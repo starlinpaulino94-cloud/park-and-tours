@@ -37,10 +37,14 @@ export async function POST(req: NextRequest) {
     }
     const userId = session.user.id;
 
-    const existing = await totalumSdk.crud.query("user", { _filter: { _id: userId }, _limit: 1 });
+    const existing = await totalumSdk.crud.query("user", { _filter: { _id: userId }, _limit: 1, company_id: true });
     const userRecord = existing.data?.[0];
     if (userRecord?.company_id) {
-      return fail(Object.assign(new Error("El usuario ya pertenece a una empresa"), { status: 409 }));
+      // Onboarding already finished (or was retried): send the user into the app
+      // instead of leaving them stuck on a screen they cannot pass.
+      const already = typeof userRecord.company_id === "object" ? userRecord.company_id : null;
+      console.log(`[setup] el usuario ${userId} ya pertenece a una empresa, se omite el alta`);
+      return ok({ company: already, focus: TYPE_FOCUS[(already?.company_type as CompanyType) || "other"], demo: null, alreadySetUp: true });
     }
 
     const body = await readJson<{
@@ -104,18 +108,34 @@ export async function POST(req: NextRequest) {
       throw new Error(linked.errors.errorMessage || "No se pudo asociar el usuario a la empresa");
     }
 
-    await seedDefaults(companyId, name, currency, companyType);
+    // From here on the tenant exists and the user is already linked to it, so no
+    // failure may block access: report it, but let the user into the app.
+    let setupError: string | null = null;
+    try {
+      await seedDefaults(companyId, name, currency, companyType);
+    } catch (err) {
+      setupError = err instanceof Error ? err.message : String(err);
+      console.error("[setup] fallo creando la configuración inicial:", err);
+    }
 
     // A brand-new tenant would otherwise show empty screens everywhere, so the
     // demo dataset is loaded unless the user explicitly opts out.
     let demo: Record<string, number> | null = null;
+    let demoError: string | null = null;
     if (body.seed_demo !== false) {
-      const seeded = await seedDemoData({
-        userId, email: session.user.email, name: session.user.name || name,
-        role: "owner", companyId, partnerId: null,
-        company: { ...company, base_currency: currency } as Company,
-      });
-      demo = seeded.created;
+      try {
+        const seeded = await seedDemoData({
+          userId, email: session.user.email, name: session.user.name || name,
+          role: "owner", companyId, partnerId: null,
+          company: { ...company, base_currency: currency } as Company,
+        });
+        demo = seeded.created;
+      } catch (err) {
+        // The company already exists and the user is linked to it: a demo-data
+        // failure must be reported, never turned into a locked-out account.
+        demoError = err instanceof Error ? err.message : String(err);
+        console.error("[setup] fallo al cargar los datos de demostración:", err);
+      }
     }
 
     await writeAudit({
@@ -126,15 +146,21 @@ export async function POST(req: NextRequest) {
     });
 
     console.log(`[setup] empresa creada: ${name} (${companyId}) para ${session.user.email}`);
-    return ok({ company, focus: TYPE_FOCUS[companyType], demo });
+    return ok({ company, focus: TYPE_FOCUS[companyType], demo, demoError: demoError || setupError });
   } catch (err) {
     return fail(err);
   }
 }
 
 async function seedDefaults(companyId: string, name: string, currency: Currency, type: CompanyType) {
-  const create = (table: string, data: Record<string, unknown>) =>
-    totalumSdk.crud.createRecord(table, { ...data, company: companyId });
+  const create = async (table: string, data: Record<string, unknown>) => {
+    const res = await totalumSdk.crud.createRecord(table, { ...data, company: companyId });
+    if (res.errors) {
+      console.error(`[setup] no se pudo crear el registro base de ${table}:`, res.errors);
+      throw new Error(res.errors.errorMessage || `No se pudo crear la configuración inicial (${table})`);
+    }
+    return res;
+  };
 
   const branchType = type === "park" ? "park" : type === "tour_center" ? "tour_center" : "office";
   const branch = await create("branch", {

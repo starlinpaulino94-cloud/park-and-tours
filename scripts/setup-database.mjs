@@ -705,7 +705,9 @@ async function main() {
         if (!targetId) throw new Error(`Unknown ref target "${__ref}" for ${t.type}.${p.name}`);
         prop.objectReference = { objectReferenceTypeId: targetId, objectReferenceRelation: __rel };
       }
-      await call(`${STRUCT}/${structureId}/property`, "POST", prop);
+      // canRepeat MUST be true: Totalum enforces uniqueness when it is not set,
+      // which would break every one-to-many relation and repeated value.
+      await call(`${STRUCT}/${structureId}/property`, "POST", { canRepeat: true, ...prop });
       added++;
       console.log(`  + ${t.type}.${p.name}`);
     }
@@ -721,7 +723,7 @@ async function main() {
     const have = propsByType.get(r.table) || new Set();
     if (have.has(r.name)) continue;
     await call(`${STRUCT}/${idByType.get(r.table)}/property`, "POST", {
-      name: r.name, label: r.label, propertyType: "objectReference",
+      name: r.name, label: r.label, propertyType: "objectReference", canRepeat: true,
       objectReference: { objectReferenceTypeId: idByType.get(r.target), objectReferenceRelation: "manyToOne" },
     });
     added++;
@@ -738,7 +740,7 @@ async function main() {
   for (const r of AUTH_USER_REFS) {
     if (!userStructureId || userProps.has(r.name)) continue;
     await call(`${STRUCT}/${userStructureId}/property`, "POST", {
-      name: r.name, label: r.label, propertyType: "objectReference",
+      name: r.name, label: r.label, propertyType: "objectReference", canRepeat: true,
       objectReference: { objectReferenceTypeId: idByType.get(r.target), objectReferenceRelation: "manyToOne" },
     });
     added++;
@@ -754,7 +756,7 @@ async function main() {
     const have = propsByType.get(r.table) || new Set();
     if (have.has(r.name)) continue;
     await call(`${STRUCT}/${idByType.get(r.table)}/property`, "POST", {
-      name: r.name, label: r.label, propertyType: "objectReference",
+      name: r.name, label: r.label, propertyType: "objectReference", canRepeat: true,
       objectReference: { objectReferenceTypeId: idByType.get(r.target), objectReferenceRelation: "manyToMany" },
     });
     added++;

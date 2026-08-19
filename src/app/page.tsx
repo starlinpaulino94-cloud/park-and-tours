@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/tf/icon";
+import { getTenantContext } from "@/lib/tenant";
 import { FILES } from "../../assets/files";
 
 const PILLARS = [
@@ -48,7 +49,14 @@ const AUDIENCES = [
   { title: "Agencias y puntos de venta", text: "Catálogo autorizado, disponibilidad real y comisión visible al instante." },
 ];
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  // The landing page is public, but a signed-in visitor must always see a way
+  // straight into the app instead of the "create account" call to action.
+  const session = await getTenantContext();
+  const signedIn = !!session;
+  const appHref = !session ? "/login" : session.role === "partner" ? "/portal" : session.companyId ? "/dashboard" : "/onboarding";
+  const appLabel = !session ? "Entrar" : session.companyId ? "Ir al panel" : "Terminar configuración";
+
   return (
     <div className="min-h-screen bg-background">
       {/* ------------------------------------------------------------- header */}
@@ -65,8 +73,21 @@ export default function LandingPage() {
             <Link href="/portal" className="transition-colors hover:text-foreground">Portal B2B</Link>
           </nav>
           <div className="ml-auto flex items-center gap-2">
-            <Link href="/login"><Button variant="ghost" size="sm">Entrar</Button></Link>
-            <Link href="/register"><Button size="sm" className="rounded-full px-4">Crear cuenta</Button></Link>
+            {signedIn ? (
+              <>
+                <span className="hidden text-[12px] text-muted-foreground sm:block">{session?.email}</span>
+                <Link href={appHref}>
+                  <Button size="sm" className="gap-1.5 rounded-full px-4">
+                    {appLabel} <Icon name="ArrowRight" className="size-3.5" />
+                  </Button>
+                </Link>
+              </>
+            ) : (
+              <>
+                <Link href="/login"><Button variant="ghost" size="sm">Entrar</Button></Link>
+                <Link href="/register"><Button size="sm" className="rounded-full px-4">Crear cuenta</Button></Link>
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -87,14 +108,14 @@ export default function LandingPage() {
               desde una excursión al día hasta miles de reservas diarias en varias empresas.
             </p>
             <div className="mt-9 flex flex-wrap gap-3">
-              <Link href="/register">
+              <Link href={signedIn ? appHref : "/register"}>
                 <Button size="lg" className="gap-2 rounded-full bg-white px-7 text-[oklch(0.24_0.035_210)] hover:bg-white/90">
-                  Empezar prueba gratuita <Icon name="ArrowRight" className="size-4" />
+                  {signedIn ? appLabel : "Empezar prueba gratuita"} <Icon name="ArrowRight" className="size-4" />
                 </Button>
               </Link>
-              <Link href="/dashboard">
+              <Link href={signedIn ? "/dashboard" : "/login"}>
                 <Button size="lg" variant="outline" className="rounded-full border-white/30 bg-white/5 px-7 text-white hover:bg-white/15 hover:text-white">
-                  Ver el panel
+                  {signedIn ? "Ver el panel" : "Ya tengo cuenta"}
                 </Button>
               </Link>
             </div>
@@ -238,14 +259,14 @@ export default function LandingPage() {
               tour centers, flota, caja y reservas de ejemplo listas para explorar.
             </p>
             <div className="mt-8 flex flex-wrap justify-center gap-3">
-              <Link href="/register">
+              <Link href={signedIn ? appHref : "/register"}>
                 <Button size="lg" className="gap-2 rounded-full bg-white px-8 text-[oklch(0.24_0.035_210)] hover:bg-white/90">
-                  Crear mi empresa <Icon name="ArrowRight" className="size-4" />
+                  {signedIn ? appLabel : "Crear mi empresa"} <Icon name="ArrowRight" className="size-4" />
                 </Button>
               </Link>
-              <Link href="/login">
+              <Link href={signedIn ? "/dashboard/pos" : "/login"}>
                 <Button size="lg" variant="outline" className="rounded-full border-white/30 bg-white/5 px-8 text-white hover:bg-white/15 hover:text-white">
-                  Ya tengo cuenta
+                  {signedIn ? "Registrar una venta" : "Ya tengo cuenta"}
                 </Button>
               </Link>
             </div>

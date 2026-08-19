@@ -27,13 +27,13 @@ export default function RegisterPage() {
     setLoading(true);
 
     if (formData.password !== formData.confirmPassword) {
-      setError("Passwords do not match");
+      setError("Las contraseñas no coinciden");
       setLoading(false);
       return;
     }
 
     if (formData.password.length < 6) {
-      setError("Password must be at least 6 characters long");
+      setError("La contraseña debe tener al menos 6 caracteres");
       setLoading(false);
       return;
     }
@@ -47,16 +47,17 @@ export default function RegisterPage() {
 
       if (result.error) {
         console.error(result.error);
-        setError(result.error.message || "Error registering. The email might already be in use.");
+        setError(result.error.message || "No se pudo crear la cuenta. Puede que el email ya esté en uso.");
         setLoading(false);
         return;
       }
 
-      // Use window.location for a full page reload to ensure session cookie is picked up
-      window.location.href = "/";
+      // Full page reload so the session cookie is picked up by the middleware.
+      // /dashboard forwards to /onboarding when the company is not created yet.
+      window.location.href = "/dashboard";
     } catch (err: any) {
       console.error("Registration error:", err);
-      setError(err.message || "Error registering. The email might already be in use.");
+      setError(err.message || "No se pudo crear la cuenta. Puede que el email ya esté en uso.");
       setLoading(false);
     }
   };
@@ -65,9 +66,9 @@ export default function RegisterPage() {
     <div className="min-h-screen flex items-center justify-center px-4 bg-gradient-to-br from-background to-muted/20">
       <Card className="w-full max-w-md shadow-xl border-2">
         <CardHeader className="space-y-2 text-center pb-6">
-          <CardTitle className="text-3xl font-bold tracking-tight">Create Account</CardTitle>
+          <CardTitle className="text-3xl font-bold tracking-tight">Crea tu cuenta</CardTitle>
           <CardDescription className="text-base">
-            Enter your information to get started
+            Regístrate y empieza a gestionar tu operación turística
           </CardDescription>
         </CardHeader>
         <form onSubmit={handleRegister}>
@@ -78,11 +79,11 @@ export default function RegisterPage() {
               </Alert>
             )}
             <div className="space-y-2">
-              <Label htmlFor="email" className="text-sm font-semibold">Email Address</Label>
+              <Label htmlFor="email" className="text-sm font-semibold">Email</Label>
               <Input
                 id="email"
                 type="email"
-                placeholder="you@example.com"
+                placeholder="tu@empresa.com"
                 value={formData.email}
                 onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                 required
@@ -90,11 +91,11 @@ export default function RegisterPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="name" className="text-sm font-semibold">Full Name</Label>
+              <Label htmlFor="name" className="text-sm font-semibold">Nombre completo</Label>
               <Input
                 id="name"
                 type="text"
-                placeholder="Your name"
+                placeholder="Tu nombre"
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 required
@@ -102,11 +103,11 @@ export default function RegisterPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password" className="text-sm font-semibold">Password</Label>
+              <Label htmlFor="password" className="text-sm font-semibold">Contraseña</Label>
               <Input
                 id="password"
                 type="password"
-                placeholder="At least 6 characters"
+                placeholder="Mínimo 6 caracteres"
                 value={formData.password}
                 onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                 required
@@ -115,11 +116,11 @@ export default function RegisterPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="confirmPassword" className="text-sm font-semibold">Confirm Password</Label>
+              <Label htmlFor="confirmPassword" className="text-sm font-semibold">Repetir contraseña</Label>
               <Input
                 id="confirmPassword"
                 type="password"
-                placeholder="Re-enter your password"
+                placeholder="Repite tu contraseña"
                 value={formData.confirmPassword}
                 onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
                 required
@@ -134,12 +135,12 @@ export default function RegisterPage() {
               className="w-full h-11 text-base font-semibold transition-all hover:scale-[1.02]"
               disabled={loading}
             >
-              {loading ? "Creating account..." : "Sign Up"}
+              {loading ? "Creando cuenta..." : "Crear cuenta"}
             </Button>
             <div className="text-sm text-center text-muted-foreground">
-              Already have an account?{" "}
+              ¿Ya tienes cuenta?{" "}
               <Link href="/login" className="font-semibold text-primary hover:underline transition-colors">
-                Sign in here
+                Entrar
               </Link>
             </div>
           </CardFooter>

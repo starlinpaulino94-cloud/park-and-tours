@@ -13,7 +13,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const redirect = searchParams.get("redirect") || "/";
+  const redirect = searchParams.get("redirect") || "/dashboard";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -33,7 +33,7 @@ function LoginForm() {
 
       // Check if login was successful
       if (result.error) {
-        setError(result.error.message || "Error signing in. Please check your credentials.");
+        setError(result.error.message || "No se pudo iniciar sesión. Revisa tus credenciales.");
         setLoading(false);
         return;
       }
@@ -45,7 +45,7 @@ function LoginForm() {
       }, 500);
     } catch (err: any) {
       console.error("Login error:", err);
-      setError(err.message || "Error signing in. Please check your credentials.");
+      setError(err.message || "No se pudo iniciar sesión. Revisa tus credenciales.");
       setLoading(false);
     }
   };
@@ -54,9 +54,9 @@ function LoginForm() {
     <div className="min-h-screen flex items-center justify-center px-4 bg-gradient-to-br from-background to-muted/20">
       <Card className="w-full max-w-md shadow-xl border-2">
         <CardHeader className="space-y-2 text-center pb-6">
-          <CardTitle className="text-3xl font-bold tracking-tight">Welcome Back</CardTitle>
+          <CardTitle className="text-3xl font-bold tracking-tight">Bienvenido de nuevo</CardTitle>
           <CardDescription className="text-base">
-            Enter your email and password to access your account
+            Introduce tu email y contraseña para acceder a tu cuenta
           </CardDescription>
         </CardHeader>
         <form onSubmit={handleSubmit}>
@@ -67,11 +67,11 @@ function LoginForm() {
               </Alert>
             )}
             <div className="space-y-2">
-              <Label htmlFor="email" className="text-sm font-semibold">Email Address</Label>
+              <Label htmlFor="email" className="text-sm font-semibold">Email</Label>
               <Input
                 id="email"
                 type="email"
-                placeholder="you@example.com"
+                placeholder="tu@empresa.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -79,11 +79,11 @@ function LoginForm() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password" className="text-sm font-semibold">Password</Label>
+              <Label htmlFor="password" className="text-sm font-semibold">Contraseña</Label>
               <Input
                 id="password"
                 type="password"
-                placeholder="Enter your password"
+                placeholder="Introduce tu contraseña"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
@@ -97,12 +97,12 @@ function LoginForm() {
               className="w-full h-11 text-base font-semibold transition-all hover:scale-[1.02]"
               disabled={loading}
             >
-              {loading ? "Signing in..." : "Sign In"}
+              {loading ? "Entrando..." : "Entrar"}
             </Button>
             <div className="text-sm text-center text-muted-foreground">
-              Don&apos;t have an account?{" "}
+              ¿Todavía no tienes cuenta?{" "}
               <Link href="/register" className="font-semibold text-primary hover:underline transition-colors">
-                Sign up here
+                Crear cuenta
               </Link>
             </div>
           </CardFooter>
@@ -118,8 +118,8 @@ export default function LoginPage() {
       <div className="min-h-screen flex items-center justify-center px-4 bg-gradient-to-br from-background to-muted/20">
         <Card className="w-full max-w-md shadow-xl border-2">
           <CardHeader className="space-y-2 text-center pb-6">
-            <CardTitle className="text-3xl font-bold tracking-tight">Welcome Back</CardTitle>
-            <CardDescription className="text-base">Loading...</CardDescription>
+            <CardTitle className="text-3xl font-bold tracking-tight">Bienvenido de nuevo</CardTitle>
+            <CardDescription className="text-base">Cargando...</CardDescription>
           </CardHeader>
         </Card>
       </div>

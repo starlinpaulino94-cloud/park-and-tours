@@ -36,17 +36,24 @@ export default function OnboardingPage() {
       return;
     }
     setSaving(true);
-    const res = await api.post<{ company: { name: string }; demo: Record<string, number> | null }>("/api/setup", {
-      ...form,
-      seed_demo: true,
-    });
+    const res = await api.post<{
+      company: { name: string } | null;
+      demo: Record<string, number> | null;
+      demoError?: string | null;
+    }>("/api/setup", { ...form, seed_demo: true });
     setSaving(false);
     if (!res.ok) {
       console.error("[onboarding] error creando la empresa:", res.error);
       toast.error(res.error?.message || "No se pudo crear la empresa");
       return;
     }
-    toast.success("Empresa creada con datos de ejemplo listos para explorar");
+    if (res.data?.demoError) {
+      // The tenant exists and is usable; only the sample data failed.
+      console.error("[onboarding] datos de ejemplo incompletos:", res.data.demoError);
+      toast.warning("Empresa creada. Los datos de ejemplo quedaron incompletos, puedes cargarlos luego.");
+    } else {
+      toast.success("Empresa creada con datos de ejemplo listos para explorar");
+    }
     router.push("/dashboard");
     router.refresh();
   };
