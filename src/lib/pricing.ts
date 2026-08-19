@@ -32,6 +32,14 @@ export interface PriceInput {
   exchangeRate?: number;
 }
 
+/**
+ * Pax that actually pay: infants travel free. The POS quote and the real sale
+ * must use this same rule or the price shown would not match the price charged.
+ */
+export function billablePax(adults = 0, children = 0): number {
+  return Math.max(1, adults + children);
+}
+
 export interface PriceResult {
   unitPrice: number;
   grossAmount: number;

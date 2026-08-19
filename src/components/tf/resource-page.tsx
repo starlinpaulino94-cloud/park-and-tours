@@ -29,7 +29,7 @@ export function ResourcePage<T extends { _id: string }>({
   resource, eyebrow, title, description, columns, fields, filters,
   searchPlaceholder = "Buscar…", createLabel = "Nuevo registro",
   emptyTitle, emptyDescription, emptyIcon, canWrite = true,
-  extraActions, renderSummary, onRowClick, pageSize = 50, initialSort,
+  extraActions, renderSummary, onRowClick, pageSize = 50, initialSort, embedded = false,
 }: {
   resource: string;
   eyebrow?: string;
@@ -49,6 +49,8 @@ export function ResourcePage<T extends { _id: string }>({
   onRowClick?: (row: T) => void;
   pageSize?: number;
   initialSort?: string;
+  /** Renders without the page header — for tabbed screens that own their own title. */
+  embedded?: boolean;
 }) {
   const [rows, setRows] = useState<T[]>([]);
   const [total, setTotal] = useState(0);
@@ -126,23 +128,23 @@ export function ResourcePage<T extends { _id: string }>({
   const allColumns = canWrite ? [...columns, actionColumn] : columns;
   const pages = Math.max(Math.ceil(total / pageSize), 1);
 
+  const actions = (
+    <>
+      {extraActions}
+      {canWrite && (
+        <Button className="gap-1.5" onClick={() => { setEditing(null); setFormOpen(true); }}>
+          <Icon name="Plus" className="size-4" /> {createLabel}
+        </Button>
+      )}
+    </>
+  );
+
   return (
     <div className="space-y-5">
-      <PageHeader
-        eyebrow={eyebrow}
-        title={title}
-        description={description}
-        actions={
-          <>
-            {extraActions}
-            {canWrite && (
-              <Button className="gap-1.5" onClick={() => { setEditing(null); setFormOpen(true); }}>
-                <Icon name="Plus" className="size-4" /> {createLabel}
-              </Button>
-            )}
-          </>
-        }
-      />
+      {!embedded && (
+        <PageHeader eyebrow={eyebrow} title={title} description={description} actions={actions} />
+      )}
+      {embedded && description && <p className="text-sm text-muted-foreground">{description}</p>}
 
       {renderSummary?.(rows, total)}
 
@@ -167,6 +169,7 @@ export function ResourcePage<T extends { _id: string }>({
         <Button variant="outline" size="icon" onClick={load} aria-label="Actualizar">
           <Icon name="RefreshCw" className="size-4" />
         </Button>
+        {embedded && actions}
       </div>
 
       <DataTable

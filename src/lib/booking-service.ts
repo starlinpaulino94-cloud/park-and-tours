@@ -1,7 +1,7 @@
 import "server-only";
 import { totalumSdk } from "@/lib/totalum";
 import { tenantCreate, tenantQuery, type TenantContext } from "@/lib/tenant";
-import { resolvePrice, resolveCost } from "@/lib/pricing";
+import { resolvePrice, resolveCost, billablePax } from "@/lib/pricing";
 import { assertCapacity, recalculateDeparture } from "@/lib/availability";
 import { resolveCommissions, type BeneficiaryDescriptor } from "@/lib/commission-engine";
 import { writeAudit } from "@/lib/audit";
@@ -114,7 +114,7 @@ export async function createOrderWithBookings(
     const children = item.children ?? 0;
     const infants = item.infants ?? 0;
     const paxTotal = adults + children + infants;
-    const billablePax = Math.max(1, adults + children);
+    const billable = billablePax(adults, children);
 
     const price = await resolvePrice({
       companyId,
@@ -123,7 +123,7 @@ export async function createOrderWithBookings(
       partnerId: input.partner_id,
       sellerId: input.seller_id,
       channel,
-      quantity: billablePax,
+      quantity: billable,
       travelDate: null,
       discountPct: item.discount_pct ?? 0,
       taxPct: item.tax_pct ?? 0,
@@ -140,7 +140,7 @@ export async function createOrderWithBookings(
       _filter: { _id: item.product_id }, _limit: 1,
     }))[0];
 
-    const cost = await resolveCost(companyId, item.product_id, billablePax, productRow?.base_cost ?? 0);
+    const cost = await resolveCost(companyId, item.product_id, billable, productRow?.base_cost ?? 0);
     const travelDate = departure?.departure_at ?? null;
     const voucherCode = newVoucherCode();
 
