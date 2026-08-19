@@ -63,3 +63,8 @@ playwright-dev-server.log
 /prod-*.png
 /page-*.png
 screenshots/
+# testing mode artifacts (auto-generated, temporary)
+.claude/
+/tmp/playwright-screenshots/
+/tmp/playwright-dev-server.log
+/*.png

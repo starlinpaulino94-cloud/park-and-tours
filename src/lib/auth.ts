@@ -247,7 +247,33 @@ export const auth = betterAuth({
   // ============================================================================
   user: {
     additionalFields: {
-      // Add your custom user fields here (see examples above)
+      role: {
+        type: "string",
+        required: false,
+        defaultValue: "owner",
+        input: true,
+      },
+      company_id: {
+        type: "string",
+        required: false,
+        input: true,
+      },
+      partner_id: {
+        type: "string",
+        required: false,
+        input: true,
+      },
+      phone: {
+        type: "string",
+        required: false,
+        input: true,
+      },
+      status: {
+        type: "string",
+        required: false,
+        defaultValue: "active",
+        input: true,
+      },
     },
   },
 });
@@ -255,3 +281,38 @@ export const auth = betterAuth({
 // Base types from Better Auth
 export type Session = typeof auth.$Infer.Session;
 export type User = Session["user"];
+
+/**
+ * Roles available across the platform.
+ * - superadmin : platform owner (SaaS panel, cross-tenant)
+ * - owner/admin: full access inside a single tenant
+ * - manager    : commercial + operations, no SaaS settings
+ * - operations : dispatch, check-in, transport, pickups
+ * - cashier    : POS / cash sessions / payments
+ * - seller     : own sales + own commissions
+ * - partner    : B2B portal user (tour center / agency)
+ */
+export type AppRole =
+  | "superadmin"
+  | "owner"
+  | "admin"
+  | "manager"
+  | "operations"
+  | "cashier"
+  | "seller"
+  | "partner";
+
+export interface ExtendedUser {
+  id: string;
+  email: string;
+  name: string;
+  image?: string | null;
+  emailVerified: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  role?: AppRole;
+  company_id?: string | null;
+  partner_id?: string | null;
+  phone?: string | null;
+  status?: string | null;
+}
