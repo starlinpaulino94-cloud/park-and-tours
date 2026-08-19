@@ -145,7 +145,7 @@ export default function OnboardingPage() {
       <div className="tf-mesh tf-grain relative hidden overflow-hidden lg:block">
         <img src={FILES.heroBoat} alt="Catamarán navegando al atardecer" className="absolute inset-0 size-full object-cover opacity-45" />
         <div className="relative flex h-full flex-col justify-end gap-4 p-12">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/60">Listo en segundos</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/80">Listo en segundos</p>
           <h2 className="max-w-md font-display text-3xl font-semibold text-white">
             Tu empresa arranca con catálogo, calendario, red de ventas y caja configurados
           </h2>

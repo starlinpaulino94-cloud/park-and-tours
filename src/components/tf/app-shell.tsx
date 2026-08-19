@@ -38,7 +38,7 @@ function NavLinks({ user, onNavigate }: { user: ShellUser; onNavigate?: () => vo
         if (items.length === 0) return null;
         return (
           <div key={group.title}>
-            <p className="px-3 pb-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-sidebar-foreground/45">
+            <p className="px-3 pb-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-sidebar-foreground/70">
               {group.title}
             </p>
             <ul className="space-y-0.5">
@@ -84,7 +84,7 @@ function Brand({ company }: { company: string }) {
       </span>
       <div className="min-w-0">
         <p className="font-display text-[15px] font-semibold leading-none text-sidebar-foreground">TourFlow</p>
-        <p className="mt-1 truncate text-[11px] text-sidebar-foreground/55">{company}</p>
+        <p className="mt-1 truncate text-[11px] text-sidebar-foreground/70">{company}</p>
       </div>
     </div>
   );
@@ -134,7 +134,7 @@ export function AppShell({ user, children }: { user: ShellUser; children: React.
               <Icon name="Globe2" className="size-4" /> Panel de plataforma
             </Link>
           )}
-          <p className="px-3 text-[10px] uppercase tracking-[0.18em] text-sidebar-foreground/40">
+          <p className="px-3 text-[10px] uppercase tracking-[0.18em] text-sidebar-foreground/65">
             {user.subscriptionStatus === "trial" ? "Periodo de prueba" : "Suscripción activa"}
           </p>
         </div>

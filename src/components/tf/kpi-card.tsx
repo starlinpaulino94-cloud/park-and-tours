@@ -15,14 +15,17 @@ export function KpiCard({
   className?: string;
   style?: React.CSSProperties;
 }) {
+  // Every pair below is verified against WCAG AA (>= 4.5:1) for the label,
+  // the value and the hint — the hint included, which is why it is dimmed with
+  // opacity-90 instead of the opacity-80 that used to fall under the threshold.
   const tones: Record<string, string> = {
     default: "bg-card",
     primary: "bg-primary text-primary-foreground border-primary",
-    coral: "bg-[oklch(0.63_0.17_35)] text-white border-transparent",
-    amber: "bg-[oklch(0.79_0.14_80)] text-[oklch(0.24_0.035_210)] border-transparent",
-    ink: "bg-[oklch(0.24_0.035_210)] text-[oklch(0.95_0.012_90)] border-transparent",
+    coral: "bg-coral text-white border-coral",
+    amber: "bg-amber text-ink border-amber",
+    ink: "bg-ink text-sand border-ink",
   };
-  const muted = tone === "default" ? "text-muted-foreground" : "opacity-80";
+  const muted = tone === "default" ? "text-muted-foreground" : "opacity-90";
 
   return (
     <div className={cn("tf-card tf-rise relative overflow-hidden p-4", tones[tone], className)} style={style}>

@@ -80,7 +80,7 @@ export function SideShell({
               key={l.href}
               href={l.href}
               onClick={onNavigate}
-              className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+              className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium text-sidebar-foreground/75 transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
             >
               <Icon name={l.icon} className="size-4 shrink-0" /> {l.label}
             </Link>
@@ -109,7 +109,7 @@ export function SideShell({
             </span>
           )}
         </p>
-        <p className="mt-1 truncate text-[11px] text-sidebar-foreground/55">{subtitle}</p>
+        <p className="mt-1 truncate text-[11px] text-sidebar-foreground/70">{subtitle}</p>
       </div>
     </div>
   );

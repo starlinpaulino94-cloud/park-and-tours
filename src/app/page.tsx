@@ -127,7 +127,7 @@ export default async function LandingPage() {
               ].map((s) => (
                 <div key={s.k}>
                   <dt className="font-display text-3xl font-semibold text-white">{s.k}</dt>
-                  <dd className="mt-1 text-[12px] uppercase tracking-wider text-white/55">{s.v}</dd>
+                  <dd className="mt-1 text-[12px] uppercase tracking-wider text-white/75">{s.v}</dd>
                 </div>
               ))}
             </dl>
@@ -138,13 +138,13 @@ export default async function LandingPage() {
               <img src={FILES.heroBeach} alt="Excursión en catamarán por el Caribe" className="h-[300px] w-full object-cover sm:h-[420px]" />
             </div>
             <div className="absolute -bottom-8 -left-4 w-[240px] rounded-2xl border border-white/15 bg-[oklch(0.19_0.028_214)]/95 p-4 shadow-2xl backdrop-blur sm:-left-10 sm:w-[280px]">
-              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/50">Despacho de hoy</p>
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/75">Despacho de hoy</p>
               <p className="mt-2 font-display text-xl font-semibold text-white">07:00 · Isla Saona</p>
               <div className="mt-3 grid grid-cols-3 gap-2 text-center">
                 {[["86", "pax"], ["4", "vehículos"], ["12", "hoteles"]].map(([k, v]) => (
                   <div key={v} className="rounded-lg bg-white/10 py-2">
                     <p className="font-display text-base font-semibold text-white">{k}</p>
-                    <p className="text-[10px] uppercase tracking-wide text-white/55">{v}</p>
+                    <p className="text-[10px] uppercase tracking-wide text-white/75">{v}</p>
                   </div>
                 ))}
               </div>
