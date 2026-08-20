@@ -191,17 +191,17 @@ export default function PortalSettlementsPage() {
                 <StatusBadge value={detail.status} dict={SETTLEMENT_STATUS} />
                 <ul className="tf-card space-y-1.5 p-4 text-sm">
                   <li className="flex justify-between gap-3"><span className="text-muted-foreground">Ventas del período</span>
-                    <span className="tabular-nums">{formatMoney(detail.sales_total, detail.currency)}</span></li>
+                    <span className="tf-num">{formatMoney(detail.sales_total, detail.currency)}</span></li>
                   <li className="flex justify-between gap-3"><span className="text-muted-foreground">Cancelaciones</span>
-                    <span className="tabular-nums">− {formatMoney(detail.cancellations_total, detail.currency)}</span></li>
+                    <span className="tf-num">− {formatMoney(detail.cancellations_total, detail.currency)}</span></li>
                   <li className="flex justify-between gap-3"><span className="text-muted-foreground">Base comisionable</span>
-                    <span className="tabular-nums">{formatMoney(detail.base_total, detail.currency)}</span></li>
+                    <span className="tf-num">{formatMoney(detail.base_total, detail.currency)}</span></li>
                   <li className="flex justify-between gap-3 border-t border-border pt-1.5 font-semibold">
-                    <span>Comisión</span><span className="tabular-nums">{formatMoney(detail.commission_total, detail.currency)}</span></li>
+                    <span>Comisión</span><span className="tf-num">{formatMoney(detail.commission_total, detail.currency)}</span></li>
                   <li className="flex justify-between gap-3"><span className="text-muted-foreground">Pagado</span>
-                    <span className="tabular-nums">{formatMoney(detail.paid_total, detail.currency)}</span></li>
+                    <span className="tf-num">{formatMoney(detail.paid_total, detail.currency)}</span></li>
                   <li className="flex justify-between gap-3 font-semibold"><span>Pendiente</span>
-                    <span className="tabular-nums">{formatMoney(detail.pending_total, detail.currency)}</span></li>
+                    <span className="tf-num">{formatMoney(detail.pending_total, detail.currency)}</span></li>
                 </ul>
                 {detail.notes && <p className="text-sm text-muted-foreground">{detail.notes}</p>}
                 <p className="rounded-lg border border-dashed border-border bg-muted/40 p-3 text-xs text-muted-foreground">

@@ -1,7 +1,7 @@
 // src/app/layout.tsx
 import React from "react";
 import type { Metadata } from "next";
-import { Fraunces, Manrope, Geist_Mono } from "next/font/google";
+import { Fraunces, Manrope, Space_Grotesk, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ScriptExecutor } from "@/components/ScriptExecutor";
 import { DevToolsHandler } from "@/components/DevToolsHandler";
@@ -15,6 +15,10 @@ const display = Fraunces({
   weight: ["400", "500", "600", "700"],
 });
 const body = Manrope({ variable: "--font-body", subsets: ["latin"], weight: ["300", "400", "500", "600", "700", "800"] });
+// Dedicated face for figures: money, counts, percentages. Geometric lining
+// digits of uniform width, so amounts stay aligned and read far lighter than
+// the Fraunces display serif that used to render them.
+const numeric = Space_Grotesk({ variable: "--font-num", subsets: ["latin"], weight: ["400", "500", "600", "700"] });
 const mono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
@@ -30,7 +34,7 @@ export const revalidate = 0;
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="es">
-      <body className={`${display.variable} ${body.variable} ${mono.variable} antialiased`}>
+      <body className={`${display.variable} ${body.variable} ${numeric.variable} ${mono.variable} antialiased`}>
         <GlobalErrorCatcher />
         <ScriptExecutor />
         <DevToolsHandler />

@@ -18,9 +18,11 @@ export function KpiCard({
   // Every pair below is verified against WCAG AA (>= 4.5:1) for the label,
   // the value and the hint — the hint included, which is why it is dimmed with
   // opacity-90 instead of the opacity-80 that used to fall under the threshold.
+  // These use fixed brand steps rather than `bg-primary`/theme tokens so the
+  // saturated cards keep the exact same verified pairing in light and dark.
   const tones: Record<string, string> = {
     default: "bg-card",
-    primary: "bg-primary text-primary-foreground border-primary",
+    primary: "bg-brand-700 text-white border-brand-700",
     coral: "bg-coral text-white border-coral",
     amber: "bg-amber text-ink border-amber",
     ink: "bg-ink text-sand border-ink",
@@ -38,13 +40,13 @@ export function KpiCard({
           </span>
         )}
       </div>
-      <p className="mt-2 font-display text-[26px] font-semibold leading-none tabular-nums">{value}</p>
+      <p className="tf-num mt-2.5 text-[27px] leading-none">{value}</p>
       <div className="mt-2 flex items-center gap-2">
         {typeof trend === "number" && Number.isFinite(trend) && (
           <span
             className={cn(
-              "inline-flex items-center gap-0.5 text-[11px] font-bold tabular-nums",
-              trend >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400",
+              "tf-num inline-flex items-center gap-0.5 text-[11px] font-semibold",
+              trend >= 0 ? "text-emerald-700 dark:text-emerald-400" : "text-rose-700 dark:text-rose-400",
               tone !== "default" && "text-current"
             )}
           >

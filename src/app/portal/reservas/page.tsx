@@ -153,7 +153,7 @@ export default function PortalBookingsPage() {
             render: (b: any) => <span className="font-semibold">{formatMoney(b.total_amount ?? 0, b.currency)}</span> },
           { key: "balance", header: "Saldo", align: "right", hideOn: "lg", render: (b: any) =>
             (b.balance_amount ?? 0) > 0.009
-              ? <span className="font-semibold text-rose-600 dark:text-rose-400">{formatMoney(b.balance_amount, b.currency)}</span>
+              ? <span className="font-semibold text-rose-700 dark:text-rose-400">{formatMoney(b.balance_amount, b.currency)}</span>
               : <span className="text-muted-foreground">—</span> },
           { key: "checkin", header: "Check-in", hideOn: "lg",
             render: (b: any) => <StatusBadge value={b.checkin_status} dict={CHECKIN_STATUS} dot={false} /> },
@@ -258,7 +258,7 @@ function Row({ label, value, strong }: { label: string; value: string; strong?: 
   return (
     <li className={`flex items-center justify-between gap-3 ${strong ? "border-t border-border pt-1.5 font-semibold" : ""}`}>
       <span className={strong ? "" : "text-muted-foreground"}>{label}</span>
-      <span className="tabular-nums">{value}</span>
+      <span className="tf-num">{value}</span>
     </li>
   );
 }

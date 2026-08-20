@@ -411,8 +411,8 @@ export default function BookingsPage() {
                           </p>
                         </div>
                         <span className={p.payment_type === "refund"
-                          ? "font-semibold text-rose-600 dark:text-rose-400"
-                          : "font-semibold text-emerald-600 dark:text-emerald-400"}>
+                          ? "font-semibold text-rose-700 dark:text-rose-400"
+                          : "font-semibold text-emerald-700 dark:text-emerald-400"}>
                           {p.payment_type === "refund" ? "−" : "+"}{formatMoney(p.amount ?? 0, p.currency)}
                         </span>
                       </li>
@@ -561,7 +561,7 @@ function Row({ label, value, strong, mono }: { label: string; value: string; str
   return (
     <div className="flex items-center justify-between gap-3 px-4 py-2.5">
       <span className="shrink-0 text-sm text-muted-foreground">{label}</span>
-      <span className={`text-right text-sm ${strong ? "font-display text-base font-semibold" : "font-medium"} ${mono ? "font-mono text-[12px]" : ""} tabular-nums`}>
+      <span className={`tf-num text-right text-sm ${strong ? "text-base font-semibold" : ""} ${mono ? "font-mono text-[12px]" : ""}`}>
         {value}
       </span>
     </div>

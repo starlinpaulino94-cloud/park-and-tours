@@ -336,7 +336,7 @@ function StatCard({ icon, label, value, tone = "default" }: {
       </span>
       <div className="min-w-0">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
-        <p className="font-display text-xl font-semibold tabular-nums">{value}</p>
+        <p className="tf-num text-xl">{value}</p>
       </div>
     </div>
   );

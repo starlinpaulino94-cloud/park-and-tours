@@ -47,7 +47,7 @@ function Pipeline({ rows }: { rows: any[] }) {
           return (
             <div key={status} className="min-w-[140px] flex-1 rounded-lg border border-border bg-muted/25 p-3">
               <StatusBadge value={status} dict={LEAD_STATUS} />
-              <p className="mt-2 font-display text-xl font-semibold tabular-nums">{agg.count}</p>
+              <p className="mt-2 tf-num text-xl">{agg.count}</p>
               <p className="text-xs text-muted-foreground">{formatMoney(agg.value, "usd")}</p>
             </div>
           );

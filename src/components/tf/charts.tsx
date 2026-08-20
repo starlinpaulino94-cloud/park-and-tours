@@ -55,7 +55,7 @@ export function AreaChart({
             <title>{`${d.label}: ${currencyFormatter ? currencyFormatter(d.value) : d.value}`}</title>
           </circle>
           {(data.length <= 12 || i % Math.ceil(data.length / 10) === 0) && (
-            <text x={x(i)} y={h - 6} textAnchor="middle" fontSize="10" fill="var(--muted-foreground)">
+            <text x={x(i)} y={h - 6} textAnchor="middle" className="tf-num" fontSize="10" fill="var(--muted-foreground)">
               {d.label}
             </text>
           )}
@@ -79,9 +79,9 @@ export function BarList({
   }
   const max = maxProp ?? Math.max(...data.map((d) => d.value), 1);
   const colors: Record<string, string> = {
-    primary: "bg-primary",
-    coral: "bg-[oklch(0.63_0.17_35)]",
-    amber: "bg-[oklch(0.79_0.14_80)]",
+    primary: "bg-brand-600",
+    coral: "bg-coral",
+    amber: "bg-amber",
   };
   return (
     <ul className={cn("space-y-2.5", className)}>
@@ -89,7 +89,7 @@ export function BarList({
         <li key={`${d.label}-${i}`} className="tf-rise" style={{ animationDelay: `${i * 45}ms` }}>
           <div className="flex items-baseline justify-between gap-3 text-sm">
             <span className="truncate font-medium">{d.label}</span>
-            <span className="shrink-0 tabular-nums text-muted-foreground">
+            <span className="tf-num shrink-0 text-muted-foreground">
               {formatter ? formatter(d.value) : d.value}
             </span>
           </div>
@@ -135,7 +135,7 @@ export function Donut({
             return el;
           })}
         </g>
-        <text x="50%" y="46%" textAnchor="middle" className="font-display" fontSize="20" fontWeight="600" fill="var(--foreground)">
+        <text x="50%" y="46%" textAnchor="middle" className="tf-num" fontSize="20" fontWeight="600" fill="var(--foreground)">
           {centerValue}
         </text>
         <text x="50%" y="60%" textAnchor="middle" fontSize="10" fill="var(--muted-foreground)">
@@ -147,7 +147,7 @@ export function Donut({
           <li key={s.label} className="flex items-center gap-2">
             <span className="size-2.5 shrink-0 rounded-sm" style={{ background: s.color }} />
             <span className="min-w-0 flex-1 truncate">{s.label}</span>
-            <span className="tabular-nums text-muted-foreground">
+            <span className="tf-num text-muted-foreground">
               {total > 0 ? `${Math.round((s.value / total) * 100)}%` : "0%"}
             </span>
           </li>
@@ -159,5 +159,5 @@ export function Donut({
 
 export const CHART_COLORS = [
   "var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)",
-  "oklch(0.55 0.1 300)", "oklch(0.6 0.12 20)", "oklch(0.65 0.1 130)",
+  "oklch(0.5 0.2 275)", "oklch(0.66 0.12 196)", "oklch(0.63 0.13 152)",
 ];

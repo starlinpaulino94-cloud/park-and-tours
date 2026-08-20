@@ -150,7 +150,7 @@ export default function PortalCatalogPage() {
                   </div>
 
                   <div className="flex flex-wrap gap-1.5 text-[11px]">
-                    {p.duration_hours ? <Pill tone="neutral"><Icon name="Clock" className="size-3" /> {p.duration_hours} h</Pill> : null}
+                    {p.duration_hours ? <Pill tone="neutral" className="tf-num"><Icon name="Clock" className="size-3" /> {p.duration_hours} h</Pill> : null}
                     {p.location ? <Pill tone="neutral"><Icon name="MapPin" className="size-3" /> {p.location}</Pill> : null}
                     {p.next_departure ? <Pill tone="info"><Icon name="CalendarDays" className="size-3" /> {formatDate(p.next_departure)}</Pill> : null}
                   </div>
@@ -158,7 +158,7 @@ export default function PortalCatalogPage() {
                   <div className="mt-auto flex items-end justify-between gap-3 border-t border-border pt-3">
                     <div>
                       <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Tu precio neto</p>
-                      <p className="font-display text-xl font-semibold tabular-nums">
+                      <p className="tf-num text-xl">
                         {p.price ? formatMoney(p.price.unit_price, p.price.currency) : "A consultar"}
                       </p>
                       {p.price?.rule && <p className="text-[11px] text-muted-foreground">Tarifa: {p.price.rule}</p>}

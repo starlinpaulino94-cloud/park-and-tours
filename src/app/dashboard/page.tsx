@@ -173,11 +173,11 @@ export default function DashboardPage() {
                     <div className="w-40">
                       <div className="mb-1 flex justify-between text-[11px] text-muted-foreground">
                         <span>{d.booked}/{d.capacity} pax</span>
-                        <span className="tabular-nums">{d.occupancy}%</span>
+                        <span className="tf-num">{d.occupancy}%</span>
                       </div>
                       <div className="h-1.5 overflow-hidden rounded-full bg-muted">
                         <div
-                          className={`h-full rounded-full ${d.occupancy >= 85 ? "bg-[oklch(0.63_0.17_35)]" : d.occupancy >= 40 ? "bg-primary" : "bg-[oklch(0.79_0.14_80)]"}`}
+                          className={`h-full rounded-full ${d.occupancy >= 85 ? "bg-coral" : d.occupancy >= 40 ? "bg-primary" : "bg-amber"}`}
                           style={{ width: `${Math.min(d.occupancy, 100)}%` }}
                         />
                       </div>

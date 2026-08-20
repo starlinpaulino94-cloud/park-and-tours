@@ -120,7 +120,7 @@ export function AgingReport({
                 return (
                   <div key={b} className="rounded-lg border border-border bg-muted/25 p-3">
                     <Pill tone={BUCKET_TONE[b]}>{AGING_BUCKET[b].label}</Pill>
-                    <p className="mt-2 font-display text-lg font-semibold tabular-nums">{formatMoney(value, currency)}</p>
+                    <p className="mt-2 tf-num text-lg">{formatMoney(value, currency)}</p>
                     <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
                       <div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(pct, 1)}%` }} />
                     </div>
@@ -197,7 +197,7 @@ export function AgingReport({
                       <div className="text-xs">
                         <p>{formatDate(d.due_date)}</p>
                         {d.days_overdue > 0 && (
-                          <p className="font-semibold text-rose-600 dark:text-rose-400">{d.days_overdue} días de retraso</p>
+                          <p className="font-semibold text-rose-700 dark:text-rose-400">{d.days_overdue} días de retraso</p>
                         )}
                       </div>
                     ),

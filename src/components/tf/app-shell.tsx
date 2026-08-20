@@ -59,7 +59,7 @@ function NavLinks({ user, onNavigate }: { user: ShellUser; onNavigate?: () => vo
                       <Icon name={item.icon} className={cn("size-4 shrink-0", active && "text-sidebar-primary")} />
                       <span className="truncate">{item.label}</span>
                       {item.badge && (
-                        <span className="ml-auto rounded bg-sidebar-primary/20 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-sidebar-primary">
+                        <span className="ml-auto rounded bg-sidebar-primary/25 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-brand-100">
                           {item.badge}
                         </span>
                       )}

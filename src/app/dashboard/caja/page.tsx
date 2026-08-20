@@ -227,7 +227,7 @@ export default function CashPage() {
 
                     <div className="rounded-lg bg-primary/10 px-4 py-3">
                       <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-primary">Efectivo esperado en caja</p>
-                      <p className="font-display text-2xl font-semibold tabular-nums">{formatMoney(s.expected_cash ?? 0, s.currency)}</p>
+                      <p className="tf-num text-2xl">{formatMoney(s.expected_cash ?? 0, s.currency)}</p>
                     </div>
 
                     <div className="flex flex-wrap gap-2">
@@ -276,7 +276,7 @@ export default function CashPage() {
                   render: (s: Session) => {
                     const d = s.difference ?? 0;
                     if (Math.abs(d) < 0.01) return <Pill tone="success">Cuadrada</Pill>;
-                    return <Pill tone={d > 0 ? "warning" : "danger"}>{formatMoney(d, s.currency)}</Pill>;
+                    return <Pill tone={d > 0 ? "warning" : "danger"} className="tf-num">{formatMoney(d, s.currency)}</Pill>;
                   },
                 },
               ]}
@@ -337,7 +337,7 @@ export default function CashPage() {
           <div className="space-y-4">
             <div className="rounded-lg bg-muted/50 px-4 py-3">
               <p className="text-xs text-muted-foreground">Efectivo esperado</p>
-              <p className="font-display text-2xl font-semibold tabular-nums">
+              <p className="tf-num text-2xl">
                 {formatMoney(closing?.expected_cash ?? 0, closing?.currency)}
               </p>
             </div>
@@ -348,8 +348,8 @@ export default function CashPage() {
                 <p className="text-xs text-muted-foreground">
                   Diferencia:{" "}
                   <span className={Math.abs(Number(countedCash) - (closing?.expected_cash ?? 0)) < 0.01
-                    ? "font-semibold text-emerald-600 dark:text-emerald-400"
-                    : "font-semibold text-rose-600 dark:text-rose-400"}>
+                    ? "font-semibold text-emerald-700 dark:text-emerald-400"
+                    : "font-semibold text-rose-700 dark:text-rose-400"}>
                     {formatMoney(Number(countedCash) - (closing?.expected_cash ?? 0), closing?.currency)}
                   </span>
                 </p>
@@ -410,7 +410,7 @@ function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</dt>
-      <dd className="font-semibold tabular-nums">{value}</dd>
+      <dd className="tf-num">{value}</dd>
     </div>
   );
 }

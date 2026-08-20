@@ -366,9 +366,9 @@ export default function PosPage() {
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <Pill tone="accent">{formatMoney(p.base_price, p.currency)}</Pill>
+                        <Pill tone="accent" className="tf-num">{formatMoney(p.base_price, p.currency)}</Pill>
                         {p.modalities.length > 0 && <Pill tone="neutral">{p.modalities.length} modalidades</Pill>}
-                        <Pill tone={seats > 0 ? "success" : "danger"}>{formatNumber(seats)} plazas</Pill>
+                        <Pill tone={seats > 0 ? "success" : "danger"} className="tf-num">{formatNumber(seats)} plazas</Pill>
                       </div>
                       <p className="text-xs text-muted-foreground">
                         {next ? `Próxima salida ${formatDate(next.departure_at)} · ${formatTime(next.departure_at)}` : "Sin salidas programadas"}
@@ -574,7 +574,7 @@ export default function PosPage() {
                           {line.applied_rule ? ` · ${line.applied_rule}` : ""}
                           {item.infants > 0 ? ` · ${item.infants} infante${item.infants === 1 ? "" : "s"} sin coste` : ""}
                         </div>
-                        <p className="font-display text-base font-semibold tabular-nums">
+                        <p className="tf-num text-base">
                           {formatMoney(line.total_amount, line.currency)}
                         </p>
                       </div>
@@ -594,7 +594,7 @@ export default function PosPage() {
                 <Line label="Impuestos" value={formatMoney(quote?.totals.tax ?? 0, currency)} />
                 <div className="flex items-baseline justify-between border-t border-border pt-2">
                   <span className="font-semibold">Total {quoting && <Icon name="LoaderCircle" className="ml-1 inline size-3 animate-spin" />}</span>
-                  <span className="font-display text-2xl font-semibold tabular-nums">
+                  <span className="tf-num text-2xl">
                     {formatMoney(quote?.totals.total ?? 0, currency)}
                   </span>
                 </div>
@@ -689,7 +689,7 @@ export default function PosPage() {
                     <p className="font-mono text-[12px] font-semibold">{b.booking_number}</p>
                     <p className="text-xs text-muted-foreground">Voucher {b.voucher_code}</p>
                   </div>
-                  <span className="font-semibold tabular-nums">{formatMoney(b.total_amount ?? 0, b.currency)}</span>
+                  <span className="tf-num">{formatMoney(b.total_amount ?? 0, b.currency)}</span>
                 </li>
               ))}
             </ul>
@@ -729,7 +729,7 @@ function Counter({ label, value, onChange }: { label: string; value: number; onC
           onClick={() => onChange(Math.max(0, value - 1))}>
           <Icon name="Minus" className="size-3.5" />
         </button>
-        <span className="flex-1 text-center text-sm font-semibold tabular-nums">{value}</span>
+        <span className="tf-num flex-1 text-center text-sm">{value}</span>
         <button type="button" aria-label={`Más ${label}`}
           className="grid size-8 place-items-center text-muted-foreground transition-colors hover:text-foreground"
           onClick={() => onChange(value + 1)}>
@@ -744,7 +744,7 @@ function Line({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between">
       <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium tabular-nums">{value}</span>
+      <span className="tf-num font-medium">{value}</span>
     </div>
   );
 }

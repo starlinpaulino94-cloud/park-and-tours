@@ -157,7 +157,7 @@ export default function OnboardingPage() {
               "Reservas, pagos, vouchers y comisiones generadas",
             ].map((t) => (
               <li key={t} className="flex items-center gap-2">
-                <Icon name="Check" className="size-4 text-[oklch(0.79_0.14_80)]" /> {t}
+                <Icon name="Check" className="size-4 text-amber" /> {t}
               </li>
             ))}
           </ul>

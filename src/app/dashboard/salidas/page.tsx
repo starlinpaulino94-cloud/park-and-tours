@@ -41,12 +41,12 @@ const occupancyOf = (d: Departure) => {
 function OccupancyBar({ d }: { d: Departure }) {
   const pct = occupancyOf(d);
   const booked = (d.booked_pax ?? 0) + (d.pending_pax ?? 0);
-  const tone = pct >= 100 ? "bg-[oklch(0.63_0.17_35)]" : pct >= 85 ? "bg-[oklch(0.79_0.14_80)]" : "bg-primary";
+  const tone = pct >= 100 ? "bg-coral" : pct >= 85 ? "bg-amber" : "bg-primary";
   return (
     <div className="w-36">
       <div className="mb-1 flex justify-between text-[11px] text-muted-foreground">
-        <span className="tabular-nums">{booked}/{d.capacity ?? 0} pax</span>
-        <span className="tabular-nums font-semibold">{pct}%</span>
+        <span className="tf-num">{booked}/{d.capacity ?? 0} pax</span>
+        <span className="tf-num">{pct}%</span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-muted">
         <div className={`h-full rounded-full ${tone}`} style={{ width: `${Math.min(pct, 100)}%` }} />

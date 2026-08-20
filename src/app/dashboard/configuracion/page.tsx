@@ -641,7 +641,7 @@ function CancellationPolicies() {
           return (
             <div className="flex flex-wrap gap-1">
               {tiers.map((t: any, i: number) => (
-                <Pill key={i} tone="neutral">{t.hours_before}h → {t.refund_pct}%</Pill>
+                <Pill key={i} tone="neutral" className="tf-num">{t.hours_before}h → {t.refund_pct}%</Pill>
               ))}
             </div>
           );

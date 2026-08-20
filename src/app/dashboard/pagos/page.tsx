@@ -206,8 +206,8 @@ export default function PaymentsPage() {
             key: "amount", header: "Importe", align: "right",
             render: (p: Payment) => (
               <span className={p.payment_type === "refund"
-                ? "font-semibold text-rose-600 dark:text-rose-400"
-                : "font-semibold text-emerald-600 dark:text-emerald-400"}>
+                ? "font-semibold text-rose-700 dark:text-rose-400"
+                : "font-semibold text-emerald-700 dark:text-emerald-400"}>
                 {p.payment_type === "refund" ? "−" : "+"}{formatMoney(p.amount ?? 0, p.currency)}
               </span>
             ),

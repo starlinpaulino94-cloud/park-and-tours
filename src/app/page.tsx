@@ -97,7 +97,7 @@ export default async function LandingPage() {
         <div className="relative mx-auto grid max-w-7xl gap-12 px-4 py-20 sm:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:px-8 lg:py-28">
           <div className="tf-rise">
             <p className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/85">
-              <span className="size-1.5 rounded-full bg-[oklch(0.79_0.14_80)]" /> ERP · OMS · Booking System
+              <span className="size-1.5 rounded-full bg-amber" /> ERP · OMS · Booking System
             </p>
             <h1 className="font-display text-[42px] font-semibold leading-[1.05] text-white sm:text-[56px] lg:text-[64px]">
               El sistema operativo de la industria de excursiones y parques
@@ -109,7 +109,7 @@ export default async function LandingPage() {
             </p>
             <div className="mt-9 flex flex-wrap gap-3">
               <Link href={signedIn ? appHref : "/register"}>
-                <Button size="lg" className="gap-2 rounded-full bg-white px-7 text-[oklch(0.24_0.035_210)] hover:bg-white/90">
+                <Button size="lg" className="gap-2 rounded-full bg-white px-7 text-ink hover:bg-white/90">
                   {signedIn ? appLabel : "Empezar prueba gratuita"} <Icon name="ArrowRight" className="size-4" />
                 </Button>
               </Link>
@@ -126,7 +126,7 @@ export default async function LandingPage() {
                 { k: "0", v: "sobreventas silenciosas" },
               ].map((s) => (
                 <div key={s.k}>
-                  <dt className="font-display text-3xl font-semibold text-white">{s.k}</dt>
+                  <dt className="tf-num text-3xl font-semibold text-white">{s.k}</dt>
                   <dd className="mt-1 text-[12px] uppercase tracking-wider text-white/75">{s.v}</dd>
                 </div>
               ))}
@@ -137,13 +137,13 @@ export default async function LandingPage() {
             <div className="tf-drift overflow-hidden rounded-[22px] border border-white/15 shadow-2xl">
               <img src={FILES.heroBeach} alt="Excursión en catamarán por el Caribe" className="h-[300px] w-full object-cover sm:h-[420px]" />
             </div>
-            <div className="absolute -bottom-8 -left-4 w-[240px] rounded-2xl border border-white/15 bg-[oklch(0.19_0.028_214)]/95 p-4 shadow-2xl backdrop-blur sm:-left-10 sm:w-[280px]">
+            <div className="absolute -bottom-8 -left-4 w-[240px] rounded-2xl border border-white/15 bg-ink/95 p-4 shadow-2xl backdrop-blur sm:-left-10 sm:w-[280px]">
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/75">Despacho de hoy</p>
               <p className="mt-2 font-display text-xl font-semibold text-white">07:00 · Isla Saona</p>
               <div className="mt-3 grid grid-cols-3 gap-2 text-center">
                 {[["86", "pax"], ["4", "vehículos"], ["12", "hoteles"]].map(([k, v]) => (
                   <div key={v} className="rounded-lg bg-white/10 py-2">
-                    <p className="font-display text-base font-semibold text-white">{k}</p>
+                    <p className="tf-num text-base font-semibold text-white">{k}</p>
                     <p className="text-[10px] uppercase tracking-wide text-white/75">{v}</p>
                   </div>
                 ))}
@@ -260,7 +260,7 @@ export default async function LandingPage() {
             </p>
             <div className="mt-8 flex flex-wrap justify-center gap-3">
               <Link href={signedIn ? appHref : "/register"}>
-                <Button size="lg" className="gap-2 rounded-full bg-white px-8 text-[oklch(0.24_0.035_210)] hover:bg-white/90">
+                <Button size="lg" className="gap-2 rounded-full bg-white px-8 text-ink hover:bg-white/90">
                   {signedIn ? appLabel : "Crear mi empresa"} <Icon name="ArrowRight" className="size-4" />
                 </Button>
               </Link>

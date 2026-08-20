@@ -223,7 +223,7 @@ export default function SuperadminPlansPage() {
                   </div>
 
                   <div>
-                    <p className="font-display text-3xl font-semibold tabular-nums">
+                    <p className="tf-num text-3xl">
                       {formatMoney(p.monthly_price ?? 0, p.currency)}
                       <span className="text-sm font-normal text-muted-foreground">/mes</span>
                     </p>
@@ -237,11 +237,11 @@ export default function SuperadminPlansPage() {
                   {p.description && <p className="text-sm text-muted-foreground">{p.description}</p>}
 
                   <ul className="space-y-1 text-[13px]">
-                    <li className="flex justify-between gap-3"><span className="text-muted-foreground">Usuarios</span><span className="tabular-nums">{limit(p.max_users)}</span></li>
-                    <li className="flex justify-between gap-3"><span className="text-muted-foreground">Reservas / mes</span><span className="tabular-nums">{limit(p.max_bookings_month)}</span></li>
-                    <li className="flex justify-between gap-3"><span className="text-muted-foreground">Productos</span><span className="tabular-nums">{limit(p.max_products)}</span></li>
-                    <li className="flex justify-between gap-3"><span className="text-muted-foreground">Almacenamiento</span><span className="tabular-nums">{p.max_storage_mb ? `${formatNumber(p.max_storage_mb)} MB` : "Ilimitado"}</span></li>
-                    <li className="flex justify-between gap-3"><span className="text-muted-foreground">Prueba</span><span className="tabular-nums">{formatNumber(p.trial_days ?? 0)} días</span></li>
+                    <li className="flex justify-between gap-3"><span className="text-muted-foreground">Usuarios</span><span className="tf-num">{limit(p.max_users)}</span></li>
+                    <li className="flex justify-between gap-3"><span className="text-muted-foreground">Reservas / mes</span><span className="tf-num">{limit(p.max_bookings_month)}</span></li>
+                    <li className="flex justify-between gap-3"><span className="text-muted-foreground">Productos</span><span className="tf-num">{limit(p.max_products)}</span></li>
+                    <li className="flex justify-between gap-3"><span className="text-muted-foreground">Almacenamiento</span><span className="tf-num">{p.max_storage_mb ? `${formatNumber(p.max_storage_mb)} MB` : "Ilimitado"}</span></li>
+                    <li className="flex justify-between gap-3"><span className="text-muted-foreground">Prueba</span><span className="tf-num">{formatNumber(p.trial_days ?? 0)} días</span></li>
                   </ul>
 
                   <div>
@@ -416,7 +416,7 @@ function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{label}</p>
-      <p className="mt-0.5 text-sm font-semibold tabular-nums">{value}</p>
+      <p className="tf-num mt-0.5 text-sm">{value}</p>
     </div>
   );
 }

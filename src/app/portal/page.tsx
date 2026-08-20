@@ -92,8 +92,8 @@ export default function PortalHomePage() {
         <div className="tf-card flex flex-wrap items-center gap-2.5 p-4">
           <StatusBadge value={data.partner.status} dict={GENERIC_STATUS} />
           <Pill tone="accent">{PARTNER_TYPE[data.partner.partner_type || ""]?.label || "Partner"}</Pill>
-          <Pill tone="info">Comisión base {formatNumber(data.partner.default_commission_pct ?? 0, 1)}%</Pill>
-          <Pill tone="neutral">Crédito {money(data.partner.credit_limit)} · {data.partner.credit_days ?? 0} días</Pill>
+          <Pill tone="info" className="tf-num">Comisión base {formatNumber(data.partner.default_commission_pct ?? 0, 1)}%</Pill>
+          <Pill tone="neutral" className="tf-num">Crédito {money(data.partner.credit_limit)} · {data.partner.credit_days ?? 0} días</Pill>
           <span className="ml-auto text-xs text-muted-foreground">{data.period.label}</span>
         </div>
       )}
@@ -134,7 +134,7 @@ export default function PortalHomePage() {
                   {data.top_products.slice(0, 5).map((p) => (
                     <li key={p.label} className="flex items-center justify-between gap-3">
                       <span className="truncate">{p.label}</span>
-                      <span className="shrink-0 tabular-nums">
+                      <span className="tf-num shrink-0">
                         {formatNumber(p.bookings)} reservas · {formatNumber(p.pax)} pax
                       </span>
                     </li>
@@ -161,7 +161,7 @@ export default function PortalHomePage() {
                         <p className="text-xs text-muted-foreground">Vence {formatDate(r.due_date)}</p>
                       </div>
                       <div className="shrink-0 text-right">
-                        <p className="text-sm font-semibold tabular-nums">{money(r.balance)}</p>
+                        <p className="tf-num text-sm">{money(r.balance)}</p>
                         <StatusBadge value={r.status} dict={GENERIC_STATUS} dot={false} />
                       </div>
                     </li>
@@ -204,8 +204,8 @@ export default function PortalHomePage() {
                             : "—"}
                         </td>
                         <td className="py-2.5">{formatDate(b.travel_date)}</td>
-                        <td className="py-2.5 text-right tabular-nums">{b.pax_total ?? 0}</td>
-                        <td className="py-2.5 text-right font-semibold tabular-nums">{money(b.total_amount)}</td>
+                        <td className="tf-num py-2.5 text-right">{b.pax_total ?? 0}</td>
+                        <td className="tf-num py-2.5 text-right">{money(b.total_amount)}</td>
                         <td className="py-2.5"><StatusBadge value={b.status} dict={BOOKING_STATUS} /></td>
                       </tr>
                     ))}
@@ -228,7 +228,7 @@ export default function PortalHomePage() {
                       </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-3">
-                      <span className="text-sm font-semibold tabular-nums">{money(s.commission_total)}</span>
+                      <span className="tf-num text-sm">{money(s.commission_total)}</span>
                       <StatusBadge value={s.status} dict={SETTLEMENT_STATUS} />
                     </div>
                   </li>

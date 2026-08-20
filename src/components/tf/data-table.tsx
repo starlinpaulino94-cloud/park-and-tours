@@ -85,7 +85,7 @@ export function DataTable<T extends { _id: string }>({
                     key={c.key}
                     className={cn(
                       "px-4 py-3 align-middle",
-                      c.align === "right" ? "text-right tabular-nums" : c.align === "center" ? "text-center" : "",
+                      c.align === "right" ? "tf-num text-right" : c.align === "center" ? "text-center" : "",
                       c.hideOn && hide[c.hideOn],
                       c.className
                     )}

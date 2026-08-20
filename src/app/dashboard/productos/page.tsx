@@ -75,7 +75,7 @@ export default function ProductsPage() {
             const margin = price - (p.base_cost ?? 0);
             const pct = price > 0 ? (margin / price) * 100 : 0;
             return (
-              <span className={margin >= 0 ? "font-semibold text-emerald-600 dark:text-emerald-400" : "font-semibold text-rose-600 dark:text-rose-400"}>
+              <span className={margin >= 0 ? "font-semibold text-emerald-700 dark:text-emerald-400" : "font-semibold text-rose-700 dark:text-rose-400"}>
                 {pct.toFixed(0)}%
               </span>
             );

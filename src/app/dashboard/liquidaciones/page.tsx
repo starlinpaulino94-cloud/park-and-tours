@@ -327,7 +327,7 @@ function Row({ label, value, strong }: { label: string; value: string; strong?: 
   return (
     <div className="flex items-center justify-between gap-3 px-4 py-2.5">
       <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className={strong ? "font-display text-base font-semibold tabular-nums" : "text-sm font-medium tabular-nums"}>{value}</dd>
+      <dd className={strong ? "tf-num text-base font-semibold" : "tf-num text-sm"}>{value}</dd>
     </div>
   );
 }

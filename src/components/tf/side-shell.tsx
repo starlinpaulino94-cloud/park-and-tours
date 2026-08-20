@@ -95,7 +95,7 @@ export function SideShell({
       <span className={cn(
         "grid size-9 shrink-0 place-items-center rounded-xl font-display text-base font-bold",
         accent === "ink"
-          ? "bg-[oklch(0.24_0.035_210)] text-[oklch(0.95_0.012_90)]"
+          ? "bg-ink text-sand"
           : "bg-sidebar-primary text-sidebar-primary-foreground"
       )}>
         T

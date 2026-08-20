@@ -148,7 +148,7 @@ export default function SuperadminHomePage() {
               {data.plans.map((p) => (
                 <li key={p._id} className="flex items-center justify-between gap-3">
                   <span className="truncate">{p.name || p.code}</span>
-                  <span className="shrink-0 tabular-nums">{formatMoney(p.monthly_price, "usd")}/mes</span>
+                  <span className="tf-num shrink-0">{formatMoney(p.monthly_price, "usd")}/mes</span>
                 </li>
               ))}
             </ul>
@@ -168,7 +168,7 @@ export default function SuperadminHomePage() {
                 <li key={a._id} className="flex items-start gap-2.5 py-2.5">
                   <Icon
                     name={a.severity === "critical" ? "ShieldAlert" : "TriangleAlert"}
-                    className={`mt-0.5 size-4 shrink-0 ${a.severity === "critical" ? "text-rose-600 dark:text-rose-400" : "text-amber-600 dark:text-amber-400"}`}
+                    className={`mt-0.5 size-4 shrink-0 ${a.severity === "critical" ? "text-rose-700 dark:text-rose-400" : "text-amber-600 dark:text-amber-400"}`}
                   />
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium">{a.description || a.action}</p>
@@ -217,9 +217,9 @@ export default function SuperadminHomePage() {
                     <td className="py-2.5">
                       {c.plan ? <Pill tone="violet">{c.plan}</Pill> : <span className="text-xs text-muted-foreground">Sin plan</span>}
                     </td>
-                    <td className="py-2.5 text-right tabular-nums">{formatNumber(c.users)}</td>
-                    <td className="py-2.5 text-right tabular-nums">{formatNumber(c.bookings)}</td>
-                    <td className="py-2.5 text-right font-semibold tabular-nums">{formatMoney(c.revenue, "usd")}</td>
+                    <td className="tf-num py-2.5 text-right">{formatNumber(c.users)}</td>
+                    <td className="tf-num py-2.5 text-right">{formatNumber(c.bookings)}</td>
+                    <td className="tf-num py-2.5 text-right">{formatMoney(c.revenue, "usd")}</td>
                     <td className="py-2.5">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <StatusBadge value={c.subscription_status} dict={GENERIC_STATUS} />
