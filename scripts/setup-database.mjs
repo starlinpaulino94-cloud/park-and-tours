@@ -385,7 +385,7 @@ const TABLES = [
     type: "voucher", label: "Vouchers", icon: "fa-solid fa-qrcode", visible: true,
     description: "Voucher/ticket unico emitido por reserva confirmada",
     props: [
-      TENANT(), REF("booking", "Reserva", "booking"),
+      TENANT(), REF("booking", "Reserva", "booking"), REF("order", "Orden", "order"),
       S("code", "Codigo", { showInTree: true }), S("qr_data", "Datos QR"),
       OPT("status", "Estado", ["valid", "used", "cancelled", "expired"]),
       D("issued_at", "Emitido"), D("used_at", "Utilizado"), D("expires_at", "Expira"),

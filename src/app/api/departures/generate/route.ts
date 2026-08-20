@@ -71,6 +71,9 @@ export async function POST(req: NextRequest) {
         const [h, m] = time.split(":").map(Number);
         const at = new Date(day);
         at.setHours(h || 0, m || 0, 0, 0);
+        // AUD-U06/B07: within a range that spans past→future, skip the slots
+        // that already elapsed instead of creating departures in the past.
+        if (at.getTime() < Date.now()) { skipped++; continue; }
         if (taken.has(at.toISOString().slice(0, 16))) { skipped++; continue; }
 
         await tenantCreate(ctx.companyId, "departure", {

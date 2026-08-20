@@ -129,7 +129,9 @@ export async function POST(req: NextRequest) {
 
     // ---- cash session movement ---------------------------------------------
     if (cashSessionId) {
-      const isRefund = body.payment_type === "refund";
+      // A credit note is an outflow too — it must never post as a positive sale
+      // (that contradicted the receivable/ledger handling below).
+      const isRefund = body.payment_type === "refund" || body.payment_type === "credit_note";
       await tenantCreate(ctx.companyId, "cash_movement", {
         cash_session: cashSessionId,
         user: ctx.userId,

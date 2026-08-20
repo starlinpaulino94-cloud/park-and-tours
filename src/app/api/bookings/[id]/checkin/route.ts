@@ -41,6 +41,35 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       );
     }
 
+    // AUD-B04: validate the ticket itself, not just the booking. A cancelled or
+    // expired voucher must never pass check-in (the docstring promised this but
+    // the code only looked at booking state). Checked only for real check-in,
+    // not for no-show correction.
+    if (!body.no_show) {
+      const bookingVouchers = await tenantQuery<{ _id: string; status?: string }>(ctx.companyId, "voucher", {
+        _filter: { booking: id }, _limit: 5,
+      });
+      if (bookingVouchers.length > 0 && bookingVouchers.every((v) => ["cancelled", "expired"].includes(v.status || ""))) {
+        throw Object.assign(new Error("El voucher de esta reserva está cancelado o expirado"), { status: 409 });
+      }
+
+      // Do not allow checking in a booking whose travel date is still in the
+      // future (guards against presenting a ticket for the wrong day). Late
+      // check-in stays allowed; a future date can still be forced.
+      if (booking.travel_date && !body.force) {
+        const travel = new Date(booking.travel_date);
+        if (!Number.isNaN(travel.getTime())) {
+          const oneDayMs = 86_400_000;
+          if (travel.getTime() - Date.now() > oneDayMs) {
+            throw Object.assign(
+              new Error("La reserva es para una fecha futura; no se puede hacer check-in todavía (usa forzar si procede)."),
+              { status: 409 }
+            );
+          }
+        }
+      }
+    }
+
     if (body.no_show) {
       await totalumSdk.crud.editRecordById("booking", id, {
         status: "no_show", checkin_status: "no_show",

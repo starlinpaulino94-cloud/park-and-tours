@@ -219,7 +219,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
       payment: { _limit: 100, _sort: { createdAt: "desc" }, user: true },
     },
     sort: { createdAt: "desc" },
-    writable: ["status", "notes", "channel", "seller", "partner", "branch", "promotion"],
+    // AUD-B02: `status` removed — an order's status is derived from its bookings
+    // and payments by `syncOrderTotals`. Editing it by hand let a seller mark an
+    // order `paid`/`cancelled` without moving money or releasing seats.
+    writable: ["notes", "channel", "seller", "partner", "branch", "promotion"],
     writeRole: "seller",
   },
   booking: {
@@ -335,8 +338,11 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["document_number"],
     expand: { partner: true, customer: true, order: true },
     sort: { due_date: "asc" },
-    writable: ["status", "notes", "due_date", "paid_amount", "balance", "aging_bucket"],
-    numeric: ["paid_amount", "balance"],
+    // AUD-F16/F21: `paid_amount`/`balance` removed — they are derived from the
+    // payments applied to the order and must not be edited by hand (that
+    // divorced the cached balance from the actual payments). `status` stays for
+    // manual write-off until a dedicated endpoint exists.
+    writable: ["status", "notes", "due_date", "aging_bucket"],
     dates: ["due_date"],
     writeRole: "manager",
   },
@@ -846,12 +852,22 @@ export function getResource(name: string): ResourceDef | null {
  * policy explicit and deny-by-default for the partner role.
  */
 // Tables a partner owns rows in — always filtered to their own partner id.
+// Tables with a real `partner` column, filtered to the caller's own partner id.
+// NOTE: `customer` is intentionally NOT here — the customer table has no
+// `partner` column, so filtering by it would apply a filter to a non-existent
+// field (fail-open risk if the backend ignores unknown filter keys). A partner
+// sees customer data only through their own bookings/orders (which expand the
+// customer), never by listing the whole customer table.
 const PARTNER_OWNED_TABLES = new Set([
-  "order", "booking", "commission", "settlement", "receivable", "customer", "lead",
+  "order", "booking", "commission", "settlement", "receivable", "lead",
 ]);
 // Read-only shared catalog a partner may browse (no partner dimension).
+// NOTE: `product` is intentionally NOT here — the product table carries
+// internal `base_cost`, and the generic ERP layer cannot strip it. Partners
+// browse the catalog through `/api/portal/catalog`, which returns only the B2B
+// price for their authorized products and never the cost.
 const PARTNER_SHARED_TABLES = new Set([
-  "product", "departure", "product_modality", "product_category",
+  "departure", "product_modality", "product_category",
   "cancellation_policy", "hotel", "zone",
 ]);
 
@@ -885,6 +901,9 @@ const ALLOW_NEGATIVE = new Set([
   // A margin can be negative (sold below cost) or exceed 100% (markup), so it
   // is left unconstrained rather than clamped.
   "margin_percent",
+  // Stock levels can legitimately go negative in warehouses that allow it
+  // (`warehouse.allows_negative`); these are derived on-hand balances.
+  "quantity", "reserved", "available",
 ]);
 // Fields expressed as a discount percentage — must stay within 0..100.
 // Only true "percent-of" discount fields; `_rate`/`margin`/absolute `discount`
@@ -892,10 +911,14 @@ const ALLOW_NEGATIVE = new Set([
 const PERCENT_SUFFIXES: string[] = [];
 const PERCENT_EXTRA = new Set(["discount_percent", "discount_pct", "max_discount_pct"]);
 // Count-like fields that must be whole numbers.
+// NOTE: inventory quantities (`quantity`, `quantity_received`, `reserved`,
+// `available`) are intentionally NOT here — items sold by weight/volume (kg, l)
+// move in fractional amounts, so forcing integers would reject valid stock
+// movements.
 const INTEGER_FIELDS = new Set([
   "pax", "pax_total", "pax_assigned", "adults", "children", "infants",
-  "seats", "seats_used", "seats_released", "reserved", "available",
-  "quantity", "quantity_received", "capacity", "default_capacity", "capacity_hour",
+  "seats", "seats_used", "seats_released",
+  "capacity", "default_capacity", "capacity_hour",
   "capacity_simultaneous", "max_pax", "min_pax", "guests", "guests_today",
   "entries_allowed", "entries_used", "visits_included", "visits_used",
   "guest_passes", "guest_passes_used", "stops_count", "line_no", "max_uses", "used_count",

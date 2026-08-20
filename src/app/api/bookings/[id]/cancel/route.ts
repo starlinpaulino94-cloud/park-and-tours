@@ -103,9 +103,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (departureId) await recalculateDeparture(ctx.companyId, departureId);
 
     const orderId = refId(booking.order);
-    if (orderId) await syncOrderTotals(ctx.companyId, orderId);
 
     // ---- refund payment record --------------------------------------------
+    // AUD (over-refund): the refund payment must be created BEFORE syncOrderTotals
+    // so the order's paid_total reflects it. Otherwise the order kept a stale
+    // paid_total and a second refund could pass the payments API's cap.
     if (refund > 0) {
       const refundPayment = await totalumSdk.crud.createRecord("payment", {
         company: ctx.companyId,
@@ -136,6 +138,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         });
       }
     }
+
+    // Now recompute the order totals — after the refund exists, so paid_total
+    // and balance account for it.
+    if (orderId) await syncOrderTotals(ctx.companyId, orderId);
 
     await writeAudit({
       companyId: ctx.companyId, userId: ctx.userId,

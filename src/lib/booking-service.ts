@@ -266,6 +266,7 @@ export async function createOrderWithBookings(
     // ---- voucher ---------------------------------------------------------
     await tenantCreate(companyId, "voucher", {
       booking: booking._id,
+      order: order._id,
       code: voucherCode,
       qr_data: voucherCode,
       status: "valid",
@@ -420,6 +421,44 @@ async function compensateOrder(
       console.error("[booking-service] compensación: no se pudo recalcular la salida", dep, e);
     }
   }
+  // Also revert the per-item children created before the failure, so no orphan
+  // voucher, commission, or receivable survives a half-built order (which would
+  // otherwise inflate KPIs or be collectible/redeemable by hand).
+  try {
+    const vouchers = await tenantQuery<{ _id: string }>(companyId, "voucher", {
+      _filter: { order: orderId, status: "valid" }, _limit: 50,
+    });
+    for (const v of vouchers) {
+      await totalumSdk.crud.editRecordById("voucher", v._id, { status: "cancelled" });
+    }
+  } catch (e) {
+    console.error("[booking-service] compensación: no se pudieron anular los vouchers", orderId, e);
+  }
+  try {
+    const commissions = await tenantQuery<{ _id: string }>(companyId, "commission", {
+      _filter: { order: orderId, status: { in: ["pending", "approved"] } }, _limit: 50,
+    });
+    for (const c of commissions) {
+      await totalumSdk.crud.editRecordById("commission", c._id, {
+        status: "cancelled", notes: "Anulada: orden revertida automáticamente",
+      });
+    }
+  } catch (e) {
+    console.error("[booking-service] compensación: no se pudieron anular las comisiones", orderId, e);
+  }
+  try {
+    const receivables = await tenantQuery<{ _id: string }>(companyId, "receivable", {
+      _filter: { order: orderId, status: { nin: ["paid", "written_off"] } }, _limit: 20,
+    });
+    for (const r of receivables) {
+      await totalumSdk.crud.editRecordById("receivable", r._id, {
+        status: "written_off", balance: 0,
+        notes: "Anulada: orden revertida automáticamente",
+      });
+    }
+  } catch (e) {
+    console.error("[booking-service] compensación: no se pudieron anular las cuentas por cobrar", orderId, e);
+  }
   try {
     await totalumSdk.crud.editRecordById("order", orderId, {
       status: "cancelled",
@@ -531,15 +570,23 @@ export async function syncOrderTotals(companyId: string, orderId: string): Promi
     companyId, "payment", { _filter: { order: orderId, status: "completed" }, _limit: 200 }
   );
 
-  const total = round2(bookings.reduce((s, b) => s + (b.total_amount ?? 0), 0));
+  // AUD-F25: cancelled/refunded bookings must not inflate the order total, and
+  // the payment proration below must run over the live bookings only.
+  const DEAD_BOOKING = new Set(["cancelled", "refunded"]);
+  const activeBookings = bookings.filter((b) => !DEAD_BOOKING.has(b.status || ""));
+  const total = round2(activeBookings.reduce((s, b) => s + (b.total_amount ?? 0), 0));
+  // AUD (credit_note): a credit note is an outflow, exactly like a refund.
+  const OUTFLOW = new Set(["refund", "credit_note"]);
   const paid = round2(
-    payments.reduce((s, p) => s + (p.payment_type === "refund" ? -(p.amount ?? 0) : p.amount ?? 0), 0)
+    payments.reduce((s, p) => s + (OUTFLOW.has(p.payment_type || "") ? -(p.amount ?? 0) : p.amount ?? 0), 0)
   );
   const balance = round2(total - paid);
 
-  const allCancelled = bookings.length > 0 && bookings.every((b) => b.status === "cancelled");
+  // An order with no live booking left (every booking cancelled/refunded) is a
+  // cancelled order, not a pending one.
+  const noneActive = bookings.length > 0 && activeBookings.length === 0;
   let status: Order["status"] = "pending_payment";
-  if (allCancelled) status = "cancelled";
+  if (noneActive) status = "cancelled";
   else if (paid <= 0) status = "pending_payment";
   else if (balance > 0.009) status = "partially_paid";
   else status = "paid";
