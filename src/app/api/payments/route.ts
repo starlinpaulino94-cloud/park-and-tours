@@ -22,6 +22,7 @@ export async function POST(req: NextRequest) {
       amount?: number; method?: PaymentMethod; currency?: Currency; exchange_rate?: number;
       payment_type?: "payment" | "refund" | "deposit" | "credit_note";
       cash_session_id?: string; reference?: string; notes?: string; paid_at?: string;
+      allow_overpay?: boolean;
     }>(req);
 
     const amount = Number(body.amount);
@@ -44,6 +45,29 @@ export async function POST(req: NextRequest) {
 
     const currency = (body.currency || order?.currency || ctx.company?.base_currency || "usd") as Currency;
     const rate = body.exchange_rate ?? order?.exchange_rate ?? 1;
+
+    // AUD-F20: cap the amount so payments can't exceed what is owed and refunds
+    // can't exceed what was actually collected. Overpay must be explicit.
+    if (order) {
+      const isRefund = body.payment_type === "refund" || body.payment_type === "credit_note";
+      if (isRefund) {
+        const collected = order.paid_total ?? 0;
+        if (amount > collected + 0.01) {
+          throw Object.assign(
+            new Error(`El reembolso (${amount}) no puede superar lo cobrado (${collected})`),
+            { status: 400 }
+          );
+        }
+      } else {
+        const balance = order.balance ?? 0;
+        if (amount > balance + 0.01 && !body.allow_overpay) {
+          throw Object.assign(
+            new Error(`El pago (${amount}) supera el saldo pendiente (${balance}). Marca sobrepago para continuar.`),
+            { status: 400 }
+          );
+        }
+      }
+    }
 
     // An open cash session is required for cash movements.
     let cashSessionId = body.cash_session_id || null;
@@ -100,19 +124,48 @@ export async function POST(req: NextRequest) {
     // ---- keep order + bookings in sync -------------------------------------
     if (orderId) await syncOrderTotals(ctx.companyId, orderId);
 
-    // ---- settle the B2B receivable -----------------------------------------
+    // ---- settle the B2B receivable(s) --------------------------------------
+    // AUD-F21: apply the payment with the correct SIGN and PRORATE it across
+    // the order's receivables, never exceeding each document's balance.
+    // Previously a refund incremented `paid_amount` (settling debt on a refund)
+    // and the full amount was applied to *every* receivable (double/triple
+    // settlement when an order had several documents).
     if (orderId) {
+      const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+      const isRefund = body.payment_type === "refund" || body.payment_type === "credit_note";
       const receivables = await tenantQuery<Receivable>(ctx.companyId, "receivable", {
-        _filter: { order: orderId, status: { nin: ["paid", "written_off"] } }, _limit: 5,
+        _filter: { order: orderId, status: { nin: ["written_off"] } },
+        _limit: 20,
+        _sort: { createdAt: "asc" },
       });
+      let remaining = amount; // positive magnitude, distributed across documents
       for (const r of receivables) {
-        const paid = Math.round(((r.paid_amount ?? 0) + amount + Number.EPSILON) * 100) / 100;
-        const balance = Math.round(((r.amount ?? 0) - paid + Number.EPSILON) * 100) / 100;
+        if (remaining <= 0.009) break;
+        const total = r.amount ?? 0;
+        const currentPaid = r.paid_amount ?? 0;
+
+        let applied: number;
+        let newPaid: number;
+        if (isRefund) {
+          // Un-apply money from documents that carry a paid amount.
+          applied = Math.min(remaining, currentPaid);
+          if (applied <= 0.009) continue;
+          newPaid = round2(currentPaid - applied);
+        } else {
+          // Apply money up to the document's outstanding balance.
+          const outstanding = round2(total - currentPaid);
+          if (outstanding <= 0.009) continue;
+          applied = Math.min(remaining, outstanding);
+          newPaid = round2(currentPaid + applied);
+        }
+
+        const newBalance = Math.max(0, round2(total - newPaid));
         await totalumSdk.crud.editRecordById("receivable", r._id, {
-          paid_amount: paid,
-          balance: Math.max(0, balance),
-          status: balance <= 0.009 ? "paid" : "partially_paid",
+          paid_amount: newPaid,
+          balance: newBalance,
+          status: newBalance <= 0.009 ? "paid" : newPaid > 0.009 ? "partially_paid" : "pending",
         });
+        remaining = round2(remaining - applied);
       }
     }
 

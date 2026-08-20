@@ -247,21 +247,28 @@ export const auth = betterAuth({
   // ============================================================================
   user: {
     additionalFields: {
+      // SECURITY (AUD-001): `role`, `company_id`, `partner_id` and `status`
+      // are authorization/tenant-scope attributes. They MUST NOT be settable
+      // from the client (sign-up / update-user body), otherwise anyone can
+      // register as `superadmin` or attach to another company. They are only
+      // ever written server-side by the onboarding flow (`/api/setup`) and by
+      // the team-management endpoint (`/api/team`), which use the Totalum SDK
+      // directly and bypass better-auth's input filtering. Hence `input:false`.
       role: {
         type: "string",
         required: false,
         defaultValue: "owner",
-        input: true,
+        input: false,
       },
       company_id: {
         type: "string",
         required: false,
-        input: true,
+        input: false,
       },
       partner_id: {
         type: "string",
         required: false,
-        input: true,
+        input: false,
       },
       phone: {
         type: "string",
@@ -272,7 +279,7 @@ export const auth = betterAuth({
         type: "string",
         required: false,
         defaultValue: "active",
-        input: true,
+        input: false,
       },
     },
   },

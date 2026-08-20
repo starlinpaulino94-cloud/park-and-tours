@@ -151,7 +151,11 @@ export const RESOURCES: Record<string, ResourceDef> = {
       pickup_route: { _limit: 50, vehicle: true, driver: true, guide: true, zone: true },
     },
     sort: { departure_at: "asc" },
-    writable: ["product", "branch", "departure_at", "departure_time", "capacity", "cutoff_hours", "status", "meeting_point", "notes"],
+    // SECURITY (AUD-B02/B16): `status` removed — it is derived by
+    // `recalculateDeparture` from live bookings (available/full/closed).
+    // Editing it through CRUD lets a user reopen a `full` departure and
+    // oversell. Closing/cancelling a departure needs a dedicated action.
+    writable: ["product", "branch", "departure_at", "departure_time", "capacity", "cutoff_hours", "meeting_point", "notes"],
     numeric: ["capacity", "cutoff_hours"],
     dates: ["departure_at"],
     writeRole: "operations",
@@ -232,7 +236,13 @@ export const RESOURCES: Record<string, ResourceDef> = {
       pickup: { _limit: 10, hotel: true, route: true },
     },
     sort: { createdAt: "desc" },
-    writable: ["status", "notes", "internal_notes", "pickup_hotel", "pickup_time", "pickup_location", "room_number", "checkin_status"],
+    // SECURITY (AUD-B02/F10): `status` and `checkin_status` are lifecycle
+    // fields. They must NOT be editable through the generic CRUD — that lets a
+    // seller resurrect a cancelled booking, skip payment, or set an impossible
+    // state without releasing seats, voiding vouchers or reversing commissions.
+    // Transitions happen only through dedicated endpoints
+    // (`/api/orders`, `/api/bookings/[id]/cancel`, `/api/bookings/[id]/checkin`).
+    writable: ["notes", "internal_notes", "pickup_hotel", "pickup_time", "pickup_location", "room_number"],
     writeRole: "seller",
   },
   participant: {
@@ -249,7 +259,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["code"],
     expand: { booking: { customer: true, product: true, departure: true } },
     sort: { createdAt: "desc" },
-    writable: ["status", "notes", "expires_at"],
+    // SECURITY (AUD-B02/B14): `status` removed — reverting a `used` voucher to
+    // `valid` re-arms an already-redeemed ticket. Voucher state is driven by
+    // the booking lifecycle (cancel voids it, check-in burns it).
+    writable: ["notes", "expires_at"],
     dates: ["expires_at"],
     writeRole: "operations",
   },
@@ -268,7 +281,11 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["beneficiary_name"],
     expand: { booking: { product: true }, seller: true, partner: true, rule: true },
     sort: { createdAt: "desc" },
-    writable: ["status", "notes"],
+    // SECURITY (AUD-B02/F10): `status` removed — editing it through CRUD lets a
+    // manager reactivate a `settled` commission so a second settlement pays it
+    // again. Commission state changes only through `/api/commissions/bulk` and
+    // `/api/settlements/generate`.
+    writable: ["notes"],
     writeRole: "manager",
   },
   settlement: {
@@ -303,7 +320,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["reference"],
     expand: { order: true, booking: true, customer: true, partner: true, user: true },
     sort: { createdAt: "desc" },
-    writable: ["status", "notes"],
+    // SECURITY (AUD-B02/F10): `status` removed — a payment's state must not be
+    // flippable through CRUD (e.g. marking a refund `completed` or voiding a
+    // real payment) as it would desync order/receivable/cash balances.
+    writable: ["notes"],
     writeRole: "cashier",
   },
   receivable: {

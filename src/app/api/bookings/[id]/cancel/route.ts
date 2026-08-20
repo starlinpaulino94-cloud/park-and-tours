@@ -23,8 +23,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const body = await readJson<{ reason?: string; refund_override?: number }>(req);
     const booking = await tenantFindOne<Booking>(ctx.companyId, "booking", id, { product: true, departure: true });
 
-    if (booking.status === "cancelled") {
-      throw Object.assign(new Error("La reserva ya está cancelada"), { status: 409 });
+    // AUD-B03: block all terminal states, not just "cancelled". A first refund
+    // leaves the booking in "refunded"/"partially_refunded", which previously
+    // passed this guard and allowed a second cancellation to issue a DUPLICATE
+    // refund payment. A double-click on the cancel dialog hit the same bug.
+    const TERMINAL = ["cancelled", "refunded", "partially_refunded"];
+    if (booking.status && TERMINAL.includes(booking.status)) {
+      throw Object.assign(
+        new Error("La reserva ya fue cancelada o reembolsada"),
+        { status: 409 }
+      );
     }
 
     // ---- refund according to the applicable policy ------------------------

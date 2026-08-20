@@ -38,7 +38,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
     }
 
     if (q && def.search.length > 0) {
-      filter._or = def.search.map((field) => ({ [field]: { regex: q, options: "i" } }));
+      // AUD-S06: escape regex metacharacters so a crafted `q` cannot cause
+      // catastrophic backtracking (ReDoS) or match unintended records.
+      const safeQ = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      filter._or = def.search.map((field) => ({ [field]: { regex: safeQ, options: "i" } }));
     }
 
     // A B2B portal user only ever sees their own partner's data.

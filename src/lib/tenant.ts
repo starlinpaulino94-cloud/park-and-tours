@@ -57,6 +57,15 @@ export async function getTenantContext(): Promise<TenantContext | null> {
     return null;
   }
 
+  // SECURITY (AUD-S02): a deactivated user must lose access immediately, not
+  // keep operating until the 7-day session expires. Any status other than
+  // "active" (inactive/suspended/pending) resolves to no tenant context, which
+  // forces the caller to treat the request as unauthenticated.
+  if (record.status && record.status !== "active") {
+    console.warn(`[tenant] user ${record.email || userId} is ${record.status}; access denied`);
+    return null;
+  }
+
   const companyRef = record.company_id;
   const company =
     companyRef && typeof companyRef === "object" ? (companyRef as Company) : null;

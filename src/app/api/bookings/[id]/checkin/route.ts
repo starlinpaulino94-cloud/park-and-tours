@@ -22,8 +22,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const booking = await tenantFindOne<Booking>(ctx.companyId, "booking", id, { participant: { _limit: 100 } });
 
-    if (booking.status === "cancelled" || booking.status === "refunded") {
-      throw Object.assign(new Error("No se puede hacer check-in de una reserva cancelada"), { status: 409 });
+    if (["cancelled", "refunded", "partially_refunded"].includes(booking.status || "")) {
+      throw Object.assign(new Error("No se puede hacer check-in de una reserva cancelada o reembolsada"), { status: 409 });
+    }
+
+    // AUD-B04: block re-use of an already completed check-in. The UI disables
+    // the button, but the API previously accepted a repeat check-in, letting a
+    // ticket be presented twice. no_show is still allowed to correct a mistake.
+    if (booking.checkin_status === "done" && !body.no_show) {
+      throw Object.assign(new Error("Esta reserva ya tiene el check-in completado"), { status: 409 });
     }
 
     const balance = booking.balance_amount ?? 0;
@@ -62,7 +69,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     });
 
     // Mark the individual participants when provided.
+    // AUD-007: only participants that actually belong to THIS booking may be
+    // touched. Previously any participant id from the request body was written,
+    // allowing a cross-booking (and cross-tenant) write.
+    const ownParticipantIds = new Set(
+      (Array.isArray(booking.participant) ? booking.participant : [])
+        .map((p) => (typeof p === "string" ? p : (p as { _id?: string })?._id))
+        .filter((x): x is string => Boolean(x))
+    );
     for (const pid of body.participant_ids || []) {
+      if (!ownParticipantIds.has(pid)) {
+        console.warn(`[checkin] ignorado participante ${pid} ajeno a la reserva ${id}`);
+        continue;
+      }
       await totalumSdk.crud.editRecordById("participant", pid, { checkin_status: "done" });
     }
 

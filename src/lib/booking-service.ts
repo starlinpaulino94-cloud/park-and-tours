@@ -2,7 +2,7 @@ import "server-only";
 import { totalumSdk } from "@/lib/totalum";
 import { tenantCreate, tenantQuery, type TenantContext } from "@/lib/tenant";
 import { resolvePrice, resolveCost, billablePax } from "@/lib/pricing";
-import { assertCapacity, recalculateDeparture } from "@/lib/availability";
+import { assertCapacity, recalculateDeparture, OversellError } from "@/lib/availability";
 import { resolveCommissions, type BeneficiaryDescriptor } from "@/lib/commission-engine";
 import { writeAudit } from "@/lib/audit";
 import { newBookingNumber, newOrderNumber, newVoucherCode, newDocumentNumber } from "@/lib/codes";
@@ -64,6 +64,12 @@ function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
+/** Coerces a pax count to a non-negative integer (AUD-B08). */
+function toCount(value: unknown): number {
+  const n = Math.floor(Number(value ?? 0));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 export async function createOrderWithBookings(
   ctx: TenantContext & { companyId: string },
   input: CreateOrderInput
@@ -75,11 +81,18 @@ export async function createOrderWithBookings(
   const exchangeRate = input.exchange_rate ?? 1;
   const channel = (input.channel || "direct") as Channel;
 
-  // ---- validate capacity for every item before writing anything -----------
+  // ---- validate capacity before writing anything --------------------------
+  // AUD-B01: aggregate requested pax PER DEPARTURE across all items. Previously
+  // each item was validated in isolation, so two items on the same departure
+  // with one seat left both passed and both got booked.
+  const paxByDeparture = new Map<string, number>();
   for (const item of input.items) {
     if (!item.departure_id) continue;
-    const pax = (item.adults ?? 0) + (item.children ?? 0) + (item.infants ?? 0);
-    await assertCapacity(companyId, item.departure_id, pax, input.capacity_override === true);
+    const pax = toCount(item.adults) + toCount(item.children) + toCount(item.infants);
+    paxByDeparture.set(item.departure_id, (paxByDeparture.get(item.departure_id) ?? 0) + pax);
+  }
+  for (const [departureId, pax] of paxByDeparture) {
+    await assertCapacity(companyId, departureId, pax, input.capacity_override === true);
   }
 
   // ---- order shell --------------------------------------------------------
@@ -110,11 +123,30 @@ export async function createOrderWithBookings(
   let commissionsCreated = 0;
 
   for (const item of input.items) {
-    const adults = item.adults ?? 0;
-    const children = item.children ?? 0;
-    const infants = item.infants ?? 0;
+    // AUD-B08: validate pax before anything is written. Non-integer or negative
+    // counts previously flowed straight into `pax_total`, and a negative pax
+    // *subtracts* from a departure's occupancy (inflating availability). Every
+    // booking must carry at least one traveller.
+    const adults = toCount(item.adults);
+    const children = toCount(item.children);
+    const infants = toCount(item.infants);
     const paxTotal = adults + children + infants;
+    if (paxTotal < 1) {
+      throw Object.assign(new Error("La reserva debe incluir al menos un participante"), { status: 400 });
+    }
     const billable = billablePax(adults, children);
+
+    // AUD-F01: load the departure BEFORE pricing so seasonal / weekday rules
+    // resolve against the real travel date. Previously `travelDate: null` meant
+    // every season/weekday price rule was ignored at sale time even though the
+    // quote endpoint applied them — the customer was quoted one price and
+    // charged another.
+    const departure = item.departure_id
+      ? ((await tenantQuery<Departure>(companyId, "departure", {
+          _filter: { _id: item.departure_id }, _limit: 1, product: true,
+        }))[0] ?? null)
+      : null;
+    const travelDate = departure?.departure_at ?? null;
 
     const price = await resolvePrice({
       companyId,
@@ -124,24 +156,17 @@ export async function createOrderWithBookings(
       sellerId: input.seller_id,
       channel,
       quantity: billable,
-      travelDate: null,
+      travelDate,
       discountPct: item.discount_pct ?? 0,
       taxPct: item.tax_pct ?? 0,
       exchangeRate,
     });
-
-    const departure = item.departure_id
-      ? ((await tenantQuery<Departure>(companyId, "departure", {
-          _filter: { _id: item.departure_id }, _limit: 1, product: true,
-        }))[0] ?? null)
-      : null;
 
     const productRow = (await tenantQuery<Product>(companyId, "product", {
       _filter: { _id: item.product_id }, _limit: 1,
     }))[0];
 
     const cost = await resolveCost(companyId, item.product_id, billable, productRow?.base_cost ?? 0);
-    const travelDate = departure?.departure_at ?? null;
     const voucherCode = newVoucherCode();
 
     const booking = await tenantCreate<Booking>(companyId, "booking", {
@@ -167,7 +192,9 @@ export async function createOrderWithBookings(
       tax_amount: price.taxAmount,
       total_amount: price.totalAmount,
       cost_amount: cost,
-      margin_amount: round2(price.totalAmount - price.discountAmount * 0 - cost),
+      // AUD-F05: margin excludes tax (tax is not revenue). Previously used
+      // `totalAmount` (tax included) with dead `* 0` code, inflating margin.
+      margin_amount: round2(price.grossAmount - price.discountAmount - cost),
       paid_amount: 0,
       balance_amount: price.totalAmount,
       refund_amount: 0,
@@ -236,8 +263,26 @@ export async function createOrderWithBookings(
       travelDate,
     });
 
-    // ---- availability ----------------------------------------------------
-    if (item.departure_id) await recalculateDeparture(companyId, item.departure_id);
+    // ---- availability: reserve-then-verify (AUD-B01) ---------------------
+    // Totalum has no transactions or row locks, so the pre-flight
+    // assertCapacity above can race with a concurrent order for the last seat.
+    // After persisting the booking we recompute occupancy and, if the departure
+    // is now oversold, roll THIS booking back so concurrent sales resolve to a
+    // single winner instead of silently double-selling the seat.
+    if (item.departure_id) {
+      const state = await recalculateDeparture(companyId, item.departure_id);
+      const overrideAllowed = input.capacity_override === true;
+      if (!overrideAllowed && state.capacity > 0 && state.bookedPax + state.pendingPax > state.capacity) {
+        await totalumSdk.crud.editRecordById("booking", booking._id, {
+          status: "cancelled",
+          cancel_reason: "Cupo agotado por una reserva simultánea",
+          cancelled_at: new Date().toISOString(),
+        });
+        await recalculateDeparture(companyId, item.departure_id);
+        const availableBefore = Math.max(0, state.capacity - state.bookedPax - state.pendingPax + paxTotal);
+        throw new OversellError(availableBefore, paxTotal);
+      }
+    }
   }
 
   const totals = {
