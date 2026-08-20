@@ -8,10 +8,11 @@
 
 | Fase | Issues | Estado |
 |---|---|---|
-| Fase 0 (P0) | AUD-001, AUD-B02/F10, AUD-F21, AUD-B01 | ✅ Corregidos (F15 ledger diferido a Fase 3) |
-| Fase 1/2 (P1) | AUD-S02, AUD-B03, AUD-B06, AUD-B04/007, AUD-F01, AUD-F20 | ✅ Corregidos |
-| P2 oportunistas | AUD-F02, AUD-F05, AUD-B05, AUD-B07, AUD-B08, AUD-005, AUD-S06 | ✅ Corregidos |
-| Pendiente | AUD-F15 (ledger), AUD-F11/F12 (settlements), AUD-002/003/004 (readRole/partner), AUD-S03 (rate limit), AUD-D01/D03 (BD), AUD-U06/U08 (zod/demo), AUD-F19 (idempotencia), AUD-F22 (webhook) | Fases 1/3/4 |
+| Fase 0 (P0) | AUD-001, AUD-B02/F10, AUD-F21, AUD-B01, **AUD-F15** | ✅ Corregidos |
+| Fase 1/2 (P1) | AUD-S02, AUD-B03, AUD-B06, AUD-B04/007, AUD-F01, AUD-F20, **AUD-F11, AUD-F12, AUD-F16** | ✅ Corregidos |
+| Multi-tenancy (P1/P2) | AUD-002/003/004/006, AUD-S03, AUD-S09 | ✅ Corregidos |
+| P2 oportunistas | AUD-F02, AUD-F05, AUD-B05, AUD-B07, AUD-B08, AUD-005, AUD-S06, AUD-U08, AUD-U10, AUD-U12, AUD-F19 | ✅ Corregidos |
+| Pendiente | AUD-F08 (comisión antes de cobro), AUD-F34 (saga de orden), AUD-D01/D03 (BD unicidad/drift restante), AUD-U06 (zod), AUD-F22 (webhook Stripe), AUD-F30 (multimoneda operativa) | Fases futuras |
 
 Verificación transversal: `tsc --noEmit` ✅ · `npm run build` ✅ tras cada bloque.
 
@@ -104,3 +105,28 @@ Verificación transversal: `tsc --noEmit` ✅ · `npm run build` ✅ tras cada b
 - **Archivos:** `src/app/api/payments/route.ts`.
 - **Solución:** `POST /api/payments` acepta `Idempotency-Key` (o `reference`); si ya existe un pago con esa clave, devuelve el existente en vez de duplicar. Es check-then-act (no hay constraint único en BD — AUD-D01), pero cierra el doble-submit común.
 - **Seguimiento:** los clientes deberían enviar `Idempotency-Key` por intento de pago para activarlo plenamente; el POS ya evita doble-click con `disabled={busy}`. Pendiente de cableo cliente.
+
+### AUD-F15 — Ledger contable desconectado de la operación (P0) — CERRADA (base efectivo)
+- **Archivos:** nuevo `src/lib/ledger-events.ts`; `src/app/api/payments/route.ts`; `src/app/api/bookings/[id]/cancel/route.ts`; `src/app/api/settlements/[id]/pay/route.ts`; esquema `scripts/setup-database.mjs` (tablas `ledger_account`/`ledger_entry`).
+- **Solución:** cada movimiento real de dinero ahora genera un asiento de partida doble:
+  - **Cobro:** Dr Caja/Banco (según método) / Cr Ingresos (4101).
+  - **Reembolso** (payments y cancelación): Dr Devoluciones (4201) / Cr Caja/Banco.
+  - **Pago de liquidación:** Dr Comisiones de venta (5103) / Cr Caja/Banco.
+- **Decisiones de diseño clave:**
+  - **Base efectivo:** cada asiento corresponde a caja real → el mayor no puede descuadrar contra la realidad y una cancelación no requiere reversión compleja. La contabilidad de devengo (ingresos diferidos, CxC en el mayor) queda como paso futuro, no como prerequisito.
+  - **Best-effort:** un fallo del ledger **nunca** rompe la venta/pago (try/catch que solo loguea). El ledger es capa de reporte, no un gate para cobrar.
+  - **Idempotente:** antes de asentar se comprueba si ya existe asiento para ese (origen, documento) → los reintentos de pago no duplican asientos.
+- **Prueba:** build/typecheck OK; el `ensureChart` crea el plan de cuentas en el primer evento; `trialBalance` recalcula desde asientos (cuadra por construcción).
+- **Límite:** las tablas del ledger estaban entre las 37 ausentes del script (AUD-D03) — añadidas ahora; en la BD actual deben existir (hay páginas de mayor). El asiento por línea sigue siendo read-modify-write del caché de saldo (AUD-F16 parcial), pero la verdad son los asientos.
+
+### AUD-F11 — Liquidación no atómica ni trazable (P1) — CERRADA
+- **Archivos:** `src/app/api/settlements/generate/route.ts`; enlace `commission.settlement` en `types.ts` y `setup-database.mjs`.
+- **Solución:** patrón claim-then-total — se crea el settlement, se **reclama** cada comisión (re-lectura + skip si ya está `settled`, enlace `settlement` a la comisión), y el total se calcula desde las comisiones **efectivamente reclamadas**. Evita doble-inclusión bajo concurrencia/reintento y deja trazabilidad comisión→liquidación. Si no se reclama ninguna → settlement `void` + 409.
+
+### AUD-F12 — "Marcar pagada" no saldaba la payable (P1) — CERRADA
+- **Archivos:** nuevo `src/app/api/settlements/[id]/pay/route.ts`; `src/app/dashboard/liquidaciones/page.tsx`; `resources.ts` (settlement solo `notes` en writable).
+- **Solución:** endpoint dedicado que marca la liquidación pagada, **salda la payable asociada**, cierra las comisiones (`settled`→`paid`) y asienta en el ledger, todo junto. La UI usa el endpoint con guard anti-doble-submit (AUD-U10). El CRUD ya no permite editar `status/paid_total/pending_total` de settlement (completa AUD-B02).
+
+### AUD-F16 — Saldo de cuenta editable por CRUD (P1, parcial) — MITIGADA
+- **Archivos:** `resources.ts` (ledger_account).
+- **Solución:** `balance` quitado de `writable`: es un caché derivado de los asientos (trial balance), no debe editarse a mano. La atomicidad completa del asiento (documento único) queda pendiente.

@@ -104,16 +104,20 @@ export default function SettlementsPage() {
     load();
   };
 
+  const [paying, setPaying] = useState(false);
   const markPaid = async (s: Settlement) => {
-    const res = await api.put(`/api/erp/settlement/${s._id}`, {
-      status: "paid", paid_total: s.commission_total ?? 0, pending_total: 0,
-    });
+    if (paying) return; // AUD-U10: guard against double-submit
+    setPaying(true);
+    // AUD-F12: dedicated endpoint that also settles the payable, closes the
+    // commissions and posts to the ledger — the old raw PUT left the debt open.
+    const res = await api.post(`/api/settlements/${s._id}/pay`, {});
+    setPaying(false);
     if (!res.ok) {
       console.error("[liquidaciones] error marcando como pagada:", res.error);
       toast.error(res.error?.message || "No se pudo actualizar la liquidación");
       return;
     }
-    toast.success("Liquidación marcada como pagada");
+    toast.success("Liquidación pagada");
     setDetail(null);
     load();
   };
@@ -310,9 +314,9 @@ export default function SettlementsPage() {
                 </div>
               )}
 
-              {detail.status !== "paid" && (
-                <Button className="w-full gap-1.5" onClick={() => markPaid(detail)}>
-                  <Icon name="CheckCheck" className="size-4" /> Marcar como pagada
+              {detail.status !== "paid" && detail.status !== "void" && (
+                <Button className="w-full gap-1.5" onClick={() => markPaid(detail)} disabled={paying}>
+                  <Icon name="CheckCheck" className="size-4" /> {paying ? "Procesando…" : "Marcar como pagada"}
                 </Button>
               )}
             </div>

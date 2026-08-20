@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { totalumSdk } from "@/lib/totalum";
 import { syncOrderTotals } from "@/lib/booking-service";
 import { recalcCashSession } from "@/lib/cash";
+import { postPayment } from "@/lib/ledger-events";
 import { newPaymentReference } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
 import type { CashSession, Currency, Order, PaymentMethod, Receivable } from "@/lib/types";
@@ -186,6 +187,19 @@ export async function POST(req: NextRequest) {
         remaining = round2(remaining - applied);
       }
     }
+
+    // ---- double-entry ledger (AUD-F15) -------------------------------------
+    // Best-effort: a bookkeeping failure never blocks the payment.
+    await postPayment(ctx.companyId, {
+      paymentId: payment._id,
+      orderId,
+      amount,
+      method: body.method || "cash",
+      currency,
+      exchangeRate: rate,
+      isRefund: body.payment_type === "refund" || body.payment_type === "credit_note",
+      userId: ctx.userId,
+    });
 
     await writeAudit({
       companyId: ctx.companyId, userId: ctx.userId,

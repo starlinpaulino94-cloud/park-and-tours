@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { totalumSdk } from "@/lib/totalum";
 import { recalculateDeparture } from "@/lib/availability";
 import { syncOrderTotals } from "@/lib/booking-service";
+import { postPayment } from "@/lib/ledger-events";
 import { writeAudit } from "@/lib/audit";
 import { parseJson } from "@/lib/format";
 import type { Booking, CancellationPolicy, CancellationTier, Product } from "@/lib/types";
@@ -106,7 +107,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     // ---- refund payment record --------------------------------------------
     if (refund > 0) {
-      await totalumSdk.crud.createRecord("payment", {
+      const refundPayment = await totalumSdk.crud.createRecord("payment", {
         company: ctx.companyId,
         order: orderId,
         booking: id,
@@ -121,6 +122,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         paid_at: new Date().toISOString(),
         notes: `Reembolso por cancelación (${policyName}, ${refundPct}%)`,
       });
+      // Double-entry ledger (AUD-F15), best-effort.
+      const refundPaymentId = (refundPayment.data as { _id?: string } | undefined)?._id;
+      if (refundPaymentId) {
+        await postPayment(ctx.companyId, {
+          paymentId: refundPaymentId,
+          orderId,
+          amount: refund,
+          method: "cash",
+          currency: booking.currency || "usd",
+          isRefund: true,
+          userId: ctx.userId,
+        });
+      }
     }
 
     await writeAudit({

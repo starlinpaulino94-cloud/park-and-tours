@@ -294,8 +294,12 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { partner: true, seller: true },
     expandOne: { partner: true, seller: true, approved_by: true, payable: { _limit: 50 } },
     sort: { createdAt: "desc" },
-    writable: ["status", "notes", "paid_total", "pending_total"],
-    numeric: ["paid_total", "pending_total"],
+    // SECURITY (AUD-B02/F10/F12): `status`/`paid_total`/`pending_total` removed —
+    // paying a settlement must go through `/api/settlements/[id]/pay`, which also
+    // settles the payable, closes the commissions and posts to the ledger.
+    // Editing these via CRUD previously left the debt open (paid twice) and let
+    // a `paid_total` be set with no money behind it.
+    writable: ["notes"],
     writeRole: "manager",
   },
   cash_register: {
@@ -707,8 +711,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["code", "name"],
     expand: { parent: true },
     sort: { code: "asc" },
-    writable: ["code", "name", "account_type", "subledger", "normal_side", "is_postable", "currency", "balance", "status", "parent"],
-    numeric: ["balance"],
+    // AUD-F16: `balance` removed from writable — it is a cache derived from the
+    // ledger entries (see trialBalance). Editing it by hand divorces the cached
+    // balance from the entries with no audit trail. Chart metadata stays editable.
+    writable: ["code", "name", "account_type", "subledger", "normal_side", "is_postable", "currency", "status", "parent"],
     writeRole: "admin",
   },
   ledger_entry: {
