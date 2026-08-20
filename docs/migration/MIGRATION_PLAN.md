@@ -32,10 +32,22 @@ Como casi todo pasa por `src/lib/tenant.ts` (+ 84 callsites con la misma superfi
 2. ✅ **Traductor de queries** `src/lib/supabase/query-translator.ts`: `_filter` Mongo→PostgREST (`eq/ne/gt/gte/lt/lte/in/nin/regex→ilike/_or`) + alias de campos (`_id→id`, `company→organization_id`, `partner→partner_id`…) + sort/paginación. **8 tests unit** con builder falso.
 3. ✅ **Proveedor de datos** `src/lib/supabase/data-provider.ts` con las mismas firmas que `tenant.ts` (`spQuery/spCount/spFindOne/spCreate/spUpdate/spDelete`) — listo para conmutar por flag `DATA_BACKEND`.
 4. ✅ **Reserva de cupo atómica** (`supabase/migrations/0008_capacity_txn.sql`, RPC `public.reserve_departure_capacity`): row-lock `FOR UPDATE` → **overbooking imposible** (validado con dos transacciones concurrentes: una gana, la otra recibe `false`). Cierra AUD-B01 de raíz.
-5. ⏳ Conmutar `tenant.ts` al proveedor Supabase tras `vi.mock`/entorno Supabase dev (requiere proyecto Supabase con las migraciones aplicadas + hook de claims).
-6. ⏳ Migrar los 84 callsites directos y envolver `createOrderWithBookings` en la transacción (usar la RPC de cupo + insert de hijos en una función/transacción).
+5. ✅ **Switch en `tenant.ts` por flag** `DATA_BACKEND` (`src/lib/data-backend.ts`): los 6 helpers CRUD (`tenantQuery/Count/FindOne/Create/Update/Delete`) delegan al proveedor Supabase cuando `DATA_BACKEND=supabase`; **default `totalum` intacto** (cero cambios de comportamiento). Mapa de tablas (`company→organizations`). Test que fija el default seguro.
+6. ⏳ Migrar los 84 callsites directos a los wrappers (con RLS/scoping ya no hay riesgo) y envolver `createOrderWithBookings` en transacción (RPC de cupo + inserts).
 
-**Gate M2:** typecheck ✅, build ✅, 38 tests ✅. Falta el switch en vivo contra Supabase dev (paso de ops del usuario) y la migración de callsites.
+### Cómo activar (paso de ops, requiere proyecto Supabase)
+```
+# 1. Crear proyecto Supabase y aplicar migraciones (supabase/README.md)
+# 2. Env:
+DATA_BACKEND=supabase
+NEXT_PUBLIC_SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...        # modo transición (service-role + scope explícito)
+# 3. Tras migrar Auth (M3):
+SUPABASE_USE_RLS=true                 # cambia al cliente con JWT → RLS aplica
+```
+Modo transición: el proveedor usa service-role con filtro `organization_id` explícito (réplica exacta del aislamiento actual) → la BD Supabase es usable ANTES de migrar Auth. `getTenantContext` (auth) permanece en el camino actual hasta M3.
+
+**Gate M2:** typecheck ✅, build ✅, 41 tests ✅. Switch listo por flag. Falta: proyecto Supabase en vivo (ops), migración de callsites y transacción de orden.
 
 ## FASE M3 — Auth (Supabase Auth)
 1. Sustituir better-auth + adapter por **Supabase Auth** (`@supabase/ssr`): signup/login/logout/session/refresh nativos.
