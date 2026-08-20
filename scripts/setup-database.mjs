@@ -101,6 +101,7 @@ const TABLES = [
       REF("plan", "Plan", "plan"),
       OPT("subscription_status", "Estado suscripcion", ["trial", "active", "past_due", "cancelled", "suspended"]),
       D("trial_ends_at", "Fin de prueba"), D("next_billing_at", "Proximo cobro"),
+      S("stripe_customer_id", "Stripe customer"), S("stripe_subscription_id", "Stripe subscription"),
       OPT("modules_enabled", "Modulos habilitados", MODULES, true),
       N("storage_used_mb", "Almacenamiento usado MB"),
       OPT("status", "Estado", ["active", "inactive", "suspended"]),
@@ -1211,6 +1212,15 @@ const TABLES = [
       JSN("metadata_json", "Metadatos"),
       OPT("severity", "Severidad", ["info", "warning", "critical"]),
       D("occurred_at", "Fecha"),
+    ],
+  },
+  {
+    type: "stripe_event", label: "Eventos Stripe", icon: "fa-solid fa-money-check-dollar", visible: false,
+    description: "Registro de eventos de webhook de Stripe procesados (idempotencia AUD-F22)",
+    props: [
+      S("event_id", "Event ID", { showInTree: true }), S("event_type", "Tipo"),
+      REF("company", "Empresa", "company"), D("processed_at", "Procesado"),
+      OPT("status", "Estado", ["processed", "skipped", "error"]), TXT("notes", "Notas"),
     ],
   },
   {

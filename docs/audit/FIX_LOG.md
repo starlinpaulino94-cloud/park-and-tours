@@ -182,3 +182,14 @@ Verificación transversal: `tsc --noEmit` ✅ · `npm run build` ✅ tras cada b
 - **Solución:** añadidas las 36 tablas faltantes (35 generadas + `attendance`) al array `TABLES` en el estilo declarativo del script, con sus columnas, enums (copiados de `labels-modules.ts`) y `objectReference`. Cerrado además el drift menor de `ledger_account` (añadidos `currency` y el self-ref `parent`).
 - **Verificación:** `node --check` OK; **todos** los targets de `REF`/self-ref del archivo resuelven a una tabla existente (validado programáticamente); cero `type:` duplicados; `comm` entre las tablas de `resources.ts` y las del esquema → **vacío** (drift 100% cerrado). 81 tablas totales.
 - **Notas (follow-up menor):** algunos campos de tipo incierto (`tax_profile.rounding`, `integration.direction`) se dejaron como `string` en vez de `enum` por no poder confirmar sus valores — funcionan, solo sin opciones en el backoffice. El script no se ejecuta en el build (es standalone), así que la verificación es parse + resolución de refs, no un `next build`.
+
+### AUD-F22 / S07 — Webhook de Stripe: handlers vacíos, firma opcional, sin idempotencia (P1) — CERRADA
+- **Archivos:** `src/app/api/stripe/webhook/route.ts` (reescrito), `src/lib/types.ts` (Company), `scripts/setup-database.mjs` (company + tabla `stripe_event`).
+- **Problema:** los 10 handlers eran `console.log` + TODO (nada persistía); sin `STRIPE_WEBHOOK_SECRET` se procesaban eventos **sin firma** (solo warning); Stripe reintenta y no había idempotencia.
+- **Solución:**
+  - **Seguridad:** en producción, un evento sin firma verificada se **rechaza** (500); la omisión de firma solo se permite fuera de producción.
+  - **Idempotencia:** cada evento se deduplica por `event.id` contra la nueva tabla `stripe_event`; se registra **tras** procesar con éxito (un handler que lance deja el evento sin registrar para que Stripe reintente). Fail-open si la tabla no existe (nuestras actualizaciones son idempotentes).
+  - **Persistencia real:** `customer.subscription.{created,updated,deleted}` e `invoice.{paid,payment_failed}` actualizan `company.subscription_status`/`next_billing_at`/`stripe_*`, resolviendo el tenant por `stripe_customer_id` o `metadata.company_id`; `checkout.session.completed` vincula la empresa con su customer/subscription. Si no resuelve empresa, loguea y no-op (nunca crashea).
+  - Nuevos campos `stripe_customer_id`/`stripe_subscription_id` en `company` (types + schema).
+- **Límite (follow-up):** no existe aún un flujo de compra de suscripción autenticado en la app (`create-checkout-session` solo lo usa la demo), así que hoy los handlers no-op por falta de vínculo; el webhook queda listo y activa el ciclo en cuanto un checkout pase `company_id` en metadata y guarde el customer. Autenticar/derivar el checkout de billing por tenant queda pendiente.
+- **Prueba:** build/typecheck OK; schema parsea; refs resuelven; `stripe_event` añadida.

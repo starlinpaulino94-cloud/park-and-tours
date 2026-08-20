@@ -67,6 +67,7 @@ export interface Company extends BaseRecord {
   base_currency?: Currency; plan?: Ref<Plan>;
   subscription_status?: "trial" | "active" | "past_due" | "cancelled" | "suspended";
   trial_ends_at?: string; next_billing_at?: string;
+  stripe_customer_id?: string; stripe_subscription_id?: string;
   modules_enabled?: ModuleKey[]; storage_used_mb?: number;
   status?: "active" | "inactive" | "suspended"; notes?: string;
 }
