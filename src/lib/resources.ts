@@ -831,6 +831,38 @@ export function getResource(name: string): ResourceDef | null {
   return RESOURCES[name] ?? null;
 }
 
+/**
+ * B2B partner isolation (AUD-002/003/004).
+ *
+ * The generic ERP layer previously only filtered 7 tables by `partner`, and
+ * only on the list endpoint, so a `partner`-role user could read the whole
+ * company's data (and other partners') via `/api/erp/*`. These sets make the
+ * policy explicit and deny-by-default for the partner role.
+ */
+// Tables a partner owns rows in — always filtered to their own partner id.
+const PARTNER_OWNED_TABLES = new Set([
+  "order", "booking", "commission", "settlement", "receivable", "customer", "lead",
+]);
+// Read-only shared catalog a partner may browse (no partner dimension).
+const PARTNER_SHARED_TABLES = new Set([
+  "product", "departure", "product_modality", "product_category",
+  "cancellation_policy", "hotel", "zone",
+]);
+
+export type PartnerScope =
+  | { kind: "denied" }
+  | { kind: "shared" }
+  | { kind: "own"; field: string; partnerId: string };
+
+/** Decides how a partner-role user may access a given table. */
+export function partnerScopeFor(table: string, partnerId: string | null): PartnerScope {
+  if (!partnerId) return { kind: "denied" };
+  if (table === "partner") return { kind: "own", field: "_id", partnerId };
+  if (PARTNER_OWNED_TABLES.has(table)) return { kind: "own", field: "partner", partnerId };
+  if (PARTNER_SHARED_TABLES.has(table)) return { kind: "shared" };
+  return { kind: "denied" };
+}
+
 /** Filters and coerces an incoming payload down to the resource's writable fields. */
 export function sanitizePayload(def: ResourceDef, body: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};

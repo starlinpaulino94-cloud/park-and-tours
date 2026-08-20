@@ -74,3 +74,24 @@ Verificación transversal: `tsc --noEmit` ✅ · `npm run build` ✅ tras cada b
 - **AUD-B08** (`booking-service.ts`): pax coercidos a enteros ≥0 y `pax_total ≥ 1` (evita pax negativos que inflaban disponibilidad).
 - **AUD-005** (`stripe/customer-portal`): exige auth admin y deriva el customer de la empresa; ignora el `customerId` del body (cierra el IDOR de facturación).
 - **AUD-S06** (`erp/[resource]/route.ts`): escape de regex en la búsqueda `q`.
+
+### AUD-002 / 003 / 004 — Aislamiento del portal B2B (P1/P2) — CERRADAS
+- **Archivos:** `src/lib/resources.ts` (helper `partnerScopeFor`), `src/app/api/erp/[resource]/route.ts`, `src/app/api/erp/[resource]/[id]/route.ts`.
+- **Solución:** modelo deny-by-default para el rol `partner` en el ERP genérico:
+  - Listado: solo tablas propias (filtradas por `partner`) o catálogo compartido; el resto → 403. Sustituye el parche de lista blanca de 7 tablas.
+  - Detalle: `assertPartnerCanRead` verifica que el registro pertenezca al partner (cierra el IDOR entre partners); antes `tenantFindOne` solo validaba `company`.
+  - Escrituras (POST/PUT/DELETE): denegadas para el rol `partner` (algunos recursos no tenían `writeRole`, lo que permitía escritura a cualquier autenticado).
+- **Prueba:** build/typecheck OK. `GET /api/erp/payment` como partner → 403; `GET /api/erp/order/<de otro partner>` → 403; el portal (que usa `/api/portal/*` y `/api/erp/booking|commission|settlement|receivable`) sigue funcionando.
+
+### AUD-006 — Portal summary/catalog: staff consulta cualquier partner (P2) — CERRADA
+- **Archivos:** `src/app/api/portal/summary/route.ts`, `catalog/route.ts`.
+- **Solución:** inspeccionar un `partner_id` ajeno exige `requireAtLeast(manager)`; antes cualquier seller podía leer la posición financiera de cualquier partner.
+
+### AUD-S03 / S09 — Rate limiting y política de contraseñas (P1/P2) — CERRADAS (app-level)
+- **Archivos:** `src/lib/auth.ts`, `src/app/register/page.tsx`.
+- **Solución:** rate limiting de better-auth activado (reglas estrictas en sign-in/sign-up/forget-password); contraseña mínima 8 (consistente con `/api/team`).
+- **Nota:** el store de better-auth es en memoria; en Cloudflare Workers conviene respaldarlo con un binding de Cloudflare Rate Limiting sobre `/api/auth/*` y `/api/checkin/*` (infra, fuera del código).
+
+### AUD-U12 — Deep-link de check-in roto (P2) — CERRADA
+- **Archivos:** `src/app/dashboard/checkin/page.tsx`.
+- **Solución:** la página lee `?code=` al montar y dispara la búsqueda; el botón "Check-in" de reservas ahora abre la reserva directamente.

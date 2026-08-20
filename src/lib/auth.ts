@@ -23,7 +23,9 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
     autoSignIn: true,
-    minPasswordLength: 6,
+    // AUD-S09: raise the minimum to 8, matching the team-invite endpoint
+    // (`/api/team`) which already required 8 — the public form allowed 6.
+    minPasswordLength: 8,
     maxPasswordLength: 128,
     // =========================================================================
     // PASSWORD RECOVERY - Uncomment to enable password reset via email
@@ -103,6 +105,22 @@ export const auth = betterAuth({
   secret: process.env.BETTER_AUTH_SECRET,
   baseURL: effectiveUrl,
   basePath: "/api/auth",
+
+  // AUD-S03: application-level rate limiting for auth endpoints (brute force /
+  // credential stuffing / mass account creation). NOTE: better-auth's default
+  // store is in-memory, which on Cloudflare Workers (many short-lived isolates)
+  // is only partially effective — a Cloudflare Rate Limiting binding on
+  // `/api/auth/*` and `/api/checkin/*` should back this in production.
+  rateLimit: {
+    enabled: true,
+    window: 60,
+    max: 100,
+    customRules: {
+      "/sign-in/email": { window: 60, max: 5 },
+      "/sign-up/email": { window: 60, max: 5 },
+      "/forget-password": { window: 300, max: 3 },
+    },
+  },
 
   // Trusted origins for CORS
   // Uses a dynamic function so both the default subdomain and custom domains

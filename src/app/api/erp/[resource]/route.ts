@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireTenant, tenantQuery, tenantCreate, tenantCount, requireAtLeast, TenantError } from "@/lib/tenant";
-import { getResource, sanitizePayload } from "@/lib/resources";
+import { getResource, sanitizePayload, partnerScopeFor } from "@/lib/resources";
 import { ok, fail, readJson } from "@/lib/api-response";
 
 /** Generic tenant-scoped list endpoint: GET /api/erp/:resource */
@@ -44,10 +44,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
       filter._or = def.search.map((field) => ({ [field]: { regex: safeQ, options: "i" } }));
     }
 
-    // A B2B portal user only ever sees their own partner's data.
-    if (ctx.role === "partner" && ctx.partnerId) {
-      if (["order", "booking", "commission", "settlement", "receivable", "customer", "lead"].includes(def.table)) {
-        filter.partner = ctx.partnerId;
+    // A B2B portal user only ever sees their own partner's data (AUD-002).
+    // Deny-by-default: any table not explicitly partner-owned or shared is 403.
+    if (ctx.role === "partner") {
+      const scope = partnerScopeFor(def.table, ctx.partnerId);
+      if (scope.kind === "denied") {
+        throw new TenantError("No tienes acceso a este recurso", 403);
+      }
+      if (scope.kind === "own") {
+        filter[scope.field] = scope.partnerId;
       }
     }
 
@@ -82,6 +87,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ res
     if (def.writable.length === 0) throw new TenantError("Este recurso es de solo lectura", 405);
 
     const ctx = await requireTenant();
+    // AUD-004: partners are read-only in the generic ERP.
+    if (ctx.role === "partner") throw new TenantError("No tienes permisos para crear este recurso", 403);
     if (def.writeRole) requireAtLeast(ctx, def.writeRole);
 
     const body = await readJson(req);
