@@ -8,6 +8,13 @@ create extension if not exists citext;         -- case-insensitive email/slug
 
 create schema if not exists app;
 
+-- The roles that evaluate RLS policies (authenticated/anon) must be able to run
+-- the app.* helpers referenced in those policies. `alter default privileges`
+-- covers every function added to the schema later (0002 hook, 0016 storage).
+grant usage on schema app to authenticated, anon, service_role;
+alter default privileges in schema app
+  grant execute on functions to authenticated, anon, service_role;
+
 -- ── JWT claim accessors ────────────────────────────────────────────────────
 -- Claims are injected by app.custom_access_token_hook (see 0002). We namespace
 -- the business role as `app_role` because the top-level `role` claim is reserved

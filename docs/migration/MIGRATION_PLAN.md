@@ -70,13 +70,14 @@ SUPABASE_USE_RLS=true               # el data-provider pasa a cliente con JWT �
 ```
 Y en Supabase: Authentication → Hooks → Custom Access Token → `app.custom_access_token_hook`.
 
-## FASE M4 — Storage
-1. Buckets **public** (logos, imágenes producto) y **private** (contratos, PDFs liquidación, recibos, documentos, waivers, fotos).
-2. RLS de Storage por path `{organization_id}/...` (y `{org}/partners/{partner_id}/...`); URLs firmadas cortas para privado.
-3. **Construir el flujo de upload** (rutas API / cliente con RLS) — hoy inexistente.
-4. Migrar blobs existentes desde Totalum; `TotalumFile.url` → path de Storage.
+## FASE M4 — Storage — ✅ MECANISMO COMPLETO
+1. ✅ Buckets `public-assets` (público) y `private-docs` (privado) — `supabase/migrations/0016_storage.sql`.
+2. ✅ **RLS de `storage.objects`** por path `{org}/...` y `{org}/partners/{partner_id}/...`, con helpers `app.storage_org_ok/storage_partner_ok/storage_can_write`. **Validado en Postgres**: partner P1 solo ve su carpeta, P2 la suya, staff ve todo el org, Org A no ve Org B. URLs firmadas de 5-10 min para privado.
+3. ✅ **Flujo de upload** (antes inexistente): `src/lib/supabase/storage.ts` (path derivado del org autenticado, sanitización de nombre, validación tamaño/MIME) + `POST /api/storage/upload` (multipart, path server-side, RLS de respaldo). 6 tests de rutas/validación.
+4. ⏳ Migrar blobs existentes desde Totalum (parte del ETL M5); `TotalumFile.url` → path de Storage.
+5. ⏳ Detalle importante hallado: los roles `authenticated/anon` necesitan `grant usage/execute` sobre el esquema `app` para evaluar RLS — añadido a `0001` (aplica a todas las políticas, no solo storage).
 
-**Gate M4:** un partner no puede descargar archivos de otro (probado); upload/download funcionan.
+**Gate M4:** typecheck ✅, build ✅ (ruta `/api/storage/upload`), 54 tests ✅. Aislamiento por path **probado**. Falta: migración de blobs (M5) y cablear los formularios de la UI al endpoint.
 
 ## FASE M5 — ETL de datos (Validate + Reconcile)
 1. **Backup** completo de Totalum antes de tocar nada.
