@@ -79,7 +79,17 @@ Y en Supabase: Authentication → Hooks → Custom Access Token → `app.custom_
 
 **Gate M4:** typecheck ✅, build ✅ (ruta `/api/storage/upload`), 54 tests ✅. Aislamiento por path **probado**. Falta: migración de blobs (M5) y cablear los formularios de la UI al endpoint.
 
-## FASE M5 — ETL de datos (Validate + Reconcile)
+## FASE M5 — ETL de datos (Validate + Reconcile) — ✅ FRAMEWORK LISTO
+Estado: framework de ETL + reconciliación escrito y con transformaciones **testeadas** (9 tests). Falta ejecutarlo contra datos reales (paso de ops con credenciales) y extender `TABLE_SPECS` a todas las tablas.
+- ✅ `scripts/migrate/transform.mjs`: `toUuid` (uuid v5 determinista → FKs sin tabla de mapeo, ETL idempotente), `ynToBool`, `parseJsonMaybe`, `refId`, `TABLE_SPECS` (núcleo comercial-financiero).
+- ✅ `scripts/migrate/etl.mjs`: backup a JSON → extract paginado → transform → upsert `onConflict:id`. `company`→`organizations(kind='tenant')`.
+- ✅ `scripts/migrate/reconcile.mjs`: conteos por tabla + **totales financieros al centavo** (`sum(payment.amount)`, `sum(booking.total_amount)`, `sum(commission.amount)`); exit≠0 ante discrepancia.
+- ✅ `scripts/migrate/backup/` en `.gitignore` (datos de clientes, nunca a Git).
+- ⏳ Extender `TABLE_SPECS` a las 82 tablas; cargar `partner`→org y `user`→memberships antes de las FKs; migrar blobs a Storage.
+
+**Gate M5:** transform con 9 tests ✅, scripts parsean ✅. La reconciliación real (conteos+totales cuadran) es el gate de cutover — requiere Totalum+Supabase en vivo.
+
+### Detalle original
 1. **Backup** completo de Totalum antes de tocar nada.
 2. Inventario: por tabla → nº registros, relaciones, archivos, usuarios.
 3. ETL **Extract → Transform → Validate → Load → Reconcile** (script idempotente, no copiar sin validar):

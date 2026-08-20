@@ -68,3 +68,6 @@ screenshots/
 /tmp/playwright-screenshots/
 /tmp/playwright-dev-server.log
 /*.png
+
+# ETL backups — customer data, never commit
+scripts/migrate/backup/
