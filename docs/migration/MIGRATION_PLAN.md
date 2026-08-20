@@ -16,7 +16,10 @@ Como casi todo pasa por `src/lib/tenant.ts` (+ 84 callsites con la misma superfi
 
 ---
 
-## FASE M1 — Provisión Supabase + esquema (Replicate)
+## FASE M1 — Provisión Supabase + esquema (Replicate) — ✅ ESQUEMA COMPLETO
+Estado: **83 tablas, 83 con RLS, 326 FKs**. Las 15 migraciones (`0001`-`0015`) aplican limpio en Postgres 16 (validado). Núcleo (0001-0008) + tablas restantes (0009-0014) + RLS (0007, 0015). Falta: crear los proyectos Supabase (dev/staging/prod) y aplicar las migraciones (paso de ops del usuario).
+
+### Detalle original
 1. Crear proyectos Supabase: **development**, **staging**, **production**.
 2. Traducir `scripts/setup-database.mjs` a **migraciones SQL** (Supabase CLI, versionadas en `supabase/migrations/`):
    - `REF` → `uuid` + FK + índice; `YN` → boolean; `OPT` → enum nativo (estables) / CHECK (máquinas de estado); `JSN` → jsonb; `FILE` → text/jsonb (path Storage); multi-opción → `text[]`.
