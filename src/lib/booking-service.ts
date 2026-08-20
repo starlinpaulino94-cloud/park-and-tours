@@ -4,6 +4,7 @@ import { tenantCreate, tenantQuery, type TenantContext } from "@/lib/tenant";
 import { resolvePrice, resolveCost, billablePax } from "@/lib/pricing";
 import { assertCapacity, recalculateDeparture, OversellError } from "@/lib/availability";
 import { resolveExchangeRate } from "@/lib/currency";
+import { uniqueCode } from "@/lib/unique";
 import { resolveCommissions, type BeneficiaryDescriptor } from "@/lib/commission-engine";
 import { writeAudit } from "@/lib/audit";
 import { newBookingNumber, newOrderNumber, newVoucherCode, newDocumentNumber } from "@/lib/codes";
@@ -109,7 +110,7 @@ export async function createOrderWithBookings(
   // can never leave a "phantom" order with live seats but zero total, or a B2B
   // sale with no receivable that nobody would ever collect.
   const order = await tenantCreate<Order>(companyId, "order", {
-    order_number: newOrderNumber(),
+    order_number: await uniqueCode(companyId, "order", "order_number", newOrderNumber),
     customer: input.customer_id,
     branch: input.branch_id || undefined,
     seller: input.seller_id || undefined,
@@ -196,10 +197,10 @@ export async function createOrderWithBookings(
     }))[0];
 
     const cost = await resolveCost(companyId, item.product_id, billable, productRow?.base_cost ?? 0);
-    const voucherCode = newVoucherCode();
+    const voucherCode = await uniqueCode(companyId, "voucher", "code", newVoucherCode);
 
     const booking = await tenantCreate<Booking>(companyId, "booking", {
-      booking_number: newBookingNumber(),
+      booking_number: await uniqueCode(companyId, "booking", "booking_number", newBookingNumber),
       order: order._id,
       customer: input.customer_id,
       product: item.product_id,
