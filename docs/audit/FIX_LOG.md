@@ -14,7 +14,8 @@
 | P2 oportunistas | AUD-F02, AUD-F05, AUD-B05, AUD-B07, AUD-B08, AUD-005, AUD-S06, AUD-U08, AUD-U10, AUD-U12, AUD-F19 | ✅ Corregidos |
 | Finanzas avanzada (P1) | **AUD-F08** (comisión solo si cobrada), **AUD-F34** (saga de orden con compensación) | ✅ Corregidos |
 | Validación y moneda (P1) | **AUD-U06** (validación servidor en 77 recursos + endpoints), **AUD-F30/F03** (rate servidor + rechazo de orden mixta) | ✅ Corregidos |
-| Pendiente | AUD-D01/D03 (BD unicidad/drift restante), AUD-F22 (webhook Stripe), agregaciones en `base_amount` (F30 follow-up), reconciliación de drafts huérfanos | Fases futuras |
+| Base de datos (P1) | **AUD-D01** (unicidad de códigos app-level), **AUD-D03** (drift: 37 tablas añadidas al script de schema) | ✅ Corregidos |
+| Pendiente | AUD-F22 (webhook Stripe), agregaciones en `base_amount` (F30 follow-up), normalización de email en signup público, reconciliación de drafts huérfanos | Fases futuras |
 
 Verificación transversal: `tsc --noEmit` ✅ · `npm run build` ✅ tras cada bloque.
 
