@@ -6,10 +6,17 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-body);
-  --font-display: var(--font-display);
-  --font-num: var(--font-num);
-  --font-mono: var(--font-geist-mono);
+  /* --font-figures is Space Grotesk cut down to digits and arithmetic/currency
+     signs only (see FIGURE_GLYPHS in layout.tsx). Putting it FIRST in every
+     stack makes every number and sign in the app render in it, while the
+     browser falls through to Manrope/Fraunces for every letter. */
+  --font-sans: var(--font-figures), var(--font-manrope), ui-sans-serif, sans-serif;
+  --font-display: var(--font-figures), var(--font-fraunces), Georgia, serif;
+  --font-num: var(--font-grotesk), ui-sans-serif, sans-serif;
+  /* Codes and references (booking numbers, plates, document numbers) stay
+     monospaced on purpose: a proportional face would break the column
+     alignment those cells exist for. */
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
   --color-ink: var(--ink);
   --color-azure: var(--azure);
   --color-sand: var(--sand);
@@ -179,12 +186,14 @@
    TourFlow atmosphere — grain, gradients and editorial type details
 --------------------------------------------------------------------------- */
 @layer base {
+  /* Stacks are written out here rather than via var(--font-sans) so the base
+     layer never depends on Tailwind emitting the theme token. */
   body {
-    font-family: var(--font-body), ui-sans-serif, sans-serif;
+    font-family: var(--font-figures), var(--font-manrope), ui-sans-serif, sans-serif;
     font-feature-settings: "ss01", "cv01";
   }
   h1, h2, h3, .font-display {
-    font-family: var(--font-display), Georgia, serif;
+    font-family: var(--font-figures), var(--font-fraunces), Georgia, serif;
     letter-spacing: -0.015em;
   }
 }
@@ -194,14 +203,15 @@
    specificity, which silently killed `bg-*`/`border-*` utilities applied
    alongside `.tf-card` (a KPI card ended up with white text on white). */
 @layer components {
-  /* Numbers get their own typeface. The Fraunces display serif is a
-     high-contrast, heavy face: perfect for headlines, far too dense for the
-     large money figures it used to render. Space Grotesk has open geometric
-     lining figures with uniform widths, so columns of amounts line up and
-     read much lighter. Weight stays at 500 on purpose — utilities still win
+  /* Digits and signs already render in Space Grotesk everywhere thanks to the
+     --font-figures unicode-range trick above. `.tf-num` is still needed for
+     strings that are figures *including their letters* — "RD$67,000", "US$",
+     "12h", "3 pax" — where the surrounding characters must match the digits
+     instead of falling back to Manrope. It also turns on tabular figures so
+     columns of amounts align. Weight stays at 500 on purpose: utilities win
      over this rule, so `font-semibold` can override it where needed. */
   .tf-num {
-    font-family: var(--font-num), ui-sans-serif, sans-serif;
+    font-family: var(--font-grotesk), ui-sans-serif, sans-serif;
     font-variant-numeric: tabular-nums;
     font-weight: 500;
     letter-spacing: -0.02em;
