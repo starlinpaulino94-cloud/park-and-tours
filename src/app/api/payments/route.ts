@@ -5,6 +5,7 @@ import { totalumSdk } from "@/lib/totalum";
 import { syncOrderTotals } from "@/lib/booking-service";
 import { recalcCashSession } from "@/lib/cash";
 import { postPayment } from "@/lib/ledger-events";
+import { resolveExchangeRate } from "@/lib/currency";
 import { newPaymentReference } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
 import type { CashSession, Currency, Order, PaymentMethod, Receivable } from "@/lib/types";
@@ -63,7 +64,10 @@ export async function POST(req: NextRequest) {
       : null;
 
     const currency = (body.currency || order?.currency || ctx.company?.base_currency || "usd") as Currency;
-    const rate = body.exchange_rate ?? order?.exchange_rate ?? 1;
+    // AUD-F30: resolve the base-currency rate server-side from `currency_rate`
+    // rather than trusting the client. `base_amount` becomes meaningful.
+    const baseCurrency = (ctx.company?.base_currency || currency) as Currency;
+    const rate = await resolveExchangeRate(ctx.companyId, currency, baseCurrency);
 
     // AUD-F20: cap the amount so payments can't exceed what is owed and refunds
     // can't exceed what was actually collected. Overpay must be explicit.

@@ -3,6 +3,7 @@ import { totalumSdk } from "@/lib/totalum";
 import { tenantCreate, tenantQuery, type TenantContext } from "@/lib/tenant";
 import { resolvePrice, resolveCost, billablePax } from "@/lib/pricing";
 import { assertCapacity, recalculateDeparture, OversellError } from "@/lib/availability";
+import { resolveExchangeRate } from "@/lib/currency";
 import { resolveCommissions, type BeneficiaryDescriptor } from "@/lib/commission-engine";
 import { writeAudit } from "@/lib/audit";
 import { newBookingNumber, newOrderNumber, newVoucherCode, newDocumentNumber } from "@/lib/codes";
@@ -78,7 +79,11 @@ export async function createOrderWithBookings(
 
   const companyId = ctx.companyId;
   const currency = (input.currency || ctx.company?.base_currency || "usd") as Currency;
-  const exchangeRate = input.exchange_rate ?? 1;
+  // AUD-F30: resolve the base-currency rate on the server from `currency_rate`,
+  // never trusting the client's `exchange_rate` (which defaulted to 1 and made
+  // `base_currency_total` meaningless for non-base-currency sales).
+  const baseCurrency = ctx.company?.base_currency || currency;
+  const exchangeRate = await resolveExchangeRate(companyId, currency, baseCurrency);
   const channel = (input.channel || "direct") as Channel;
 
   // ---- validate capacity before writing anything --------------------------
@@ -173,6 +178,18 @@ export async function createOrderWithBookings(
       taxPct: item.tax_pct ?? 0,
       exchangeRate,
     });
+
+    // AUD-F03: an order carries a single currency. If a line resolves to a
+    // different currency (e.g. a DOP price rule inside a USD order), the totals
+    // would sum different currencies 1:1 and be meaningless — reject instead.
+    if (price.currency && price.currency !== currency) {
+      throw Object.assign(
+        new Error(
+          `El producto tiene precio en ${String(price.currency).toUpperCase()} pero la orden es en ${String(currency).toUpperCase()}. Una orden no puede mezclar monedas.`
+        ),
+        { status: 400 }
+      );
+    }
 
     const productRow = (await tenantQuery<Product>(companyId, "product", {
       _filter: { _id: item.product_id }, _limit: 1,

@@ -47,6 +47,10 @@ export async function POST(req: NextRequest) {
     if (!register) throw Object.assign(new Error("Caja no encontrada"), { status: 404 });
 
     const opening = Number(body.opening_amount ?? 0);
+    // AUD-U06: opening float must be a valid, non-negative amount.
+    if (!Number.isFinite(opening) || opening < 0) {
+      throw Object.assign(new Error("El fondo de apertura no puede ser negativo"), { status: 400 });
+    }
     const session = await tenantCreate<CashSession>(ctx.companyId, "cash_session", {
       cash_register: body.cash_register_id,
       branch: typeof register.branch === "object" ? register.branch?._id : register.branch,

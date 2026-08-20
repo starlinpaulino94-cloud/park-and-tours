@@ -869,6 +869,46 @@ export function partnerScopeFor(table: string, partnerId: string | null): Partne
   return { kind: "denied" };
 }
 
+/**
+ * Server-side field validation for the generic ERP layer (AUD-U06).
+ *
+ * Every numeric field written through `/api/erp/*` is validated here, so the
+ * whole catalog of 77 resources gets real server-side checks instead of relying
+ * on the browser. Previously `sanitizePayload` only coerced types, letting a
+ * negative price, a 150% discount or a non-integer pax count reach the database.
+ */
+
+// Numeric fields that may legitimately be negative (coordinates, running
+// balances, time offsets, ordering). Everything else must be >= 0.
+const ALLOW_NEGATIVE = new Set([
+  "latitude", "longitude", "balance", "balance_after", "pickup_offset_min", "sort_order",
+  // A margin can be negative (sold below cost) or exceed 100% (markup), so it
+  // is left unconstrained rather than clamped.
+  "margin_percent",
+]);
+// Fields expressed as a discount percentage — must stay within 0..100.
+// Only true "percent-of" discount fields; `_rate`/`margin`/absolute `discount`
+// are intentionally excluded.
+const PERCENT_SUFFIXES: string[] = [];
+const PERCENT_EXTRA = new Set(["discount_percent", "discount_pct", "max_discount_pct"]);
+// Count-like fields that must be whole numbers.
+const INTEGER_FIELDS = new Set([
+  "pax", "pax_total", "pax_assigned", "adults", "children", "infants",
+  "seats", "seats_used", "seats_released", "reserved", "available",
+  "quantity", "quantity_received", "capacity", "default_capacity", "capacity_hour",
+  "capacity_simultaneous", "max_pax", "min_pax", "guests", "guests_today",
+  "entries_allowed", "entries_used", "visits_included", "visits_used",
+  "guest_passes", "guest_passes_used", "stops_count", "line_no", "max_uses", "used_count",
+]);
+
+function isPercent(key: string): boolean {
+  return PERCENT_EXTRA.has(key) || PERCENT_SUFFIXES.some((s) => key.endsWith(s));
+}
+
+function badRequest(message: string): Error {
+  return Object.assign(new Error(message), { status: 400 });
+}
+
 /** Filters and coerces an incoming payload down to the resource's writable fields. */
 export function sanitizePayload(def: ResourceDef, body: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -878,7 +918,19 @@ export function sanitizePayload(def: ResourceDef, body: Record<string, unknown>)
     if (value === "" || value === undefined) value = null;
     if (value !== null && def.numeric?.includes(key)) {
       const n = Number(value);
-      value = Number.isFinite(n) ? n : null;
+      if (!Number.isFinite(n)) {
+        throw badRequest(`El campo "${key}" debe ser un número válido`);
+      }
+      if (n < 0 && !ALLOW_NEGATIVE.has(key)) {
+        throw badRequest(`El campo "${key}" no puede ser negativo`);
+      }
+      if (isPercent(key) && n > 100) {
+        throw badRequest(`El campo "${key}" no puede superar el 100%`);
+      }
+      if (INTEGER_FIELDS.has(key) && !Number.isInteger(n)) {
+        throw badRequest(`El campo "${key}" debe ser un número entero`);
+      }
+      value = n;
     }
     if (value !== null && def.dates?.includes(key)) {
       const d = new Date(value as string);
