@@ -369,7 +369,7 @@ create table task (
   assigned_to_id uuid references auth.users(id) on delete set null,
   created_by  uuid references auth.users(id) on delete set null,
   booking_id  uuid references booking(id) on delete set null,
-  order_id    uuid references "order"(id) on delete set null,
+  order_id    uuid references sales_order(id) on delete set null,
   incident_id uuid references incident(id) on delete set null,
   work_order_id uuid references work_order(id) on delete set null,
   guest_case_id uuid references guest_case(id) on delete set null,

@@ -29,7 +29,7 @@ alter table price_rule
 create index price_rule_seller_idx on price_rule (seller_id);
 
 -- ── order (header; 1..N bookings) ───────────────────────────────────────────
-create table "order" (
+create table sales_order (
   id              uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete restrict,
   order_number text not null,
@@ -55,17 +55,17 @@ create table "order" (
   updated_at    timestamptz not null default now(),
   unique (organization_id, order_number)
 );
-create index order_org_idx      on "order" (organization_id, status, created_at desc);
-create index order_customer_idx on "order" (organization_id, customer_id);
-create index order_partner_idx  on "order" (organization_id, partner_id);
-create trigger order_touch before update on "order" for each row execute function app.touch_updated_at();
+create index order_org_idx      on sales_order (organization_id, status, created_at desc);
+create index order_customer_idx on sales_order (organization_id, customer_id);
+create index order_partner_idx  on sales_order (organization_id, partner_id);
+create trigger order_touch before update on sales_order for each row execute function app.touch_updated_at();
 
 -- ── booking ─────────────────────────────────────────────────────────────────
 create table booking (
   id              uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete restrict,
   booking_number text not null,
-  order_id     uuid not null references "order"(id) on delete cascade,
+  order_id     uuid not null references sales_order(id) on delete cascade,
   customer_id  uuid references customer(id) on delete restrict,
   product_id   uuid not null references product(id) on delete restrict,
   departure_id uuid references departure(id) on delete restrict,
@@ -130,7 +130,7 @@ create table voucher (
   id              uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete restrict,
   booking_id  uuid not null references booking(id) on delete cascade,
-  order_id    uuid references "order"(id) on delete cascade,
+  order_id    uuid references sales_order(id) on delete cascade,
   code        text not null,
   qr_data     text,
   status      text not null default 'valid' check (status in ('valid','used','cancelled','expired')),

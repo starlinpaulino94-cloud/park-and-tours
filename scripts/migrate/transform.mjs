@@ -72,7 +72,7 @@ export const TABLE_SPECS = [
   { source: "departure", target: "departure", refs: { product: "product_id" } },
   { source: "seller", target: "seller",
     refs: { user: "user_id", partner: "partner_id", supervisor: "supervisor_id" } },
-  { source: "order", target: "order",
+  { source: "order", target: "sales_order",
     refs: { customer: "customer_id", seller: "seller_id", partner: "partner_id", created_by: "created_by" } },
   { source: "booking", target: "booking",
     refs: { order: "order_id", customer: "customer_id", product: "product_id", departure: "departure_id",

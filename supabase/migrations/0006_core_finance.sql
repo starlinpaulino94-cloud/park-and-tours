@@ -83,7 +83,7 @@ create table commission (
   id              uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete restrict,
   booking_id  uuid references booking(id) on delete set null,
-  order_id    uuid references "order"(id) on delete set null,
+  order_id    uuid references sales_order(id) on delete set null,
   rule_id     uuid references commission_rule(id) on delete set null,
   settlement_id uuid references settlement(id) on delete set null,
   seller_id   uuid references seller(id) on delete set null,
@@ -109,7 +109,7 @@ create trigger commission_touch before update on commission for each row execute
 create table payment (
   id              uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete restrict,
-  order_id     uuid references "order"(id) on delete set null,
+  order_id     uuid references sales_order(id) on delete set null,
   booking_id   uuid references booking(id) on delete set null,
   customer_id  uuid references customer(id) on delete set null,
   partner_id   uuid references organizations(id) on delete set null,
@@ -140,7 +140,7 @@ create trigger payment_touch before update on payment for each row execute funct
 create table receivable (
   id              uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete restrict,
-  order_id    uuid references "order"(id) on delete cascade,
+  order_id    uuid references sales_order(id) on delete cascade,
   partner_id  uuid references organizations(id) on delete set null,
   customer_id uuid references customer(id) on delete set null,
   document_number text,

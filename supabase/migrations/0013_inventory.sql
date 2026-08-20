@@ -125,7 +125,7 @@ create table stock_movement (
   inventory_item_id uuid references inventory_item(id) on delete set null,
   user_id     uuid references auth.users(id) on delete set null,
   purchase_order_id uuid references purchase_order(id) on delete set null,
-  order_id    uuid references "order"(id) on delete set null,
+  order_id    uuid references sales_order(id) on delete set null,
   work_order_id uuid,   -- FK added at end of 0014
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()

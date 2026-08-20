@@ -180,7 +180,7 @@ create table quote (
   partner_id  uuid references organizations(id) on delete set null,
   seller_id   uuid references seller(id) on delete set null,
   lead_id     uuid references lead(id) on delete set null,
-  order_id    uuid references "order"(id) on delete set null,
+  order_id    uuid references sales_order(id) on delete set null,
   user_id     uuid references auth.users(id) on delete set null,
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now(),
@@ -234,7 +234,7 @@ create table guest_case (
   booking_id  uuid references booking(id) on delete set null,
   participant_id uuid references participant(id) on delete set null,
   assigned_to_id uuid references auth.users(id) on delete set null,
-  order_id    uuid references "order"(id) on delete set null,
+  order_id    uuid references sales_order(id) on delete set null,
   incident_id uuid,   -- FK added at end of 0014
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now(),
