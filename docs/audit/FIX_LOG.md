@@ -12,7 +12,8 @@
 | Fase 1/2 (P1) | AUD-S02, AUD-B03, AUD-B06, AUD-B04/007, AUD-F01, AUD-F20, **AUD-F11, AUD-F12, AUD-F16** | ✅ Corregidos |
 | Multi-tenancy (P1/P2) | AUD-002/003/004/006, AUD-S03, AUD-S09 | ✅ Corregidos |
 | P2 oportunistas | AUD-F02, AUD-F05, AUD-B05, AUD-B07, AUD-B08, AUD-005, AUD-S06, AUD-U08, AUD-U10, AUD-U12, AUD-F19 | ✅ Corregidos |
-| Pendiente | AUD-F08 (comisión antes de cobro), AUD-F34 (saga de orden), AUD-D01/D03 (BD unicidad/drift restante), AUD-U06 (zod), AUD-F22 (webhook Stripe), AUD-F30 (multimoneda operativa) | Fases futuras |
+| Finanzas avanzada (P1) | **AUD-F08** (comisión solo si cobrada), **AUD-F34** (saga de orden con compensación) | ✅ Corregidos |
+| Pendiente | AUD-D01/D03 (BD unicidad/drift restante), AUD-U06 (zod), AUD-F22 (webhook Stripe), AUD-F30 (multimoneda operativa), reconciliación de drafts huérfanos | Fases futuras |
 
 Verificación transversal: `tsc --noEmit` ✅ · `npm run build` ✅ tras cada bloque.
 
@@ -130,3 +131,16 @@ Verificación transversal: `tsc --noEmit` ✅ · `npm run build` ✅ tras cada b
 ### AUD-F16 — Saldo de cuenta editable por CRUD (P1, parcial) — MITIGADA
 - **Archivos:** `resources.ts` (ledger_account).
 - **Solución:** `balance` quitado de `writable`: es un caché derivado de los asientos (trial balance), no debe editarse a mano. La atomicidad completa del asiento (documento único) queda pendiente.
+
+### AUD-F08 — Se liquidaban comisiones de ventas no cobradas (P1) — CERRADA
+- **Archivos:** `src/app/api/settlements/generate/route.ts`.
+- **Problema:** las comisiones se devengan al crear la reserva (`pending`), y la generación de liquidaciones incluía toda comisión `pending/approved` sin mirar si la venta se cobró → salida de caja real por ingresos inexistentes.
+- **Solución:** en el bucle de reclamación se omite la comisión si su reserva no está cobrada: se exige `booking.status ∈ {paid, completed, checked_in}` o `paid_amount ≥ total`, y se excluyen explícitamente reservas `cancelled/refunded/partially_refunded` (cuyo balance 0 no debe confundirse con "cobrado").
+- **Prueba:** build/typecheck OK. Una orden B2B creada y nunca pagada ya no genera CxP en la liquidación.
+
+### AUD-F34 — createOrderWithBookings sin atomicidad (P1) — CERRADA (saga con compensación)
+- **Archivos:** `src/lib/booking-service.ts`.
+- **Problema:** ~10+ escrituras sin transacción; un fallo intermedio dejaba órdenes fantasma (con reservas vivas que ocupan cupo pero total 0) o ventas B2B sin receivable.
+- **Solución:** patrón saga — la orden se crea como `draft`; solo tras escribir todos los hijos (reservas, vouchers, comisiones, receivable) se **promueve** a `pending_payment` (última escritura crítica). Si cualquier paso falla, `compensateOrder` **cancela las reservas creadas** (liberando cupo vía recálculo) y anula la orden (`cancelled`), best-effort. Convierte la corrupción parcial silenciosa en "orden completa o revertida". Efecto secundario deseado: una orden multi-ítem donde el último ítem se queda sin cupo ahora se revierte entera (all-or-nothing) en vez de quedar parcial.
+- **Límite:** sigue sin ser una transacción real (Totalum no las soporta); la compensación es best-effort. Un job de reconciliación para detectar `draft` huérfanos (por caídas de proceso) queda como mejora.
+- **Prueba:** build/typecheck OK; estructura try/catch/compensación revisada.

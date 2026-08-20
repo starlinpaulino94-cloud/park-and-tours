@@ -96,6 +96,13 @@ export async function createOrderWithBookings(
   }
 
   // ---- order shell --------------------------------------------------------
+  // AUD-F34: Totalum has no transactions, so an order is built as a saga. The
+  // order starts as `draft`; only after every child (bookings, vouchers,
+  // commissions, receivable) is written does it get PROMOTED to
+  // `pending_payment`. If any step fails we COMPENSATE — cancel the bookings
+  // created so far (releasing their seats) and void the order — so a failure
+  // can never leave a "phantom" order with live seats but zero total, or a B2B
+  // sale with no receivable that nobody would ever collect.
   const order = await tenantCreate<Order>(companyId, "order", {
     order_number: newOrderNumber(),
     customer: input.customer_id,
@@ -105,7 +112,7 @@ export async function createOrderWithBookings(
     promotion: input.promotion_id || undefined,
     created_by: ctx.userId,
     channel,
-    status: "pending_payment",
+    status: "draft",
     order_date: new Date().toISOString(),
     currency,
     exchange_rate: exchangeRate,
@@ -121,7 +128,12 @@ export async function createOrderWithBookings(
   let taxTotal = 0;
   let grandTotal = 0;
   let commissionsCreated = 0;
+  let totals = {
+    subtotal: 0, discount_total: 0, tax_total: 0,
+    total: 0, balance: 0, base_currency_total: 0,
+  };
 
+  try {
   for (const item of input.items) {
     // AUD-B08: validate pax before anything is written. Non-integer or negative
     // counts previously flowed straight into `pax_total`, and a negative pax
@@ -285,7 +297,7 @@ export async function createOrderWithBookings(
     }
   }
 
-  const totals = {
+  totals = {
     subtotal: round2(subtotal),
     discount_total: round2(discountTotal),
     tax_total: round2(taxTotal),
@@ -293,11 +305,6 @@ export async function createOrderWithBookings(
     balance: round2(grandTotal),
     base_currency_total: round2(grandTotal * exchangeRate),
   };
-  const updated = await totalumSdk.crud.editRecordById("order", order._id, totals);
-  if (updated.errors) {
-    console.error("[booking-service] failed updating order totals:", updated.errors);
-    throw new Error(updated.errors.errorMessage || "Error actualizando los totales de la orden");
-  }
 
   // ---- B2B receivable ----------------------------------------------------
   if (input.partner_id) {
@@ -323,6 +330,22 @@ export async function createOrderWithBookings(
     });
   }
 
+  // ---- promote the order (AUD-F34): the last critical write. Totals and the
+  // final status go together, so the order only becomes a real sale once every
+  // child exists. A failure before this point triggers the catch below.
+  const promoted = await totalumSdk.crud.editRecordById("order", order._id, {
+    ...totals,
+    status: "pending_payment",
+  });
+  if (promoted.errors) {
+    throw new Error(promoted.errors.errorMessage || "Error finalizando la orden");
+  }
+
+  } catch (err) {
+    await compensateOrder(companyId, order._id, order.order_number, bookings);
+    throw err;
+  }
+
   if (input.capacity_override) {
     await writeAudit({
       companyId, userId: ctx.userId,
@@ -343,7 +366,51 @@ export async function createOrderWithBookings(
 
   console.log(`[booking-service] orden ${order.order_number} creada · ${bookings.length} reservas · total ${totals.total} ${currency}`);
 
-  return { order: { ...order, ...totals }, bookings, commissionsCreated };
+  return { order: { ...order, ...totals, status: "pending_payment" as const }, bookings, commissionsCreated };
+}
+
+/**
+ * Compensating action for a failed order build (AUD-F34): cancels the bookings
+ * created so far (releasing their seats) and voids the order, so a partial
+ * failure never leaves live seats held by a phantom order. Best-effort — every
+ * step is guarded so compensation itself cannot throw.
+ */
+async function compensateOrder(
+  companyId: string,
+  orderId: string,
+  orderNumber: string | undefined,
+  bookings: Booking[]
+): Promise<void> {
+  const departures = new Set<string>();
+  for (const b of bookings) {
+    try {
+      await totalumSdk.crud.editRecordById("booking", b._id, {
+        status: "cancelled",
+        cancel_reason: "Orden incompleta: revertida automáticamente",
+        cancelled_at: new Date().toISOString(),
+      });
+      const dep = refId(b.departure);
+      if (dep) departures.add(dep);
+    } catch (e) {
+      console.error("[booking-service] compensación: no se pudo cancelar la reserva", b._id, e);
+    }
+  }
+  for (const dep of departures) {
+    try {
+      await recalculateDeparture(companyId, dep);
+    } catch (e) {
+      console.error("[booking-service] compensación: no se pudo recalcular la salida", dep, e);
+    }
+  }
+  try {
+    await totalumSdk.crud.editRecordById("order", orderId, {
+      status: "cancelled",
+      notes: "Orden revertida automáticamente por un fallo durante su creación",
+    });
+  } catch (e) {
+    console.error("[booking-service] compensación: no se pudo anular la orden", orderId, e);
+  }
+  console.warn(`[booking-service] orden ${orderNumber ?? orderId} revertida (compensación)`);
 }
 
 /** Registers every commission obligation generated by a booking. */

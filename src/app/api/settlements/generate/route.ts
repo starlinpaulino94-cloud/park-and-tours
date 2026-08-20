@@ -78,6 +78,21 @@ export async function POST(req: NextRequest) {
       }))[0];
       if (!fresh || !["pending", "approved"].includes(fresh.status || "")) continue;
 
+      // AUD-F08: only settle commissions for bookings that were actually paid.
+      // Commissions accrue at booking time, so without this a settlement would
+      // pay out real money for sales that were never collected. A booking is
+      // eligible when it is paid/completed/checked_in or its balance is cleared.
+      const bk: any = fresh.booking;
+      if (bk && typeof bk === "object") {
+        // A cancelled/refunded booking's commission is never paid out (its
+        // zero balance must not be mistaken for "collected").
+        if (["cancelled", "refunded", "partially_refunded"].includes(bk.status || "")) continue;
+        const paid =
+          ["paid", "completed", "checked_in"].includes(bk.status || "") ||
+          (bk.paid_amount ?? 0) >= (bk.total_amount ?? 0) - 0.009;
+        if (!paid) continue;
+      }
+
       // Link the commission to this settlement. The `settlement` field may not
       // exist yet in an un-migrated database, so fall back to a status-only
       // write rather than aborting the whole batch.
