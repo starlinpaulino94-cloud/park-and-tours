@@ -27,6 +27,8 @@ export function isSupabase(): boolean {
  */
 const TABLE_MAP: Record<string, string> = {
   company: "organizations",
+  // `order` is a reserved SQL word — the Postgres table is `sales_order`.
+  order: "sales_order",
 };
 
 export function pgTable(totalumTable: string): string {

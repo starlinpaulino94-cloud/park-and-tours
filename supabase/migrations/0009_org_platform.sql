@@ -285,7 +285,7 @@ create table approval_request (
   requested_by uuid references auth.users(id) on delete set null,
   approved_by  uuid references auth.users(id) on delete set null,
   second_approver_id uuid references auth.users(id) on delete set null,
-  order_id    uuid references "order"(id) on delete set null,
+  order_id    uuid references sales_order(id) on delete set null,
   booking_id  uuid references booking(id) on delete set null,
   payment_id  uuid references payment(id) on delete set null,
   purchase_order_id uuid,   -- FK added at end of 0013

@@ -23,6 +23,7 @@ describe("data-backend switch", () => {
   it("maps renamed tables and passes others through", () => {
     expect(pgTable("company")).toBe("organizations");
     expect(pgTable("booking")).toBe("booking");
-    expect(pgTable("order")).toBe("order");
+    // `order` is a reserved SQL word → Postgres table is `sales_order`.
+    expect(pgTable("order")).toBe("sales_order");
   });
 });

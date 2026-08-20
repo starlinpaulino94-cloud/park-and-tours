@@ -20,7 +20,7 @@ select app.enable_tenant_rls('public.cash_session');
 select app.enable_tenant_rls('public.commission_rule');
 
 -- Partner-owned (partner-role users see only their own partner's rows)
-select app.enable_tenant_rls('public."order"',   true);
+select app.enable_tenant_rls('public.sales_order',   true);
 select app.enable_tenant_rls('public.booking',    true);
 select app.enable_tenant_rls('public.commission', true);
 select app.enable_tenant_rls('public.settlement', true);
