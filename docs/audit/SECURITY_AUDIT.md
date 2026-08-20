@@ -2,17 +2,43 @@
 
 > Referencias: OWASP Top 10:2025, OWASP ASVS 5.0, NIST SSDF.
 > Fecha: 2026-08-20 · Método: lectura de código + `npm audit` ejecutado + grep de secretos sobre árbol e historial de Git.
-> **Auditoría independiente:** el autor de este informe no implementó las correcciones de PR #1/#2. Varias afirmaciones de esos PR se re-verificaron y **una resultó ser falsa** (`SEC-001`).
+> **Auditoría independiente:** el autor de este informe no implementó las correcciones de PR #1/#2.
+>
+> ## ⚠️ CORRECCIÓN — `SEC-001` RETIRADO (2026-08-20, tras verificación en Postgres real)
+>
+> La primera versión de este informe afirmaba que la RLS nunca se había activado. **Era falso, y era el hallazgo principal.**
+>
+> El error fue mío y fue metodológico: busqué las invocaciones con el patrón `enable_tenant_rls\('[a-z_]+'`, cuya clase de caracteres **excluye el punto**. Las llamadas reales son `app.enable_tenant_rls('public.customer')` — con prefijo de esquema — así que el grep devolvió 0 coincidencias sobre **155 llamadas existentes**.
+>
+> **Verificación empírica** (Postgres 16 local, migraciones 0001–0016 aplicadas sobre un shim de Supabase con los privilegios por defecto de `anon`/`authenticated`):
+>
+> ```
+> tablas en public ............................. 83
+> con RLS ...................................... 83
+> sin RLS ......................................  0
+> expuestas a anon .............................  0
+>
+> anon sin JWT lee `customer` ................... 0 filas
+> authenticated org=A lee `customer` ............ 1 fila (sólo la suya)
+> authenticated org=A lee filas de B ............ 0 filas
+> authenticated org=A inserta en B .............. ERROR: violates RLS policy
+> authenticated org=A borra filas de B .......... DELETE 0
+> service_role (bypass legítimo) ................ 2 filas
+> ```
+>
+> **La RLS está correctamente activada y el aislamiento entre tenants funciona.** El trabajo de PR #2 en esta materia era correcto y mi informe lo describió mal. Esta corrección invalida también la entrada correspondiente de `AI_TECHNICAL_DEBT.md` `AID-003`.
+>
+> Lección aplicable al resto del informe: un grep negativo **no es evidencia de ausencia**. Los hallazgos que sobreviven abajo se re-verificaron con patrones amplios o con ejecución real.
 
 ## Resumen
 
-El **aislamiento entre empresas a nivel de aplicación es sólido** y las correcciones de RBAC de PR #1 **se sostienen** (re-verificadas: los 77 recursos tienen `writeRole`, el partner es deny-by-default en lista y detalle, `escapeRegex` está completo, los usuarios desactivados pierden acceso al instante). No hay secretos en el repositorio ni en el historial. No se encontró XSS explotable ni SQL injection.
+El **aislamiento multi-tenant es sólido en las dos capas**: en aplicación (`tenant.ts` fuerza el scope y no puede sobrescribirse) y en base de datos (RLS activa en 83/83 tablas, verificada con pruebas de lectura, escritura y borrado cruzadas). Las correcciones de RBAC de PR #1 **se sostienen** (re-verificadas: los 77 recursos tienen `writeRole`, el partner es deny-by-default en lista y detalle, `escapeRegex` está completo, los usuarios desactivados pierden acceso al instante). No hay secretos en el repositorio ni en el historial. No se encontró XSS explotable ni SQL injection.
 
-Los problemas graves están en otro sitio: **la frontera de base de datos que la documentación da por hecha no existe**, la cabecera CSP invita al clickjacking, la librería de autenticación acumula avisos críticos que coinciden con esta configuración, y no hay forma de recuperar una cuenta.
+Los problemas graves que quedan: **una función `SECURITY DEFINER` invocable sin autenticar** (con exploit reproducible, abajo), una cabecera CSP que invita al clickjacking, CORS con credenciales hacia dominios de terceros, una librería de autenticación con avisos críticos que coinciden con esta configuración, y ninguna forma de recuperar una cuenta.
 
 | Severidad | Nº |
 |---|---:|
-| P0 | 3 |
+| P0 | 2 |
 | P1 | 6 |
 | P2 | 5 |
 | P3 | 2 |
@@ -21,42 +47,47 @@ Los problemas graves están en otro sitio: **la frontera de base de datos que la
 
 ## P0
 
-### SEC-001 — RLS declarada en la documentación, nunca activada en el esquema
-- **Área:** Aislamiento multi-tenant / control de acceso (OWASP A01)
-- **Ficheros:** `supabase/migrations/0001_init_extensions_helpers.sql:52-77`, todas las migraciones `0004`–`0015`
-- **Problema:** la función `app.enable_tenant_rls(tbl)` está definida y es correcta, pero **no se invoca sobre ninguna tabla de negocio**.
-  ```
-  $ grep -rhoiE "enable_tenant_rls\('[a-z_]+'" supabase/migrations/ | sort -u | wc -l
-  0
-  ```
-  De 82 tablas con `organization_id`, sólo **5** tienen RLS activada (`organizations`, `organization_memberships`, `organization_relationships`, `plan`, `stripe_event`) más las políticas de `storage.objects`. Las **77 restantes** — `booking`, `payment`, `customer`, `commission`, `ledger_entry`, `receivable`, `cash_session`, `waiver`, `participant`… — quedan **sin RLS**.
-- **Evidencia contradictoria:** `docs/migration/MIGRATION_PLAN.md:144` afirma *"RLS activa desde M1"*; `docs/architecture/ARCHITECTURE.md` y `PRODUCTION_READINESS_REPORT.md` listan *"Sí — RLS + app + UI"*. **Es falso.**
-- **Cómo reproducir:** aplicar las migraciones en un Postgres limpio y ejecutar
-  `select relname from pg_class where relrowsecurity = false and relname in (select table_name from information_schema.tables where table_schema='public');`
-- **Explotación:** `NEXT_PUBLIC_SUPABASE_URL` y `NEXT_PUBLIC_SUPABASE_ANON_KEY` viajan al navegador por definición. Supabase expone cada tabla de `public` por PostgREST con los privilegios por defecto de `anon`/`authenticated`. Sin RLS, cualquiera que abra la aplicación puede leer y escribir **todas las tablas de todos los tenants** con una petición HTTP directa, sin pasar por la aplicación.
-- **Impacto de negocio:** pérdida total de aislamiento multi-tenant en el momento del cutover. PII de clientes, precios de coste, márgenes, deuda B2B y contabilidad de todas las empresas, expuestos.
-- **Causa raíz:** el helper se escribió y se dio por aplicado; ningún test ni gate de CI verifica la cobertura de RLS.
-- **Solución:** invocar `app.enable_tenant_rls('<tabla>')` en las 77 tablas (con `partner_scoped => true` donde exista `partner_id`), en una migración nueva. Añadir a CI una aserción que falle si alguna tabla con `organization_id` tiene `relrowsecurity = false`.
-- **Riesgo de la migración:** bajo si se aplica **antes** de que haya datos; medio después (las rutas que hoy usan service-role seguirán funcionando, las que usan el cliente RLS empezarán a filtrar correctamente y hay que probarlas).
-- **Validación requerida:** consulta de cobertura + test de integración que, con el JWT del tenant A, intente `select` sobre una fila del tenant B y obtenga 0 filas.
-- **Estado actual:** **el riesgo NO está vivo en producción** porque `DATA_BACKEND` es `totalum` por defecto y Postgres no es aún la fuente de verdad. Es un **bloqueador absoluto del cutover**. Si ya existe un proyecto Supabase con datos reales, el riesgo es inmediato — **UNVERIFIED**: no se puede comprobar desde el repositorio.
-
-### SEC-002 — RPC de capacidad ejecutable por `anon` y sin comprobación de tenant
-- **Área:** Control de acceso / integridad (OWASP A01)
+### SEC-002 — RPC de capacidad ejecutable por `anon`: **exploit verificado**
+- **Área:** Control de acceso / aislamiento multi-tenant (OWASP A01)
 - **Ficheros:** `supabase/migrations/0001_init_extensions_helpers.sql:14-16`, `supabase/migrations/0008_capacity_txn.sql:20-95`
+- **Estado:** **CONFIRMADO con reproducción ejecutada**, no inferido.
 - **Problema:** dos defectos que se componen.
-  1. `alter default privileges … grant execute on functions to authenticated, anon, service_role` concede ejecución de **todas** las funciones a `anon`.
+  1. `alter default privileges in schema public grant execute on functions to authenticated, anon, service_role` concede ejecución de **todas** las funciones a `anon`.
   2. `reserve_departure_capacity` comprueba el tenant sólo si hay claim:
      ```sql
      if app.current_org_id() is not null and d.organization_id <> app.current_org_id() then
      ```
-     Para `anon`, `app.current_org_id()` es `null` → **la comprobación se salta entera**.
-  3. `release_departure_capacity` **no tiene comprobación de tenant en absoluto** y es `security definer`.
-- **Explotación:** con la anon key pública y el UUID de una salida, un atacante no autenticado puede consumir el cupo de cualquier salida de cualquier tenant (`reserve`) o liberarlo (`release`), corrompiendo los contadores. El UUID v4 no es adivinable, pero se filtra a cualquiera que vea la salida — por ejemplo un usuario partner legítimo, que así ataca a otros tenants.
-- **Impacto:** denegación de venta (cupo agotado artificialmente) o sobreventa forzada (liberación) en tenants ajenos.
-- **Causa raíz:** `security definer` sin `revoke` explícito; la comprobación se escribió tolerante a `null` para permitir el modo service-role.
-- **Solución:** `revoke execute … from anon, authenticated` sobre ambas funciones y exponerlas sólo a `service_role`; o exigir `app.current_org_id() is not null` (fallar cerrado) y añadir la comprobación de tenant a `release_departure_capacity`.
-- **Validación:** test de integración llamando ambas RPC con la anon key → debe devolver `permission denied`.
+     Para `anon` no hay JWT → `current_org_id()` es `NULL` → **la comprobación se salta entera**. Un usuario *autenticado* de otro tenant sí queda bloqueado; el **no autenticado, no**.
+  3. `release_departure_capacity` **no tenía comprobación de tenant en absoluto** y es `security definer`.
+- **Reproducción (ejecutada en Postgres 16 con las migraciones 0001–0016):**
+  ```
+  Salida del Tenant B:            capacity=10  booked_pax=0
+  set role anon;                             -- sin autenticar, sin tenant
+  select reserve_departure_capacity('<uuid de la salida de B>', 8);   --> t
+  Salida del Tenant B:            capacity=10  booked_pax=8  status=almost_full
+  select release_departure_capacity('<uuid de la salida de B>', 8);   --> ok
+  Salida del Tenant B:            capacity=10  booked_pax=0
+
+  -- Control: usuario AUTENTICADO del Tenant A sobre la misma salida
+  --> ERROR: departure ... is outside your organization   (correcto)
+  ```
+- **Explotación:** con la anon key pública y el UUID de una salida, un atacante **no autenticado** agota el cupo de cualquier salida de cualquier tenant, o lo libera. El UUID v4 no es adivinable, pero se filtra a cualquiera que vea la salida — por ejemplo un usuario partner legítimo, que así ataca a otros tenants.
+- **Impacto de negocio:** denegación de venta (cupo agotado artificialmente sin ninguna reserva real detrás) o sobreventa forzada (liberación de plazas ya vendidas). Los contadores `booked_pax`/`status` quedan divergentes de las reservas reales.
+- **Causa raíz:** `security definer` sin `revoke` explícito, más una comprobación que **falla abierta** ante la ausencia de claim.
+- **Solución:** implementada y verificada en `supabase/migrations/0017_rpc_tenant_hardening.sql`:
+  1. `revoke execute` a `anon` y `public` sobre ambas funciones (y en los default privileges de los esquemas `public` y `app`).
+  2. Comprobación que **falla cerrada**: sólo `service_role` queda exento; cualquier otro llamante debe traer `org_id` y coincidir.
+  3. Comprobación de tenant añadida a `release_departure_capacity`.
+  4. Aserción que hace fallar la migración si queda alguna `SECURITY DEFINER` ejecutable por `anon`.
+- **Validación ejecutada tras aplicar 0017:**
+  ```
+  anon → reserve_departure_capacity   ERROR: permission denied      ✅ bloqueado
+  anon → release_departure_capacity   ERROR: permission denied      ✅ bloqueado
+  authenticated org=B (dueña)         t, booked_pax 0→3             ✅ sin regresión
+  service_role (webhook/seed/ETL)     t, booked_pax 3→5             ✅ sin regresión
+  authenticated org=A sobre salida B  ERROR: outside your org       ✅ sigue bloqueado
+  ```
+- **Riesgo de la migración:** bajo. No toca RLS ni datos; sólo privilegios de ejecución y el cuerpo de dos funciones que **el código de la aplicación no invoca todavía** (ver `DB-003`).
 
 ### SEC-003 — `better-auth` 1.3.26 con avisos críticos que coinciden con esta configuración
 - **Área:** Autenticación / dependencias (OWASP A06)
@@ -144,6 +175,7 @@ Los problemas graves están en otro sitio: **la frontera de base de datos que la
 | Secretos en código o historial de Git | ✅ **Ninguno** | `git grep -E '(sk_live\|sk_test\|whsec_\|eyJhbGciOi\|-----BEGIN)'` limpio; `.env`, `.envProd`, `.env*.local` en `.gitignore`; `.env.example` sin valores |
 | Escalada de privilegios en registro (AUD-001) | ✅ Cerrado | `role` no escribible; `/api/team` valida `ASSIGNABLE_ROLES` |
 | IDOR en detalle ERP | ✅ Cerrado | `tenantFindOne` filtra por `company`; `assertPartnerCanRead` valida pertenencia |
+| **RLS en base de datos** | ✅ **83/83 tablas, verificado en Postgres real** | 155 llamadas a `app.enable_tenant_rls`; lectura, escritura y borrado cross-tenant bloqueados; `service_role` conserva el bypass legítimo |
 | Aislamiento del portal B2B | ✅ Deny-by-default | `partnerScopeFor` → `denied` para toda tabla no listada |
 | Autorización de escritura | ✅ Completa | **Los 77 recursos** tienen `writeRole`; partner es read-only en el ERP genérico |
 | Mass assignment | ✅ Cerrado | `sanitizePayload` con allowlist `writable` + coerción numérica/fecha |
@@ -165,11 +197,11 @@ Los problemas graves están en otro sitio: **la frontera de base de datos que la
 
 | Activo | Actor hostil | Frontera de confianza | Amenaza | Mitigación hoy |
 |---|---|---|---|---|
-| Datos de otro tenant | Usuario autenticado de otro tenant | `tenant.ts` (aplicación) | Lectura/escritura cross-tenant | ✅ App · ❌ BD (`SEC-001`) |
+| Datos de otro tenant | Usuario autenticado de otro tenant | `tenant.ts` (app) + RLS (BD) | Lectura/escritura cross-tenant | ✅ **Ambas capas, verificado** |
 | Datos de otro partner | Usuario `partner` | `partnerScopeFor` | Enumeración de reservas y comisiones | ✅ Deny-by-default |
 | Dinero (pagos) | Usuario interno | `/api/payments` | Doble cobro, reembolso excesivo | ⚠️ Topes ✅ · idempotencia best-effort |
 | Cupo | Cliente/vendedor | `assertCapacity` | Sobreventa | ⚠️ Mitigado |
-| Cupo ajeno | No autenticado | RPC Postgres | Agotamiento/liberación | ❌ (`SEC-002`) |
+| Cupo ajeno | **No autenticado** | RPC Postgres | Agotamiento/liberación | ❌ (`SEC-002`) → ✅ con 0017 |
 | Sesión | Externo | `middleware` + layouts | Fuerza bruta, clickjacking | ❌ (`SEC-004`, `SEC-007`, `SEC-003`) |
 | Rastro de auditoría | Interno | `writeAudit` | Acción sin registro | ❌ (`SEC-009`) |
 

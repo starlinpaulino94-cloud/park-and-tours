@@ -12,7 +12,7 @@
 | `src/app/superadmin` | 5 | 1 437 |
 | `src/components` | 56 | 6 084 |
 | `src/lib` | 51 | 9 715 |
-| `supabase/migrations` | 16 | 2 520 |
+| `supabase/migrations` | 17 | ~2 760 |
 | `scripts` | 7 | 2 055 |
 | **Total `src` (TS/TSX)** | **280** | **34 306** |
 

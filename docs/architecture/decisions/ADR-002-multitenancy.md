@@ -9,7 +9,7 @@ El modelo es un tenant por fila (`company` / `organization_id`). El aislamiento 
 
 La auditoría verificó que este diseño **funciona y se respeta**: no se encontró ninguna ruta de fuga entre empresas. Pero también encontró que:
 - Algunos módulos (`availability.ts`, `booking-service.ts`, `audit.ts`) llaman al SDK **directamente**, saltándose `tenant.ts`. La garantía pasa a depender de la disciplina del autor en cada callsite.
-- La RLS que el esquema Postgres define **nunca se activa** (`DB-001`), y la documentación previa afirmaba lo contrario.
+- La RLS del esquema Postgres **sí está activa y verificada** (155 llamadas a `app.enable_tenant_rls`, 83/83 tablas, aislamiento comprobado en Postgres real). La primera versión de este ADR afirmaba lo contrario por un error de verificación; ver la errata en `docs/audit/README.md`.
 
 ## Decisión
 

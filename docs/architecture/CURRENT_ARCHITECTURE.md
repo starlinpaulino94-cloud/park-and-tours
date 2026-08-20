@@ -11,7 +11,7 @@
 | Lenguaje | TypeScript 5.8.3 (`tsc --noEmit` ✅ limpio) | ejecutado |
 | Hosting | **Cloudflare Workers** vía OpenNext 1.3.0 | `wrangler.jsonc`, `open-next.config.ts` |
 | Datos (producción) | **Totalum** — BaaS propietario, CRUD registro a registro | `src/lib/totalum.ts`, `DATA_BACKEND` por defecto |
-| Datos (migración) | **Supabase / Postgres** tras flag | `supabase/migrations/*`, `src/lib/supabase/*` |
+| Datos (migración) | **Supabase / Postgres** tras flag — 16 migraciones aplican limpio, RLS 83/83 verificada | `supabase/migrations/*`, `src/lib/supabase/*` |
 | Auth (producción) | **better-auth 1.3.26** + adapter propio sobre Totalum | `src/lib/auth.ts`, `better-auth-totalum-adapter.ts` (592 líneas) |
 | Auth (migración) | Supabase Auth tras `AUTH_BACKEND` | `src/lib/auth-backend.ts` |
 | Storage | Supabase Storage (buckets `public-assets`/`private-docs`) | `supabase/migrations/0016_storage.sql` |
@@ -53,7 +53,7 @@ Infra         totalum-api-sdk  |  supabase/{service,server,data-provider}.ts
 
 - Entre empresas: **sólido**. No se encontró ninguna ruta de fuga cross-tenant en la rama Totalum.
 - Dentro del tenant (partner B2B): deny-by-default en `partnerScopeFor()`, verificado en lista y detalle.
-- **En base de datos: inexistente.** Totalum no tiene RLS. El esquema Supabase la define pero **no la activa** (ver `DATABASE_AUDIT.md` `DB-001`).
+- **En base de datos:** inexistente sobre Totalum (el motor no lo soporta). En el esquema Supabase de destino **está activa y verificada**: 155 llamadas a `app.enable_tenant_rls`, 83/83 tablas, y aislamiento comprobado con lecturas, escrituras y borrados cruzados en Postgres 16 real.
 
 Superadmin cruza tenants mediante cookie `totalum_impersonate_company` (httpOnly, 2 h) con escritura obligatoria en `audit_log` con severidad `critical`.
 
@@ -142,6 +142,8 @@ El proyecto está **a mitad de una migración de motor** (M1–M5 hechos, cutove
 
 Este producto mueve **dinero y cupos con concurrencia real**. Los defectos P0/P1 que quedan abiertos (`BIZ-001`, `BIZ-004`, `BIZ-005`, `DB-002`) **no tienen solución correcta sobre Totalum** — sólo mitigaciones, y las mitigaciones ya se intentaron en PR #1 y siguen siendo mitigaciones. Postgres los resuelve por construcción.
 
-**Condición innegociable:** la migración **no puede ejecutarse con el esquema actual**, porque `enable_tenant_rls()` no se invoca en ninguna tabla (`DB-001`). Hacer cutover hoy cambiaría un aislamiento débil-pero-consistente por **ninguno**. Corregir `DB-001`/`DB-002` es prerrequisito del cutover, no un paso posterior.
+**Condiciones previas al cutover** (trabajo acotado, no bloqueadores de diseño): aplicar `0017` (`SEC-002`, exploit verificado y corrección verificada); **cablear la RPC atómica de capacidad al flujo de venta** (`DB-003` — hoy escrita y nunca invocada, así que el cutover por sí solo *no* resolvería la sobreventa, que es una de las razones principales para migrar); pooling de conexiones medido bajo carga; y cutover ensayado con dual-run. Ver `ADR-001`.
+
+> El esquema de destino está en **mejor** estado del que reportó la primera versión de este documento: la RLS está activa en 83/83 tablas y el aislamiento cross-tenant se verificó en Postgres 16 real.
 
 **No sobrearquitectar:** monolito modular sobre Next.js + Postgres. Sin microservicios, sin Kafka, sin Kubernetes, sin event sourcing, sin CQRS. Redis sólo si el rate limiting distribuido lo exige, y entonces basta Upstash o Cloudflare Rate Limiting.

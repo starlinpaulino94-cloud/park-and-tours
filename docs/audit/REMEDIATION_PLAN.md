@@ -8,7 +8,9 @@
 Los 35 hallazgos **no son 35 problemas**. Son cinco causas y sus síntomas. Corregir síntomas uno a uno es exactamente lo que produjo la deuda que estamos auditando.
 
 ### RC-1 — Se escribe la solución, no se conecta ni se verifica
-**Síntomas:** `SEC-001` (RLS definida, 0 invocaciones) · `DB-003` (RPC atómica nunca llamada) · `BIZ-002` (barredora sin cron) · logger que no corre en Workers · Sentry en `.env.example` sin código · reset de contraseña comentado.
+**Síntomas:** `DB-003` (RPC atómica escrita y nunca llamada — un solo `.rpc(` en todo `src/`, dentro de su propia definición) · `BIZ-002` (barredora sin cron: sin `triggers`/`scheduled` en ninguna configuración) · logger que no corre en Workers · Sentry en `.env.example` sin código · reset de contraseña comentado.
+
+> **Nota de autocorrección:** la primera versión encabezaba esta lista con `SEC-001` ("RLS definida, 0 invocaciones"). **Era un error mío de grep**, no un defecto del código: hay 155 invocaciones y la RLS funciona. La causa raíz sigue siendo válida para el resto — pero la lección se amplía: *verificar* también puede fallar, así que la evidencia debe ser **ejecución**, no coincidencia de patrón.
 **Causa:** ninguna corrección de P0/P1 llevó un test que fallara sin ella. Escribir la solución y no cablearla es indistinguible de haberla resuelto.
 **Cura:** regla de proceso — *ningún P0/P1 se cierra sin un test que falle sin la corrección*. Sin ese test, el estado es `UNVERIFIED`.
 
@@ -28,7 +30,7 @@ Los 35 hallazgos **no son 35 problemas**. Son cinco causas y sus síntomas. Corr
 **Cura:** pipeline propio con staging, rollback ensayado y restore probado.
 
 ### RC-5 — La documentación afirma más de lo que el código hace
-**Síntomas:** `AID-003` — cuatro afirmaciones de garantía verificadas como falsas.
+**Síntomas:** `AID-003` — tres afirmaciones de garantía que este ciclo no pudo confirmar (RPC conectada, barredora periódica, logger activo).
 **Causa:** cada documento describe la intención del incremento, no su verificación.
 **Cura:** ninguna afirmación de garantía sin comando reproducible al lado.
 
@@ -44,9 +46,8 @@ Regla: **nada de estética ni de UX mientras haya un P0 abierto.** Cada fase ter
 
 | ID | Acción | Riesgo del cambio | Verificación |
 |---|---|---|---|
-| **SEC-001 / DB-001** | Nueva migración que invoque `app.enable_tenant_rls('<tabla>')` en las **77 tablas** con `organization_id` (`partner_scoped => true` donde exista `partner_id`) | **Bajo antes de tener datos.** Medio después: las rutas con cliente RLS empezarán a filtrar de verdad y hay que probarlas | Consulta de cobertura + test cross-tenant con JWT del tenant A contra filas del tenant B |
-| **SEC-001b** | **Gate en CI**: falla si alguna tabla con `organization_id` tiene `relrowsecurity = false` | Nulo | El propio gate |
-| **SEC-002 / DB-002** | `revoke execute` de `reserve_departure_capacity` y `release_departure_capacity` a `anon`/`authenticated`; exigir `current_org_id() is not null` (fallar cerrado); añadir comprobación de tenant a `release_*` | Bajo | Llamada con anon key → `permission denied` |
+| **SEC-002 / DB-002** | Aplicar `supabase/migrations/0017_rpc_tenant_hardening.sql`: `revoke execute` a `anon`, comprobación de tenant que falla cerrada, y comprobación añadida a `release_departure_capacity` | Bajo — no toca RLS ni datos; sólo privilegios y dos funciones que la aplicación aún no invoca | **Ya verificado**: exploit bloqueado, y tenant legítimo / `service_role` / tenant ajeno sin regresión |
+| **VERIF** | Ejecutar `supabase/verify/RLS_EXPOSURE_CHECK.sql` en el proyecto real para confirmar que coincide con la reproducción local | Nulo — sólo lectura | La propia salida |
 | **SEC-003** | Actualizar `better-auth` a versión parcheada; re-verificar `AUD-S02` | Medio — cambio de versión mayor en auth | Test: usuario desactivado no puede operar; login funciona |
 | **DEP-1** | Actualizar `next` y `@opennextjs/cloudflare`; **añadir `npm audit --audit-level=high` bloqueante a CI** | Medio | CI verde con el nuevo gate |
 | **SEC-004** | `frame-ancestors 'self' https://*.totalum-project.com`; restaurar `X-Frame-Options` fuera del editor visual; añadir `default-src`/`script-src` | Bajo — verificar que el editor visual sigue funcionando | `curl -I` en producción |
@@ -133,7 +134,7 @@ Estados de error y reintento consistentes, `zod` en formularios alineado con el 
 ## Qué NO hacer
 
 - **No reescribir desde cero.** La lógica de dominio es el activo del proyecto.
-- **No hacer cutover antes de la Fase 0.** `SEC-001` convertiría un aislamiento débil pero consistente en ninguno.
+- **No hacer cutover antes de la Fase 0.** Falta aplicar `0017`, cablear la RPC de capacidad (`DB-003`) y ensayar el cutover con pooling medido.
 - **No sobrearquitectar.** Monolito modular + Postgres. Sin microservicios, Kafka, Kubernetes, event sourcing ni CQRS. Redis sólo si el rate limiting distribuido lo exige.
 - **No tocar estética mientras haya un P0.**
 - **No cerrar un hallazgo sin un test que falle sin la corrección.** Es la causa raíz RC-1 y es la razón por la que existe este segundo ciclo de auditoría.

@@ -110,7 +110,7 @@ superadmin 100 → owner 90 → admin 80 → manager 60 → operations 40 ═ ca
 Venta/POS, reservas y cupos, precios, comisiones, liquidaciones, pagos y caja, check-in, portal B2B, onboarding, suscripción Stripe, audit log, panel superadmin, CRUD genérico de 77 recursos.
 
 ### EXISTE PERO INCOMPLETO
-- **Backend Supabase** (`DATA_BACKEND=supabase`): esquema completo escrito, **RLS nunca activada** (`DB-001`), RPC atómica **nunca invocada** (`BIZ-001`), sin cutover.
+- **Backend Supabase** (`DATA_BACKEND=supabase`): esquema completo, **RLS activa y verificada (83/83)**, 16 migraciones aplican limpio. Pendiente: la RPC atómica de capacidad **está escrita y nunca se invoca** (`DB-003`), y el cutover no se ha ejecutado.
 - **Auth Supabase** (`AUTH_BACKEND=supabase`): implementada tras flag, sin migración de usuarios ejecutada.
 - **Recuperación de cuenta**: reset de contraseña y verificación de email **comentados** en `auth.ts` (`SEC-006`).
 - **Contabilidad**: base caja, sin devengo ni CxC en el mayor.
@@ -141,9 +141,9 @@ Checkout público para cliente final, app móvil, multi-idioma (UI sólo en espa
 | Equipo | `/dashboard/equipo/*` (6) | PARTIAL | P2 | CRUD |
 | Superadmin | `/superadmin/*` (4) | WORKING | P0 | impersonación auditada |
 | Suscripción | `/api/stripe/*` | WORKING | P0 | firma exigida en prod |
-| Backend Supabase | `src/lib/supabase/*` | **BROKEN** | P0 | RLS ausente → no apto para cutover |
+| Backend Supabase | `src/lib/supabase/*` | PARTIAL | P0 | Esquema y RLS correctos; RPC de capacidad sin cablear, sin cutover |
 | Observabilidad | — | **DEAD** | P0 | `instrumentation.ts` no corre en Workers |
 
-**Clasificación:** WORKING 7 · PARTIAL 7 · BROKEN 1 · DEAD 1 · MOCK 0 · UNKNOWN 0.
+**Clasificación:** WORKING 7 · PARTIAL 8 · BROKEN 0 · DEAD 1 · MOCK 0 · UNKNOWN 0.
 
 > No se encontraron datos mock en rutas de producción. Los únicos generadores sintéticos están en `src/lib/demo-seed.ts` (621 líneas), invocado sólo por `/api/setup/demo` con rol ≥ admin y bloqueado si el tenant ya tiene productos. **Los KPIs del dashboard se calculan de datos reales.**

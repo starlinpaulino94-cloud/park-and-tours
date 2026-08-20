@@ -16,31 +16,37 @@
 | CHECK | ❌ | ✅ 266 |
 | Índices | ❌ no controlables | ✅ 159 |
 | NOT NULL | ❌ | ✅ 556 |
-| RLS | ❌ imposible | ❌ **definida pero no activada** |
+| RLS | ❌ imposible | ✅ **activa en 83/83, verificada** |
 | Backups verificables | ❌ opacos al equipo | ⚠️ disponibles, sin probar |
 
 **La base de datos que está en producción no tiene esquema como código.** No hay ningún fichero en el repositorio que describa las tablas de Totalum: el esquema vive en la interfaz web del proveedor. `src/lib/types.ts` (583 líneas de interfaces TypeScript) es la única descripción, y **no es ejecutable ni verificable** — nada impide que el esquema real haya derivado. Esto invalida el requisito de la Fase 30 (*"toda modificación estructural debe tener migración reproducible"*): hoy es literalmente *"alguien cambió esa tabla a mano"*.
 
 ---
 
+## ⚠️ CORRECCIÓN — `DB-001` RETIRADO
+
+La primera versión afirmaba que la RLS nunca se activó. **Era falso.** El error fue un patrón de grep cuya clase de caracteres excluía el punto (`enable_tenant_rls\('[a-z_]+'`), mientras las llamadas reales llevan prefijo de esquema (`'public.customer'`). Hay **155 llamadas** a `app.enable_tenant_rls`, repartidas entre `0007_rls_core.sql` y `0015_rls_extras.sql`.
+
+**Verificado en Postgres 16 real** (migraciones 0001–0016 sobre un shim de Supabase con los privilegios por defecto de `anon`/`authenticated`):
+
+```
+tablas en public: 83   ·   con RLS: 83   ·   sin RLS: 0   ·   expuestas a anon: 0
+
+anon sin JWT lee customer .................... 0 filas
+authenticated org=A lee customer ............. 1 fila (sólo la suya)
+authenticated org=A lee filas de B ........... 0 filas
+authenticated org=A inserta en B ............. ERROR: violates row-level security policy
+authenticated org=A borra filas de B ......... DELETE 0
+service_role (bypass legítimo) ............... 2 filas
+```
+
+Detalle completo en `SECURITY_AUDIT.md`. Ver también `AI_TECHNICAL_DEBT.md` §Corrección.
+
 ## P0
 
-### DB-001 — RLS nunca activada en 77 de 82 tablas
-Ver `SECURITY_AUDIT.md` `SEC-001`. Es simultáneamente el hallazgo de base de datos y de seguridad más grave, y **bloquea el cutover**.
+### DB-002 — RPC `SECURITY DEFINER` ejecutable por `anon` (exploit verificado)
 
-```
-Tablas creadas ............................ 83
-Tablas con organization_id ................ 82
-Invocaciones de app.enable_tenant_rls() ....  0
-alter table … enable row level security ....  5
-```
-
-Tablas **sin RLS** (extracto): `booking`, `payment`, `customer`, `participant`, `commission`, `settlement`, `receivable`, `payable`, `ledger_entry`, `ledger_account`, `cash_session`, `cash_movement`, `invoice`, `expense`, `product_cost`, `price_rule`, `waiver`, `document`, `staff`, `audit_log`, y 57 más.
-
-### DB-002 — Funciones `security definer` ejecutables por `anon`
-Ver `SEC-002`.
-
----
+Ver `SECURITY_AUDIT.md` `SEC-002`. Reproducido: `anon` sin autenticar reservó 8 de 10 plazas de una salida ajena y luego las liberó. Corregido y verificado en `supabase/migrations/0017_rpc_tenant_hardening.sql`.
 
 ## P1
 
@@ -124,4 +130,4 @@ En Postgres, **todas** deben ser una transacción. Es el argumento central de la
 | RPO objetivo | **No definido** |
 | RTO objetivo | **No definido** |
 
-> **Un backup que nunca se ha restaurado no es un backup.** Hoy la respuesta a *"¿qué pasa si mañana desaparece la base de datos?"* es: **no lo sabemos**. Éste es, junto con `DB-001`, el motivo por el que el gate C no puede pasar.
+> **Un backup que nunca se ha restaurado no es un backup.** Hoy la respuesta a *"¿qué pasa si mañana desaparece la base de datos?"* es: **no lo sabemos**. Éste es el motivo principal por el que el gate C no puede pasar.

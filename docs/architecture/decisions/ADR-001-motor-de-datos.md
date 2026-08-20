@@ -29,13 +29,18 @@ Análisis comparativo completo en `docs/architecture/CURRENT_ARCHITECTURE.md` §
 
 **Opción A**, con una condición innegociable:
 
-> La migración **no puede ejecutarse con el esquema actual**. `app.enable_tenant_rls()` está definida y no se invoca en ninguna de las 77 tablas de negocio (`SEC-001`/`DB-001`). Hacer cutover hoy cambiaría un aislamiento débil pero consistente por **ninguno**, exponiendo los datos de todos los tenants a través de PostgREST con la anon key pública.
+**Condiciones previas al cutover** (trabajo acotado, ninguna es un bloqueador de diseño):
 
-Corregir `DB-001` y `DB-002` es **prerrequisito del cutover**, no un paso posterior.
+1. Aplicar `0017_rpc_tenant_hardening.sql` — `SEC-002`, exploit verificado y corrección verificada.
+2. **Cablear `spReserveCapacity` al flujo de venta** (`DB-003`). Hoy la RPC atómica existe y nunca se llama: sin esto, el cutover *no* resolvería la sobreventa, que es una de las razones principales para migrar.
+3. Pooling de conexiones medido bajo carga antes de abrir a usuarios.
+4. Cutover ensayado con dual-run y reconciliación.
+
+> **Nota:** la primera versión de este ADR declaraba como condición innegociable que la RLS no estaba activada. **Era un error de verificación mío**: está activa en 83/83 tablas y el aislamiento cross-tenant está comprobado en Postgres real. El esquema de destino está en mejor estado del que reporté.
 
 ## Consecuencias
 
-**Positivas:** transacciones, locks, FK, UNIQUE, CHECK, índices medibles, RLS como frontera real, migraciones versionadas, backups con PITR, `EXPLAIN`. Resuelve por construcción `BIZ-001`, `BIZ-004`, `BIZ-007` y toda la sección de constraints. Elimina las dos dependencias de mayor riesgo del proyecto (`totalum-api-sdk` y `better-auth`).
+**Positivas:** transacciones, locks, FK, UNIQUE, CHECK, índices medibles, RLS como frontera real **ya construida y verificada**, migraciones versionadas, backups con PITR, `EXPLAIN`. Resuelve por construcción `BIZ-001`, `BIZ-004`, `BIZ-007` y toda la sección de constraints. Elimina las dos dependencias de mayor riesgo del proyecto (`totalum-api-sdk` y `better-auth`).
 
 **Negativas:** cutover con riesgo de deriva de datos; hay que migrar Auth y Storage a la vez; se descartan las 592 líneas del adapter de better-auth; el pooling de conexiones se convierte en el riesgo operativo nº 1 y debe medirse antes de abrir a usuarios.
 

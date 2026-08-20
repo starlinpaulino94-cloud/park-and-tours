@@ -49,7 +49,6 @@ Patrón muy característico: la IA implementa la solución correcta, la document
 
 | Artefacto | Estado | Documentado como |
 |---|---|---|
-| `app.enable_tenant_rls()` | Definida, **0 invocaciones** | *"RLS activa desde M1"* |
 | `reserve_departure_capacity` | Escrita, `spReserveCapacity` **nunca llamada** | *"cierra AUD-B01 overbooking"* |
 | `reconcileStaleDrafts` | Escrita, **sin cron que la ejecute** | *"Meant to be run periodically"* |
 | `backend-logger.ts` (395 líneas) | Cargada sólo si `NEXT_RUNTIME === 'nodejs'` → **nunca en Workers** | *"ensures logger loads first"* |
@@ -64,18 +63,19 @@ Patrón muy característico: la IA implementa la solución correcta, la document
 
 ## AID-003 — Documentación que afirma más de lo que el código hace (P1)
 
-Documentos previos, generados en el mismo ciclo que el código, afirman garantías que no existen:
+> **Autocorrección.** La primera versión de este apartado encabezaba la lista con *"RLS activa desde M1"* como afirmación falsa. **La afirmación era cierta y mi verificación era defectuosa**: mi grep excluía el punto del nombre cualificado (`'public.customer'`) y reportó 0 sobre 155 llamadas reales. Comprobado después en Postgres real: 83/83 tablas con RLS y aislamiento cross-tenant efectivo. La ironía es instructiva — este apartado acusaba a la documentación previa de afirmar sin verificar, y lo hacía sin verificar.
+
+Con esa entrada retirada, quedan estas discrepancias, todas re-verificadas con patrones amplios o ejecución:
 
 | Afirmación | Fuente | Realidad |
 |---|---|---|
-| "RLS activa desde M1" | `MIGRATION_PLAN.md:144` | 0 tablas de negocio con RLS |
-| "Aislamiento: Sí — RLS + app + UI" | `PRODUCTION_READINESS_REPORT.md` | Sólo app |
-| "cierra AUD-B01 overbooking" | `0008_capacity_txn.sql` | La función no se llama |
+| "cierra AUD-B01 overbooking" | `0008_capacity_txn.sql` | La función no se llama — **re-verificado**: un solo `.rpc(` en todo `src/`, dentro de su propia definición |
 | "M5 ETL + reconciliación (framework testeado)" | commit `a79532d` | Framework testeado ✅, migración no ejecutada |
+| "run periodically (cron)" | `booking-service.ts` | **Re-verificado**: sin `cron`/`triggers`/`scheduled` en ninguna configuración ni código |
 
 No hay mala fe: cada documento describe la **intención** del incremento. Pero el efecto acumulado es que el proyecto **se cree más maduro de lo que es**, y esa creencia es lo que llevaría a un cutover catastrófico.
 
-**Antídoto:** ninguna afirmación de garantía en documentación sin comando reproducible al lado. Este informe intenta cumplir su propia regla.
+**Antídoto:** ninguna afirmación de garantía sin comando reproducible al lado — **y el comando hay que ejecutarlo**. Un grep negativo no es evidencia de ausencia; es evidencia de que el patrón no coincidió. Los hallazgos de este ciclo que sobreviven se re-verificaron con ejecución real (Postgres 16 local con las migraciones aplicadas) o con patrones amplios.
 
 ---
 

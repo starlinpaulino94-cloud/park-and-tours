@@ -53,8 +53,8 @@ No es una pirámide: es una base sin edificio. Los tests actuales prueban **func
 
 | # | Test | Qué demuestra | Hallazgo que cubre |
 |---|---|---|---|
-| 1 | **Aislamiento cross-tenant**: usuario del tenant A intenta leer/escribir cada uno de los 77 recursos del tenant B | La garantía central del producto | `SEC-001`, `tenant.ts` |
-| 2 | **Cobertura de RLS**: consulta que falla si alguna tabla con `organization_id` tiene `relrowsecurity = false` | Impide que `DB-001` se repita | `DB-001` |
+| 1 | **Aislamiento cross-tenant**: usuario del tenant A intenta leer/escribir cada uno de los 77 recursos del tenant B | La garantía central del producto. En Postgres ya está verificado a nivel RLS; falta a nivel de API | `tenant.ts` |
+| 2 | **Cobertura de RLS en CI**: consulta que falla si alguna tabla con `organization_id` tiene `relrowsecurity = false` | Hoy pasa (83/83), pero nada impide que una tabla futura se añada sin RLS | `supabase/verify/` |
 | 3 | **Concurrencia de cupo**: 2, 10 y 100 clientes por la última plaza | Exactamente 1 éxito, 0 auto-cancelaciones | `BIZ-001` |
 | 4 | **Idempotencia de pago**: 2 peticiones concurrentes con la misma `Idempotency-Key` | Un solo pago | `BIZ-004` |
 | 5 | **Aislamiento de partner**: usuario `partner` contra los 77 recursos y contra datos de otro partner | Deny-by-default real | `partnerScopeFor` |
