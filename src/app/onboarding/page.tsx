@@ -28,6 +28,10 @@ export default function OnboardingPage() {
     name: "", company_type: "excursion_company", base_currency: "usd",
     country: "República Dominicana", city: "", phone: "", tax_id: "", group_name: "",
   });
+  // AUD-U08: demo data is now OPT-IN. Previously it was seeded unconditionally,
+  // mixing fictitious customers/sales/commissions into every real company and
+  // inflating its financial KPIs with data no one could later tell apart.
+  const [seedDemo, setSeedDemo] = useState(false);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   const submit = async () => {
@@ -40,7 +44,7 @@ export default function OnboardingPage() {
       company: { name: string } | null;
       demo: Record<string, number> | null;
       demoError?: string | null;
-    }>("/api/setup", { ...form, seed_demo: true });
+    }>("/api/setup", { ...form, seed_demo: seedDemo });
     setSaving(false);
     if (!res.ok) {
       console.error("[onboarding] error creando la empresa:", res.error);
@@ -52,7 +56,7 @@ export default function OnboardingPage() {
       console.error("[onboarding] datos de ejemplo incompletos:", res.data.demoError);
       toast.warning("Empresa creada. Los datos de ejemplo quedaron incompletos, puedes cargarlos luego.");
     } else {
-      toast.success("Empresa creada con datos de ejemplo listos para explorar");
+      toast.success(seedDemo ? "Empresa creada con datos de ejemplo listos para explorar" : "Empresa creada correctamente");
     }
     router.push("/dashboard");
     router.refresh();
@@ -130,6 +134,22 @@ export default function OnboardingPage() {
               <Input id="group" value={form.group_name} onChange={(e) => set("group_name", e.target.value)}
                 placeholder="Grupo Caribe Holdings" />
             </div>
+
+            <label className="flex items-start gap-2.5 rounded-lg border p-3 text-sm">
+              <input
+                type="checkbox"
+                className="mt-0.5 size-4"
+                checked={seedDemo}
+                onChange={(e) => setSeedDemo(e.target.checked)}
+              />
+              <span>
+                <span className="font-medium">Cargar datos de ejemplo</span>
+                <span className="block text-xs text-muted-foreground">
+                  Añade excursiones, clientes y ventas ficticias para explorar. No lo actives
+                  si vas a operar con datos reales: se mezclarían con tu información.
+                </span>
+              </span>
+            </label>
 
             <Button className="w-full gap-2" size="lg" onClick={submit} disabled={saving}>
               {saving ? "Creando tu empresa…" : "Crear empresa y entrar"}

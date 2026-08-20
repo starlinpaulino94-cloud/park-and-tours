@@ -33,6 +33,24 @@ export async function POST(req: NextRequest) {
       throw Object.assign(new Error("Indica la orden o la reserva a la que aplica el pago"), { status: 400 });
     }
 
+    // AUD-F19: idempotency. A retried request (network retry, double-submit,
+    // two tabs) previously created a second identical payment — double-charging
+    // the customer and desyncing order/cash/receivable totals. When the client
+    // sends an Idempotency-Key we store it as the payment `reference`; a repeat
+    // with the same key returns the existing payment instead of creating a new
+    // one. Because `reference` has no unique DB constraint (AUD-D01), this is a
+    // best-effort check-then-act, but it closes the common double-submit path.
+    const idempotencyKey = req.headers.get("Idempotency-Key")?.trim() || body.reference?.trim() || null;
+    if (idempotencyKey) {
+      const existing = await tenantQuery<{ _id: string }>(ctx.companyId, "payment", {
+        _filter: { reference: idempotencyKey }, _limit: 1,
+      });
+      if (existing[0]) {
+        console.log(`[payments] idempotent hit for ${idempotencyKey}`);
+        return ok(existing[0], { idempotent: true });
+      }
+    }
+
     let orderId = body.order_id || null;
     if (!orderId && body.booking_id) {
       const booking = await tenantFindOne<{ order?: any }>(ctx.companyId, "booking", body.booking_id);
@@ -91,7 +109,7 @@ export async function POST(req: NextRequest) {
       partner: body.partner_id || (order && typeof order.partner === "object" ? order.partner?._id : order?.partner) || undefined,
       cash_session: cashSessionId || undefined,
       user: ctx.userId,
-      reference: body.reference || newPaymentReference(),
+      reference: idempotencyKey || newPaymentReference(),
       payment_type: body.payment_type || "payment",
       method: body.method || "cash",
       status: "completed",

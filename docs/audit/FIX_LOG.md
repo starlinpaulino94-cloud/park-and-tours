@@ -95,3 +95,12 @@ Verificación transversal: `tsc --noEmit` ✅ · `npm run build` ✅ tras cada b
 ### AUD-U12 — Deep-link de check-in roto (P2) — CERRADA
 - **Archivos:** `src/app/dashboard/checkin/page.tsx`.
 - **Solución:** la página lee `?code=` al montar y dispara la búsqueda; el botón "Check-in" de reservas ahora abre la reserva directamente.
+
+### AUD-U08 — Datos demo sembrados por defecto en tenants reales (P1) — CERRADA
+- **Archivos:** `src/app/onboarding/page.tsx`.
+- **Solución:** `seed_demo` ahora es opt-in (checkbox, default apagado) con aviso explícito de que mezcla datos ficticios. El backend ya respetaba `seed_demo !== false`.
+
+### AUD-F19 — Sin idempotencia en pagos (P1) — CERRADA (servidor)
+- **Archivos:** `src/app/api/payments/route.ts`.
+- **Solución:** `POST /api/payments` acepta `Idempotency-Key` (o `reference`); si ya existe un pago con esa clave, devuelve el existente en vez de duplicar. Es check-then-act (no hay constraint único en BD — AUD-D01), pero cierra el doble-submit común.
+- **Seguimiento:** los clientes deberían enviar `Idempotency-Key` por intento de pago para activarlo plenamente; el POS ya evita doble-click con `disabled={busy}`. Pendiente de cableo cliente.
