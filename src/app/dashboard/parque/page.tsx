@@ -1,6 +1,6 @@
 import { requireTenant } from "@/lib/tenant";
-import { DomainHub, type HubMetric } from "@/components/tf/domain-hub";
-import { domainBySlug } from "@/lib/nav";
+import { WorkspaceHub, type HubMetric } from "@/components/tf/workspace-hub";
+import { workspaceBySlug } from "@/lib/nav";
 import { countMany, sumMany, todayRange, plural } from "@/lib/hub-stats";
 
 export default async function ParqueHub() {
@@ -47,8 +47,8 @@ export default async function ParqueHub() {
   };
 
   return (
-    <DomainHub
-      domain={domainBySlug("parque")!}
+    <WorkspaceHub
+      workspace={workspaceBySlug("parque")!}
       role={ctx.role}
       modules={ctx.company?.modules_enabled}
       companyType={ctx.company?.company_type}

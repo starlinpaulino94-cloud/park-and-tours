@@ -1,17 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Icon } from "@/components/tf/icon";
 import {
-  breadcrumbs, canSeeModule, domainOf, visibleDomains, visibleSections,
-  type Domain,
+  breadcrumbs, canSeeItem, visibleGroups, visibleWorkspaces, workspaceOf,
+  QUICK_ACTIONS, type NavContext, type Workspace, type BadgeKey,
 } from "@/lib/nav";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
@@ -20,7 +21,11 @@ import { initials } from "@/lib/format";
 import { api } from "@/lib/api";
 import { signOut as authSignOut } from "@/lib/auth-client";
 import { toast } from "sonner";
-import { CommandPalette, openCommandPalette } from "@/components/tf/command-palette";
+import { CommandPalette, openCommandPalette, rememberVisit } from "@/components/tf/command-palette";
+import { OrgProvider, useOrg } from "@/components/tf/org-context";
+import { COMPANY_TYPE } from "@/lib/labels";
+
+export type NavBadges = Partial<Record<BadgeKey, number>>;
 
 export interface ShellUser {
   name: string;
@@ -34,57 +39,172 @@ export interface ShellUser {
   trialEndsAt?: string | null;
 }
 
+const NAV_MODE_KEY = "tf:nav-mode";
+type NavMode = "full" | "compact";
+
 /* -------------------------------------------------------------------------- */
-/* Level 1 — the domain rail. Fixed at 13 entries, so it never grows.          */
+/* Nivel 1 — riel de workspaces. Diez entradas, nunca crece.                   */
 /* -------------------------------------------------------------------------- */
 
-function DomainRail({ user, active }: { user: ShellUser; active: Domain }) {
-  const domains = visibleDomains(user.role, user.modules, user.companyType);
+function WorkspaceLink({
+  workspace, active, compact, badge, onNavigate,
+}: {
+  workspace: Workspace;
+  active: boolean;
+  compact: boolean;
+  badge?: number;
+  onNavigate?: () => void;
+}) {
   return (
-    <TooltipProvider delayDuration={120}>
+    <Link
+      href={workspace.href}
+      onClick={onNavigate}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "group relative flex items-center rounded-xl transition-colors",
+        compact
+          ? "size-11 justify-center"
+          : "w-[66px] flex-col gap-1 px-1 py-2",
+        active
+          ? "bg-sidebar-accent text-sidebar-primary"
+          : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+      )}
+    >
+      {active && (
+        <span className="absolute left-0 top-1/2 h-7 w-[3px] -translate-y-1/2 rounded-r-full bg-sidebar-primary" />
+      )}
+      <span className="relative">
+        <Icon name={workspace.icon} className="size-[18px]" />
+        {!!badge && badge > 0 && (
+          <span className="absolute -right-2 -top-1.5 grid min-w-[15px] place-items-center rounded-full bg-destructive px-1 text-[9px] font-bold leading-[15px] text-white">
+            {badge > 99 ? "99+" : badge}
+          </span>
+        )}
+      </span>
+      {!compact && (
+        <span className="w-full truncate text-center text-[10px] font-semibold leading-tight">
+          {workspace.short}
+        </span>
+      )}
+    </Link>
+  );
+}
+
+function WorkspaceRail({
+  ctx, active, mode, badges, onToggleMode, onNavigate,
+}: {
+  ctx: NavContext;
+  active: Workspace;
+  mode: NavMode;
+  badges: NavBadges;
+  onToggleMode?: () => void;
+  onNavigate?: () => void;
+}) {
+  const workspaces = visibleWorkspaces(ctx);
+  const main = workspaces.filter((w) => !w.footer);
+  const bottom = workspaces.filter((w) => w.footer);
+  const compact = mode === "compact";
+
+  const badgeOf = (w: Workspace) =>
+    visibleGroups(w, ctx)
+      .flatMap((g) => g.items)
+      .reduce((sum, i) => sum + (i.badgeKey ? badges[i.badgeKey] || 0 : 0), 0);
+
+  const render = (w: Workspace) => {
+    const link = (
+      <WorkspaceLink
+        workspace={w}
+        active={w.id === active.id}
+        compact={compact}
+        badge={badgeOf(w)}
+        onNavigate={onNavigate}
+      />
+    );
+    if (!compact) {
+      return (
+        <Tooltip key={w.id}>
+          <TooltipTrigger asChild>{link}</TooltipTrigger>
+          <TooltipContent side="right" className="max-w-[220px]">
+            <p className="font-semibold">{w.label}</p>
+            <p className="text-[11px] opacity-80">{w.tagline}</p>
+          </TooltipContent>
+        </Tooltip>
+      );
+    }
+    // Contraído: el clic sigue navegando y el árbol del workspace aparece al
+    // posarse encima, así ganar espacio de trabajo nunca cuesta perder el
+    // nivel 2 ni obliga a competir por el mismo clic.
+    return (
+      <HoverCard key={w.id} openDelay={140} closeDelay={120}>
+        <HoverCardTrigger asChild>{link}</HoverCardTrigger>
+        <HoverCardContent
+          side="right"
+          align="start"
+          sideOffset={8}
+          className="w-[252px] border-sidebar-border bg-sidebar p-0"
+        >
+          <ContextPanel ctx={ctx} workspace={w} badges={badges} flyout />
+        </HoverCardContent>
+      </HoverCard>
+    );
+  };
+
+  return (
+    <TooltipProvider delayDuration={150}>
       <nav
         aria-label="Áreas del sistema"
-        className="flex h-full w-[78px] shrink-0 flex-col items-center gap-1 border-r border-sidebar-border bg-sidebar py-3"
+        className={cn(
+          "flex h-full shrink-0 flex-col items-center gap-1 border-r border-sidebar-border bg-sidebar py-3",
+          compact ? "w-[64px]" : "w-[78px]"
+        )}
       >
         <Link
           href="/dashboard"
-          className="mb-2 grid size-10 place-items-center rounded-xl bg-sidebar-primary font-display text-base font-bold text-sidebar-primary-foreground"
+          onClick={onNavigate}
+          className="mb-2 grid size-10 shrink-0 place-items-center rounded-xl bg-sidebar-primary font-display text-base font-bold text-sidebar-primary-foreground"
           aria-label="Inicio"
         >
           T
         </Link>
+
         <div className="tf-scroll flex w-full flex-1 flex-col items-center gap-0.5 overflow-y-auto">
-          {domains.map((d) => {
-            const isActive = d.slug === active.slug;
-            return (
-              <Tooltip key={d.slug}>
-                <TooltipTrigger asChild>
-                  <Link
-                    href={d.href}
-                    aria-current={isActive ? "page" : undefined}
-                    className={cn(
-                      "group relative flex w-[66px] flex-col items-center gap-1 rounded-xl px-1 py-2 transition-colors",
-                      isActive
-                        ? "bg-sidebar-accent text-sidebar-primary"
-                        : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                    )}
-                  >
-                    {isActive && (
-                      <span className="absolute left-0 top-1/2 h-7 w-[3px] -translate-y-1/2 rounded-r-full bg-sidebar-primary" />
-                    )}
-                    <Icon name={d.icon} className="size-[18px]" />
-                    <span className="w-full truncate text-center text-[10px] font-semibold leading-tight">
-                      {d.short}
-                    </span>
-                  </Link>
-                </TooltipTrigger>
-                <TooltipContent side="right" className="max-w-[220px]">
-                  <p className="font-semibold">{d.label}</p>
-                  <p className="text-[11px] opacity-80">{d.tagline}</p>
-                </TooltipContent>
-              </Tooltip>
-            );
-          })}
+          {main.map(render)}
+        </div>
+
+        <div className="flex w-full flex-col items-center gap-0.5 border-t border-sidebar-border pt-2">
+          {bottom.map(render)}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Link
+                href="/profile"
+                onClick={onNavigate}
+                className={cn(
+                  "flex items-center justify-center rounded-xl text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
+                  compact ? "size-11" : "w-[66px] flex-col gap-1 px-1 py-2"
+                )}
+              >
+                <Icon name="CircleUser" className="size-[18px]" />
+                {!compact && <span className="text-[10px] font-semibold">Perfil</span>}
+              </Link>
+            </TooltipTrigger>
+            <TooltipContent side="right">Mi perfil</TooltipContent>
+          </Tooltip>
+          {onToggleMode && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={onToggleMode}
+                  aria-label={compact ? "Expandir navegación" : "Contraer navegación"}
+                  className="mt-1 hidden size-9 place-items-center rounded-xl text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-foreground lg:grid"
+                >
+                  <Icon name={compact ? "PanelLeftOpen" : "PanelLeftClose"} className="size-[17px]" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {compact ? "Expandir navegación" : "Contraer para ganar espacio"}
+              </TooltipContent>
+            </Tooltip>
+          )}
         </div>
       </nav>
     </TooltipProvider>
@@ -92,41 +212,105 @@ function DomainRail({ user, active }: { user: ShellUser; active: Domain }) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Level 2 — the module tree of the domain you are inside.                     */
+/* Contexto organizacional — empresa y sucursal activa                        */
 /* -------------------------------------------------------------------------- */
 
-function DomainPanel({
-  user, domain, onNavigate,
+function OrgHeader({ compactLabel }: { compactLabel?: boolean }) {
+  const { companyName, companyType, branches, branch, setBranchId } = useOrg();
+  const typeLabel = companyType ? COMPANY_TYPE[companyType]?.label : undefined;
+
+  return (
+    <div className="border-b border-sidebar-border px-3 py-3">
+      <div className="flex items-center gap-2 rounded-lg bg-sidebar-accent/50 px-2.5 py-2">
+        <span className="grid size-7 shrink-0 place-items-center rounded-md bg-sidebar-primary text-[11px] font-bold text-sidebar-primary-foreground">
+          {initials(companyName)}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[12.5px] font-semibold leading-tight text-sidebar-foreground">
+            {companyName}
+          </p>
+          {typeLabel && !compactLabel && (
+            <p className="truncate text-[10px] uppercase tracking-wider text-sidebar-foreground/60">
+              {typeLabel}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {branches.length > 1 && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button className="mt-1.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11.5px] text-sidebar-foreground/75 transition-colors hover:bg-sidebar-accent/50">
+              <Icon name="Building2" className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">
+                {branch ? branch.name : "Todas las sucursales"}
+              </span>
+              <Icon name="ChevronsUpDown" className="size-3.5 shrink-0 opacity-60" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            <DropdownMenuLabel className="text-[11px] uppercase tracking-wider">
+              Sucursal activa
+            </DropdownMenuLabel>
+            <DropdownMenuItem onClick={() => setBranchId(null)}>
+              <Icon name="Globe" className="mr-2 size-4" /> Todas las sucursales
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            {branches.map((b) => (
+              <DropdownMenuItem key={b._id} onClick={() => setBranchId(b._id)}>
+                <Icon name="Building2" className="mr-2 size-4" />
+                <span className="truncate">{b.name}</span>
+                {branch?._id === b._id && <Icon name="Check" className="ml-auto size-3.5" />}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Nivel 2 — el árbol del workspace en el que estás                            */
+/* -------------------------------------------------------------------------- */
+
+function ContextPanel({
+  ctx, workspace, badges, onNavigate, flyout = false, showOrg = false,
 }: {
-  user: ShellUser;
-  domain: Domain;
+  ctx: NavContext;
+  workspace: Workspace;
+  badges: NavBadges;
   onNavigate?: () => void;
+  flyout?: boolean;
+  showOrg?: boolean;
 }) {
   const pathname = usePathname();
-  const sections = visibleSections(domain, user.role, user.modules, user.companyType);
-  const hubActive = pathname === domain.href;
+  const groups = visibleGroups(workspace, ctx);
+  const hubActive = pathname === workspace.href;
 
   return (
     <div className="flex h-full w-full flex-col bg-sidebar">
-      <div className="px-4 pb-3 pt-4">
+      {showOrg && <OrgHeader />}
+
+      <div className="px-4 pb-2 pt-3.5">
         <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-sidebar-foreground/55">
-          Área
+          Workspace
         </p>
         <div className="mt-1 flex items-start gap-2">
-          <Icon name={domain.icon} className="mt-0.5 size-[17px] shrink-0 text-sidebar-primary" />
+          <Icon name={workspace.icon} className="mt-0.5 size-[17px] shrink-0 text-sidebar-primary" />
           <div className="min-w-0">
             <p className="font-display text-[15px] font-semibold leading-tight text-sidebar-foreground">
-              {domain.label}
+              {workspace.label}
             </p>
-            <p className="mt-1 text-[11px] leading-snug text-sidebar-foreground/65">{domain.tagline}</p>
+            <p className="mt-1 text-[11px] leading-snug text-sidebar-foreground/65">{workspace.tagline}</p>
           </div>
         </div>
       </div>
 
-      {domain.slug !== "inicio" && (
-        <div className="px-3 pb-2">
+      {workspace.slug !== "inicio" && (
+        <div className="px-3 pb-1.5">
           <Link
-            href={domain.href}
+            href={workspace.href}
             onClick={onNavigate}
             className={cn(
               "flex items-center gap-2 rounded-lg px-3 py-2 text-[12.5px] font-semibold transition-colors",
@@ -136,27 +320,32 @@ function DomainPanel({
             )}
           >
             <Icon name="LayoutGrid" className="size-4" />
-            Resumen del área
+            Resumen
           </Link>
         </div>
       )}
 
-      <nav className="tf-scroll flex-1 space-y-4 overflow-y-auto px-3 pb-6">
-        {sections.map((section) => (
-          <div key={section.title}>
+      <nav
+        aria-label={`Navegación de ${workspace.label}`}
+        className={cn("tf-scroll flex-1 space-y-4 overflow-y-auto px-3 pb-5", flyout && "max-h-[70vh] pt-1")}
+      >
+        {groups.map((group) => (
+          <div key={group.id}>
             <p className="px-3 pb-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-sidebar-foreground/50">
-              {section.title}
+              {group.title}
             </p>
             <ul className="space-y-0.5">
-              {section.items.map((item) => {
+              {group.items.map((item) => {
                 const active =
                   pathname === item.href ||
                   (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`));
+                const count = item.badgeKey ? badges[item.badgeKey] || 0 : 0;
                 return (
-                  <li key={item.href}>
+                  <li key={item.id}>
                     <Link
                       href={item.href}
-                      onClick={onNavigate}
+                      onClick={() => { rememberVisit(item.id); onNavigate?.(); }}
+                      target={item.external ? "_blank" : undefined}
                       className={cn(
                         "group flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors",
                         active
@@ -169,12 +358,18 @@ function DomainPanel({
                         className={cn("size-4 shrink-0", active && "text-sidebar-primary")}
                       />
                       <span className="truncate">{item.label}</span>
-                      {item.badge && (
-                        <span className="ml-auto rounded bg-sidebar-primary/25 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-brand-100">
-                          {item.badge}
+                      {item.tag && (
+                        <span className="rounded bg-sidebar-primary/25 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-brand-100">
+                          {item.tag}
                         </span>
                       )}
-                      {active && !item.badge && (
+                      {count > 0 && (
+                        <span className="ml-auto grid min-w-[18px] place-items-center rounded-full bg-destructive px-1 text-[10px] font-bold text-white">
+                          {count > 99 ? "99+" : count}
+                        </span>
+                      )}
+                      {item.external && <Icon name="ArrowUpRight" className="ml-auto size-3.5 opacity-60" />}
+                      {active && !count && !item.external && (
                         <span className="ml-auto size-1.5 rounded-full bg-sidebar-primary" />
                       )}
                     </Link>
@@ -186,38 +381,134 @@ function DomainPanel({
         ))}
       </nav>
 
-      <div className="border-t border-sidebar-border p-3">
-        {user.role === "superadmin" && (
-          <Link
-            href="/superadmin"
-            onClick={onNavigate}
-            className="mb-2 flex items-center gap-2 rounded-lg bg-sidebar-accent/60 px-3 py-2 text-[12px] font-semibold text-sidebar-primary hover:bg-sidebar-accent"
+      {!flyout && (
+        <div className="border-t border-sidebar-border p-3">
+          {ctx.role === "superadmin" && (
+            <Link
+              href="/superadmin"
+              onClick={onNavigate}
+              className="mb-2 flex items-center gap-2 rounded-lg bg-sidebar-accent/60 px-3 py-2 text-[12px] font-semibold text-sidebar-primary hover:bg-sidebar-accent"
+            >
+              <Icon name="Globe2" className="size-4" /> Panel de plataforma
+            </Link>
+          )}
+          <button
+            onClick={openCommandPalette}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-[12px] text-sidebar-foreground/65 transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
           >
-            <Icon name="Globe2" className="size-4" /> Panel de plataforma
-          </Link>
-        )}
-        <p className="px-3 text-[10px] uppercase tracking-[0.18em] text-sidebar-foreground/60">
-          {user.subscriptionStatus === "trial" ? "Periodo de prueba" : "Suscripción activa"}
-        </p>
+            <Icon name="LifeBuoy" className="size-4" /> Ayuda y búsqueda
+            <kbd className="ml-auto rounded border border-sidebar-border px-1.5 text-[10px] font-semibold">⌘K</kbd>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Navegación móvil — dos pasos: workspaces → módulos del workspace            */
+/* -------------------------------------------------------------------------- */
+
+function MobileNav({
+  ctx, current, badges, onNavigate,
+}: {
+  ctx: NavContext;
+  current: Workspace;
+  badges: NavBadges;
+  onNavigate: () => void;
+}) {
+  const [selected, setSelected] = useState<Workspace | null>(null);
+  const workspaces = visibleWorkspaces(ctx);
+
+  if (selected) {
+    return (
+      <div className="flex h-full w-full flex-col bg-sidebar">
+        <button
+          onClick={() => setSelected(null)}
+          className="flex items-center gap-2 border-b border-sidebar-border px-4 py-3 text-[13px] font-semibold text-sidebar-foreground/80"
+        >
+          <Icon name="ChevronLeft" className="size-4" /> Todas las áreas
+        </button>
+        <div className="min-h-0 flex-1">
+          <ContextPanel ctx={ctx} workspace={selected} badges={badges} onNavigate={onNavigate} />
+        </div>
       </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full w-full flex-col bg-sidebar">
+      <OrgHeader />
+      <ul className="tf-scroll flex-1 overflow-y-auto p-3">
+        {workspaces.map((w) => {
+          const count = visibleGroups(w, ctx)
+            .flatMap((g) => g.items)
+            .reduce((sum, i) => sum + (i.badgeKey ? badges[i.badgeKey] || 0 : 0), 0);
+          return (
+            <li key={w.id}>
+              <button
+                onClick={() => setSelected(w)}
+                className={cn(
+                  "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
+                  w.id === current.id
+                    ? "bg-sidebar-accent text-sidebar-primary"
+                    : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60"
+                )}
+              >
+                <Icon name={w.icon} className="size-[18px] shrink-0" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13.5px] font-semibold">{w.label}</span>
+                  <span className="block truncate text-[11px] text-sidebar-foreground/60">{w.tagline}</span>
+                </span>
+                {count > 0 && (
+                  <span className="grid min-w-[18px] place-items-center rounded-full bg-destructive px-1 text-[10px] font-bold text-white">
+                    {count}
+                  </span>
+                )}
+                <Icon name="ChevronRight" className="size-4 shrink-0 opacity-50" />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
 
 /* -------------------------------------------------------------------------- */
 
-export function AppShell({ user, children }: { user: ShellUser; children: React.ReactNode }) {
+export function AppShell({
+  user, badges = {}, children,
+}: {
+  user: ShellUser;
+  badges?: NavBadges;
+  children: React.ReactNode;
+}) {
   const router = useRouter();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<NavMode>("full");
 
-  const domain = domainOf(pathname);
+  const ctx: NavContext = { role: user.role, modules: user.modules, companyType: user.companyType };
+  const workspace = workspaceOf(pathname);
   const trail = breadcrumbs(pathname);
-  const showPos = canSeeModule(
-    { href: "/dashboard/pos", label: "", icon: "", description: "" },
-    user.role, user.modules, user.companyType
-  );
+
+  // La preferencia de sidebar se recuerda entre sesiones.
+  useEffect(() => {
+    const stored = window.localStorage.getItem(NAV_MODE_KEY);
+    if (stored === "compact" || stored === "full") setMode(stored);
+  }, []);
+
+  const toggleMode = useCallback(() => {
+    setMode((prev) => {
+      const next = prev === "full" ? "compact" : "full";
+      window.localStorage.setItem(NAV_MODE_KEY, next);
+      return next;
+    });
+  }, []);
+
+  const quickActions = QUICK_ACTIONS.filter((a) => canSeeItem(a, ctx));
 
   const signOut = async () => {
     setBusy(true);
@@ -236,6 +527,7 @@ export function AppShell({ user, children }: { user: ShellUser; children: React.
   const stopImpersonation = async () => {
     const res = await api.post("/api/superadmin/impersonate", { stop: true });
     if (!res.ok) {
+      console.error("[shell] error saliendo de la empresa:", res.error);
       toast.error(res.error?.message || "No se pudo salir de la empresa");
       return;
     }
@@ -245,138 +537,158 @@ export function AppShell({ user, children }: { user: ShellUser; children: React.
   };
 
   return (
-    <div className="flex min-h-screen bg-background">
-      <CommandPalette role={user.role} modules={user.modules} companyType={user.companyType} />
+    <OrgProvider companyName={user.companyName} companyType={user.companyType}>
+      <div className="flex min-h-screen bg-background">
+        <CommandPalette role={user.role} modules={user.modules} companyType={user.companyType} />
 
-      {/* Two-level navigation: domain rail + the module tree of that domain. */}
-      <div className="sticky top-0 hidden h-screen shrink-0 lg:flex">
-        <DomainRail user={user} active={domain} />
-        <aside className="w-[248px] border-r border-sidebar-border">
-          <DomainPanel user={user} domain={domain} />
-        </aside>
-      </div>
+        {/* Nivel 1 + nivel 2. En compacto el panel se pliega y el árbol vive en el flyout del riel. */}
+        <div className="sticky top-0 hidden h-screen shrink-0 lg:flex">
+          <WorkspaceRail
+            ctx={ctx}
+            active={workspace}
+            mode={mode}
+            badges={badges}
+            onToggleMode={toggleMode}
+          />
+          {mode === "full" && (
+            <aside className="w-[252px] border-r border-sidebar-border">
+              <ContextPanel ctx={ctx} workspace={workspace} badges={badges} showOrg />
+            </aside>
+          )}
+        </div>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-border bg-background/85 px-4 backdrop-blur-md sm:px-6">
-          <Sheet open={open} onOpenChange={setOpen}>
-            <SheetTrigger asChild>
-              <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Abrir menú">
-                <Icon name="Menu" className="size-5" />
-              </Button>
-            </SheetTrigger>
-            <SheetContent side="left" className="flex w-[330px] border-sidebar-border bg-sidebar p-0">
-              <SheetTitle className="sr-only">Navegación</SheetTitle>
-              <DomainRail user={user} active={domain} />
-              <div className="min-w-0 flex-1">
-                <DomainPanel user={user} domain={domain} onNavigate={() => setOpen(false)} />
-              </div>
-            </SheetContent>
-          </Sheet>
-
-          {/* Breadcrumbs make the nesting explicit: area → module. */}
-          <nav aria-label="Ruta" className="flex min-w-0 items-center gap-1.5 text-[13px]">
-            <Icon name={domain.icon} className="size-4 shrink-0 text-primary" />
-            {trail.map((crumb, i) => (
-              <span key={crumb.href} className="flex min-w-0 items-center gap-1.5">
-                {i > 0 && <Icon name="ChevronRight" className="size-3.5 shrink-0 text-muted-foreground/60" />}
-                {i === trail.length - 1 ? (
-                  <span className="truncate font-semibold text-foreground">{crumb.label}</span>
-                ) : (
-                  <Link href={crumb.href} className="truncate text-muted-foreground hover:text-foreground">
-                    {crumb.label}
-                  </Link>
-                )}
-              </span>
-            ))}
-          </nav>
-
-          <div className="ml-auto flex items-center gap-2">
-            <button
-              onClick={openCommandPalette}
-              className="hidden items-center gap-2 rounded-full border border-border px-3 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-muted md:flex"
-            >
-              <Icon name="Search" className="size-3.5" />
-              Buscar módulo
-              <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-semibold">⌘K</kbd>
-            </button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="md:hidden"
-              aria-label="Buscar"
-              onClick={openCommandPalette}
-            >
-              <Icon name="Search" className="size-4" />
-            </Button>
-
-            {showPos && (
-              <Link href="/dashboard/pos" className="hidden sm:block">
-                <Button size="sm" className="gap-1.5 rounded-full px-4">
-                  <Icon name="Plus" className="size-4" /> Nueva venta
+        <div className="flex min-w-0 flex-1 flex-col">
+          <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-border bg-background/85 px-4 backdrop-blur-md sm:px-6">
+            <Sheet open={open} onOpenChange={setOpen}>
+              <SheetTrigger asChild>
+                <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Abrir menú">
+                  <Icon name="Menu" className="size-5" />
                 </Button>
-              </Link>
-            )}
+              </SheetTrigger>
+              <SheetContent side="left" className="w-[320px] border-sidebar-border bg-sidebar p-0">
+                <SheetTitle className="sr-only">Navegación</SheetTitle>
+                <MobileNav ctx={ctx} current={workspace} badges={badges} onNavigate={() => setOpen(false)} />
+              </SheetContent>
+            </Sheet>
 
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-2 rounded-full border border-border py-1 pl-1 pr-3 transition-colors hover:bg-muted">
-                  <span className="grid size-7 place-items-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">
-                    {initials(user.name)}
-                  </span>
-                  <span className="hidden text-left sm:block">
-                    <span className="block text-[12px] font-semibold leading-none">{user.name}</span>
-                    <span className="block text-[10px] uppercase tracking-wider text-muted-foreground">
-                      {user.role}
+            {/* Migas: Workspace → Grupo → Módulo. */}
+            <nav aria-label="Ruta" className="flex min-w-0 items-center gap-1.5 text-[13px]">
+              <Icon name={workspace.icon} className="size-4 shrink-0 text-primary" />
+              {trail.map((crumb, i) => (
+                <span key={`${crumb.label}-${i}`} className="flex min-w-0 items-center gap-1.5">
+                  {i > 0 && <Icon name="ChevronRight" className="size-3.5 shrink-0 text-muted-foreground/60" />}
+                  {i === trail.length - 1 ? (
+                    <span className="truncate font-semibold text-foreground">{crumb.label}</span>
+                  ) : crumb.href ? (
+                    <Link href={crumb.href} className="hidden truncate text-muted-foreground hover:text-foreground sm:inline">
+                      {crumb.label}
+                    </Link>
+                  ) : (
+                    <span className="hidden truncate text-muted-foreground md:inline">{crumb.label}</span>
+                  )}
+                </span>
+              ))}
+            </nav>
+
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={openCommandPalette}
+                className="hidden items-center gap-2 rounded-full border border-border px-3 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-muted md:flex"
+              >
+                <Icon name="Search" className="size-3.5" />
+                Buscar
+                <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-semibold">⌘K</kbd>
+              </button>
+              <Button variant="ghost" size="icon" className="md:hidden" aria-label="Buscar" onClick={openCommandPalette}>
+                <Icon name="Search" className="size-4" />
+              </Button>
+
+              {/* Las acciones frecuentes son acciones, no módulos: viven aquí. */}
+              {quickActions.length > 0 && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button size="sm" className="gap-1.5 rounded-full px-3 sm:px-4">
+                      <Icon name="Plus" className="size-4" />
+                      <span className="hidden sm:inline">Crear</span>
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-56">
+                    <DropdownMenuLabel className="text-[11px] uppercase tracking-wider">
+                      Acciones rápidas
+                    </DropdownMenuLabel>
+                    {quickActions.map((action) => (
+                      <DropdownMenuItem key={action.id} asChild>
+                        <Link href={action.href}>
+                          <Icon name={action.icon} className="mr-2 size-4" />
+                          <span>{action.label}</span>
+                        </Link>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button className="flex items-center gap-2 rounded-full border border-border py-1 pl-1 pr-3 transition-colors hover:bg-muted">
+                    <span className="grid size-7 place-items-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">
+                      {initials(user.name)}
                     </span>
-                  </span>
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-60">
-                <DropdownMenuLabel className="font-normal">
-                  <p className="text-sm font-semibold">{user.name}</p>
-                  <p className="text-xs text-muted-foreground">{user.email}</p>
-                  <p className="mt-1 text-[11px] text-muted-foreground">{user.companyName}</p>
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem asChild>
-                  <Link href="/dashboard/inicio/mi-dia">
-                    <Icon name="Sun" className="mr-2 size-4" /> Mi día
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <Link href="/dashboard/configuracion">
-                    <Icon name="Settings" className="mr-2 size-4" /> Configuración
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <Link href="/portal">
-                    <Icon name="Handshake" className="mr-2 size-4" /> Portal B2B
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={signOut} disabled={busy}>
-                  <Icon name="LogOut" className="mr-2 size-4" /> Cerrar sesión
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </header>
+                    <span className="hidden text-left sm:block">
+                      <span className="block text-[12px] font-semibold leading-none">{user.name}</span>
+                      <span className="block text-[10px] uppercase tracking-wider text-muted-foreground">
+                        {user.role}
+                      </span>
+                    </span>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-60">
+                  <DropdownMenuLabel className="font-normal">
+                    <p className="text-sm font-semibold">{user.name}</p>
+                    <p className="text-xs text-muted-foreground">{user.email}</p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">{user.companyName}</p>
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem asChild>
+                    <Link href="/dashboard/inicio/mi-dia">
+                      <Icon name="Sun" className="mr-2 size-4" /> Mi día
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link href="/profile">
+                      <Icon name="CircleUser" className="mr-2 size-4" /> Mi perfil
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link href="/dashboard/configuracion">
+                      <Icon name="Settings" className="mr-2 size-4" /> Configuración
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={signOut} disabled={busy}>
+                    <Icon name="LogOut" className="mr-2 size-4" /> Cerrar sesión
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </header>
 
-        {user.impersonating && (
-          <div className="flex items-center gap-3 border-b border-amber-300 bg-amber-100 px-4 py-2 text-[13px] text-amber-950 sm:px-6 dark:border-amber-900 dark:bg-amber-950/60 dark:text-amber-100">
-            <Icon name="Eye" className="size-4 shrink-0" />
-            <p className="min-w-0 flex-1">
-              Estás operando dentro de <strong>{user.companyName}</strong> como superadministrador.
-              Todas las acciones quedan registradas en la auditoría.
-            </p>
-            <Button size="sm" variant="outline" className="h-7 border-amber-500 bg-transparent" onClick={stopImpersonation}>
-              Salir
-            </Button>
-          </div>
-        )}
+          {user.impersonating && (
+            <div className="flex items-center gap-3 border-b border-amber-300 bg-amber-100 px-4 py-2 text-[13px] text-amber-950 sm:px-6 dark:border-amber-900 dark:bg-amber-950/60 dark:text-amber-100">
+              <Icon name="Eye" className="size-4 shrink-0" />
+              <p className="min-w-0 flex-1">
+                Estás operando dentro de <strong>{user.companyName}</strong> como superadministrador.
+                Todas las acciones quedan registradas en la auditoría.
+              </p>
+              <Button size="sm" variant="outline" className="h-7 border-amber-500 bg-transparent" onClick={stopImpersonation}>
+                Salir
+              </Button>
+            </div>
+          )}
 
-        <div className="mx-auto w-full max-w-[1500px] flex-1 px-4 py-6 sm:px-6 lg:px-8">{children}</div>
+          <div className="mx-auto w-full max-w-[1500px] flex-1 px-4 py-6 sm:px-6 lg:px-8">{children}</div>
+        </div>
       </div>
-    </div>
+    </OrgProvider>
   );
 }

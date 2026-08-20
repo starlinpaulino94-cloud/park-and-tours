@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 import { Icon } from "@/components/tf/icon";
 import { PageHeader } from "@/components/tf/page-header";
 import { KpiCard } from "@/components/tf/kpi-card";
-import { visibleSections, type Domain } from "@/lib/nav";
+import { visibleGroups, type NavContext, type Workspace } from "@/lib/nav";
 
 export interface HubMetric {
   /** Short live figure shown on the module card, e.g. "18 abiertas". */
@@ -28,14 +28,15 @@ const METRIC_TONE: Record<string, string> = {
 };
 
 /**
- * Landing screen of a domain. Lists the domain's own modules as cards grouped
- * by section, each carrying a live figure, so entering an area feels like
- * opening a smaller system with its own dashboard rather than jumping to a list.
+ * Pantalla de entrada de un workspace: sus propios módulos en tarjetas,
+ * agrupadas igual que en el panel contextual y con una cifra viva cada una.
+ * Entrar a un workspace se siente como abrir un sistema más pequeño con su
+ * propio tablero, no como saltar a una lista.
  */
-export function DomainHub({
-  domain, role, modules, companyType, kpis, metrics, children,
+export function WorkspaceHub({
+  workspace, role, modules, companyType, kpis, metrics, children,
 }: {
-  domain: Domain;
+  workspace: Workspace;
   role?: string;
   modules?: string[] | null;
   companyType?: string;
@@ -44,15 +45,16 @@ export function DomainHub({
   metrics?: Record<string, HubMetric>;
   children?: React.ReactNode;
 }) {
-  const sections = visibleSections(domain, role, modules, companyType);
-  const moduleCount = sections.reduce((n, s) => n + s.items.length, 0);
+  const ctx: NavContext = { role, modules, companyType };
+  const groups = visibleGroups(workspace, ctx);
+  const moduleCount = groups.reduce((n, g) => n + g.items.length, 0);
 
   return (
     <div className="space-y-7">
       <PageHeader
-        eyebrow={`Área · ${moduleCount} módulos`}
-        title={domain.label}
-        description={domain.tagline}
+        eyebrow={`Workspace · ${moduleCount} módulos`}
+        title={workspace.label}
+        description={workspace.tagline}
       />
 
       {kpis && kpis.length > 0 && (
@@ -75,8 +77,8 @@ export function DomainHub({
       {children}
 
       <div className="space-y-7">
-        {sections.map((section) => (
-          <section key={section.title}>
+        {groups.map((section) => (
+          <section key={section.id}>
             <div className="mb-3 flex items-center gap-3">
               <h2 className="font-display text-[15px] font-semibold tracking-tight">{section.title}</h2>
               <span className="tf-rule flex-1" />
@@ -89,8 +91,9 @@ export function DomainHub({
                 const metric = metrics?.[item.href];
                 return (
                   <Link
-                    key={item.href}
+                    key={item.id}
                     href={item.href}
+                    target={item.external ? "_blank" : undefined}
                     className={cn(
                       "group tf-card flex flex-col gap-2.5 p-4 transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg",
                       item.primary && "border-primary/30 bg-primary/[0.03]"
@@ -110,10 +113,13 @@ export function DomainHub({
                       <div className="min-w-0 flex-1">
                         <p className="flex items-center gap-1.5 font-display text-[14px] font-semibold leading-tight">
                           <span className="truncate">{item.label}</span>
-                          {item.badge && (
+                          {item.tag && (
                             <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-primary">
-                              {item.badge}
+                              {item.tag}
                             </span>
+                          )}
+                          {item.external && (
+                            <Icon name="ArrowUpRight" className="size-3.5 shrink-0 text-muted-foreground" />
                           )}
                         </p>
                         <p className="mt-1 text-[12.5px] leading-snug text-muted-foreground">

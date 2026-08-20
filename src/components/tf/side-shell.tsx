@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Icon } from "@/components/tf/icon";
-import type { ModuleNode } from "@/lib/nav";
+import type { NavItem } from "@/lib/nav";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import {
@@ -23,7 +23,7 @@ import { toast } from "sonner";
 export function SideShell({
   nav, brand, subtitle, badge, accent = "primary", user, extraLinks, children,
 }: {
-  nav: ModuleNode[];
+  nav: NavItem[];
   brand: string;
   subtitle: string;
   badge?: string;

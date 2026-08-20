@@ -1,6 +1,6 @@
 import { requireTenant } from "@/lib/tenant";
-import { DomainHub, type HubMetric } from "@/components/tf/domain-hub";
-import { domainBySlug } from "@/lib/nav";
+import { WorkspaceHub, type HubMetric } from "@/components/tf/workspace-hub";
+import { workspaceBySlug } from "@/lib/nav";
 import { countMany, sumMany, todayRange, plural } from "@/lib/hub-stats";
 import { formatCompactMoney } from "@/lib/format";
 
@@ -46,8 +46,8 @@ export default async function FinanzasHub() {
   };
 
   return (
-    <DomainHub
-      domain={domainBySlug("finanzas")!}
+    <WorkspaceHub
+      workspace={workspaceBySlug("finanzas")!}
       role={ctx.role}
       modules={ctx.company?.modules_enabled}
       companyType={ctx.company?.company_type}

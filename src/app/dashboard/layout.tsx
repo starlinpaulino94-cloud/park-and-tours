@@ -1,12 +1,44 @@
 import { redirect } from "next/navigation";
-import { getTenantContext } from "@/lib/tenant";
-import { AppShell, type ShellUser } from "@/components/tf/app-shell";
+import { getTenantContext, tenantCount } from "@/lib/tenant";
+import { AppShell, type NavBadges, type ShellUser } from "@/components/tf/app-shell";
+
+/**
+ * Contadores del sidebar. Solo tres, y solo accionables: algo que alguien tiene
+ * que resolver hoy. Si alguna cuenta falla no se rompe la navegación: el badge
+ * simplemente no aparece.
+ */
+async function loadBadges(companyId: string, userId: string, role: string): Promise<NavBadges> {
+  const safe = async (label: string, run: () => Promise<number>) => {
+    try {
+      return await run();
+    } catch (err) {
+      console.error(`[shell] no se pudo contar ${label}:`, err);
+      return 0;
+    }
+  };
+
+  const canApprove = ["superadmin", "owner", "admin", "manager"].includes(role);
+
+  const [tasks, approvals, incidents] = await Promise.all([
+    safe("tareas", () => tenantCount(companyId, "task", {
+      assigned_to: userId, status: { in: ["todo", "in_progress", "blocked", "waiting"] },
+    })),
+    canApprove
+      ? safe("aprobaciones", () => tenantCount(companyId, "approval_request", { status: "pending" }))
+      : Promise.resolve(0),
+    safe("incidentes", () => tenantCount(companyId, "incident", {
+      status: { in: ["open", "investigating", "action_required", "escalated"] },
+    })),
+  ]);
+
+  return { tasks, approvals, incidents };
+}
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const ctx = await getTenantContext();
   if (!ctx) redirect("/login");
   if (!ctx.companyId) redirect("/onboarding");
-  // Portal users never reach the internal ERP.
+  // Los usuarios del portal nunca entran al ERP interno.
   if (ctx.role === "partner") redirect("/portal");
 
   const user: ShellUser = {
@@ -21,5 +53,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
     trialEndsAt: (ctx.company?.trial_ends_at as string) || null,
   };
 
-  return <AppShell user={user}>{children}</AppShell>;
+  const badges = await loadBadges(ctx.companyId, ctx.userId, ctx.role);
+
+  return <AppShell user={user} badges={badges}>{children}</AppShell>;
 }
