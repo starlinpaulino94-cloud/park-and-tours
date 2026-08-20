@@ -236,7 +236,7 @@ export default function DeparturesPage() {
                           {items.length} salida{items.length === 1 ? "" : "s"} · {formatNumber(dayPax)}/{formatNumber(dayCap)} pax
                         </p>
                       </div>
-                      <Link href={`/dashboard/operaciones?date=${day}`}>
+                      <Link href={`/dashboard/operaciones/despacho?date=${day}`}>
                         <Button variant="outline" size="sm" className="gap-1.5">
                           <Icon name="Radar" className="size-3.5" /> Ver despacho
                         </Button>

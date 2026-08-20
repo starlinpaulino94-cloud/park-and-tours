@@ -1,72 +1,48 @@
-"use client";
+import { requireTenant } from "@/lib/tenant";
+import { DomainHub, type HubMetric } from "@/components/tf/domain-hub";
+import { domainBySlug } from "@/lib/nav";
+import { countMany, sumMany, plural } from "@/lib/hub-stats";
+import { formatCompactMoney } from "@/lib/format";
 
-import { ResourcePage } from "@/components/tf/resource-page";
-import { StatusBadge } from "@/components/tf/status-badge";
-import { GENERIC_STATUS } from "@/lib/labels";
-import { formatDate, formatMoney } from "@/lib/format";
-import { CURRENCY_OPTIONS, LANGUAGE_OPTIONS } from "@/components/tf/options";
-import type { Customer } from "@/lib/types";
+export default async function ClientesHub() {
+  const ctx = await requireTenant();
+  const currency = ctx.company?.base_currency || "usd";
 
-const fullName = (c: any) => [c.first_name, c.last_name].filter(Boolean).join(" ") || "Sin nombre";
+  const [c, s] = await Promise.all([
+    countMany(ctx.companyId, {
+      customers: { table: "customer" },
+      memberships: { table: "membership", filter: { status: "active" } },
+      casesOpen: { table: "guest_case", filter: { status: { in: ["open", "in_progress", "waiting_customer", "escalated"] } } },
+      casesUrgent: { table: "guest_case", filter: { priority: "urgent", status: { in: ["open", "in_progress", "escalated"] } } },
+      giftCards: { table: "gift_card", filter: { status: { in: ["active", "partially_used"] } } },
+      vouchers: { table: "voucher", filter: { status: "valid" } },
+    }),
+    sumMany(ctx.companyId, {
+      liability: { table: "gift_card", field: "balance", filter: { status: { in: ["active", "partially_used"] } } },
+      spend: { table: "customer", field: "total_spent" },
+    }),
+  ]);
 
-export default function CustomersPage() {
+  const metrics: Record<string, HubMetric> = {
+    "/dashboard/clientes/directorio": { value: plural(c.customers, "cliente", "clientes"), tone: c.customers > 0 ? "good" : "neutral" },
+    "/dashboard/clientes/membresias": { value: plural(c.memberships, "membresía activa", "membresías activas") },
+    "/dashboard/clientes/casos": { value: plural(c.casesOpen, "caso abierto", "casos abiertos"), tone: c.casesUrgent > 0 ? "bad" : c.casesOpen > 0 ? "warn" : "good" },
+    "/dashboard/clientes/gift-cards": { value: formatCompactMoney(s.liability, currency) + " en saldo", tone: "neutral" },
+    "/dashboard/clientes/vouchers": { value: plural(c.vouchers, "voucher válido", "vouchers válidos") },
+  };
+
   return (
-    <ResourcePage
-      resource="customer"
-      eyebrow="Comercial"
-      title="Clientes"
-      description="El comprador y los participantes son entidades distintas: un cliente puede comprar entradas para otras personas."
-      createLabel="Nuevo cliente"
-      searchPlaceholder="Buscar por nombre, email, teléfono o documento…"
-      emptyIcon="Users"
-      emptyTitle="Todavía no hay clientes"
-      emptyDescription="Los clientes se crean automáticamente al registrar una venta, o puedes darlos de alta aquí."
-      columns={[
-        {
-          key: "name", header: "Cliente",
-          render: (c: any) => (
-            <div>
-              <p className="font-semibold">{fullName(c)}</p>
-              <p className="text-xs text-muted-foreground">{c.email || c.phone || "Sin contacto"}</p>
-            </div>
-          ),
-        },
-        { key: "country", header: "País", hideOn: "md", render: (c: any) => c.country || c.nationality || "—" },
-        {
-          key: "hotel", header: "Hotel", hideOn: "lg",
-          render: (c: any) => (typeof c.hotel === "object" && c.hotel ? `${c.hotel.name}${c.room ? ` · hab. ${c.room}` : ""}` : "—"),
-        },
-        { key: "bookings", header: "Reservas", align: "right", hideOn: "sm", render: (c: any) => c.bookings_count ?? 0 },
-        { key: "spent", header: "Facturado", align: "right", render: (c: any) => formatMoney(c.total_spent ?? 0, "usd") },
-        { key: "created", header: "Alta", align: "right", hideOn: "lg", render: (c: any) => formatDate(c.createdAt) },
-        { key: "status", header: "Estado", render: (c: any) => <StatusBadge value={c.status} dict={GENERIC_STATUS} /> },
-      ]}
-      fields={[
-        { name: "first_name", label: "Nombre", required: true },
-        { name: "last_name", label: "Apellidos" },
-        { name: "email", label: "Email", type: "email" },
-        { name: "phone", label: "Teléfono" },
-        { name: "whatsapp", label: "WhatsApp" },
-        { name: "document_id", label: "Documento / pasaporte" },
-        { name: "country", label: "País" },
-        { name: "nationality", label: "Nacionalidad" },
-        { name: "language", label: "Idioma", type: "select", options: LANGUAGE_OPTIONS },
-        { name: "birth_date", label: "Fecha de nacimiento", type: "date" },
-        { name: "hotel", label: "Hotel", type: "reference", resource: "hotel" },
-        { name: "room", label: "Habitación" },
-        { name: "assigned_seller", label: "Vendedor asignado", type: "reference", resource: "seller",
-          optionLabel: (s: any) => [s.first_name, s.last_name].filter(Boolean).join(" ") },
-        { name: "source", label: "Origen", type: "select", options: [
-          { value: "web", label: "Web" }, { value: "walk_in", label: "Walk-in" },
-          { value: "referral", label: "Referido" }, { value: "whatsapp", label: "WhatsApp" },
-          { value: "agency", label: "Agencia" }, { value: "ota", label: "OTA" },
-        ] },
-        { name: "status", label: "Estado", type: "select", defaultValue: "active", options: [
-          { value: "active", label: "Activo" }, { value: "inactive", label: "Inactivo" }, { value: "blacklist", label: "Lista negra" },
-        ] },
-        { name: "address", label: "Dirección", span: 2 },
-        { name: "preferences", label: "Preferencias", type: "textarea", span: 2 },
-        { name: "notes", label: "Notas internas", type: "textarea", span: 2 },
+    <DomainHub
+      domain={domainBySlug("clientes")!}
+      role={ctx.role}
+      modules={ctx.company?.modules_enabled}
+      companyType={ctx.company?.company_type}
+      metrics={metrics}
+      kpis={[
+        { label: "Clientes registrados", value: String(c.customers), icon: "Users", tone: "primary" },
+        { label: "Gasto histórico", value: formatCompactMoney(s.spend, currency), icon: "TrendingUp", hint: "Suma del gasto por cliente" },
+        { label: "Casos abiertos", value: String(c.casesOpen), icon: "Headset", tone: c.casesUrgent > 0 ? "coral" : "default", hint: `${c.casesUrgent} urgentes` },
+        { label: "Pasivo en gift cards", value: formatCompactMoney(s.liability, currency), icon: "Gift", tone: "amber", hint: `${c.giftCards} tarjetas con saldo` },
       ]}
     />
   );

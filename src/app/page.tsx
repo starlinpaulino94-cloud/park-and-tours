@@ -31,7 +31,7 @@ const MODULES = [
   { icon: "Percent", title: "Comisiones", text: "Porcentaje, fija, escalonada o por volumen; vendedor, supervisor y agencia en la misma venta.", href: "/dashboard/comisiones" },
   { icon: "FileSpreadsheet", title: "Liquidaciones", text: "Agrupación por período y beneficiario con documento, estado y cuenta por pagar asociada.", href: "/dashboard/liquidaciones" },
   { icon: "Wallet", title: "Caja y arqueo", text: "Abrir caja, vender, registrar entradas y salidas, cerrar, arquear y explicar diferencias.", href: "/dashboard/caja" },
-  { icon: "Radar", title: "Despacho diario", text: "07:00 Saona · 86 pasajeros · 4 vehículos · 3 guías · 12 hoteles, con detección de conflictos.", href: "/dashboard/operaciones" },
+  { icon: "Radar", title: "Despacho diario", text: "07:00 Saona · 86 pasajeros · 4 vehículos · 3 guías · 12 hoteles, con detección de conflictos.", href: "/dashboard/operaciones/despacho" },
   { icon: "ScanLine", title: "Check-in y vouchers", text: "Escaneo, check-in parcial, no-show y vouchers de un solo uso imposibles de reutilizar.", href: "/dashboard/checkin" },
   { icon: "Bus", title: "Transporte y pickups", text: "Flota, conductores, rutas por zona y hotel, manifiestos y control de capacidad.", href: "/dashboard/transporte" },
   { icon: "TrendingUp", title: "Rentabilidad", text: "Ingreso − descuentos − comisiones − transporte − guía − proveedor = margen de contribución.", href: "/dashboard/rentabilidad" },
@@ -289,7 +289,7 @@ export default async function LandingPage() {
           <FooterCol title="Operación" links={[
             ["Panel ejecutivo", "/dashboard"],
             ["Reservas", "/dashboard/reservas"],
-            ["Despacho diario", "/dashboard/operaciones"],
+            ["Despacho diario", "/dashboard/operaciones/despacho"],
             ["Check-in", "/dashboard/checkin"],
           ]} />
           <FooterCol title="Comercial" links={[

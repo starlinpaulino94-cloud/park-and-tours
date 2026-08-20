@@ -75,13 +75,15 @@ function useReferenceOptions(fields: FieldDef[], open: boolean) {
 }
 
 export function ResourceForm({
-  open, onOpenChange, resource, fields, record, title, description, onSaved,
+  open, onOpenChange, resource, fields, record, title, description, onSaved, extraPayload,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   resource: string;
   fields: FieldDef[];
   record?: Record<string, any> | null;
+  /** Merged into every create so scoped screens stay inside their own scope. */
+  extraPayload?: Record<string, string>;
   title: string;
   description?: string;
   onSaved: () => void;
@@ -131,7 +133,7 @@ export function ResourceForm({
     setSaving(true);
     const res = record?._id
       ? await api.put(`/api/erp/${resource}/${record._id}`, payload)
-      : await api.post(`/api/erp/${resource}`, payload);
+      : await api.post(`/api/erp/${resource}`, { ...(extraPayload || {}), ...payload });
     setSaving(false);
 
     if (!res.ok) {

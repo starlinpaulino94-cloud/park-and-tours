@@ -26,7 +26,7 @@ export interface FilterDef {
  * Every module that is a straight master-data list reuses this.
  */
 export function ResourcePage<T extends { _id: string }>({
-  resource, eyebrow, title, description, columns, fields, filters,
+  resource, eyebrow, title, description, columns, fields, filters, fixedFilters,
   searchPlaceholder = "Buscar…", createLabel = "Nuevo registro",
   emptyTitle, emptyDescription, emptyIcon, canWrite = true,
   extraActions, renderSummary, onRowClick, pageSize = 50, initialSort, embedded = false,
@@ -38,6 +38,12 @@ export function ResourcePage<T extends { _id: string }>({
   columns: Column<T>[];
   fields: FieldDef[];
   filters?: FilterDef[];
+  /**
+   * Always-on equality filters. They scope the list (e.g. only spare parts) and
+   * are also merged into every record created from this screen, so a scoped
+   * module can never produce a record that falls outside its own view.
+   */
+  fixedFilters?: Record<string, string>;
   searchPlaceholder?: string;
   createLabel?: string;
   emptyTitle?: string;
@@ -66,12 +72,13 @@ export function ResourcePage<T extends { _id: string }>({
   const query = useMemo(() => {
     const params = new URLSearchParams();
     if (search) params.set("q", search);
+    for (const [k, v] of Object.entries(fixedFilters || {})) params.set(`filter.${k}`, v);
     for (const [k, v] of Object.entries(filterValues)) if (v) params.set(`filter.${k}`, v);
     params.set("limit", String(pageSize));
     params.set("offset", String(page * pageSize));
     if (initialSort) params.set("sort", initialSort);
     return params.toString();
-  }, [search, filterValues, page, pageSize, initialSort]);
+  }, [search, filterValues, fixedFilters, page, pageSize, initialSort]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -203,6 +210,7 @@ export function ResourcePage<T extends { _id: string }>({
         resource={resource}
         fields={fields}
         record={editing}
+        extraPayload={fixedFilters}
         title={editing ? `Editar ${title.toLowerCase()}` : createLabel}
         onSaved={load}
       />
