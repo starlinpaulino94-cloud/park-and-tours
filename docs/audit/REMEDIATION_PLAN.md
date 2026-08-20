@@ -1,81 +1,139 @@
-# Plan de Corrección — Park & Tours
+# REMEDIATION_PLAN.md — Park & Tours
 
-> **Fase 3** de la auditoría. Orden obligatorio: **integridad de datos → seguridad → multi-tenancy → permisos → reservas → pagos → disponibilidad → comisiones → finanzas**, por encima de cualquier problema visual. Dentro de cada fase: **P0 → P1 → P2 → P3**.
->
-> Cada corrección sigue el ciclo: identificar → reproducir → solucionar → implementar → probar → regression test → cerrar (registrado en [`FIX_LOG.md`](./FIX_LOG.md)).
+> Fecha: 2026-08-20 · Deriva de `PRODUCTION_READINESS.md`, `SECURITY_AUDIT.md`, `DATABASE_AUDIT.md`, `BUSINESS_LOGIC_AUDIT.md`, `SCALABILITY_AUDIT.md`, `TESTING_AUDIT.md`, `DEPENDENCY_AUDIT.md`, `AI_TECHNICAL_DEBT.md`.
+> El plan anterior (PR #1, ya ejecutado) se conserva en `REMEDIATION_PLAN_PR1_2026-08.md`.
 
-## Principio de seguridad de las correcciones
+## Causas raíz
 
-- **No refactor por refactor.** Cada cambio responde a un bug, riesgo, deuda importante, escalabilidad, seguridad o mantenibilidad concretos.
-- **Proteger lo que funciona.** El aislamiento multi-tenant de datos, el recálculo de cupos desde bookings, los snapshots inmutables de precio y el flujo de aprobaciones (four-eyes) están **bien** — no romperlos.
-- **Backups antes de cambios destructivos de BD.** Ninguna migración destructiva sin plan de rollback. Los cambios de schema de Totalum se hacen aditivos primero.
+Los 35 hallazgos **no son 35 problemas**. Son cinco causas y sus síntomas. Corregir síntomas uno a uno es exactamente lo que produjo la deuda que estamos auditando.
 
----
+### RC-1 — Se escribe la solución, no se conecta ni se verifica
+**Síntomas:** `SEC-001` (RLS definida, 0 invocaciones) · `DB-003` (RPC atómica nunca llamada) · `BIZ-002` (barredora sin cron) · logger que no corre en Workers · Sentry en `.env.example` sin código · reset de contraseña comentado.
+**Causa:** ninguna corrección de P0/P1 llevó un test que fallara sin ella. Escribir la solución y no cablearla es indistinguible de haberla resuelto.
+**Cura:** regla de proceso — *ningún P0/P1 se cierra sin un test que falle sin la corrección*. Sin ese test, el estado es `UNVERIFIED`.
 
-## Fase 0 — Bloqueadores y seguridad (P0)
+### RC-2 — El motor de datos no puede dar las garantías que el dominio necesita
+**Síntomas:** `BIZ-001` (sobreventa) · `BIZ-004` (idempotencia) · `BIZ-007` (totales) · `DB-006`/`DB-007` (paginación, N+1) · toda la sección de transacciones.
+**Causa:** Totalum no tiene transacciones, locks ni constraints. Cada mitigación en aplicación es check-then-act, y ya han llegado a su techo.
+**Cura:** completar la migración a Postgres (Opción A de `CURRENT_ARCHITECTURE.md`). Estos defectos desaparecen por construcción, no por más código.
 
-| ID | Acción | Riesgo del cambio |
-|---|---|---|
-| **AUD-001/S01** | `input:false` en `role/company_id/partner_id/status` (`auth.ts`); `databaseHooks.user.create/update.before` que valide `role` contra enum y nunca acepte `superadmin`; ignorar `company_id/partner_id` del cliente. | Bajo. La asignación legítima ya es server-side (`/api/setup`, `/api/team`). Verificar que signup y onboarding siguen funcionando. |
-| **AUD-B02/F10** | Sacar `status`/`checkin_status` de `writable` en `booking`, `commission`, `settlement`, `payment`, `voucher`, `access_ticket`, `departure` (`resources.ts`). Transiciones solo por endpoints dedicados. | Medio. Verificar que las páginas que hoy editan estado por CRUD tengan endpoint alternativo (cancel/checkin ya existen). |
-| **AUD-F21** | En `payments/route.ts`: aplicar signo por `payment_type` (refund = negativo), prorratear por documento, nunca exceder balance. | Medio. Requiere test del prorrateo. |
-| **AUD-F15** | Servicio único de "eventos financieros" que postee al ledger desde venta/pago/refund/comisión/gasto. (Grande — puede fasearse: primero conectar pagos y ventas.) | Alto. Es funcionalidad nueva; no debe alterar los flujos existentes, solo añadir asientos. |
-| **AUD-B01/F35** | Reserve-then-verify en `booking-service`: recalcular tras crear y compensar si `booked>capacity`; validar total agregado por departure antes del bucle de ítems. | Alto. Núcleo de ventas; test de concurrencia obligatorio. |
+### RC-3 — El sistema es invisible en producción
+**Síntomas:** gate I completo · `SEC-009` (auditoría silenciosa) · `BIZ-003` (contabilidad best-effort sin alerta) · sin health check · sin trazas.
+**Causa:** la observabilidad nunca fue un requisito de ninguna fase de generación.
+**Cura:** tratarla como funcionalidad P0, no como "mejora".
 
-## Fase 1 — Datos, multi-tenancy y permisos (P1)
+### RC-4 — No hay red de seguridad operativa
+**Síntomas:** sin backups probados · sin rollback · sin staging · sin RPO/RTO · sin cron · sin timeouts · sin circuit breaker.
+**Causa:** el despliegue se heredó de la plataforma generadora y nunca se diseñó como operación propia.
+**Cura:** pipeline propio con staging, rollback ensayado y restore probado.
 
-| ID | Acción |
-|---|---|
-| AUD-S02 | `getTenantContext`: `status!=="active"` → `null`. Revocar sesiones al desactivar en `/api/team`. |
-| AUD-S03 | Activar rate limit de better-auth y/o binding Cloudflare para `/api/auth/*`, `/api/checkin/*`. |
-| AUD-002/003/004 | Introducir `readRole` por recurso y `partnerFindOne`/filtro `partner` en detalle ERP y endpoints del portal; denegar por defecto al rol `partner`. |
-| AUD-D01 | Unicidad aplicativa atómica para email/voucher/booking_number; `crypto.getRandomValues` en `codes.ts` con retry ante colisión. |
-| AUD-D03 | Sincronizar `setup-database.mjs` con las 37 tablas faltantes de `resources.ts`. |
-| AUD-U06 | Esquemas zod por recurso compartidos cliente/servidor (`min(0)`, enums, fechas). |
-| AUD-U08 | Onboarding: `seed_demo` opt-in (default off); marcar/limpiar datos demo. |
-
-## Fase 2 — Reservas, pagos y disponibilidad (P1/P2)
-
-| ID | Acción |
-|---|---|
-| AUD-B03 | Guard de cancelación bloquea estados terminales. |
-| AUD-B04 | Check-in valida voucher `valid`+fecha, rechaza si ya `done`, relee tras escribir. |
-| AUD-B06 | `checkin/lookup`: `requireAtLeast(operations)`, escapar regex, filtrar partner. |
-| AUD-F19/F20 | Idempotencia y topes en pagos. |
-| AUD-B07/B08 | Rechazar salidas pasadas/cutoff; validar pax (enteros≥0), topes de descuento. |
-| AUD-U04 | Cablear cambio de estado de activo a `/api/assets/[id]/status`. |
-
-## Fase 3 — Comisiones, ledger y settlements (P1)
-
-AUD-F08 (comisión condicionada a cobro), AUD-F09 (reversión tras liquidar), AUD-F11 (settlement atómico y trazable), AUD-F12 (pago de liquidación salda payable), AUD-F16 (asiento atómico, balance derivado).
-
-## Fase 4 — Partners y operaciones (P2)
-
-AUD-005/006/007 (Stripe portal auth, portal partner_id, check-in participants), AUD-B10 (soft-delete/cascada), AUD-F22 (webhook Stripe).
-
-## Fase 5 — Frontend y UX (P2/P3)
-
-AUD-U01/U02/U03 (conectar motores a UI), AUD-U09 (no silenciar errores en prod), AUD-U10/U11 (guardas de liquidación/pago), AUD-U12/U13/U14 (deep-link, error states, moneda en KPIs), resto de UX.
-
-## Fase 6 — Performance (P2/P3)
-
-AUD-D09 (cursores en vez de límites fijos; recálculo de cupos agregado), AUD-F17/F32 (paginación de trial-balance y KPIs server-side), AUD-S08.
-
-## Fase 7 — Testing y observabilidad (P1 estructural)
-
-- Tests de los flujos críticos: venta completa (seller→booking→payment→ticket→checkin), partner (venta→comisión→settlement), refund (cancel→refund→reversión→ajuste).
-- Error monitoring real (Sentry/equivalente), logs sin PII, tracing.
-- Actualizar dependencias vulnerables (`better-auth`, `@opennextjs/cloudflare` y las 59 de `npm audit`), eliminar dependencias muertas.
+### RC-5 — La documentación afirma más de lo que el código hace
+**Síntomas:** `AID-003` — cuatro afirmaciones de garantía verificadas como falsas.
+**Causa:** cada documento describe la intención del incremento, no su verificación.
+**Cura:** ninguna afirmación de garantía sin comando reproducible al lado.
 
 ---
 
-## Estrategia de implementación en esta sesión
+## Orden de ejecución
 
-Comienzo por **Fase 0 (P0)** en el orden que minimiza riesgo de regresión y maximiza impacto de seguridad:
+Regla: **nada de estética ni de UX mientras haya un P0 abierto.** Cada fase termina con verificación y **revisión independiente** (agente/modelo distinto del que implementó — Fase 43).
 
-1. **AUD-001** (cerrar la escalada a superadmin) — cambio pequeño, impacto máximo.
-2. **AUD-B02/F10** (sacar `status` del CRUD genérico) — cierra múltiples P0/P1 de una vez (causa raíz #5).
-3. **AUD-F21** (receivables con signo y prorrateo) — corrección financiera acotada.
-4. **AUD-S02** (usuarios desactivados) y **AUD-B03/B06** (guards de cancelación y lookup) — cambios acotados de alto valor.
+---
 
-Los cambios grandes que introducen funcionalidad nueva (conectar el ledger a la operación — AUD-F15, reserve-then-verify con compensación — AUD-B01, servicio de settlements atómico — AUD-F11) se documentan con su diseño y se implementan con cuidado y pruebas, sin romper los flujos que hoy funcionan.
+### FASE 0 — Bloqueadores de seguridad y pérdida de datos
+
+| ID | Acción | Riesgo del cambio | Verificación |
+|---|---|---|---|
+| **SEC-001 / DB-001** | Nueva migración que invoque `app.enable_tenant_rls('<tabla>')` en las **77 tablas** con `organization_id` (`partner_scoped => true` donde exista `partner_id`) | **Bajo antes de tener datos.** Medio después: las rutas con cliente RLS empezarán a filtrar de verdad y hay que probarlas | Consulta de cobertura + test cross-tenant con JWT del tenant A contra filas del tenant B |
+| **SEC-001b** | **Gate en CI**: falla si alguna tabla con `organization_id` tiene `relrowsecurity = false` | Nulo | El propio gate |
+| **SEC-002 / DB-002** | `revoke execute` de `reserve_departure_capacity` y `release_departure_capacity` a `anon`/`authenticated`; exigir `current_org_id() is not null` (fallar cerrado); añadir comprobación de tenant a `release_*` | Bajo | Llamada con anon key → `permission denied` |
+| **SEC-003** | Actualizar `better-auth` a versión parcheada; re-verificar `AUD-S02` | Medio — cambio de versión mayor en auth | Test: usuario desactivado no puede operar; login funciona |
+| **DEP-1** | Actualizar `next` y `@opennextjs/cloudflare`; **añadir `npm audit --audit-level=high` bloqueante a CI** | Medio | CI verde con el nuevo gate |
+| **SEC-004** | `frame-ancestors 'self' https://*.totalum-project.com`; restaurar `X-Frame-Options` fuera del editor visual; añadir `default-src`/`script-src` | Bajo — verificar que el editor visual sigue funcionando | `curl -I` en producción |
+| **SEC-005** | Allowlist explícita de orígenes CORS; eliminar el comodín de desarrollo | Bajo | Petición cross-origin desde origen no permitido → sin cabeceras CORS |
+| **SEC-009** | `writeAudit` de severidad `critical`/`warning` debe abortar la operación si no puede escribir | Medio — cambia el comportamiento ante fallo | Test con escritura de auditoría inyectada como fallo |
+| **BIZ-002** | Cron real para `reconcileStaleDrafts` (`triggers.crons` en `wrangler.jsonc` + handler `scheduled`, iterando tenants) | Bajo | Ejecución observable + registro de auditoría |
+| **DR-1** | **Probar un restore completo** en un entorno aparte. Documentar frecuencia, retención, RPO y RTO | Nulo (no toca producción) | Restore verificado con datos comprobados |
+
+**Salida de fase:** revisión independiente + los tests 1, 2 y 5 de `TESTING_AUDIT.md` en verde.
+
+---
+
+### FASE 1 — Arquitectura, base de datos y autenticación
+
+| ID | Acción |
+|---|---|
+| **DECISIÓN** | Ratificar Opción A (completar migración) o B (consolidar en Totalum). Escribir el ADR. **Todo lo que sigue depende de esta decisión** |
+| **DB-008/009** | Adoptar Supabase CLI: migraciones versionadas, con `down`, aplicadas por CI contra Postgres efímero |
+| **DB-004** | Revisar tabla a tabla las 39 cascadas; ninguna puede alcanzar `payment`, `ledger_entry`, `commission`, `receivable` ni `audit_log` |
+| **DB-013** | `audit_log` insert-only: revocar `update`/`delete` incluso al rol de aplicación |
+| **SEC-006** | Activar reset de contraseña y verificación de email + páginas `/forgot-password`, `/reset-password`, `/verify-email` |
+| **SEC-007** | Rate limiting distribuido (Cloudflare Rate Limiting o Upstash) en `/api/auth/*`, `/api/checkin/*`, `/api/setup`, `/api/storage/upload` |
+| **SEC-010** | Fallar al arrancar si falta `TOTALUM_API_KEY` (patrón de `supabase/service.ts`) |
+| **AID-003** | **Corregir la documentación falsa.** `MIGRATION_PLAN.md`, `ARCHITECTURE.md`, `PRODUCTION_READINESS_REPORT.md` |
+| **AID-007** | Limpiar herencia de plantilla: `package.json`, `README.md`, `Cache-Control` |
+
+---
+
+### FASE 2 — Lógica de negocio crítica
+
+| ID | Acción |
+|---|---|
+| **DB-003 / BIZ-001** | Cablear `spReserveCapacity` a `booking-service`; reserva de cupo e inserción del booking en **la misma transacción**. Eliminar el patrón de auto-cancelación |
+| **DB-005** | Agregar la ocupación en base de datos (`sum(pax_total) group by status`), no en JavaScript |
+| **BIZ-004** | Índice único `(organization_id, reference)` sobre `payment`; capturar la violación como "ya procesado". Mismo patrón en `uniqueCode()` y `stripe_event.event_id` |
+| **BIZ-003** | Asiento contable **dentro** de la transacción del pago. Reconciliación periódica `sum(payment)` vs `sum(ledger_entry)` con alerta |
+| **BIZ-006/007** | Residuo de redondeo a la última línea; `syncOrderTotals` con lock de fila |
+| **BIZ-008/009** | Eliminar los límites fijos de la compensación (`_limit: 50/20`) |
+| **VAL-1** | Esquema `zod` en el cuerpo de **cada** ruta API. Entrada inválida → 400 explícito, nunca `null` silencioso |
+| **IDEM-1** | `Idempotency-Key` en `POST /api/orders` |
+| **SEC-012** | Decidir si `moduleEnabled` debe fallar cerrado y aplicar los límites de plan (`max_users`, `max_bookings_month`) |
+
+---
+
+### FASE 3 — Concurrencia y fiabilidad
+
+| ID | Acción |
+|---|---|
+| **BIZ-005** | `AbortSignal.timeout()` en toda llamada externa; retry con backoff **sólo en lecturas idempotentes**; circuit breaker sobre el proveedor de datos |
+| **CONC-1** | Suite de concurrencia: cupo, pagos, totales de orden, liquidaciones (2 / 10 / 100 clientes) |
+| **REL-1** | Colas para liquidaciones, informes, importaciones y emails; degradación controlada (backpressure) |
+| **REL-2** | Health check (`/api/health`) que compruebe aplicación, base de datos, storage e integraciones críticas |
+
+---
+
+### FASE 4 — Testing
+
+Ejecutar la lista bloqueante de `TESTING_AUDIT.md`, en ese orden: aislamiento cross-tenant → cobertura de RLS → concurrencia de cupo → idempotencia de pago → aislamiento de partner → matriz de autorización → saga → cuadre contable. Después: datos inesperados, fallo de dependencias, contract tests de Stripe y E2E de los flujos P0.
+
+**CI añade:** migraciones contra Postgres efímero, tests de integración, E2E, CodeQL/Semgrep, y **gate de despliegue** (CI roja no publica).
+
+---
+
+### FASE 5 — Rendimiento
+
+Definir capacidad objetivo y SLO con negocio → colapsar el N+1 (una transacción por venta, inserciones por lote) → arreglar el cacheo de estáticos → pooling medido bajo carga → `EXPLAIN ANALYZE` sobre las consultas críticas y ajustar los 159 índices con evidencia → **entonces** ejecutar k6 (load / stress / spike / soak) y publicar `LOAD_TEST_REPORT.md`.
+
+> Sólo tras esta fase puede evaluarse el Level 5. Antes, no.
+
+---
+
+### FASE 6 — Observabilidad
+
+Sentry (servidor y cliente) → logs estructurados con `request_id`, `user_id`, `organization_id`, operación, duración y resultado, **sin PII** → métricas de negocio (ventas, sobreventas evitadas, fallos de pago, asientos fallidos) → alertas sobre SLO → runbook de incidentes.
+
+---
+
+### FASE 7 — UX y limpieza
+
+Estados de error y reintento consistentes, `zod` en formularios alineado con el servidor, revisión de doble submit, retirada de código muerto (documentado antes de borrar), `GLOSSARY.md` con el modelo canónico y unificación de vocabulario (`AID-004`).
+
+---
+
+## Qué NO hacer
+
+- **No reescribir desde cero.** La lógica de dominio es el activo del proyecto.
+- **No hacer cutover antes de la Fase 0.** `SEC-001` convertiría un aislamiento débil pero consistente en ninguno.
+- **No sobrearquitectar.** Monolito modular + Postgres. Sin microservicios, Kafka, Kubernetes, event sourcing ni CQRS. Redis sólo si el rate limiting distribuido lo exige.
+- **No tocar estética mientras haya un P0.**
+- **No cerrar un hallazgo sin un test que falle sin la corrección.** Es la causa raíz RC-1 y es la razón por la que existe este segundo ciclo de auditoría.
