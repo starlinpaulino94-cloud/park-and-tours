@@ -27,14 +27,15 @@ Como casi todo pasa por `src/lib/tenant.ts` (+ 84 callsites con la misma superfi
 
 **Gate M1:** migraciones aplican limpio en dev; RLS activa; `supabase db reset` reproducible.
 
-## FASE M2 — Data-access layer sobre Supabase (Replicate)
-1. `src/lib/supabase/{server,client}.ts` con `@supabase/ssr` (service_role solo server-only).
-2. Reescribir `src/lib/tenant.ts` **conservando firmas** (`tenantQuery/Create/Update/Delete/FindOne/Count/Aggregate`): traductor de `_filter` Mongo→PostgREST/SQL (`eq/ne/lte/gte/in/nin/regex→ilike/_or`), expansión de relaciones → `select=...(*)`, `_aggregate:{_count}` → `count`.
-3. Reescribir `src/lib/totalum.ts` → cliente Supabase (o eliminarlo).
-4. Migrar los **84 callsites directos** a los wrappers o al cliente Supabase (con RLS ya no hay riesgo de omitir el scope).
-5. **Transacciones reales** en `booking-service.ts` (orden→bookings→vouchers→commissions→receivable en un `BEGIN/COMMIT` o RPC `SECURITY DEFINER`) — cierra el overbooking y elimina la compensación manual.
+## FASE M2 — Data-access layer sobre Supabase (Replicate) — EN PROGRESO
+1. ✅ `src/lib/supabase/server.ts` (cliente con RLS vía `@supabase/ssr`) + `service.ts` (service_role, server-only, bypass RLS).
+2. ✅ **Traductor de queries** `src/lib/supabase/query-translator.ts`: `_filter` Mongo→PostgREST (`eq/ne/gt/gte/lt/lte/in/nin/regex→ilike/_or`) + alias de campos (`_id→id`, `company→organization_id`, `partner→partner_id`…) + sort/paginación. **8 tests unit** con builder falso.
+3. ✅ **Proveedor de datos** `src/lib/supabase/data-provider.ts` con las mismas firmas que `tenant.ts` (`spQuery/spCount/spFindOne/spCreate/spUpdate/spDelete`) — listo para conmutar por flag `DATA_BACKEND`.
+4. ✅ **Reserva de cupo atómica** (`supabase/migrations/0008_capacity_txn.sql`, RPC `public.reserve_departure_capacity`): row-lock `FOR UPDATE` → **overbooking imposible** (validado con dos transacciones concurrentes: una gana, la otra recibe `false`). Cierra AUD-B01 de raíz.
+5. ⏳ Conmutar `tenant.ts` al proveedor Supabase tras `vi.mock`/entorno Supabase dev (requiere proyecto Supabase con las migraciones aplicadas + hook de claims).
+6. ⏳ Migrar los 84 callsites directos y envolver `createOrderWithBookings` en la transacción (usar la RPC de cupo + insert de hijos en una función/transacción).
 
-**Gate M2:** typecheck/build; tests de integración de flujos críticos pasan contra Supabase dev.
+**Gate M2:** typecheck ✅, build ✅, 38 tests ✅. Falta el switch en vivo contra Supabase dev (paso de ops del usuario) y la migración de callsites.
 
 ## FASE M3 — Auth (Supabase Auth)
 1. Sustituir better-auth + adapter por **Supabase Auth** (`@supabase/ssr`): signup/login/logout/session/refresh nativos.
