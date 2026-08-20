@@ -22,8 +22,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const booking = await tenantFindOne<Booking>(ctx.companyId, "booking", id, { participant: { _limit: 100 } });
 
-    if (booking.status === "cancelled" || booking.status === "refunded") {
-      throw Object.assign(new Error("No se puede hacer check-in de una reserva cancelada"), { status: 409 });
+    if (["cancelled", "refunded", "partially_refunded"].includes(booking.status || "")) {
+      throw Object.assign(new Error("No se puede hacer check-in de una reserva cancelada o reembolsada"), { status: 409 });
+    }
+
+    // AUD-B04: block re-use of an already completed check-in. The UI disables
+    // the button, but the API previously accepted a repeat check-in, letting a
+    // ticket be presented twice. no_show is still allowed to correct a mistake.
+    if (booking.checkin_status === "done" && !body.no_show) {
+      throw Object.assign(new Error("Esta reserva ya tiene el check-in completado"), { status: 409 });
     }
 
     const balance = booking.balance_amount ?? 0;
@@ -32,6 +39,35 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         new Error(`La reserva tiene un saldo pendiente de ${balance}. Cobra el saldo o fuerza el check-in.`),
         { status: 402 }
       );
+    }
+
+    // AUD-B04: validate the ticket itself, not just the booking. A cancelled or
+    // expired voucher must never pass check-in (the docstring promised this but
+    // the code only looked at booking state). Checked only for real check-in,
+    // not for no-show correction.
+    if (!body.no_show) {
+      const bookingVouchers = await tenantQuery<{ _id: string; status?: string }>(ctx.companyId, "voucher", {
+        _filter: { booking: id }, _limit: 5,
+      });
+      if (bookingVouchers.length > 0 && bookingVouchers.every((v) => ["cancelled", "expired"].includes(v.status || ""))) {
+        throw Object.assign(new Error("El voucher de esta reserva está cancelado o expirado"), { status: 409 });
+      }
+
+      // Do not allow checking in a booking whose travel date is still in the
+      // future (guards against presenting a ticket for the wrong day). Late
+      // check-in stays allowed; a future date can still be forced.
+      if (booking.travel_date && !body.force) {
+        const travel = new Date(booking.travel_date);
+        if (!Number.isNaN(travel.getTime())) {
+          const oneDayMs = 86_400_000;
+          if (travel.getTime() - Date.now() > oneDayMs) {
+            throw Object.assign(
+              new Error("La reserva es para una fecha futura; no se puede hacer check-in todavía (usa forzar si procede)."),
+              { status: 409 }
+            );
+          }
+        }
+      }
     }
 
     if (body.no_show) {
@@ -62,7 +98,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     });
 
     // Mark the individual participants when provided.
+    // AUD-007: only participants that actually belong to THIS booking may be
+    // touched. Previously any participant id from the request body was written,
+    // allowing a cross-booking (and cross-tenant) write.
+    const ownParticipantIds = new Set(
+      (Array.isArray(booking.participant) ? booking.participant : [])
+        .map((p) => (typeof p === "string" ? p : (p as { _id?: string })?._id))
+        .filter((x): x is string => Boolean(x))
+    );
     for (const pid of body.participant_ids || []) {
+      if (!ownParticipantIds.has(pid)) {
+        console.warn(`[checkin] ignorado participante ${pid} ajeno a la reserva ${id}`);
+        continue;
+      }
       await totalumSdk.crud.editRecordById("participant", pid, { checkin_status: "done" });
     }
 

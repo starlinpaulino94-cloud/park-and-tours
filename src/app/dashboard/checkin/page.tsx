@@ -60,6 +60,18 @@ export default function CheckinPage() {
 
   useEffect(() => { loadToday(); }, [loadToday]);
 
+  // AUD-U12: honour the ?code= deep-link used by the "Check-in" button on the
+  // bookings page. Previously this param was ignored and the desk had to
+  // re-type the voucher on an empty screen.
+  useEffect(() => {
+    const initial = new URLSearchParams(window.location.search).get("code");
+    if (initial) {
+      setCode(initial);
+      void search(initial);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const search = async (value?: string) => {
     const term = (value ?? code).trim();
     if (!term) { toast.error("Introduce un código de voucher, número de reserva o habitación"); return; }

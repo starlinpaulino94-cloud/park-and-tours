@@ -151,7 +151,11 @@ export const RESOURCES: Record<string, ResourceDef> = {
       pickup_route: { _limit: 50, vehicle: true, driver: true, guide: true, zone: true },
     },
     sort: { departure_at: "asc" },
-    writable: ["product", "branch", "departure_at", "departure_time", "capacity", "cutoff_hours", "status", "meeting_point", "notes"],
+    // SECURITY (AUD-B02/B16): `status` removed — it is derived by
+    // `recalculateDeparture` from live bookings (available/full/closed).
+    // Editing it through CRUD lets a user reopen a `full` departure and
+    // oversell. Closing/cancelling a departure needs a dedicated action.
+    writable: ["product", "branch", "departure_at", "departure_time", "capacity", "cutoff_hours", "meeting_point", "notes"],
     numeric: ["capacity", "cutoff_hours"],
     dates: ["departure_at"],
     writeRole: "operations",
@@ -215,7 +219,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
       payment: { _limit: 100, _sort: { createdAt: "desc" }, user: true },
     },
     sort: { createdAt: "desc" },
-    writable: ["status", "notes", "channel", "seller", "partner", "branch", "promotion"],
+    // AUD-B02: `status` removed — an order's status is derived from its bookings
+    // and payments by `syncOrderTotals`. Editing it by hand let a seller mark an
+    // order `paid`/`cancelled` without moving money or releasing seats.
+    writable: ["notes", "channel", "seller", "partner", "branch", "promotion"],
     writeRole: "seller",
   },
   booking: {
@@ -232,7 +239,13 @@ export const RESOURCES: Record<string, ResourceDef> = {
       pickup: { _limit: 10, hotel: true, route: true },
     },
     sort: { createdAt: "desc" },
-    writable: ["status", "notes", "internal_notes", "pickup_hotel", "pickup_time", "pickup_location", "room_number", "checkin_status"],
+    // SECURITY (AUD-B02/F10): `status` and `checkin_status` are lifecycle
+    // fields. They must NOT be editable through the generic CRUD — that lets a
+    // seller resurrect a cancelled booking, skip payment, or set an impossible
+    // state without releasing seats, voiding vouchers or reversing commissions.
+    // Transitions happen only through dedicated endpoints
+    // (`/api/orders`, `/api/bookings/[id]/cancel`, `/api/bookings/[id]/checkin`).
+    writable: ["notes", "internal_notes", "pickup_hotel", "pickup_time", "pickup_location", "room_number"],
     writeRole: "seller",
   },
   participant: {
@@ -249,7 +262,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["code"],
     expand: { booking: { customer: true, product: true, departure: true } },
     sort: { createdAt: "desc" },
-    writable: ["status", "notes", "expires_at"],
+    // SECURITY (AUD-B02/B14): `status` removed — reverting a `used` voucher to
+    // `valid` re-arms an already-redeemed ticket. Voucher state is driven by
+    // the booking lifecycle (cancel voids it, check-in burns it).
+    writable: ["notes", "expires_at"],
     dates: ["expires_at"],
     writeRole: "operations",
   },
@@ -268,7 +284,11 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["beneficiary_name"],
     expand: { booking: { product: true }, seller: true, partner: true, rule: true },
     sort: { createdAt: "desc" },
-    writable: ["status", "notes"],
+    // SECURITY (AUD-B02/F10): `status` removed — editing it through CRUD lets a
+    // manager reactivate a `settled` commission so a second settlement pays it
+    // again. Commission state changes only through `/api/commissions/bulk` and
+    // `/api/settlements/generate`.
+    writable: ["notes"],
     writeRole: "manager",
   },
   settlement: {
@@ -277,8 +297,12 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { partner: true, seller: true },
     expandOne: { partner: true, seller: true, approved_by: true, payable: { _limit: 50 } },
     sort: { createdAt: "desc" },
-    writable: ["status", "notes", "paid_total", "pending_total"],
-    numeric: ["paid_total", "pending_total"],
+    // SECURITY (AUD-B02/F10/F12): `status`/`paid_total`/`pending_total` removed —
+    // paying a settlement must go through `/api/settlements/[id]/pay`, which also
+    // settles the payable, closes the commissions and posts to the ledger.
+    // Editing these via CRUD previously left the debt open (paid twice) and let
+    // a `paid_total` be set with no money behind it.
+    writable: ["notes"],
     writeRole: "manager",
   },
   cash_register: {
@@ -303,7 +327,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["reference"],
     expand: { order: true, booking: true, customer: true, partner: true, user: true },
     sort: { createdAt: "desc" },
-    writable: ["status", "notes"],
+    // SECURITY (AUD-B02/F10): `status` removed — a payment's state must not be
+    // flippable through CRUD (e.g. marking a refund `completed` or voiding a
+    // real payment) as it would desync order/receivable/cash balances.
+    writable: ["notes"],
     writeRole: "cashier",
   },
   receivable: {
@@ -311,8 +338,11 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["document_number"],
     expand: { partner: true, customer: true, order: true },
     sort: { due_date: "asc" },
-    writable: ["status", "notes", "due_date", "paid_amount", "balance", "aging_bucket"],
-    numeric: ["paid_amount", "balance"],
+    // AUD-F16/F21: `paid_amount`/`balance` removed — they are derived from the
+    // payments applied to the order and must not be edited by hand (that
+    // divorced the cached balance from the actual payments). `status` stays for
+    // manual write-off until a dedicated endpoint exists.
+    writable: ["status", "notes", "due_date", "aging_bucket"],
     dates: ["due_date"],
     writeRole: "manager",
   },
@@ -687,8 +717,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["code", "name"],
     expand: { parent: true },
     sort: { code: "asc" },
-    writable: ["code", "name", "account_type", "subledger", "normal_side", "is_postable", "currency", "balance", "status", "parent"],
-    numeric: ["balance"],
+    // AUD-F16: `balance` removed from writable — it is a cache derived from the
+    // ledger entries (see trialBalance). Editing it by hand divorces the cached
+    // balance from the entries with no audit trail. Chart metadata stays editable.
+    writable: ["code", "name", "account_type", "subledger", "normal_side", "is_postable", "currency", "status", "parent"],
     writeRole: "admin",
   },
   ledger_entry: {
@@ -811,6 +843,145 @@ export function getResource(name: string): ResourceDef | null {
   return RESOURCES[name] ?? null;
 }
 
+/**
+ * B2B partner isolation (AUD-002/003/004).
+ *
+ * The generic ERP layer previously only filtered 7 tables by `partner`, and
+ * only on the list endpoint, so a `partner`-role user could read the whole
+ * company's data (and other partners') via `/api/erp/*`. These sets make the
+ * policy explicit and deny-by-default for the partner role.
+ */
+// Tables a partner owns rows in — always filtered to their own partner id.
+// Tables with a real `partner` column, filtered to the caller's own partner id.
+// NOTE: `customer` is intentionally NOT here — the customer table has no
+// `partner` column, so filtering by it would apply a filter to a non-existent
+// field (fail-open risk if the backend ignores unknown filter keys). A partner
+// sees customer data only through their own bookings/orders (which expand the
+// customer), never by listing the whole customer table.
+const PARTNER_OWNED_TABLES = new Set([
+  "order", "booking", "commission", "settlement", "receivable", "lead",
+]);
+// Read-only shared catalog a partner may browse (no partner dimension).
+// NOTE: `product` is intentionally NOT here — the product table carries
+// internal `base_cost`, and the generic ERP layer cannot strip it. Partners
+// browse the catalog through `/api/portal/catalog`, which returns only the B2B
+// price for their authorized products and never the cost.
+const PARTNER_SHARED_TABLES = new Set([
+  "departure", "product_modality", "product_category",
+  "cancellation_policy", "hotel", "zone",
+]);
+
+export type PartnerScope =
+  | { kind: "denied" }
+  | { kind: "shared" }
+  | { kind: "own"; field: string; partnerId: string };
+
+/** Decides how a partner-role user may access a given table. */
+export function partnerScopeFor(table: string, partnerId: string | null): PartnerScope {
+  if (!partnerId) return { kind: "denied" };
+  if (table === "partner") return { kind: "own", field: "_id", partnerId };
+  if (PARTNER_OWNED_TABLES.has(table)) return { kind: "own", field: "partner", partnerId };
+  if (PARTNER_SHARED_TABLES.has(table)) return { kind: "shared" };
+  return { kind: "denied" };
+}
+
+/**
+ * Server-side field validation for the generic ERP layer (AUD-U06).
+ *
+ * Every numeric field written through `/api/erp/*` is validated here, so the
+ * whole catalog of 77 resources gets real server-side checks instead of relying
+ * on the browser. Previously `sanitizePayload` only coerced types, letting a
+ * negative price, a 150% discount or a non-integer pax count reach the database.
+ */
+
+// Numeric fields that may legitimately be negative (coordinates, running
+// balances, time offsets, ordering). Everything else must be >= 0.
+const ALLOW_NEGATIVE = new Set([
+  "latitude", "longitude", "balance", "balance_after", "pickup_offset_min", "sort_order",
+  // A margin can be negative (sold below cost) or exceed 100% (markup), so it
+  // is left unconstrained rather than clamped.
+  "margin_percent",
+  // Stock levels can legitimately go negative in warehouses that allow it
+  // (`warehouse.allows_negative`); these are derived on-hand balances.
+  "quantity", "reserved", "available",
+]);
+// Fields expressed as a discount percentage — must stay within 0..100.
+// Only true "percent-of" discount fields; `_rate`/`margin`/absolute `discount`
+// are intentionally excluded.
+const PERCENT_SUFFIXES: string[] = [];
+const PERCENT_EXTRA = new Set(["discount_percent", "discount_pct", "max_discount_pct"]);
+// Count-like fields that must be whole numbers.
+// NOTE: inventory quantities (`quantity`, `quantity_received`, `reserved`,
+// `available`) are intentionally NOT here — items sold by weight/volume (kg, l)
+// move in fractional amounts, so forcing integers would reject valid stock
+// movements.
+const INTEGER_FIELDS = new Set([
+  "pax", "pax_total", "pax_assigned", "adults", "children", "infants",
+  "seats", "seats_used", "seats_released",
+  "capacity", "default_capacity", "capacity_hour",
+  "capacity_simultaneous", "max_pax", "min_pax", "guests", "guests_today",
+  "entries_allowed", "entries_used", "visits_included", "visits_used",
+  "guest_passes", "guest_passes_used", "stops_count", "line_no", "max_uses", "used_count",
+]);
+
+function isPercent(key: string): boolean {
+  return PERCENT_EXTRA.has(key) || PERCENT_SUFFIXES.some((s) => key.endsWith(s));
+}
+
+function badRequest(message: string): Error {
+  return Object.assign(new Error(message), { status: 400 });
+}
+
+/**
+ * Read authorization by resource (AUD-004 follow-up).
+ *
+ * The generic ERP GET had no role gate, so any authenticated tenant user
+ * (seller/cashier/operations) could read sensitive financial tables. These
+ * minimum roles apply to NON-partner roles only — a `partner` is governed
+ * separately by `partnerScopeFor` (deny-by-default + own-partner scope), and its
+ * low rank would otherwise wrongly block its legitimate own-data reads.
+ */
+const READ_ROLE: Partial<Record<string, AppRole>> = {
+  // Cash desk data — cashiers legitimately handle it.
+  payment: "cashier", cash_session: "cashier", cash_movement: "cashier",
+  // Commercial/accounting figures, costs and margins — managers and up.
+  commission: "manager", settlement: "manager", receivable: "manager", payable: "manager",
+  commission_rule: "manager", product_cost: "manager", price_rule: "manager",
+  ledger_account: "manager", ledger_entry: "manager", invoice: "manager",
+  expense: "manager", tax_profile: "manager", purchase_order: "manager", purchase_order_line: "manager",
+};
+
+/** Minimum role required to READ a resource (for non-partner roles). */
+export function readRoleFor(table: string): AppRole | null {
+  return READ_ROLE[table] ?? null;
+}
+
+// Enum-like fields that are always safe to filter on, regardless of a
+// resource's writable list (e.g. `status` stays filterable even where it was
+// removed from `writable` to protect the state machine).
+const GLOBAL_FILTERABLE = new Set([
+  "_id", "status", "severity", "payment_type", "beneficiary_type", "method",
+  "channel", "aging_bucket", "read_status", "operational_status", "checkin_status",
+  "result", "priority", "category", "case_type", "movement_type",
+]);
+
+/**
+ * Allowlist of fields a client may filter on for a resource (AUD-S06 follow-up).
+ * Prevents querying arbitrary internal columns through `?filter.<field>=`.
+ * Unknown fields are ignored rather than rejected, so the UI never breaks.
+ */
+export function allowedFilterFields(def: ResourceDef): Set<string> {
+  return new Set([
+    ...GLOBAL_FILTERABLE,
+    ...def.search,
+    ...def.writable,
+    ...(def.numeric || []),
+    ...(def.dates || []),
+    ...Object.keys(def.expand || {}),
+    ...Object.keys(def.expandOne || {}),
+  ]);
+}
+
 /** Filters and coerces an incoming payload down to the resource's writable fields. */
 export function sanitizePayload(def: ResourceDef, body: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -820,7 +991,19 @@ export function sanitizePayload(def: ResourceDef, body: Record<string, unknown>)
     if (value === "" || value === undefined) value = null;
     if (value !== null && def.numeric?.includes(key)) {
       const n = Number(value);
-      value = Number.isFinite(n) ? n : null;
+      if (!Number.isFinite(n)) {
+        throw badRequest(`El campo "${key}" debe ser un número válido`);
+      }
+      if (n < 0 && !ALLOW_NEGATIVE.has(key)) {
+        throw badRequest(`El campo "${key}" no puede ser negativo`);
+      }
+      if (isPercent(key) && n > 100) {
+        throw badRequest(`El campo "${key}" no puede superar el 100%`);
+      }
+      if (INTEGER_FIELDS.has(key) && !Number.isInteger(n)) {
+        throw badRequest(`El campo "${key}" debe ser un número entero`);
+      }
+      value = n;
     }
     if (value !== null && def.dates?.includes(key)) {
       const d = new Date(value as string);

@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { totalumSdk } from "@/lib/totalum";
 import { recalculateDeparture } from "@/lib/availability";
 import { syncOrderTotals } from "@/lib/booking-service";
+import { postPayment } from "@/lib/ledger-events";
 import { writeAudit } from "@/lib/audit";
 import { parseJson } from "@/lib/format";
 import type { Booking, CancellationPolicy, CancellationTier, Product } from "@/lib/types";
@@ -23,8 +24,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const body = await readJson<{ reason?: string; refund_override?: number }>(req);
     const booking = await tenantFindOne<Booking>(ctx.companyId, "booking", id, { product: true, departure: true });
 
-    if (booking.status === "cancelled") {
-      throw Object.assign(new Error("La reserva ya está cancelada"), { status: 409 });
+    // AUD-B03: block all terminal states, not just "cancelled". A first refund
+    // leaves the booking in "refunded"/"partially_refunded", which previously
+    // passed this guard and allowed a second cancellation to issue a DUPLICATE
+    // refund payment. A double-click on the cancel dialog hit the same bug.
+    const TERMINAL = ["cancelled", "refunded", "partially_refunded"];
+    if (booking.status && TERMINAL.includes(booking.status)) {
+      throw Object.assign(
+        new Error("La reserva ya fue cancelada o reembolsada"),
+        { status: 409 }
+      );
     }
 
     // ---- refund according to the applicable policy ------------------------
@@ -94,11 +103,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (departureId) await recalculateDeparture(ctx.companyId, departureId);
 
     const orderId = refId(booking.order);
-    if (orderId) await syncOrderTotals(ctx.companyId, orderId);
 
     // ---- refund payment record --------------------------------------------
+    // AUD (over-refund): the refund payment must be created BEFORE syncOrderTotals
+    // so the order's paid_total reflects it. Otherwise the order kept a stale
+    // paid_total and a second refund could pass the payments API's cap.
     if (refund > 0) {
-      await totalumSdk.crud.createRecord("payment", {
+      const refundPayment = await totalumSdk.crud.createRecord("payment", {
         company: ctx.companyId,
         order: orderId,
         booking: id,
@@ -113,7 +124,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         paid_at: new Date().toISOString(),
         notes: `Reembolso por cancelación (${policyName}, ${refundPct}%)`,
       });
+      // Double-entry ledger (AUD-F15), best-effort.
+      const refundPaymentId = (refundPayment.data as { _id?: string } | undefined)?._id;
+      if (refundPaymentId) {
+        await postPayment(ctx.companyId, {
+          paymentId: refundPaymentId,
+          orderId,
+          amount: refund,
+          method: "cash",
+          currency: booking.currency || "usd",
+          isRefund: true,
+          userId: ctx.userId,
+        });
+      }
     }
+
+    // Now recompute the order totals — after the refund exists, so paid_total
+    // and balance account for it.
+    if (orderId) await syncOrderTotals(ctx.companyId, orderId);
 
     await writeAudit({
       companyId: ctx.companyId, userId: ctx.userId,

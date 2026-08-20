@@ -188,6 +188,13 @@ export function ResourceForm({
                       value={values[f.name] ?? ""}
                       placeholder={f.placeholder}
                       step={f.type === "number" ? "any" : undefined}
+                      // AUD-U06: mirror the server's non-negative rule in the UI.
+                      // Coordinates and offsets are the only numbers allowed below 0.
+                      min={
+                        f.type === "number" && !/lat|long|lng|offset|balance/i.test(f.name)
+                          ? 0
+                          : undefined
+                      }
                       onChange={(e) => set(f.name, e.target.value)}
                       className={cn(f.suffix && "pr-10")}
                     />

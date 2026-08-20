@@ -2,7 +2,9 @@ import "server-only";
 import { totalumSdk } from "@/lib/totalum";
 import { tenantCreate, tenantQuery, type TenantContext } from "@/lib/tenant";
 import { resolvePrice, resolveCost, billablePax } from "@/lib/pricing";
-import { assertCapacity, recalculateDeparture } from "@/lib/availability";
+import { assertCapacity, recalculateDeparture, OversellError } from "@/lib/availability";
+import { resolveExchangeRate } from "@/lib/currency";
+import { uniqueCode } from "@/lib/unique";
 import { resolveCommissions, type BeneficiaryDescriptor } from "@/lib/commission-engine";
 import { writeAudit } from "@/lib/audit";
 import { newBookingNumber, newOrderNumber, newVoucherCode, newDocumentNumber } from "@/lib/codes";
@@ -64,6 +66,12 @@ function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
+/** Coerces a pax count to a non-negative integer (AUD-B08). */
+function toCount(value: unknown): number {
+  const n = Math.floor(Number(value ?? 0));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 export async function createOrderWithBookings(
   ctx: TenantContext & { companyId: string },
   input: CreateOrderInput
@@ -72,19 +80,37 @@ export async function createOrderWithBookings(
 
   const companyId = ctx.companyId;
   const currency = (input.currency || ctx.company?.base_currency || "usd") as Currency;
-  const exchangeRate = input.exchange_rate ?? 1;
+  // AUD-F30: resolve the base-currency rate on the server from `currency_rate`,
+  // never trusting the client's `exchange_rate` (which defaulted to 1 and made
+  // `base_currency_total` meaningless for non-base-currency sales).
+  const baseCurrency = ctx.company?.base_currency || currency;
+  const exchangeRate = await resolveExchangeRate(companyId, currency, baseCurrency);
   const channel = (input.channel || "direct") as Channel;
 
-  // ---- validate capacity for every item before writing anything -----------
+  // ---- validate capacity before writing anything --------------------------
+  // AUD-B01: aggregate requested pax PER DEPARTURE across all items. Previously
+  // each item was validated in isolation, so two items on the same departure
+  // with one seat left both passed and both got booked.
+  const paxByDeparture = new Map<string, number>();
   for (const item of input.items) {
     if (!item.departure_id) continue;
-    const pax = (item.adults ?? 0) + (item.children ?? 0) + (item.infants ?? 0);
-    await assertCapacity(companyId, item.departure_id, pax, input.capacity_override === true);
+    const pax = toCount(item.adults) + toCount(item.children) + toCount(item.infants);
+    paxByDeparture.set(item.departure_id, (paxByDeparture.get(item.departure_id) ?? 0) + pax);
+  }
+  for (const [departureId, pax] of paxByDeparture) {
+    await assertCapacity(companyId, departureId, pax, input.capacity_override === true);
   }
 
   // ---- order shell --------------------------------------------------------
+  // AUD-F34: Totalum has no transactions, so an order is built as a saga. The
+  // order starts as `draft`; only after every child (bookings, vouchers,
+  // commissions, receivable) is written does it get PROMOTED to
+  // `pending_payment`. If any step fails we COMPENSATE — cancel the bookings
+  // created so far (releasing their seats) and void the order — so a failure
+  // can never leave a "phantom" order with live seats but zero total, or a B2B
+  // sale with no receivable that nobody would ever collect.
   const order = await tenantCreate<Order>(companyId, "order", {
-    order_number: newOrderNumber(),
+    order_number: await uniqueCode(companyId, "order", "order_number", newOrderNumber),
     customer: input.customer_id,
     branch: input.branch_id || undefined,
     seller: input.seller_id || undefined,
@@ -92,7 +118,7 @@ export async function createOrderWithBookings(
     promotion: input.promotion_id || undefined,
     created_by: ctx.userId,
     channel,
-    status: "pending_payment",
+    status: "draft",
     order_date: new Date().toISOString(),
     currency,
     exchange_rate: exchangeRate,
@@ -108,13 +134,37 @@ export async function createOrderWithBookings(
   let taxTotal = 0;
   let grandTotal = 0;
   let commissionsCreated = 0;
+  let totals = {
+    subtotal: 0, discount_total: 0, tax_total: 0,
+    total: 0, balance: 0, base_currency_total: 0,
+  };
 
+  try {
   for (const item of input.items) {
-    const adults = item.adults ?? 0;
-    const children = item.children ?? 0;
-    const infants = item.infants ?? 0;
+    // AUD-B08: validate pax before anything is written. Non-integer or negative
+    // counts previously flowed straight into `pax_total`, and a negative pax
+    // *subtracts* from a departure's occupancy (inflating availability). Every
+    // booking must carry at least one traveller.
+    const adults = toCount(item.adults);
+    const children = toCount(item.children);
+    const infants = toCount(item.infants);
     const paxTotal = adults + children + infants;
+    if (paxTotal < 1) {
+      throw Object.assign(new Error("La reserva debe incluir al menos un participante"), { status: 400 });
+    }
     const billable = billablePax(adults, children);
+
+    // AUD-F01: load the departure BEFORE pricing so seasonal / weekday rules
+    // resolve against the real travel date. Previously `travelDate: null` meant
+    // every season/weekday price rule was ignored at sale time even though the
+    // quote endpoint applied them — the customer was quoted one price and
+    // charged another.
+    const departure = item.departure_id
+      ? ((await tenantQuery<Departure>(companyId, "departure", {
+          _filter: { _id: item.departure_id }, _limit: 1, product: true,
+        }))[0] ?? null)
+      : null;
+    const travelDate = departure?.departure_at ?? null;
 
     const price = await resolvePrice({
       companyId,
@@ -124,28 +174,33 @@ export async function createOrderWithBookings(
       sellerId: input.seller_id,
       channel,
       quantity: billable,
-      travelDate: null,
+      travelDate,
       discountPct: item.discount_pct ?? 0,
       taxPct: item.tax_pct ?? 0,
       exchangeRate,
     });
 
-    const departure = item.departure_id
-      ? ((await tenantQuery<Departure>(companyId, "departure", {
-          _filter: { _id: item.departure_id }, _limit: 1, product: true,
-        }))[0] ?? null)
-      : null;
+    // AUD-F03: an order carries a single currency. If a line resolves to a
+    // different currency (e.g. a DOP price rule inside a USD order), the totals
+    // would sum different currencies 1:1 and be meaningless — reject instead.
+    if (price.currency && price.currency !== currency) {
+      throw Object.assign(
+        new Error(
+          `El producto tiene precio en ${String(price.currency).toUpperCase()} pero la orden es en ${String(currency).toUpperCase()}. Una orden no puede mezclar monedas.`
+        ),
+        { status: 400 }
+      );
+    }
 
     const productRow = (await tenantQuery<Product>(companyId, "product", {
       _filter: { _id: item.product_id }, _limit: 1,
     }))[0];
 
     const cost = await resolveCost(companyId, item.product_id, billable, productRow?.base_cost ?? 0);
-    const travelDate = departure?.departure_at ?? null;
-    const voucherCode = newVoucherCode();
+    const voucherCode = await uniqueCode(companyId, "voucher", "code", newVoucherCode);
 
     const booking = await tenantCreate<Booking>(companyId, "booking", {
-      booking_number: newBookingNumber(),
+      booking_number: await uniqueCode(companyId, "booking", "booking_number", newBookingNumber),
       order: order._id,
       customer: input.customer_id,
       product: item.product_id,
@@ -167,7 +222,9 @@ export async function createOrderWithBookings(
       tax_amount: price.taxAmount,
       total_amount: price.totalAmount,
       cost_amount: cost,
-      margin_amount: round2(price.totalAmount - price.discountAmount * 0 - cost),
+      // AUD-F05: margin excludes tax (tax is not revenue). Previously used
+      // `totalAmount` (tax included) with dead `* 0` code, inflating margin.
+      margin_amount: round2(price.grossAmount - price.discountAmount - cost),
       paid_amount: 0,
       balance_amount: price.totalAmount,
       refund_amount: 0,
@@ -209,6 +266,7 @@ export async function createOrderWithBookings(
     // ---- voucher ---------------------------------------------------------
     await tenantCreate(companyId, "voucher", {
       booking: booking._id,
+      order: order._id,
       code: voucherCode,
       qr_data: voucherCode,
       status: "valid",
@@ -236,11 +294,29 @@ export async function createOrderWithBookings(
       travelDate,
     });
 
-    // ---- availability ----------------------------------------------------
-    if (item.departure_id) await recalculateDeparture(companyId, item.departure_id);
+    // ---- availability: reserve-then-verify (AUD-B01) ---------------------
+    // Totalum has no transactions or row locks, so the pre-flight
+    // assertCapacity above can race with a concurrent order for the last seat.
+    // After persisting the booking we recompute occupancy and, if the departure
+    // is now oversold, roll THIS booking back so concurrent sales resolve to a
+    // single winner instead of silently double-selling the seat.
+    if (item.departure_id) {
+      const state = await recalculateDeparture(companyId, item.departure_id);
+      const overrideAllowed = input.capacity_override === true;
+      if (!overrideAllowed && state.capacity > 0 && state.bookedPax + state.pendingPax > state.capacity) {
+        await totalumSdk.crud.editRecordById("booking", booking._id, {
+          status: "cancelled",
+          cancel_reason: "Cupo agotado por una reserva simultánea",
+          cancelled_at: new Date().toISOString(),
+        });
+        await recalculateDeparture(companyId, item.departure_id);
+        const availableBefore = Math.max(0, state.capacity - state.bookedPax - state.pendingPax + paxTotal);
+        throw new OversellError(availableBefore, paxTotal);
+      }
+    }
   }
 
-  const totals = {
+  totals = {
     subtotal: round2(subtotal),
     discount_total: round2(discountTotal),
     tax_total: round2(taxTotal),
@@ -248,11 +324,6 @@ export async function createOrderWithBookings(
     balance: round2(grandTotal),
     base_currency_total: round2(grandTotal * exchangeRate),
   };
-  const updated = await totalumSdk.crud.editRecordById("order", order._id, totals);
-  if (updated.errors) {
-    console.error("[booking-service] failed updating order totals:", updated.errors);
-    throw new Error(updated.errors.errorMessage || "Error actualizando los totales de la orden");
-  }
 
   // ---- B2B receivable ----------------------------------------------------
   if (input.partner_id) {
@@ -278,6 +349,22 @@ export async function createOrderWithBookings(
     });
   }
 
+  // ---- promote the order (AUD-F34): the last critical write. Totals and the
+  // final status go together, so the order only becomes a real sale once every
+  // child exists. A failure before this point triggers the catch below.
+  const promoted = await totalumSdk.crud.editRecordById("order", order._id, {
+    ...totals,
+    status: "pending_payment",
+  });
+  if (promoted.errors) {
+    throw new Error(promoted.errors.errorMessage || "Error finalizando la orden");
+  }
+
+  } catch (err) {
+    await compensateOrder(companyId, order._id, order.order_number, bookings);
+    throw err;
+  }
+
   if (input.capacity_override) {
     await writeAudit({
       companyId, userId: ctx.userId,
@@ -298,7 +385,122 @@ export async function createOrderWithBookings(
 
   console.log(`[booking-service] orden ${order.order_number} creada · ${bookings.length} reservas · total ${totals.total} ${currency}`);
 
-  return { order: { ...order, ...totals }, bookings, commissionsCreated };
+  return { order: { ...order, ...totals, status: "pending_payment" as const }, bookings, commissionsCreated };
+}
+
+/**
+ * Compensating action for a failed order build (AUD-F34): cancels the bookings
+ * created so far (releasing their seats) and voids the order, so a partial
+ * failure never leaves live seats held by a phantom order. Best-effort — every
+ * step is guarded so compensation itself cannot throw.
+ */
+async function compensateOrder(
+  companyId: string,
+  orderId: string,
+  orderNumber: string | undefined,
+  bookings: Booking[]
+): Promise<void> {
+  const departures = new Set<string>();
+  for (const b of bookings) {
+    try {
+      await totalumSdk.crud.editRecordById("booking", b._id, {
+        status: "cancelled",
+        cancel_reason: "Orden incompleta: revertida automáticamente",
+        cancelled_at: new Date().toISOString(),
+      });
+      const dep = refId(b.departure);
+      if (dep) departures.add(dep);
+    } catch (e) {
+      console.error("[booking-service] compensación: no se pudo cancelar la reserva", b._id, e);
+    }
+  }
+  for (const dep of departures) {
+    try {
+      await recalculateDeparture(companyId, dep);
+    } catch (e) {
+      console.error("[booking-service] compensación: no se pudo recalcular la salida", dep, e);
+    }
+  }
+  // Also revert the per-item children created before the failure, so no orphan
+  // voucher, commission, or receivable survives a half-built order (which would
+  // otherwise inflate KPIs or be collectible/redeemable by hand).
+  try {
+    const vouchers = await tenantQuery<{ _id: string }>(companyId, "voucher", {
+      _filter: { order: orderId, status: "valid" }, _limit: 50,
+    });
+    for (const v of vouchers) {
+      await totalumSdk.crud.editRecordById("voucher", v._id, { status: "cancelled" });
+    }
+  } catch (e) {
+    console.error("[booking-service] compensación: no se pudieron anular los vouchers", orderId, e);
+  }
+  try {
+    const commissions = await tenantQuery<{ _id: string }>(companyId, "commission", {
+      _filter: { order: orderId, status: { in: ["pending", "approved"] } }, _limit: 50,
+    });
+    for (const c of commissions) {
+      await totalumSdk.crud.editRecordById("commission", c._id, {
+        status: "cancelled", notes: "Anulada: orden revertida automáticamente",
+      });
+    }
+  } catch (e) {
+    console.error("[booking-service] compensación: no se pudieron anular las comisiones", orderId, e);
+  }
+  try {
+    const receivables = await tenantQuery<{ _id: string }>(companyId, "receivable", {
+      _filter: { order: orderId, status: { nin: ["paid", "written_off"] } }, _limit: 20,
+    });
+    for (const r of receivables) {
+      await totalumSdk.crud.editRecordById("receivable", r._id, {
+        status: "written_off", balance: 0,
+        notes: "Anulada: orden revertida automáticamente",
+      });
+    }
+  } catch (e) {
+    console.error("[booking-service] compensación: no se pudieron anular las cuentas por cobrar", orderId, e);
+  }
+  try {
+    await totalumSdk.crud.editRecordById("order", orderId, {
+      status: "cancelled",
+      notes: "Orden revertida automáticamente por un fallo durante su creación",
+    });
+  } catch (e) {
+    console.error("[booking-service] compensación: no se pudo anular la orden", orderId, e);
+  }
+  console.warn(`[booking-service] orden ${orderNumber ?? orderId} revertida (compensación)`);
+}
+
+/**
+ * Reconciliation for orphaned `draft` orders (AUD-F34 follow-up).
+ *
+ * The saga leaves an order `draft` only transiently; a normal request promotes
+ * or compensates it within itself. But a HARD process crash (not an exception)
+ * between creating bookings and compensating can strand a `draft` order whose
+ * bookings still hold seats and count as sales. This sweep finds such orders
+ * older than a safety window and compensates them (releasing seats, voiding
+ * children). Meant to be run periodically (cron) or on demand by an admin.
+ */
+export async function reconcileStaleDrafts(
+  companyId: string,
+  olderThanMinutes = 30
+): Promise<{ scanned: number; reverted: number }> {
+  const cutoff = new Date(Date.now() - olderThanMinutes * 60_000).toISOString();
+  const drafts = await tenantQuery<Order>(companyId, "order", {
+    _filter: { status: "draft" }, _limit: 100, _sort: { createdAt: "asc" },
+  });
+  let reverted = 0;
+  for (const o of drafts) {
+    const created = o.order_date || (o as { createdAt?: string }).createdAt;
+    // Skip drafts that could still be an in-flight saga (sub-second normally).
+    if (created && created > cutoff) continue;
+    const bookings = await tenantQuery<Booking>(companyId, "booking", {
+      _filter: { order: o._id }, _limit: 50,
+    });
+    await compensateOrder(companyId, o._id, o.order_number, bookings);
+    reverted++;
+  }
+  if (reverted > 0) console.warn(`[booking-service] reconciliación: ${reverted} orden(es) draft revertida(s)`);
+  return { scanned: drafts.length, reverted };
 }
 
 /** Registers every commission obligation generated by a booking. */
@@ -401,15 +603,23 @@ export async function syncOrderTotals(companyId: string, orderId: string): Promi
     companyId, "payment", { _filter: { order: orderId, status: "completed" }, _limit: 200 }
   );
 
-  const total = round2(bookings.reduce((s, b) => s + (b.total_amount ?? 0), 0));
+  // AUD-F25: cancelled/refunded bookings must not inflate the order total, and
+  // the payment proration below must run over the live bookings only.
+  const DEAD_BOOKING = new Set(["cancelled", "refunded"]);
+  const activeBookings = bookings.filter((b) => !DEAD_BOOKING.has(b.status || ""));
+  const total = round2(activeBookings.reduce((s, b) => s + (b.total_amount ?? 0), 0));
+  // AUD (credit_note): a credit note is an outflow, exactly like a refund.
+  const OUTFLOW = new Set(["refund", "credit_note"]);
   const paid = round2(
-    payments.reduce((s, p) => s + (p.payment_type === "refund" ? -(p.amount ?? 0) : p.amount ?? 0), 0)
+    payments.reduce((s, p) => s + (OUTFLOW.has(p.payment_type || "") ? -(p.amount ?? 0) : p.amount ?? 0), 0)
   );
   const balance = round2(total - paid);
 
-  const allCancelled = bookings.length > 0 && bookings.every((b) => b.status === "cancelled");
+  // An order with no live booking left (every booking cancelled/refunded) is a
+  // cancelled order, not a pending one.
+  const noneActive = bookings.length > 0 && activeBookings.length === 0;
   let status: Order["status"] = "pending_payment";
-  if (allCancelled) status = "cancelled";
+  if (noneActive) status = "cancelled";
   else if (paid <= 0) status = "pending_payment";
   else if (balance > 0.009) status = "partially_paid";
   else status = "paid";

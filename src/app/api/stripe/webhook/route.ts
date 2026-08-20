@@ -1,72 +1,126 @@
 /**
- * Stripe Webhook Handler API Route
+ * Stripe Webhook Handler (AUD-F22)
  *
- * This endpoint handles Stripe webhook events for real-time updates on:
- * - Customer creation/updates
- * - Subscription lifecycle (created, updated, deleted)
- * - Payment intents (succeeded, failed)
- * - Invoices
+ * Hardened webhook endpoint for the SaaS subscription lifecycle:
+ * - In production the signature MUST verify (an unsigned event is rejected).
+ * - Every event is de-duplicated by its Stripe id (Stripe retries deliveries).
+ * - Subscription/invoice events update the tenant `company` (subscription_status,
+ *   next_billing_at, stripe ids), resolving the company by its stored
+ *   `stripe_customer_id` or by `metadata.company_id`. If no company resolves the
+ *   event is logged and skipped, never crashing the endpoint.
  *
- * Events to subscribe to:
- * - customer.created, customer.updated, customer.deleted
- * - customer.subscription.created, customer.subscription.updated, customer.subscription.deleted
- * - payment_intent.succeeded, payment_intent.payment_failed
- * - invoice.paid, invoice.payment_failed
+ * Subscribe in Stripe to: customer.subscription.{created,updated,deleted},
+ * invoice.{paid,payment_failed}.
  */
 
 import { NextResponse } from "next/server";
 import { stripe, STRIPE_WEBHOOK_SECRET, cryptoProvider } from "@/lib/stripe";
 import Stripe from "stripe";
 import { totalumSdk } from "@/lib/totalum";
+import type { Company } from "@/lib/types";
 
-async function handleCustomerCreated(customer: Stripe.Customer) {
-  console.log("Customer created:", customer.id);
-  // TODO: implement any database operations using TotalumSDK if needed
+const IS_PROD = process.env.NODE_ENV === "production";
+
+/** Maps a Stripe subscription status to the tenant's `subscription_status`. */
+function mapSubscriptionStatus(status: Stripe.Subscription.Status): Company["subscription_status"] {
+  switch (status) {
+    case "trialing": return "trial";
+    case "active": return "active";
+    case "past_due":
+    case "unpaid": return "past_due";
+    case "canceled":
+    case "incomplete_expired": return "cancelled";
+    case "paused": return "suspended";
+    default: return "past_due";
+  }
 }
 
-async function handleCustomerUpdated(customer: Stripe.Customer) {
-  console.log("Customer updated:", customer.id);
-  // TODO: implement any database operations using TotalumSDK if needed
+/** Resolves the tenant company from a customer id and/or metadata company_id. */
+async function resolveCompany(opts: { customerId?: string | null; companyId?: string | null }): Promise<Company | null> {
+  if (opts.companyId) {
+    const byId = await totalumSdk.crud.query("company", { _filter: { _id: opts.companyId }, _limit: 1 });
+    const c = byId.data?.[0] as Company | undefined;
+    if (c) return c;
+  }
+  if (opts.customerId) {
+    const byCustomer = await totalumSdk.crud.query("company", {
+      _filter: { stripe_customer_id: opts.customerId }, _limit: 1,
+    });
+    const c = byCustomer.data?.[0] as Company | undefined;
+    if (c) return c;
+  }
+  return null;
 }
 
-async function handleCustomerDeleted(customer: Stripe.Customer) {
-  console.log("Customer deleted:", customer.id);
-  // TODO: implement any database operations using TotalumSDK if needed
+/** Reads the subscription's current period end across Stripe API shapes. */
+function periodEndISO(sub: Stripe.Subscription): string | undefined {
+  const top = (sub as any).current_period_end as number | undefined;
+  const item = sub.items?.data?.[0] && ((sub.items.data[0] as any).current_period_end as number | undefined);
+  const ts = top || item;
+  return ts ? new Date(ts * 1000).toISOString() : undefined;
 }
 
-async function handleSubscriptionCreated(subscription: Stripe.Subscription) {
-  console.log("Subscription created:", subscription.id);
-  // TODO: implement any database operations using TotalumSDK if needed
+async function syncSubscription(sub: Stripe.Subscription, deleted = false) {
+  const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
+  const company = await resolveCompany({ customerId, companyId: sub.metadata?.company_id });
+  if (!company) {
+    console.warn(`[stripe] suscripción ${sub.id}: no se encontró empresa (customer ${customerId})`);
+    return { resolved: false, companyId: null as string | null };
+  }
+  const patch: Record<string, unknown> = {
+    subscription_status: deleted ? "cancelled" : mapSubscriptionStatus(sub.status),
+    stripe_customer_id: customerId,
+    stripe_subscription_id: sub.id,
+  };
+  if (!deleted) {
+    const end = periodEndISO(sub);
+    if (end) patch.next_billing_at = end;
+  }
+  await totalumSdk.crud.editRecordById("company", company._id, patch);
+  console.log(`[stripe] empresa ${company._id} → ${patch.subscription_status} (sub ${sub.id})`);
+  return { resolved: true, companyId: company._id };
 }
 
-async function handleSubscriptionUpdated(subscription: Stripe.Subscription) {
-  console.log("Subscription updated:", subscription.id);
-  // TODO: Update subscription in your database using TotalumSDK
+async function syncInvoice(invoice: Stripe.Invoice, paid: boolean) {
+  const customerId = typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id;
+  const company = await resolveCompany({ customerId, companyId: invoice.metadata?.company_id });
+  if (!company) {
+    console.warn(`[stripe] factura ${invoice.id}: no se encontró empresa (customer ${customerId})`);
+    return { resolved: false, companyId: null as string | null };
+  }
+  const patch: Record<string, unknown> = { subscription_status: paid ? "active" : "past_due" };
+  const end = (invoice.lines?.data?.[0]?.period?.end as number | undefined);
+  if (paid && end) patch.next_billing_at = new Date(end * 1000).toISOString();
+  await totalumSdk.crud.editRecordById("company", company._id, patch);
+  console.log(`[stripe] empresa ${company._id} → ${patch.subscription_status} (invoice ${invoice.id})`);
+  return { resolved: true, companyId: company._id };
 }
 
-async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
-  console.log("Subscription deleted:", subscription.id);
-  // TODO: implement any database operations using TotalumSDK if needed
+/** Idempotency: has this Stripe event already been processed? */
+async function alreadyProcessed(eventId: string): Promise<boolean> {
+  try {
+    const res = await totalumSdk.crud.query("stripe_event", { _filter: { event_id: eventId }, _limit: 1 });
+    return (res.data || []).length > 0;
+  } catch (err) {
+    // If the ledger table is missing we fail open (process the event) rather
+    // than dropping it; duplicate processing is idempotent for our updates.
+    console.error("[stripe] no se pudo verificar idempotencia:", err);
+    return false;
+  }
 }
 
-async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent) {
-  console.log("Payment intent succeeded:", paymentIntent.id);
-  // TODO: Store payment in your database using TotalumSDK
-}
-
-async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
-  console.log("Payment intent failed:", paymentIntent.id);
-  // TODO: Store failed payment in your database using TotalumSDK
-}
-
-async function handleInvoicePaid(invoice: Stripe.Invoice) {
-  console.log("Invoice paid:", invoice.id);
-  // TODO: Update invoice status in your database
-}
-
-async function handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
-  console.log("Invoice payment failed:", invoice.id);
-  // TODO: Handle failed invoice payment
+async function recordEvent(event: Stripe.Event, companyId: string | null, status: string) {
+  try {
+    await totalumSdk.crud.createRecord("stripe_event", {
+      event_id: event.id,
+      event_type: event.type,
+      company: companyId || undefined,
+      processed_at: new Date().toISOString(),
+      status,
+    });
+  } catch (err) {
+    console.error("[stripe] no se pudo registrar el evento (idempotencia):", err);
+  }
 }
 
 export async function POST(req: Request) {
@@ -74,90 +128,84 @@ export async function POST(req: Request) {
     const body = await req.text();
     const signature = req.headers.get("stripe-signature");
 
-    if (!signature) {
-      return NextResponse.json(
-        { error: "Missing stripe-signature header" },
-        { status: 400 }
-      );
-    }
-
     let event: Stripe.Event;
 
-    // Verify webhook signature using async method for Cloudflare Workers compatibility
     if (STRIPE_WEBHOOK_SECRET) {
+      if (!signature) {
+        return NextResponse.json({ error: "Missing stripe-signature header" }, { status: 400 });
+      }
       try {
         event = await stripe.webhooks.constructEventAsync(
-          body,
-          signature,
-          STRIPE_WEBHOOK_SECRET,
-          undefined,
-          cryptoProvider
+          body, signature, STRIPE_WEBHOOK_SECRET, undefined, cryptoProvider
         );
       } catch (err: any) {
-        console.error("Webhook signature verification failed:", err.message);
-        return NextResponse.json(
-          { error: `Webhook signature verification failed: ${err.message}` },
-          { status: 400 }
-        );
+        console.error("[stripe] verificación de firma fallida:", err.message);
+        return NextResponse.json({ error: `Signature verification failed: ${err.message}` }, { status: 400 });
       }
     } else {
-      // For development without webhook secret
-      console.warn("⚠️  Webhook signature verification skipped (no STRIPE_WEBHOOK_SECRET)");
+      // SECURITY (AUD-F22/S07): never process unsigned events in production.
+      // Without the secret we cannot trust the payload, so refuse rather than
+      // acting on a potentially forged event.
+      if (IS_PROD) {
+        console.error("[stripe] STRIPE_WEBHOOK_SECRET no configurado en producción; evento rechazado");
+        return NextResponse.json({ error: "Webhook secret not configured" }, { status: 500 });
+      }
+      console.warn("⚠️  [stripe] firma omitida (sin STRIPE_WEBHOOK_SECRET; solo desarrollo)");
       event = JSON.parse(body) as Stripe.Event;
     }
 
-    // Handle the event
-    switch (event.type) {
-      case "customer.created":
-        await handleCustomerCreated(event.data.object as Stripe.Customer);
-        break;
-
-      case "customer.updated":
-        await handleCustomerUpdated(event.data.object as Stripe.Customer);
-        break;
-
-      case "customer.deleted":
-        await handleCustomerDeleted(event.data.object as Stripe.Customer);
-        break;
-
-      case "customer.subscription.created":
-        await handleSubscriptionCreated(event.data.object as Stripe.Subscription);
-        break;
-
-      case "customer.subscription.updated":
-        await handleSubscriptionUpdated(event.data.object as Stripe.Subscription);
-        break;
-
-      case "customer.subscription.deleted":
-        await handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
-        break;
-
-      case "payment_intent.succeeded":
-        await handlePaymentIntentSucceeded(event.data.object as Stripe.PaymentIntent);
-        break;
-
-      case "payment_intent.payment_failed":
-        await handlePaymentIntentFailed(event.data.object as Stripe.PaymentIntent);
-        break;
-
-      case "invoice.paid":
-        await handleInvoicePaid(event.data.object as Stripe.Invoice);
-        break;
-
-      case "invoice.payment_failed":
-        await handleInvoicePaymentFailed(event.data.object as Stripe.Invoice);
-        break;
-
-      default:
-        console.log(`Unhandled event type: ${event.type}`);
+    // Idempotency: Stripe retries deliveries, so skip events already handled.
+    if (await alreadyProcessed(event.id)) {
+      console.log(`[stripe] evento ${event.id} ya procesado, se omite`);
+      return NextResponse.json({ received: true, duplicate: true });
     }
+
+    let companyId: string | null = null;
+    switch (event.type) {
+      case "checkout.session.completed": {
+        // Links the tenant to its Stripe customer/subscription. The checkout
+        // must carry `metadata.company_id` for this to resolve.
+        const session = event.data.object as Stripe.Checkout.Session;
+        const custId = typeof session.customer === "string" ? session.customer : session.customer?.id;
+        const subId = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
+        const company = await resolveCompany({ customerId: custId, companyId: session.metadata?.company_id });
+        if (company) {
+          await totalumSdk.crud.editRecordById("company", company._id, {
+            stripe_customer_id: custId,
+            stripe_subscription_id: subId,
+            subscription_status: session.mode === "subscription" ? "active" : company.subscription_status,
+          });
+          companyId = company._id;
+          console.log(`[stripe] checkout completado → empresa ${company._id} vinculada (customer ${custId})`);
+        } else {
+          console.warn(`[stripe] checkout ${session.id}: sin company_id en metadata, no se pudo vincular`);
+        }
+        break;
+      }
+      case "customer.subscription.created":
+      case "customer.subscription.updated":
+        ({ companyId } = await syncSubscription(event.data.object as Stripe.Subscription));
+        break;
+      case "customer.subscription.deleted":
+        ({ companyId } = await syncSubscription(event.data.object as Stripe.Subscription, true));
+        break;
+      case "invoice.paid":
+        ({ companyId } = await syncInvoice(event.data.object as Stripe.Invoice, true));
+        break;
+      case "invoice.payment_failed":
+        ({ companyId } = await syncInvoice(event.data.object as Stripe.Invoice, false));
+        break;
+      default:
+        console.log(`[stripe] evento no manejado: ${event.type}`);
+    }
+
+    // Record only after successful handling, so a thrown handler lets Stripe
+    // retry (the event stays un-recorded and will be reprocessed).
+    await recordEvent(event, companyId, "processed");
 
     return NextResponse.json({ received: true });
   } catch (err: any) {
-    console.error("[WEBHOOK ERROR]", err);
-    return NextResponse.json(
-      { error: err.message || "Webhook handler failed" },
-      { status: 500 }
-    );
+    console.error("[stripe][WEBHOOK ERROR]", err);
+    return NextResponse.json({ error: err.message || "Webhook handler failed" }, { status: 500 });
   }
 }
