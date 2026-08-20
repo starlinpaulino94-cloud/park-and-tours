@@ -69,14 +69,17 @@ De ~40 correcciones verificadas, **la gran mayoría se sostienen**. La re-audito
 - **Concurrencia sin locks:** overbooking (B01), read-modify-write de cachés y la saga (F34) son *best-effort* sobre Totalum, que no tiene transacciones ni locks. La garantía dura requeriría Durable Objects/constraints. La sobreventa silenciosa se convirtió en un evento detectable y compensado, pero la ventana no es cero.
 - **Drafts huérfanos:** un crash de proceso duro (no una excepción) entre crear reservas y compensar puede dejar una orden `draft` con reservas `pending_payment` que cuentan como venta. Requiere un **job de reconciliación** (follow-up).
 
-## Pendientes (follow-up, no bloqueantes)
+## Follow-ups — estado
 
-- Job de reconciliación de órdenes `draft` huérfanas.
-- `readRole` por recurso (lecturas financieras de `seller`/`cashier` vía `/api/erp/*` siguen abiertas — P2).
-- Normalización de agregaciones a `base_amount` (multimoneda operativa en dashboards).
-- Endurecer el sistema paralelo de `access_ticket`/`membership`/`gift_card` cuando tengan endpoints de ciclo de vida.
-- Checkout de billing autenticado por tenant (activa el ciclo de Stripe).
-- Verificación de email / reset de contraseña; allowlist de `filter.<campo>` en ERP.
+**Implementados (Fase 6+):**
+- ✅ **`readRole` por recurso** — lecturas financieras vía `/api/erp/*` ahora exigen rol mínimo (cashier para caja/pagos, manager para comisiones/costes/ledger…); partners exentos (regidos por su scope). Cierra el P2.
+- ✅ **Allowlist de `filter.<campo>`** en el ERP — los filtros se restringen a campos conocidos; los desconocidos se ignoran.
+- ✅ **Reconciliación de drafts huérfanos** — `reconcileStaleDrafts` + endpoint `POST /api/maintenance/reconcile-drafts` (admin, apto para cron).
+
+**Deferidos con fundamento (no son endurecimiento de código, requieren migración o feature de producto):**
+- **Agregación en `base_amount`:** `base_amount` ya se puebla correctamente en registros nuevos; cambiar los `_sum` del dashboard exige **backfill** de datos históricos/demo (si no, mostraría ceros). Migración deliberada con acceso a BD, no cambio a ciegas. Tenants de una sola moneda ya son correctos.
+- **Normalización de email en signup público:** better-auth 1.3.26 no normaliza el email en el login → bajarlo solo en el alta rompería el login con variantes de mayúsculas. El alta por `/api/team` ya es segura.
+- **Ciclo de vida de `access_ticket`/`membership`/`gift_card`, checkout de billing por tenant, reset/verificación de email:** features nuevas con decisiones de producto (motor de redención, mapeo plan↔precio, envío de correos), fuera del alcance de la auditoría.
 
 ## Veredicto de Production Readiness — actualizado
 

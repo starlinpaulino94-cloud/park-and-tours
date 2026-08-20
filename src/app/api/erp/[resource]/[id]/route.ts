@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireTenant, tenantFindOne, tenantUpdate, tenantDelete, requireAtLeast, TenantError } from "@/lib/tenant";
-import { getResource, sanitizePayload, partnerScopeFor } from "@/lib/resources";
+import { getResource, sanitizePayload, partnerScopeFor, readRoleFor } from "@/lib/resources";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { refId } from "@/lib/types";
@@ -28,6 +28,11 @@ export async function GET(_req: NextRequest, { params }: Params) {
     if (!def) throw new TenantError(`Recurso desconocido: ${resource}`, 404);
 
     const ctx = await requireTenant();
+    // AUD-004 follow-up: same read authorization as the list endpoint.
+    if (ctx.role !== "partner") {
+      const rr = readRoleFor(def.table);
+      if (rr) requireAtLeast(ctx, rr);
+    }
     const record = await tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id, def.expandOne || def.expand || {});
     if (ctx.role === "partner") assertPartnerCanRead(def.table, ctx.partnerId, record);
     return ok(record);

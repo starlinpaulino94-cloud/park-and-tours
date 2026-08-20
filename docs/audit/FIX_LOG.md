@@ -16,7 +16,9 @@
 | Validación y moneda (P1) | **AUD-U06** (validación servidor en 77 recursos + endpoints), **AUD-F30/F03** (rate servidor + rechazo de orden mixta) | ✅ Corregidos |
 | Base de datos (P1) | **AUD-D01** (unicidad de códigos app-level), **AUD-D03** (drift cerrado: 36 tablas añadidas al script de schema, 81 totales) | ✅ Corregidos |
 | Integraciones (P1) | **AUD-F22/S07** (webhook Stripe: firma en prod, idempotencia, persistencia real) | ✅ Corregidos |
-| Pendiente | agregaciones en `base_amount` (F30 follow-up), checkout de billing autenticado por tenant, normalización de email en signup público, reconciliación de drafts huérfanos | Fases futuras |
+| Validación final (Fase 6) | 9 defectos de la re-auditoría adversarial | ✅ Corregidos |
+| Follow-ups (Fase 6+) | **readRole** por recurso, **allowlist de filtros**, **reconciliación de drafts** (endpoint) | ✅ Corregidos |
+| Deferidos con fundamento | agregación en `base_amount` (necesita backfill), email en signup (riesgo de login), features nuevas (redención de tickets, billing checkout, reset de contraseña) | Trabajo de producto |
 
 Verificación transversal: `tsc --noEmit` ✅ · `npm run build` ✅ tras cada bloque.
 
@@ -194,3 +196,23 @@ Verificación transversal: `tsc --noEmit` ✅ · `npm run build` ✅ tras cada b
   - Nuevos campos `stripe_customer_id`/`stripe_subscription_id` en `company` (types + schema).
 - **Límite (follow-up):** no existe aún un flujo de compra de suscripción autenticado en la app (`create-checkout-session` solo lo usa la demo), así que hoy los handlers no-op por falta de vínculo; el webhook queda listo y activa el ciclo en cuanto un checkout pase `company_id` en metadata y guarde el customer. Autenticar/derivar el checkout de billing por tenant queda pendiente.
 - **Prueba:** build/typecheck OK; schema parsea; refs resuelven; `stripe_event` añadida.
+
+## Follow-ups no bloqueantes (Fase 6+)
+
+### readRole por recurso (P2 — lecturas financieras sin gate) — CERRADO
+- **Archivos:** `src/lib/resources.ts` (`readRoleFor`), `src/app/api/erp/[resource]/route.ts`, `[id]/route.ts`.
+- **Problema:** el GET genérico del ERP no tenía control de rol → seller/cashier/operations podían leer comisiones, liquidaciones, pagos, costes, márgenes, plan contable, etc.
+- **Solución:** mapa `READ_ROLE` por tabla (payment/caja → cashier; comisiones/settlements/receivable/costes/precios/ledger/invoice/gastos/compras → manager) aplicado en list y detalle **solo a roles no-partner** (el partner se rige por `partnerScopeFor`). Verificado: todos los `minRole` del nav de las páginas que leen esos recursos son ≥ el `readRole`, así que ninguna UI se rompe; el portal (partner) queda exento y sigue leyendo lo suyo.
+
+### Allowlist de `filter.<campo>` en ERP (S06 follow-up) — CERRADO
+- **Archivos:** `src/lib/resources.ts` (`allowedFilterFields`), `erp/[resource]/route.ts`.
+- **Solución:** los filtros `?filter.<x>=` se restringen a search∪writable∪numeric∪dates∪relaciones∪set global seguro (`status`, `severity`, `payment_type`, …); los campos desconocidos se **ignoran** (no 400), así la UI no se rompe. Cierra la consulta de columnas internas arbitrarias.
+
+### Reconciliación de drafts huérfanos (F34 follow-up) — CERRADO
+- **Archivos:** `src/lib/booking-service.ts` (`reconcileStaleDrafts`), `src/app/api/maintenance/reconcile-drafts/route.ts`.
+- **Solución:** `reconcileStaleDrafts(companyId, olderThanMinutes=30)` busca órdenes `draft` más antiguas que la ventana de seguridad y las compensa (libera cupo, anula hijos). Endpoint `POST /api/maintenance/reconcile-drafts` (rol admin, auditado), apto para cron. Maneja el único caso residual de la saga: un crash duro de proceso que deje un draft huérfano.
+
+### Deferidos con fundamento (requieren migración/feature nueva, no cambio a ciegas)
+- **Agregación en `base_amount`:** `base_amount` ya se puebla correctamente en bookings nuevos (rate resuelto por F30). Cambiar los `_sum` del dashboard/reportes a `base_amount` exige **backfill** de registros existentes (datos demo/históricos podrían tener el campo nulo → mostraría ceros). Es una migración de datos deliberada con acceso a BD, fuera del alcance de un cambio de código seguro. Los tenants de una sola moneda ya son correctos.
+- **Normalización de email en signup público:** better-auth 1.3.26 no normaliza el email en el lookup de login; bajar el email solo en el alta rompería el login con variantes de mayúsculas. Requiere soporte de `normalizeEmail` en ambos lados. El alta por `/api/team` ya es case-insensitive segura.
+- **Endpoints de ciclo de vida de `access_ticket`/`membership`/`gift_card`; checkout de billing autenticado por tenant; páginas de reset/verificación de email:** son **features nuevas** con decisiones de producto (motor de redención, mapeo plan↔precio de Stripe, envío de correos), no endurecimiento de código existente. Se dejan como trabajo de producto, no de auditoría.

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireTenant, tenantQuery, tenantCreate, tenantCount, requireAtLeast, TenantError } from "@/lib/tenant";
-import { getResource, sanitizePayload, partnerScopeFor } from "@/lib/resources";
+import { getResource, sanitizePayload, partnerScopeFor, readRoleFor, allowedFilterFields } from "@/lib/resources";
 import { ok, fail, readJson } from "@/lib/api-response";
 
 /** Generic tenant-scoped list endpoint: GET /api/erp/:resource */
@@ -11,6 +11,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
     if (!def) throw new TenantError(`Recurso desconocido: ${resource}`, 404);
 
     const ctx = await requireTenant();
+
+    // AUD-004 follow-up: read authorization for sensitive resources. Partners
+    // are handled by `partnerScopeFor` below (their rank would misfire here).
+    if (ctx.role !== "partner") {
+      const rr = readRoleFor(def.table);
+      if (rr) requireAtLeast(ctx, rr);
+    }
+
     const sp = req.nextUrl.searchParams;
     const limit = Math.min(Number(sp.get("limit") || 50), 1000);
     const offset = Number(sp.get("offset") || 0);
@@ -18,11 +26,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
 
     const filter: Record<string, unknown> = {};
 
-    // Explicit equality filters (filter.<field>=value)
+    // Explicit equality filters (filter.<field>=value), restricted to an
+    // allowlist (AUD-S06 follow-up). Unknown fields are ignored, not rejected.
+    const filterable = allowedFilterFields(def);
     for (const [key, value] of sp.entries()) {
       if (!key.startsWith("filter.")) continue;
       const field = key.slice(7);
-      if (!value) continue;
+      if (!value || !filterable.has(field)) continue;
       filter[field] = value.includes(",") ? { in: value.split(",") } : value;
     }
 

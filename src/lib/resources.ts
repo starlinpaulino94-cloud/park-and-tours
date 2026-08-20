@@ -932,6 +932,56 @@ function badRequest(message: string): Error {
   return Object.assign(new Error(message), { status: 400 });
 }
 
+/**
+ * Read authorization by resource (AUD-004 follow-up).
+ *
+ * The generic ERP GET had no role gate, so any authenticated tenant user
+ * (seller/cashier/operations) could read sensitive financial tables. These
+ * minimum roles apply to NON-partner roles only — a `partner` is governed
+ * separately by `partnerScopeFor` (deny-by-default + own-partner scope), and its
+ * low rank would otherwise wrongly block its legitimate own-data reads.
+ */
+const READ_ROLE: Partial<Record<string, AppRole>> = {
+  // Cash desk data — cashiers legitimately handle it.
+  payment: "cashier", cash_session: "cashier", cash_movement: "cashier",
+  // Commercial/accounting figures, costs and margins — managers and up.
+  commission: "manager", settlement: "manager", receivable: "manager", payable: "manager",
+  commission_rule: "manager", product_cost: "manager", price_rule: "manager",
+  ledger_account: "manager", ledger_entry: "manager", invoice: "manager",
+  expense: "manager", tax_profile: "manager", purchase_order: "manager", purchase_order_line: "manager",
+};
+
+/** Minimum role required to READ a resource (for non-partner roles). */
+export function readRoleFor(table: string): AppRole | null {
+  return READ_ROLE[table] ?? null;
+}
+
+// Enum-like fields that are always safe to filter on, regardless of a
+// resource's writable list (e.g. `status` stays filterable even where it was
+// removed from `writable` to protect the state machine).
+const GLOBAL_FILTERABLE = new Set([
+  "_id", "status", "severity", "payment_type", "beneficiary_type", "method",
+  "channel", "aging_bucket", "read_status", "operational_status", "checkin_status",
+  "result", "priority", "category", "case_type", "movement_type",
+]);
+
+/**
+ * Allowlist of fields a client may filter on for a resource (AUD-S06 follow-up).
+ * Prevents querying arbitrary internal columns through `?filter.<field>=`.
+ * Unknown fields are ignored rather than rejected, so the UI never breaks.
+ */
+export function allowedFilterFields(def: ResourceDef): Set<string> {
+  return new Set([
+    ...GLOBAL_FILTERABLE,
+    ...def.search,
+    ...def.writable,
+    ...(def.numeric || []),
+    ...(def.dates || []),
+    ...Object.keys(def.expand || {}),
+    ...Object.keys(def.expandOne || {}),
+  ]);
+}
+
 /** Filters and coerces an incoming payload down to the resource's writable fields. */
 export function sanitizePayload(def: ResourceDef, body: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
