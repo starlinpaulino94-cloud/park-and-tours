@@ -15,7 +15,8 @@
 | Finanzas avanzada (P1) | **AUD-F08** (comisión solo si cobrada), **AUD-F34** (saga de orden con compensación) | ✅ Corregidos |
 | Validación y moneda (P1) | **AUD-U06** (validación servidor en 77 recursos + endpoints), **AUD-F30/F03** (rate servidor + rechazo de orden mixta) | ✅ Corregidos |
 | Base de datos (P1) | **AUD-D01** (unicidad de códigos app-level), **AUD-D03** (drift cerrado: 36 tablas añadidas al script de schema, 81 totales) | ✅ Corregidos |
-| Pendiente | AUD-F22 (webhook Stripe), agregaciones en `base_amount` (F30 follow-up), normalización de email en signup público, reconciliación de drafts huérfanos | Fases futuras |
+| Integraciones (P1) | **AUD-F22/S07** (webhook Stripe: firma en prod, idempotencia, persistencia real) | ✅ Corregidos |
+| Pendiente | agregaciones en `base_amount` (F30 follow-up), checkout de billing autenticado por tenant, normalización de email en signup público, reconciliación de drafts huérfanos | Fases futuras |
 
 Verificación transversal: `tsc --noEmit` ✅ · `npm run build` ✅ tras cada bloque.
 
