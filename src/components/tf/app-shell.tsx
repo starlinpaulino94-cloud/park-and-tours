@@ -1,12 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Icon } from "@/components/tf/icon";
 import {
-  breadcrumbs, canSeeItem, visibleGroups, visibleWorkspaces, workspaceOf,
+  breadcrumbs, canSeeItem, visibleGroups, visibleWorkspaces, workspaceOf, workspaceLanding,
   QUICK_ACTIONS, type NavContext, type Workspace, type BadgeKey,
 } from "@/lib/nav";
 import { Button } from "@/components/ui/button";
@@ -43,22 +43,45 @@ const NAV_MODE_KEY = "tf:nav-mode";
 type NavMode = "full" | "compact";
 
 /* -------------------------------------------------------------------------- */
+/* Respuesta inmediata al clic                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Cada pantalla se renderiza en el servidor, así que entre el clic y el cambio
+ * de página pasa un tiempo real. Sin señal alguna, esa espera se lee como una
+ * app colgada. Aquí se marca la entrada pulsada y se pinta una barra de avance
+ * hasta que la ruta cambia.
+ */
+const NavPendingContext = createContext<{ pending: string | null; start: (href: string) => void }>({
+  pending: null,
+  start: () => {},
+});
+
+function useNavPending() {
+  return useContext(NavPendingContext);
+}
+
+/* -------------------------------------------------------------------------- */
 /* Nivel 1 — riel de workspaces. Diez entradas, nunca crece.                   */
 /* -------------------------------------------------------------------------- */
 
 function WorkspaceLink({
-  workspace, active, compact, badge, onNavigate,
+  workspace, href, active, compact, badge, onNavigate,
 }: {
   workspace: Workspace;
+  /** Módulo de entrada del área, no una pantalla intermedia de tarjetas. */
+  href: string;
   active: boolean;
   compact: boolean;
   badge?: number;
   onNavigate?: () => void;
 }) {
+  const { start } = useNavPending();
   return (
     <Link
-      href={workspace.href}
-      onClick={onNavigate}
+      href={href}
+      prefetch
+      onClick={() => { start(href); onNavigate?.(); }}
       aria-current={active ? "page" : undefined}
       className={cn(
         "group relative flex items-center rounded-xl transition-colors",
@@ -114,6 +137,7 @@ function WorkspaceRail({
     const link = (
       <WorkspaceLink
         workspace={w}
+        href={workspaceLanding(w, ctx)}
         active={w.id === active.id}
         compact={compact}
         badge={badgeOf(w)}
@@ -286,48 +310,29 @@ function ContextPanel({
 }) {
   const pathname = usePathname();
   const groups = visibleGroups(workspace, ctx);
-  const hubActive = pathname === workspace.href;
+  const { pending, start } = useNavPending();
 
   return (
     <div className="flex h-full w-full flex-col bg-sidebar">
       {showOrg && <OrgHeader />}
 
-      <div className="px-4 pb-2 pt-3.5">
-        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-sidebar-foreground/55">
-          Workspace
-        </p>
-        <div className="mt-1 flex items-start gap-2">
-          <Icon name={workspace.icon} className="mt-0.5 size-[17px] shrink-0 text-sidebar-primary" />
-          <div className="min-w-0">
-            <p className="font-display text-[15px] font-semibold leading-tight text-sidebar-foreground">
-              {workspace.label}
-            </p>
-            <p className="mt-1 text-[11px] leading-snug text-sidebar-foreground/65">{workspace.tagline}</p>
-          </div>
-        </div>
-      </div>
-
-      {workspace.slug !== "inicio" && (
-        <div className="px-3 pb-1.5">
-          <Link
-            href={workspace.href}
-            onClick={onNavigate}
-            className={cn(
-              "flex items-center gap-2 rounded-lg px-3 py-2 text-[12.5px] font-semibold transition-colors",
-              hubActive
-                ? "bg-sidebar-accent text-sidebar-primary"
-                : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-            )}
-          >
-            <Icon name="LayoutGrid" className="size-4" />
-            Resumen
-          </Link>
+      {/*
+        Sin bloque descriptivo del workspace: el riel ya marca el área activa y
+        las migas la repiten en la cabecera. Repetir nombre y descripción aquí
+        solo robaba altura al menú, que es lo que de verdad se usa.
+        En el flyout del riel contraído sí hace falta un título, porque ahí el
+        nivel 1 son iconos sueltos.
+      */}
+      {flyout && (
+        <div className="flex items-center gap-2 border-b border-sidebar-border px-3.5 py-2.5">
+          <Icon name={workspace.icon} className="size-4 shrink-0 text-sidebar-primary" />
+          <p className="truncate text-[13px] font-semibold text-sidebar-foreground">{workspace.label}</p>
         </div>
       )}
 
       <nav
         aria-label={`Navegación de ${workspace.label}`}
-        className={cn("tf-scroll flex-1 space-y-4 overflow-y-auto px-3 pb-5", flyout && "max-h-[70vh] pt-1")}
+        className={cn("tf-scroll flex-1 space-y-4 overflow-y-auto px-3 pb-5 pt-3", flyout && "max-h-[70vh] pt-2")}
       >
         {groups.map((group) => (
           <div key={group.id}>
@@ -340,15 +345,21 @@ function ContextPanel({
                   pathname === item.href ||
                   (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`));
                 const count = item.badgeKey ? badges[item.badgeKey] || 0 : 0;
+                const loading = pending === item.href && !active;
                 return (
                   <li key={item.id}>
                     <Link
                       href={item.href}
-                      onClick={() => { rememberVisit(item.id); onNavigate?.(); }}
+                      prefetch
+                      onClick={() => {
+                        rememberVisit(item.id);
+                        if (!item.external) start(item.href);
+                        onNavigate?.();
+                      }}
                       target={item.external ? "_blank" : undefined}
                       className={cn(
                         "group flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors",
-                        active
+                        active || loading
                           ? "bg-sidebar-accent text-sidebar-primary"
                           : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
                       )}
@@ -369,7 +380,10 @@ function ContextPanel({
                         </span>
                       )}
                       {item.external && <Icon name="ArrowUpRight" className="ml-auto size-3.5 opacity-60" />}
-                      {active && !count && !item.external && (
+                      {loading && (
+                        <Icon name="LoaderCircle" className="ml-auto size-3.5 animate-spin text-sidebar-primary" />
+                      )}
+                      {active && !loading && !count && !item.external && (
                         <span className="ml-auto size-1.5 rounded-full bg-sidebar-primary" />
                       )}
                     </Link>
@@ -490,9 +504,32 @@ export function AppShell({
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<NavMode>("full");
 
+  const [pending, setPending] = useState<string | null>(null);
+
   const ctx: NavContext = { role: user.role, modules: user.modules, companyType: user.companyType };
   const workspace = workspaceOf(pathname);
-  const trail = breadcrumbs(pathname);
+  // La primera miga lleva al módulo de entrada del área: el workspace en sí no
+  // es una pantalla, así se evita el salto por la redirección.
+  const trail = breadcrumbs(pathname).map((crumb, i) =>
+    i === 0 ? { ...crumb, href: workspaceLanding(workspace, ctx) } : crumb
+  );
+
+  // Al llegar la nueva ruta se apaga el indicador. La red de seguridad evita que
+  // una navegación fallida deje la barra encendida para siempre.
+  useEffect(() => { setPending(null); }, [pathname]);
+
+  useEffect(() => {
+    if (!pending) return;
+    const timer = window.setTimeout(() => {
+      console.warn(`[shell] la navegación a ${pending} tarda más de lo previsto`);
+      setPending(null);
+    }, 10000);
+    return () => window.clearTimeout(timer);
+  }, [pending]);
+
+  const startNav = useCallback((href: string) => {
+    setPending((prev) => (href === window.location.pathname ? prev : href));
+  }, []);
 
   // La preferencia de sidebar se recuerda entre sesiones.
   useEffect(() => {
@@ -537,8 +574,15 @@ export function AppShell({
   };
 
   return (
+    <NavPendingContext.Provider value={{ pending, start: startNav }}>
     <OrgProvider companyName={user.companyName} companyType={user.companyType}>
       <div className="flex min-h-screen bg-background">
+        {/* Señal de que el clic se registró, mientras el servidor prepara la pantalla. */}
+        {pending && (
+          <div className="fixed inset-x-0 top-0 z-50 h-0.5 overflow-hidden bg-transparent">
+            <div className="tf-nav-progress h-full w-full origin-left bg-primary" />
+          </div>
+        )}
         <CommandPalette role={user.role} modules={user.modules} companyType={user.companyType} />
 
         {/* Nivel 1 + nivel 2. En compacto el panel se pliega y el árbol vive en el flyout del riel. */}
@@ -690,5 +734,6 @@ export function AppShell({
         </div>
       </div>
     </OrgProvider>
+    </NavPendingContext.Provider>
   );
 }

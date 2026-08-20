@@ -266,7 +266,16 @@
   }
   .tf-drift { animation: tf-drift 9s ease-in-out infinite; }
 
+  /* Barra de avance al navegar entre módulos: el clic responde al instante. */
+  @keyframes tf-nav-progress {
+    0%   { transform: scaleX(0); }
+    45%  { transform: scaleX(0.65); }
+    100% { transform: scaleX(0.92); }
+  }
+  .tf-nav-progress { animation: tf-nav-progress 1.6s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+
   @media (prefers-reduced-motion: reduce) {
     .tf-rise, .tf-drift { animation: none; }
+    .tf-nav-progress { animation: none; transform: scaleX(0.6); }
   }
 }
