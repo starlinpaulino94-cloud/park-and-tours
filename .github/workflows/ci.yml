@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A PR is not healthy if build or tests fail.
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npx next lint
+
+      - name: Typecheck
+        run: npx tsc --noEmit --skipLibCheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+        env:
+          # Build-time only; runtime secrets are injected by the hosting platform.
+          NEXT_TELEMETRY_DISABLED: "1"
+          DISABLE_OPENNEXT: "true"
+
+      - name: Guard — service role key never in client bundle
+        run: |
+          if grep -rn "SUPABASE_SERVICE_ROLE_KEY" src/ 2>/dev/null | grep -v "server-only\|process.env" | grep -iE "NEXT_PUBLIC|client"; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY must never be exposed to the client"; exit 1
+          fi
+          echo "OK: no service role key exposure detected"

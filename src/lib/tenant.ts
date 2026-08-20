@@ -4,6 +4,12 @@ import { auth, type AppRole } from "@/lib/auth";
 import { totalumSdk } from "@/lib/totalum";
 import type { AppUser, Company, ModuleKey } from "@/lib/types";
 import { refId } from "@/lib/types";
+import { isSupabase, pgTable } from "@/lib/data-backend";
+import { isSupabaseAuth } from "@/lib/auth-backend";
+import {
+  spQuery, spCount, spFindOne, spCreate, spUpdate, spDelete,
+} from "@/lib/supabase/data-provider";
+import { getSupabaseTenantContext } from "@/lib/supabase/auth-context";
 
 /**
  * Multi-tenant security core.
@@ -39,6 +45,11 @@ export class TenantError extends Error {
 
 /** Resolves the caller's tenant context from the session + database (authoritative). */
 export async function getTenantContext(): Promise<TenantContext | null> {
+  // M3: when Supabase Auth is active, the tenant comes from the JWT claims
+  // (org_id/app_role/partner_id) — no per-request DB lookup.
+  if (isSupabaseAuth()) {
+    return getSupabaseTenantContext();
+  }
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session?.user?.id) {
     console.log("[tenant] no session");
@@ -162,6 +173,9 @@ export async function tenantQuery<T = Record<string, unknown>>(
   tableName: string,
   options: QueryOptions = {}
 ): Promise<T[]> {
+  if (isSupabase()) {
+    return spQuery<T>(companyId, pgTable(tableName), options as never);
+  }
   const filter = { ...((options._filter as Record<string, unknown>) || {}), company: companyId };
   const res = await totalumSdk.crud.query(tableName, { ...options, _filter: filter });
   if (res.errors) console.error(`[tenantQuery] ${tableName} errors:`, res.errors);
@@ -184,6 +198,9 @@ export async function tenantCount(
   tableName: string,
   filter: Record<string, unknown> = {}
 ): Promise<number> {
+  if (isSupabase()) {
+    return spCount(companyId, pgTable(tableName), filter);
+  }
   const agg = await tenantAggregate(companyId, tableName, {
     _filter: filter,
     _aggregate: { _count: true },
@@ -201,6 +218,9 @@ export async function tenantFindOne<T = Record<string, unknown>>(
   id: string,
   expand: QueryOptions = {}
 ): Promise<T> {
+  if (isSupabase()) {
+    return spFindOne<T>(companyId, pgTable(tableName), id);
+  }
   const rows = await tenantQuery<any>(companyId, tableName, {
     ...expand,
     _filter: { _id: id },
@@ -218,6 +238,9 @@ export async function tenantCreate<T = Record<string, unknown>>(
   tableName: string,
   data: Record<string, unknown>
 ): Promise<T> {
+  if (isSupabase()) {
+    return spCreate<T>(companyId, pgTable(tableName), data);
+  }
   const res = await totalumSdk.crud.createRecord(tableName, { ...data, company: companyId });
   if (res.errors) {
     console.error(`[tenantCreate] ${tableName} errors:`, res.errors);
@@ -233,6 +256,9 @@ export async function tenantUpdate<T = Record<string, unknown>>(
   id: string,
   data: Record<string, unknown>
 ): Promise<T> {
+  if (isSupabase()) {
+    return spUpdate<T>(companyId, pgTable(tableName), id, data);
+  }
   await tenantFindOne(companyId, tableName, id);
   const { company: _ignored, ...safe } = data as Record<string, unknown>;
   const res = await totalumSdk.crud.editRecordById(tableName, id, safe);
@@ -245,6 +271,9 @@ export async function tenantUpdate<T = Record<string, unknown>>(
 
 /** Deletes a record after verifying tenant ownership. */
 export async function tenantDelete(companyId: string, tableName: string, id: string): Promise<void> {
+  if (isSupabase()) {
+    return spDelete(companyId, pgTable(tableName), id);
+  }
   await tenantFindOne(companyId, tableName, id);
   const res = await totalumSdk.crud.deleteRecordById(tableName, id);
   if (res.errors) {
