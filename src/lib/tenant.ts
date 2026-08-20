@@ -5,9 +5,11 @@ import { totalumSdk } from "@/lib/totalum";
 import type { AppUser, Company, ModuleKey } from "@/lib/types";
 import { refId } from "@/lib/types";
 import { isSupabase, pgTable } from "@/lib/data-backend";
+import { isSupabaseAuth } from "@/lib/auth-backend";
 import {
   spQuery, spCount, spFindOne, spCreate, spUpdate, spDelete,
 } from "@/lib/supabase/data-provider";
+import { getSupabaseTenantContext } from "@/lib/supabase/auth-context";
 
 /**
  * Multi-tenant security core.
@@ -43,6 +45,11 @@ export class TenantError extends Error {
 
 /** Resolves the caller's tenant context from the session + database (authoritative). */
 export async function getTenantContext(): Promise<TenantContext | null> {
+  // M3: when Supabase Auth is active, the tenant comes from the JWT claims
+  // (org_id/app_role/partner_id) — no per-request DB lookup.
+  if (isSupabaseAuth()) {
+    return getSupabaseTenantContext();
+  }
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session?.user?.id) {
     console.log("[tenant] no session");

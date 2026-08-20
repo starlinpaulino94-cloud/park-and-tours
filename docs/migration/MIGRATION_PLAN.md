@@ -49,14 +49,23 @@ Modo transición: el proveedor usa service-role con filtro `organization_id` exp
 
 **Gate M2:** typecheck ✅, build ✅, 41 tests ✅. Switch listo por flag. Falta: proyecto Supabase en vivo (ops), migración de callsites y transacción de orden.
 
-## FASE M3 — Auth (Supabase Auth)
-1. Sustituir better-auth + adapter por **Supabase Auth** (`@supabase/ssr`): signup/login/logout/session/refresh nativos.
-2. **Custom claims** (`custom_access_token_hook`): `org_id`, `role`, `partner_id`, `status` desde `organization_memberships` → el JWT lleva el tenant (elimina la 2ª query por request de `tenant.ts:49-53`).
-3. Activar **verificación de email** y **reset de contraseña** (hoy comentados); OAuth Google/GitHub si se desea.
-4. Reescribir `getTenantContext/requireTenant` para leer del JWT + memberships; recrear **impersonación auditada** con service_role.
-5. Actualizar `middleware.ts` (nombre de cookie `sb-<ref>-auth-token` / `getUser()`), `auth-client.ts`, `/api/auth`.
+## FASE M3 — Auth (Supabase Auth) — EN PROGRESO (detrás de flag)
+1. ✅ Clientes Supabase Auth: `src/lib/supabase/client.ts` (browser, facade `supabaseAuth` con signUp/signIn/signOut/resetPassword) + `server.ts` ya existente.
+2. ✅ **Resolución sesión→tenant desde el JWT**: `src/lib/supabase/auth-context.ts` (`getSupabaseTenantContext`) lee los claims `org_id/app_role/partner_id/status` (inyectados por `custom_access_token_hook`, migración 0002) — **sin query por request**. `getTenantContext` delega por flag `AUTH_BACKEND`. Revocación por `status` respetada (AUD-S02). Partes puras (`decodeJwtClaims`/`mapClaimsToContext`) con **7 tests**.
+3. ✅ **Middleware** `src/lib/supabase/middleware.ts` (refresco de sesión) + rama guardada en `src/middleware.ts` que gatea por `getUser()` cuando el flag está activo.
+4. ✅ **Switch `AUTH_BACKEND`** (`src/lib/auth-backend.ts`, default `better-auth`); login/register branch por `NEXT_PUBLIC_AUTH_BACKEND`.
+5. ⏳ En el dashboard de Supabase: activar el hook `custom_access_token_hook`, verificación de email y reset de contraseña; configurar OAuth si se desea (paso de ops).
+6. ⏳ Recrear **impersonación auditada** de superadmin con service_role (endpoint dedicado); portar `logout` del shell y `/api/team`/`/api/setup` a crear usuarios vía Supabase Admin API.
 
-**Gate M3:** login/logout/refresh/reset funcionan; revocación por `status` inmediata; impersonación auditada.
+**Gate M3:** typecheck ✅, build ✅, 48 tests ✅. Switch listo por flag. Falta: proyecto Supabase con hook activado (ops), impersonación y creación de usuarios server-side.
+
+### Cómo activar (con M2)
+```
+AUTH_BACKEND=supabase
+NEXT_PUBLIC_AUTH_BACKEND=supabase   # login/register usan Supabase
+SUPABASE_USE_RLS=true               # el data-provider pasa a cliente con JWT → RLS
+```
+Y en Supabase: Authentication → Hooks → Custom Access Token → `app.custom_access_token_hook`.
 
 ## FASE M4 — Storage
 1. Buckets **public** (logos, imágenes producto) y **private** (contratos, PDFs liquidación, recibos, documentos, waivers, fotos).

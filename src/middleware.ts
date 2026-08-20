@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { isSupabaseAuth } from "@/lib/auth-backend";
+import { updateSupabaseSession } from "@/lib/supabase/middleware";
 
 const isProduction = process.env.NODE_ENV === "production";
 const appUrl = process.env.NEXT_PUBLIC_APP_URL || "";
@@ -91,6 +93,22 @@ export async function middleware(request: NextRequest) {
   // Allow public routes
   if (publicRoutes.some((route) => pathname === route || pathname.startsWith(route + "/"))) {
     return response;
+  }
+
+  // M3: when Supabase Auth is active, refresh the session and gate on the user.
+  if (isSupabaseAuth()) {
+    const { response: sessionResponse, user } = await updateSupabaseSession(request);
+    if (!user) {
+      const loginUrl = new URL("/login", request.url);
+      loginUrl.searchParams.set("redirect", pathname);
+      const redirectResponse = NextResponse.redirect(loginUrl);
+      addCorsHeaders(redirectResponse, request);
+      addCspHeaders(redirectResponse);
+      return redirectResponse;
+    }
+    addCorsHeaders(sessionResponse, request);
+    addCspHeaders(sessionResponse);
+    return sessionResponse;
   }
 
   // Check session cookie for protected routes (lightweight Edge-compatible check)
