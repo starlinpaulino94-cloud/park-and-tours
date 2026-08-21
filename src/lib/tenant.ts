@@ -1,4 +1,5 @@
 import "server-only";
+import { cache } from "react";
 import { cookies, headers } from "next/headers";
 import { auth, type AppRole } from "@/lib/auth";
 import { totalumSdk } from "@/lib/totalum";
@@ -43,8 +44,16 @@ export class TenantError extends Error {
   }
 }
 
-/** Resolves the caller's tenant context from the session + database (authoritative). */
-export async function getTenantContext(): Promise<TenantContext | null> {
+/**
+ * Resolves the caller's tenant context from the session + database (authoritative).
+ *
+ * Wrapped in `cache()` so it runs once per request instead of once per caller:
+ * the dashboard layout and the page it renders both need it, and each call cost
+ * a session lookup plus a user query. Deduplicating halves the round-trips on
+ * every navigation. The cache is per-request, so it can never leak one user's
+ * context into another's.
+ */
+export const getTenantContext = cache(async function getTenantContext(): Promise<TenantContext | null> {
   // M3: when Supabase Auth is active, the tenant comes from the JWT claims
   // (org_id/app_role/partner_id) — no per-request DB lookup.
   if (isSupabaseAuth()) {
@@ -108,7 +117,7 @@ export async function getTenantContext(): Promise<TenantContext | null> {
   }
 
   return ctx;
-}
+});
 
 /** Same as `getTenantContext` but throws when unauthenticated / not attached to a tenant. */
 export async function requireTenant(): Promise<TenantContext & { companyId: string }> {

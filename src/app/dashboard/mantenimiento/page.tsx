@@ -1,11 +1,9 @@
-import { redirect } from "next/navigation";
-import { LEGACY_HUB_REDIRECTS } from "@/lib/nav";
+import { enterWorkspace } from "@/lib/workspace-entry";
 
 /**
- * Ruta heredada. "mantenimiento" dejó de ser un área propia al fusionarse en
- * "operaciones"; el enlace antiguo sigue funcionando y lleva al workspace correcto.
- * Sus rutas hijas no cambiaron.
+ * Ruta heredada: «mantenimiento» pasó a formar parte de «operaciones».
+ * El enlace antiguo sigue vivo y lleva al módulo principal del área.
  */
-export default function LegacyHub() {
-  redirect(LEGACY_HUB_REDIRECTS["/dashboard/mantenimiento"]);
+export default async function LegacyHub() {
+  await enterWorkspace("operaciones");
 }

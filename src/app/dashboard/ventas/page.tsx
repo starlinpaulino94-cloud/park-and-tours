@@ -1,11 +1,9 @@
-import { redirect } from "next/navigation";
-import { LEGACY_HUB_REDIRECTS } from "@/lib/nav";
+import { enterWorkspace } from "@/lib/workspace-entry";
 
 /**
- * Ruta heredada. "ventas" dejó de ser un área propia al fusionarse en
- * "comercial"; el enlace antiguo sigue funcionando y lleva al workspace correcto.
- * Sus rutas hijas no cambiaron.
+ * Ruta heredada: «ventas» se fusionó en «comercial».
+ * El enlace antiguo sigue vivo y lleva al módulo principal del área.
  */
-export default function LegacyHub() {
-  redirect(LEGACY_HUB_REDIRECTS["/dashboard/ventas"]);
+export default async function LegacyHub() {
+  await enterWorkspace("comercial");
 }
