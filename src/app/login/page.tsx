@@ -26,6 +26,19 @@ function LoginForm() {
     setLoading(true);
 
     try {
+      // M3: use Supabase Auth when the flag is set, else better-auth (default).
+      if (process.env.NEXT_PUBLIC_AUTH_BACKEND === "supabase") {
+        const { supabaseAuth } = await import("@/lib/supabase/client");
+        const { error } = await supabaseAuth.signInEmail(email, password);
+        if (error) {
+          setError(error.message || "No se pudo iniciar sesión. Revisa tus credenciales.");
+          setLoading(false);
+          return;
+        }
+        setTimeout(() => { window.location.href = redirect; }, 300);
+        return;
+      }
+
       const result = await signIn.email({
         email,
         password,

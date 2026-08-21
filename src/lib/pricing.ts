@@ -139,10 +139,14 @@ export async function resolvePrice(input: PriceInput): Promise<PriceResult> {
     appliedRule?.price_type === "per_group" || appliedRule?.price_type === "per_vehicle";
   const grossAmount = round2(isGroupPrice ? unitPrice : unitPrice * input.quantity);
 
-  const discountPct = input.discountPct ?? 0;
+  // AUD-F02: clamp discount to [0,100]. A client-supplied discount >100 (or
+  // negative) previously produced negative totals/balances, and a booking with
+  // a negative total corrupts order totals and dashboard KPIs.
+  const discountPct = Math.min(100, Math.max(0, input.discountPct ?? 0));
   const discountAmount = round2((grossAmount * discountPct) / 100);
   const netAmount = round2(grossAmount - discountAmount);
-  const taxPct = input.taxPct ?? 0;
+  // AUD-F02: tax percentage cannot be negative.
+  const taxPct = Math.max(0, input.taxPct ?? 0);
   const taxAmount = round2((netAmount * taxPct) / 100);
   const totalAmount = round2(netAmount + taxAmount);
 

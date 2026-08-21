@@ -29,6 +29,8 @@ yarn-error.log*
 
 # local env files
 .env*.local
+.env.production
+.env.development
 
 # vercel
 .vercel
@@ -47,7 +49,11 @@ next-env.d.ts
 frontend.log
 npm-start.log
 CLAUDE.md
-/docs/
+
+# NOTE: `/docs/` estuvo aquí (heredado del andamiaje del generador). Se retiró
+# porque el conocimiento del proyecto — especificación, arquitectura, ADRs y
+# auditorías — debe vivir en el repositorio, no fuera de él. Ver
+# docs/audit/AI_TECHNICAL_DEBT.md (AID-007).
 
 # claude files
 .claude
@@ -68,3 +74,6 @@ screenshots/
 /tmp/playwright-screenshots/
 /tmp/playwright-dev-server.log
 /*.png
+
+# ETL backups — customer data, never commit
+scripts/migrate/backup/

@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, tenantQuery, TenantError } from "@/lib/tenant";
+import { requireTenant, tenantQuery, requireAtLeast, TenantError } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import { resolvePrice } from "@/lib/pricing";
 import type { Departure, Partner, Product, ProductModality } from "@/lib/types";
@@ -13,7 +13,15 @@ export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
     const sp = req.nextUrl.searchParams;
-    const partnerId = ctx.role === "partner" ? ctx.partnerId : sp.get("partner_id") || ctx.partnerId;
+    // AUD-006: a staff user needs manager+ to inspect another partner's catalog.
+    let partnerId: string | null;
+    if (ctx.role === "partner") {
+      partnerId = ctx.partnerId;
+    } else {
+      const requested = sp.get("partner_id");
+      if (requested && requested !== ctx.partnerId) requireAtLeast(ctx, "manager");
+      partnerId = requested || ctx.partnerId;
+    }
     if (!partnerId) throw new TenantError("Tu usuario no está asociado a ningún partner", 403);
 
     const partner = (await tenantQuery<Partner>(ctx.companyId, "partner", {

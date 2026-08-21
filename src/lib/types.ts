@@ -67,6 +67,7 @@ export interface Company extends BaseRecord {
   base_currency?: Currency; plan?: Ref<Plan>;
   subscription_status?: "trial" | "active" | "past_due" | "cancelled" | "suspended";
   trial_ends_at?: string; next_billing_at?: string;
+  stripe_customer_id?: string; stripe_subscription_id?: string;
   modules_enabled?: ModuleKey[]; storage_used_mb?: number;
   status?: "active" | "inactive" | "suspended"; notes?: string;
 }
@@ -395,7 +396,7 @@ export interface CommissionSnapshot {
 
 export interface Commission extends BaseRecord {
   company?: Ref<Company>; booking?: Ref<Booking>; order?: Ref<Order>;
-  rule?: Ref<CommissionRule>;
+  rule?: Ref<CommissionRule>; settlement?: Ref<Settlement>;
   seller?: Ref<Seller>; partner?: Ref<Partner>; user?: Ref<AppUser>;
   beneficiary_type?: BeneficiaryType; beneficiary_name?: string;
   base_amount?: number; calc_type?: CalcType;
@@ -411,7 +412,8 @@ export interface Settlement extends BaseRecord {
   sales_total?: number; cancellations_total?: number; base_total?: number;
   commission_total?: number; paid_total?: number; pending_total?: number;
   currency?: Currency;
-  status?: "pending" | "approved" | "partially_paid" | "paid" | "held" | "disputed";
+  status?: "pending" | "approved" | "partially_paid" | "paid" | "held" | "disputed" | "void";
+  paid_at?: string;
   issued_at?: string; pdf_file?: TotalumFile; notes?: string;
 }
 

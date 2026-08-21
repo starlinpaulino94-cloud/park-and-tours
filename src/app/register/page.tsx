@@ -32,13 +32,26 @@ export default function RegisterPage() {
       return;
     }
 
-    if (formData.password.length < 6) {
-      setError("La contraseña debe tener al menos 6 caracteres");
+    if (formData.password.length < 8) {
+      setError("La contraseña debe tener al menos 8 caracteres");
       setLoading(false);
       return;
     }
 
     try {
+      // M3: Supabase Auth when the flag is set, else better-auth (default).
+      if (process.env.NEXT_PUBLIC_AUTH_BACKEND === "supabase") {
+        const { supabaseAuth } = await import("@/lib/supabase/client");
+        const { error } = await supabaseAuth.signUpEmail(formData.email, formData.password, formData.name);
+        if (error) {
+          setError(error.message || "No se pudo crear la cuenta. Puede que el email ya esté en uso.");
+          setLoading(false);
+          return;
+        }
+        window.location.href = "/dashboard";
+        return;
+      }
+
       const result = await signUp.email({
         email: formData.email,
         password: formData.password,

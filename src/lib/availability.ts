@@ -23,6 +23,8 @@ export interface AvailabilityState {
   pendingPax: number;
   availablePax: number;
   status: DepartureStatus;
+  departureAt: string | null;
+  cutoffHours: number;
 }
 
 export class OversellError extends Error {
@@ -91,7 +93,11 @@ export async function recalculateDeparture(
     `[Availability] salida ${departureId}: cap=${capacity} conf=${bookedPax} pend=${pendingPax} libre=${availablePax} (${status})`
   );
 
-  return { departureId, capacity, bookedPax, pendingPax, availablePax, status };
+  return {
+    departureId, capacity, bookedPax, pendingPax, availablePax, status,
+    departureAt: departure.departure_at ?? null,
+    cutoffHours: departure.cutoff_hours ?? 0,
+  };
 }
 
 /**
@@ -108,6 +114,24 @@ export async function assertCapacity(
 
   if (state.status === "cancelled") throw new Error("La salida está cancelada");
   if (state.status === "closed" && !override) throw new Error("La salida está cerrada para nuevas reservas");
+  if (state.status === "completed" && !override) throw new Error("La salida ya se realizó");
+
+  // AUD-B07: reject sales on departures that have already left or are inside
+  // their booking cutoff window. Previously `cutoff_hours` was stored but never
+  // evaluated, so the sales-close time was purely decorative.
+  if (!override && state.departureAt) {
+    const departAt = new Date(state.departureAt).getTime();
+    if (Number.isFinite(departAt)) {
+      const cutoffMs = (state.cutoffHours ?? 0) * 3_600_000;
+      if (departAt - cutoffMs <= Date.now()) {
+        throw new Error(
+          state.cutoffHours > 0
+            ? `La salida está cerrada para reservas (cierre ${state.cutoffHours} h antes)`
+            : "La salida ya no admite reservas"
+        );
+      }
+    }
+  }
 
   if (state.capacity > 0 && pax > state.availablePax && !override) {
     console.warn(`[Availability] intento de sobreventa en ${departureId}: ${pax} > ${state.availablePax}`);
