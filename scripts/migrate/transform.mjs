@@ -160,6 +160,13 @@ const RELATIONSHIP_TYPES = new Set([
 const RELATIONSHIP_STATUS = new Set(["active", "inactive", "suspended"]);
 const ORG_STATUS = new Set(["active", "inactive", "suspended", "blocked", "pending"]);
 
+/** Drops null/undefined entries so jsonb metadata stays clean (0/"" are kept). */
+function pruneNulls(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) if (v != null) out[k] = v;
+  return out;
+}
+
 /** Totalum `partner` → organizations(kind='partner') row. */
 export function partnerToOrg(p) {
   const tenant = toUuid(refId(p.company));
@@ -168,15 +175,27 @@ export function partnerToOrg(p) {
     kind: "partner",
     tenant_org_id: tenant,
     parent_org_id: toUuid(refId(p.parent_partner)) ?? tenant,
-    name: p.name ?? p.legal_name ?? "Partner",
+    // Totalum `name` is the legal entity ("… SRL"); `commercial_name` is the trade name.
+    name: p.commercial_name ?? p.name ?? "Partner",
     slug: p.slug ?? null,
-    legal_name: p.legal_name ?? null,
+    legal_name: p.legal_name ?? p.name ?? null,
     tax_id: p.tax_id ?? null,
     email: p.email ?? null,
     phone: p.phone ?? null,
     country: p.country ?? null,
     currency: p.currency ?? null,
     status: ORG_STATUS.has(p.status) ? p.status : "active",
+    // Fields with no dedicated organizations column are preserved, not dropped.
+    // `balance` is a legacy snapshot — the real partner balance is recomputed from
+    // receivables/payments after load.
+    metadata: pruneNulls({
+      contact_name: p.contact_name,
+      city: p.city,
+      commercial_terms: p.commercial_terms,
+      notes: p.notes,
+      legacy_balance: p.balance,
+      legacy_created_by: refId(p.createdBy),
+    }),
   };
 }
 
