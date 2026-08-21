@@ -79,19 +79,21 @@ Y en Supabase: Authentication → Hooks → Custom Access Token → `app.custom_
 
 **Gate M4:** typecheck ✅, build ✅ (ruta `/api/storage/upload`), 54 tests ✅. Aislamiento por path **probado**. Falta: migración de blobs (M5) y cablear los formularios de la UI al endpoint.
 
-## FASE M5 — ETL de datos (Validate + Reconcile) — ✅ FRAMEWORK LISTO
-Estado: framework de ETL + reconciliación escrito y con transformaciones **testeadas** (9 tests). Falta ejecutarlo contra datos reales (paso de ops con credenciales) y extender `TABLE_SPECS` a todas las tablas.
-- ✅ `scripts/migrate/transform.mjs`: `toUuid` (uuid v5 determinista → FKs sin tabla de mapeo, ETL idempotente), `ynToBool`, `parseJsonMaybe`, `refId`, `TABLE_SPECS` (núcleo comercial-financiero).
-- ✅ `scripts/migrate/etl.mjs`: backup a JSON → extract paginado → transform → upsert `onConflict:id`. `company`→`organizations(kind='tenant')`.
-- ✅ `scripts/migrate/reconcile.mjs`: conteos por tabla + **totales financieros al centavo** (`sum(payment.amount)`, `sum(booking.total_amount)`, `sum(commission.amount)`); exit≠0 ante discrepancia.
+## FASE M5 — ETL de datos (Validate + Reconcile) — ✅ DATOS RECONCILIADOS
+Estado: ETL ejecutado contra los datos reales y reconciliación completada correctamente. Ver `docs/migration/DATA_MIGRATION_RECONCILIATION.md`.
+- ✅ `scripts/migrate/transform.mjs`: `toUuid` (uuid v5 determinista → FKs sin tabla de mapeo, ETL idempotente), `ynToBool`, `parseJsonMaybe`, `refId`, `TABLE_SPECS` completo para 80 tablas de negocio.
+- ✅ `scripts/migrate/etl.mjs`: backup a JSON → extract paginado → transform → upsert `onConflict:id`. `company`→`organizations(kind='tenant')`, `partner`→`organizations(kind='partner')` y `organization_relationships`.
+- ✅ `scripts/migrate/reconcile.mjs`: conteos por tabla, separando tenants/partners/relaciones, + **totales financieros al centavo** (`sum(payment.amount)`, `sum(booking.total_amount)`, `sum(commission.amount)`); exit≠0 ante discrepancia.
 - ✅ `scripts/migrate/backup/` en `.gitignore` (datos de clientes, nunca a Git).
 - ✅ **`TABLE_SPECS` completo: 80 tablas de negocio** (todas menos `organizations`/`partner`, que carga `loadOrganizations()`). Cada columna `ref/yn/json` **validada contra el esquema real** (`validate-specs.mjs` + `schema-columns.json` de las migraciones): 80 tablas, todas las columnas existen.
 - ✅ **Filtrado por columnas** en `transformRecord`: descarta campos de Totalum sin columna en Postgres (evita fallos de upsert por columnas inexistentes). `etl.mjs` pasa las columnas reales por tabla desde `schema-columns.json`.
-- ⏳ Cargar `partner`→org y `user`→memberships antes de las FKs; migrar blobs a Storage; refinar reconcile (organizations = tenants + partners).
+- ✅ Reconciliacion real: todos los conteos coinciden; pagos 20,362; reservas 23,374; comisiones 3,324.58.
+- ⏳ Confirmar memberships reales para usuarios que deban acceder; los usuarios demo historicos quedaron sin migrar y sus referencias se dejaron en `NULL`.
+- ⏳ Migrar blobs a Storage.
 
-**Gate M5:** transform con 9 tests ✅, scripts parsean ✅. La reconciliación real (conteos+totales cuadran) es el gate de cutover — requiere Totalum+Supabase en vivo.
+**Gate M5:** transform con 15 tests ✅, scripts parsean ✅, validación de specs 80 tablas ✅, reconciliación real ✅. El siguiente gate es M6: probar la aplicación con `DATA_BACKEND=supabase` antes de cortar lectura/escritura.
 
-### Detalle original
+### Detalle original de la estrategia
 1. **Backup** completo de Totalum antes de tocar nada.
 2. Inventario: por tabla → nº registros, relaciones, archivos, usuarios.
 3. ETL **Extract → Transform → Validate → Load → Reconcile** (script idempotente, no copiar sin validar):
@@ -99,10 +101,10 @@ Estado: framework de ETL + reconciliación escrito y con transformaciones **test
    - Transform: `'yes'→true`, strings→enums, JSON→jsonb, refs→uuid.
 4. **Reconciliación**: comparar conteos y totales financieros (bookings, customers, payments, commissions, documents). No dar por terminada la migración hasta cuadrar (p.ej. `Totalum bookings = Supabase bookings`).
 
-**Gate M5:** conteos y totales financieros coinciden 100%; referencias íntegras.
+**Gate M5 original:** conteos y totales financieros coinciden 100%; referencias íntegras. Cumplido para la carga real documentada.
 
 ## FASE M6 — Switch reads → Switch writes → Monitor
-1. `DATA_BACKEND=supabase` en **staging**: switch de lecturas; monitorizar discrepancias contra Totalum (dual-read).
+1. `DATA_BACKEND=supabase` en **staging**: switch de lecturas; monitorizar discrepancias contra Totalum (dual-read). Antes del corte, eliminar o aislar callsites directos a `totalumSdk` en flujos activos.
 2. Switch de escrituras en staging; validar flujos críticos (venta completa, check-in, comisión/settlement, refund, aislamiento A×B).
 3. Monitor con Sentry + audit_log; ventana de observación.
 

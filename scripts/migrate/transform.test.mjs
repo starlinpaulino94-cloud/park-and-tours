@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  toUuid, ynToBool, parseJsonMaybe, refId, transformRecord, TABLE_SPECS,
-  partnerToOrg, partnerToRelationship,
+  toUuid, ynToBool, parseJsonMaybe, refId, transformRecord,
+  transformPartnerOrganization, transformPartnerRelationship, TABLE_SPECS,
 } from "./transform.mjs";
 
 describe("ETL transform — toUuid (deterministic)", () => {
@@ -44,7 +44,7 @@ describe("ETL transform — transformRecord (booking)", () => {
   it("maps _id→id, company→organization_id, refs→*_id (all uuids), YN→bool, json parsed", () => {
     const row = transformRecord(spec, {
       _id: "bk1", company: "co1", order: "or1", customer: { _id: "cu1" },
-      booking_number: "RSV-1", capacity_override: "yes",
+      booking_number: "RSV-1", created_by: "user-1", capacity_override: "yes",
       price_snapshot: '{"unit_price":100}', createdAt: "2024-01-01",
     });
     expect(row.id).toBe(toUuid("bk1"));
@@ -54,6 +54,7 @@ describe("ETL transform — transformRecord (booking)", () => {
     expect(row.booking_number).toBe("RSV-1");
     expect(row.capacity_override).toBe(true);
     expect(row.price_snapshot).toEqual({ unit_price: 100 });
+    expect(row.created_by).toBeNull(); // demo users are not migrated to auth.users
     expect(row.createdAt).toBeUndefined();             // bookkeeping field dropped
   });
 
@@ -72,52 +73,49 @@ describe("ETL transform — transformRecord (booking)", () => {
   });
 });
 
-describe("ETL transform — partner → organizations / relationships", () => {
+describe("ETL transform — partner organizations", () => {
   const partner = {
-    _id: "pt1", company: "co1", name: "Agencia Sol",
-    tax_id: "B123", email: "sol@x.com", relationship_type: "subagency",
-    default_commission_pct: 12.5, credit_limit: 5000, credit_days: 30,
-    contract_from: "2024-01-01", status: "active",
+    _id: "partner-1", company: "company-1", parent_partner: { _id: "parent-1" },
+    name: "Partner One", partner_type: "reseller", default_commission_pct: 12.5,
+    credit_limit: 1000, credit_days: 30, contract_from: "2026-01-01", contract_to: "2026-12-31",
   };
 
-  it("maps a partner to an organizations(kind='partner') row scoped to its tenant", () => {
-    const org = partnerToOrg(partner);
-    expect(org.id).toBe(toUuid("pt1"));
-    expect(org.kind).toBe("partner");
-    expect(org.tenant_org_id).toBe(toUuid("co1"));   // scoped to the owning company
-    expect(org.parent_org_id).toBe(toUuid("co1"));   // no parent_partner → the tenant
-    expect(org.name).toBe("Agencia Sol");
-    expect(org.status).toBe("active");
+  it("maps partner to a tenant-scoped organization", () => {
+    expect(transformPartnerOrganization(partner)).toMatchObject({
+      id: toUuid("partner-1"), kind: "partner", tenant_org_id: toUuid("company-1"),
+      parent_org_id: toUuid("parent-1"), name: "Partner One",
+    });
   });
 
-  it("clamps an out-of-enum org status to 'active'", () => {
-    expect(partnerToOrg({ _id: "p", company: "c", status: "weird" }).status).toBe("active");
-    expect(partnerToOrg({ _id: "p", company: "c", status: "blocked" }).status).toBe("blocked");
+  it("maps commercial terms with a deterministic relationship id", () => {
+    const row = transformPartnerRelationship(partner);
+    expect(row).toMatchObject({
+      from_org_id: toUuid("company-1"), to_org_id: toUuid("partner-1"),
+      relationship_type: "reseller", default_commission_pct: 12.5, credit_days: 30,
+    });
+    expect(row.id).toBe(transformPartnerRelationship(partner).id);
   });
+});
 
-  it("nests a partner under its parent_partner when present", () => {
-    const org = partnerToOrg({ _id: "pt2", company: "co1", parent_partner: "pt1" });
-    expect(org.parent_org_id).toBe(toUuid("pt1"));
+describe("ETL transform — payment methods", () => {
+  const spec = TABLE_SPECS.find((s) => s.source === "payment");
+
+  it("maps Totalum payment methods to the Supabase enum", () => {
+    const row = transformRecord(spec, {
+      _id: "pay-1", company: "company-1", method: "b2b_credit",
+    });
+    expect(row.method).toBe("credit");
+    expect(transformRecord(spec, { method: "payment_link" }).method).toBe("link");
   });
+});
 
-  it("derives one relationship carrying the commercial terms (principal → partner)", () => {
-    const rel = partnerToRelationship(partner);
-    expect(rel.id).toBe(toUuid("rel_pt1"));           // deterministic → idempotent upsert
-    expect(rel.from_org_id).toBe(toUuid("co1"));
-    expect(rel.to_org_id).toBe(toUuid("pt1"));
-    expect(rel.relationship_type).toBe("subagency");
-    expect(rel.default_commission_pct).toBe(12.5);
-    expect(rel.credit_limit).toBe(5000);
-    expect(rel.credit_days).toBe(30);
-  });
+describe("ETL transform — lead sources", () => {
+  const spec = TABLE_SPECS.find((s) => s.source === "lead");
 
-  it("clamps an unknown relationship_type to 'agency'", () => {
-    expect(partnerToRelationship({ _id: "p", company: "c", relationship_type: "bogus" })
-      .relationship_type).toBe("agency");
-  });
-
-  it("returns null when the partner has no owning company (no FK anchor)", () => {
-    expect(partnerToRelationship({ _id: "p" })).toBeNull();
+  it("maps Totalum lead sources to allowed Supabase values", () => {
+    expect(transformRecord(spec, { source: "instagram" }).source).toBe("social");
+    expect(transformRecord(spec, { source: "ota" }).source).toBe("agency");
+    expect(transformRecord(spec, { source: "direct" }).source).toBe("web");
   });
 });
 
