@@ -12,11 +12,17 @@ import { TotalumApiSdk } from "totalum-api-sdk";
 import { createClient } from "@supabase/supabase-js";
 import { TABLE_SPECS } from "./transform.mjs";
 
-const envPath = path.resolve(process.cwd(), ".env");
-if (fs.existsSync(envPath)) {
+const envFiles = [
+  ".env",
+  `.env.${process.env.NODE_ENV || "development"}`,
+  ".env.local",
+];
+for (const envFile of envFiles) {
+  const envPath = path.resolve(process.cwd(), envFile);
+  if (!fs.existsSync(envPath)) continue;
   for (const line of fs.readFileSync(envPath, "utf8").split("\n")) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim().replace(/^['"]|['"]$/g, "");
   }
 }
 const totalum = new TotalumApiSdk({ apiKey: { "api-key": process.env.TOTALUM_API_KEY } });
@@ -29,10 +35,10 @@ async function totalumCount(table) {
   const res = await totalum.crud.query(table, { _limit: 1, _aggregate: { _count: true } });
   return res.data?.[0]?._aggregate?._count ?? 0;
 }
-async function supabaseCount(table, filter) {
-  let q = supabase.from(table).select("*", { count: "exact", head: true });
-  if (filter) q = q.eq(filter.col, filter.val);
-  const { count, error } = await q;
+async function supabaseCount(table, filters = {}) {
+  let query = supabase.from(table).select("*", { count: "exact", head: true });
+  for (const [column, value] of Object.entries(filters)) query = query.eq(column, value);
+  const { count, error } = await query;
   if (error) throw new Error(`${table}: ${error.message}`);
   return count ?? 0;
 }
@@ -47,7 +53,7 @@ const FINANCIAL = [
 async function totalumSum(table, field) {
   const pageSize = 500; let sum = 0;
   for (let offset = 0; ; offset += pageSize) {
-    const res = await totalum.crud.query(table, { _limit: pageSize, _offset: offset, _select: [field] });
+    const res = await totalum.crud.query(table, { _limit: pageSize, _offset: offset });
     const batch = res.data || [];
     for (const r of batch) sum += Number(r[field] || 0);
     if (batch.length < pageSize) break;
@@ -70,21 +76,27 @@ async function supabaseSum(table, field) {
 async function main() {
   let ok = true;
   console.log("── Reconciliation: counts ──");
-  // `organizations` holds BOTH tenants (from company) and partners (from partner),
-  // so each is reconciled against its own `kind`; partners also yield one
-  // organization_relationships row apiece.
-  const tenancy = [
-    { source: "company", target: "organizations", filter: { col: "kind", val: "tenant" } },
-    { source: "partner", target: "organizations", filter: { col: "kind", val: "partner" } },
-    { source: "partner", target: "organization_relationships" },
-  ];
-  const tables = [...tenancy, ...TABLE_SPECS.filter((s) => s.source !== "company")];
-  for (const { source, target, filter } of tables) {
-    const [a, b] = await Promise.all([totalumCount(source), supabaseCount(target, filter)]);
+  const tables = TABLE_SPECS.filter((s) => s.source !== "company");
+  const [companyCount, partnerCount, tenantCount, partnerOrgCount, relationshipCount] = await Promise.all([
+    totalumCount("company"), totalumCount("partner"),
+    supabaseCount("organizations", { kind: "tenant" }),
+    supabaseCount("organizations", { kind: "partner" }),
+    supabaseCount("organization_relationships"),
+  ]);
+  for (const [source, target, a, b] of [
+    ["company", "organizations(kind=tenant)", companyCount, tenantCount],
+    ["partner", "organizations(kind=partner)", partnerCount, partnerOrgCount],
+    ["partner", "organization_relationships", partnerCount, relationshipCount],
+  ]) {
     const match = a === b;
     if (!match) ok = false;
-    const label = filter ? `${target}[${filter.val}]` : target;
-    console.log(`  ${match ? "✓" : "✗"} ${source}→${label}: Totalum ${a} / Supabase ${b}`);
+    console.log(`  ${match ? "✓" : "✗"} ${source}→${target}: Totalum ${a} / Supabase ${b}`);
+  }
+  for (const { source, target } of tables) {
+    const [a, b] = await Promise.all([totalumCount(source), supabaseCount(target)]);
+    const match = a === b;
+    if (!match) ok = false;
+    console.log(`  ${match ? "✓" : "✗"} ${source}→${target}: Totalum ${a} / Supabase ${b}`);
   }
 
   console.log("\n── Reconciliation: financial totals ──");
