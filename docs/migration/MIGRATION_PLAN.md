@@ -85,7 +85,9 @@ Estado: framework de ETL + reconciliación escrito y con transformaciones **test
 - ✅ `scripts/migrate/etl.mjs`: backup a JSON → extract paginado → transform → upsert `onConflict:id`. `company`→`organizations(kind='tenant')`.
 - ✅ `scripts/migrate/reconcile.mjs`: conteos por tabla + **totales financieros al centavo** (`sum(payment.amount)`, `sum(booking.total_amount)`, `sum(commission.amount)`); exit≠0 ante discrepancia.
 - ✅ `scripts/migrate/backup/` en `.gitignore` (datos de clientes, nunca a Git).
-- ⏳ Extender `TABLE_SPECS` a las 82 tablas; cargar `partner`→org y `user`→memberships antes de las FKs; migrar blobs a Storage.
+- ✅ **`TABLE_SPECS` completo: 80 tablas de negocio** (todas menos `organizations`/`partner`, que carga `loadOrganizations()`). Cada columna `ref/yn/json` **validada contra el esquema real** (`validate-specs.mjs` + `schema-columns.json` de las migraciones): 80 tablas, todas las columnas existen.
+- ✅ **Filtrado por columnas** en `transformRecord`: descarta campos de Totalum sin columna en Postgres (evita fallos de upsert por columnas inexistentes). `etl.mjs` pasa las columnas reales por tabla desde `schema-columns.json`.
+- ⏳ Cargar `partner`→org y `user`→memberships antes de las FKs; migrar blobs a Storage; refinar reconcile (organizations = tenants + partners).
 
 **Gate M5:** transform con 9 tests ✅, scripts parsean ✅. La reconciliación real (conteos+totales cuadran) es el gate de cutover — requiere Totalum+Supabase en vivo.
 
