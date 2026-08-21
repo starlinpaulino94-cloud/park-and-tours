@@ -48,6 +48,95 @@ export function refId(v) {
   return v;
 }
 
+const RELATIONSHIP_TYPES = new Set([
+  "distributor", "subagency", "tour_operator", "reseller", "hotel", "agency", "tour_center",
+]);
+const PARTNER_TYPE_MAP = { ota: "agency" };
+// organization_relationships.status sólo admite estos tres (CHECK en 0002); el
+// `status` de un partner de Totalum puede ser "blocked" o "pending", que harían
+// fallar el INSERT de toda la tanda.
+const RELATIONSHIP_STATUS = new Set(["active", "inactive", "suspended"]);
+const ORG_STATUS = new Set(["active", "inactive", "suspended", "blocked", "pending"]);
+
+/** Quita nulos para que el jsonb de metadata quede limpio (0 y "" se conservan). */
+function pruneNulls(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) if (v != null) out[k] = v;
+  return out;
+}
+const AUTH_REF_FIELDS = new Set([
+  "user", "created_by", "checked_in_by", "supervisor", "approved_by", "second_approver",
+  "requested_by", "impersonated_by", "owner", "assigned_to", "reported_by", "verified_by",
+  "performed_by", "manager", "driver", "guide",
+]);
+const PAYMENT_METHOD_MAP = { b2b_credit: "credit", payment_link: "link" };
+const LEAD_SOURCE_MAP = { instagram: "social", ota: "agency", direct: "web" };
+
+export function transformPartnerOrganization(partner) {
+  const partnerId = refId(partner._id);
+  const tenant = toUuid(refId(partner.company));
+  return {
+    id: toUuid(partnerId),
+    kind: "partner",
+    // Sin `parent_partner` el nodo cuelga de su propio tenant, no de null.
+    parent_org_id: toUuid(refId(partner.parent_partner)) ?? tenant,
+    tenant_org_id: tenant,
+    // En Totalum `name` es la razón social ("… SRL") y `commercial_name` el
+    // nombre comercial. La app ya muestra `commercial_name || name`
+    // (booking-service.ts), así que organizations.name debe seguir ese criterio.
+    name: partner.commercial_name || partner.name || String(partnerId),
+    slug: partner.slug ?? null,
+    legal_name: partner.legal_name ?? partner.name ?? null,
+    tax_id: partner.tax_id ?? null,
+    email: partner.email ?? null,
+    phone: partner.phone ?? null,
+    country: partner.country ?? null,
+    timezone: partner.timezone ?? null,
+    currency: partner.currency || partner.base_currency || "usd",
+    status: ORG_STATUS.has(partner.status) ? partner.status : "active",
+    // Campos reales de `partner` que no tienen columna en organizations. Sin
+    // esto se perderían en silencio, y la migración es de una sola pasada.
+    // `balance` es una foto histórica: el saldo real se recalcula de
+    // receivables/payments tras la carga.
+    metadata: pruneNulls({
+      contact_name: partner.contact_name,
+      address: partner.address,
+      city: partner.city,
+      whatsapp: partner.whatsapp,
+      logo_url: partner.logo_url,
+      commercial_terms: partner.commercial_terms,
+      notes: partner.notes,
+      legacy_balance: partner.balance,
+      legacy_created_by: refId(partner.createdBy),
+    }),
+  };
+}
+
+export function transformPartnerRelationship(partner) {
+  const partnerId = refId(partner._id);
+  const companyId = refId(partner.company);
+  // from_org_id/to_org_id son NOT NULL: sin ancla no hay fila que insertar, y
+  // colarla haría fallar la tanda entera. El ETL descarta los nulos.
+  if (!companyId || !partnerId) return null;
+  const rawType = partner.relationship_type || partner.partner_type;
+  const relationshipType = RELATIONSHIP_TYPES.has(rawType)
+    ? rawType
+    : PARTNER_TYPE_MAP[rawType] || "agency";
+  return {
+    id: toUuid(`partner-relationship:${companyId}:${partnerId}:${relationshipType}`),
+    from_org_id: toUuid(companyId),
+    to_org_id: toUuid(partnerId),
+    relationship_type: relationshipType,
+    default_commission_pct: partner.default_commission_pct ?? null,
+    credit_limit: partner.credit_limit ?? null,
+    credit_days: partner.credit_days ?? null,
+    currency: partner.currency || partner.base_currency || "usd",
+    contract_from: partner.contract_from ?? null,
+    contract_to: partner.contract_to ?? null,
+    status: RELATIONSHIP_STATUS.has(partner.status) ? partner.status : "active",
+  };
+}
+
 /**
  * Per-table migration spec:
  *   source  Totalum table name
@@ -87,6 +176,7 @@ export const TABLE_SPECS = [
   { source: "zone", target: "zone", refs: {} },
   { source: "branch", target: "branch", refs: { manager: "manager_id", parent_branch: "parent_branch_id" } },
   { source: "supplier", target: "supplier", refs: {} },
+  { source: "vehicle", target: "vehicle", refs: { supplier: "supplier_id", driver: "driver_id" } },
   { source: "staff", target: "staff", refs: { supplier: "supplier_id", user: "user_id" } },
   { source: "shift", target: "shift", refs: { staff: "staff_id", zone: "zone_id", attraction: "attraction_id", branch: "branch_id", departure: "departure_id", user: "user_id" } },
   { source: "attendance", target: "attendance", refs: { staff: "staff_id", shift: "shift_id", approved_by: "approved_by" } },
@@ -131,7 +221,6 @@ export const TABLE_SPECS = [
   { source: "stock_movement", target: "stock_movement", refs: { warehouse: "warehouse_id", to_warehouse: "to_warehouse_id", inventory_item: "inventory_item_id", user: "user_id", purchase_order: "purchase_order_id", order: "order_id", work_order: "work_order_id" } },
   { source: "purchase_order_line", target: "purchase_order_line", refs: { purchase_order: "purchase_order_id", inventory_item: "inventory_item_id" } },
   { source: "attraction", target: "attraction", refs: { zone: "zone_id" }, yn: ["requires_waiver", "weather_sensitive"] },
-  { source: "vehicle", target: "vehicle", refs: { supplier: "supplier_id", driver: "driver_id" } },
   { source: "asset", target: "asset", refs: { zone: "zone_id", vehicle: "vehicle_id", supplier: "supplier_id", branch: "branch_id", attraction: "attraction_id" }, yn: ["blocks_capacity"] },
   { source: "attraction_log", target: "attraction_log", refs: { attraction: "attraction_id", user: "user_id", staff: "staff_id" } },
   { source: "waiver_template", target: "waiver_template", refs: {}, yn: ["requires_guardian"] },
@@ -144,85 +233,6 @@ export const TABLE_SPECS = [
   { source: "inspection", target: "inspection", refs: { inspection_template: "inspection_template_id", asset: "asset_id", attraction: "attraction_id", vehicle: "vehicle_id", performed_by: "performed_by", work_order: "work_order_id" }, yn: ["blocked_operation"] },
   { source: "task", target: "task", refs: { assigned_to: "assigned_to_id", created_by: "created_by", booking: "booking_id", order: "order_id", incident: "incident_id", work_order: "work_order_id", guest_case: "guest_case_id", customer: "customer_id", lead: "lead_id" } },
 ];
-
-// ── partner / relationship mappers ───────────────────────────────────────────
-// `partner` and `company` are NOT plain TABLE_SPECS: both become `organizations`
-// rows. A tenant's partners must be loaded (kind='partner') BEFORE any business
-// table that references partner_id, or those FKs won't resolve. Each partner also
-// yields one organization_relationships row carrying the commercial terms
-// (commission / credit / contract) between the principal tenant and the partner.
-
-// Allowed enum values from migration 0002 — anything else is clamped to a default
-// so a stray Totalum value never trips the CHECK constraint on load.
-const RELATIONSHIP_TYPES = new Set([
-  "distributor", "subagency", "tour_operator", "reseller", "hotel", "agency", "tour_center",
-]);
-const RELATIONSHIP_STATUS = new Set(["active", "inactive", "suspended"]);
-const ORG_STATUS = new Set(["active", "inactive", "suspended", "blocked", "pending"]);
-
-/** Drops null/undefined entries so jsonb metadata stays clean (0/"" are kept). */
-function pruneNulls(obj) {
-  const out = {};
-  for (const [k, v] of Object.entries(obj)) if (v != null) out[k] = v;
-  return out;
-}
-
-/** Totalum `partner` → organizations(kind='partner') row. */
-export function partnerToOrg(p) {
-  const tenant = toUuid(refId(p.company));
-  return {
-    id: toUuid(p._id),
-    kind: "partner",
-    tenant_org_id: tenant,
-    parent_org_id: toUuid(refId(p.parent_partner)) ?? tenant,
-    // Totalum `name` is the legal entity ("… SRL"); `commercial_name` is the trade name.
-    name: p.commercial_name ?? p.name ?? "Partner",
-    slug: p.slug ?? null,
-    legal_name: p.legal_name ?? p.name ?? null,
-    tax_id: p.tax_id ?? null,
-    email: p.email ?? null,
-    phone: p.phone ?? null,
-    country: p.country ?? null,
-    currency: p.currency ?? null,
-    status: ORG_STATUS.has(p.status) ? p.status : "active",
-    // Fields with no dedicated organizations column are preserved, not dropped.
-    // `balance` is a legacy snapshot — the real partner balance is recomputed from
-    // receivables/payments after load.
-    metadata: pruneNulls({
-      contact_name: p.contact_name,
-      city: p.city,
-      commercial_terms: p.commercial_terms,
-      notes: p.notes,
-      legacy_balance: p.balance,
-      legacy_created_by: refId(p.createdBy),
-    }),
-  };
-}
-
-/**
- * Totalum `partner` → organization_relationships row (principal → partner), or
- * null when the partner has no owning company. The id is derived deterministically
- * from the partner id so re-runs upsert the same row.
- */
-export function partnerToRelationship(p) {
-  const from = toUuid(refId(p.company));
-  const to = toUuid(p._id);
-  if (!from || !to) return null;
-  const type = p.relationship_type ?? p.partner_type ?? p.type;
-  return {
-    id: toUuid(`rel_${p._id}`),
-    from_org_id: from,
-    to_org_id: to,
-    relationship_type: RELATIONSHIP_TYPES.has(type) ? type : "agency",
-    default_commission_pct: p.default_commission_pct ?? p.commission_pct ?? null,
-    credit_limit: p.credit_limit ?? null,
-    credit_days: p.credit_days ?? null,
-    currency: p.currency ?? "usd",
-    contract_from: p.contract_from ?? null,
-    contract_to: p.contract_to ?? null,
-    status: RELATIONSHIP_STATUS.has(p.status) ? p.status : "active",
-  };
-}
 
 /**
  * Transforms a Totalum record into a Postgres row per its spec.
@@ -245,7 +255,18 @@ export function transformRecord(spec, record, orgUuid, allowedCols = null) {
     if (drop.has(key)) continue;
     if (key === "_id") { row.id = toUuid(value); continue; }
     if (key === "company") { row.organization_id = orgUuid ?? toUuid(refId(value)); continue; }
-    if (key in refs) { row[refs[key]] = toUuid(refId(value)); continue; }
+    if (key in refs) {
+      row[refs[key]] = AUTH_REF_FIELDS.has(key) ? null : toUuid(refId(value));
+      continue;
+    }
+    if (spec.source === "payment" && key === "method") {
+      row.method = PAYMENT_METHOD_MAP[value] || value;
+      continue;
+    }
+    if (spec.source === "lead" && key === "source") {
+      row.source = LEAD_SOURCE_MAP[value] || value;
+      continue;
+    }
     if (yn.has(key)) { row[rename[key] ?? key] = ynToBool(value); continue; }
     if (json.has(key)) { row[rename[key] ?? key] = parseJsonMaybe(value); continue; }
     if (key === "createdAt" || key === "updatedAt" || key === "__v") continue;

@@ -102,7 +102,7 @@ export const WORKSPACES: Workspace[] = [
     groups: [
       {
         id: "inicio-panel",
-        title: "Panel",
+        title: "Vista general",
         items: [
           { id: "panel", href: "/dashboard", label: "Panel", icon: "LayoutDashboard", primary: true,
             description: "Ventas, ocupación, caja y alertas del día en tiempo real.",
@@ -497,7 +497,7 @@ export const WORKSPACES: Workspace[] = [
       },
       {
         id: "fin-facturacion",
-        title: "Facturación",
+        title: "Comprobantes",
         items: [
           { id: "facturas", href: "/dashboard/finanzas/facturas", label: "Facturación", icon: "Receipt", minRole: "manager",
             description: "Comprobantes fiscales, NCF/e-CF y notas de crédito.",
@@ -584,7 +584,7 @@ export const WORKSPACES: Workspace[] = [
     groups: [
       {
         id: "ana-rentabilidad",
-        title: "Rentabilidad",
+        title: "Resultados",
         items: [
           { id: "rentabilidad", href: "/dashboard/rentabilidad", label: "Rentabilidad", icon: "TrendingUp", module: "reports", primary: true,
             description: "Margen por producto, canal y socio con costos reales.",
@@ -593,7 +593,7 @@ export const WORKSPACES: Workspace[] = [
       },
       {
         id: "ana-reportes",
-        title: "Reportes",
+        title: "Informes",
         items: [
           { id: "reportes", href: "/dashboard/analitica/reportes", label: "Reportes", icon: "BarChart3",
             description: "Los reportes indispensables del negocio, listos para exportar.",
@@ -694,11 +694,12 @@ export const SUPERADMIN_NAV: NavItem[] = [
 /* Rutas heredadas — los hubs fusionados conservan su URL vía redirect         */
 /* -------------------------------------------------------------------------- */
 
+/** Ruta heredada → slug del workspace que la absorbió. */
 export const LEGACY_HUB_REDIRECTS: Record<string, string> = {
-  "/dashboard/ventas": "/dashboard/comercial",
-  "/dashboard/catalogo": "/dashboard/comercial",
-  "/dashboard/distribucion": "/dashboard/comercial",
-  "/dashboard/mantenimiento": "/dashboard/operaciones",
+  "/dashboard/ventas": "comercial",
+  "/dashboard/catalogo": "comercial",
+  "/dashboard/distribucion": "comercial",
+  "/dashboard/mantenimiento": "operaciones",
 };
 
 /* -------------------------------------------------------------------------- */
@@ -753,6 +754,24 @@ export function canSeeWorkspace(workspace: Workspace, ctx: NavContext): boolean 
 /** Nivel 1 ya filtrado y ordenado. */
 export function visibleWorkspaces(ctx: NavContext): Workspace[] {
   return WORKSPACES.filter((w) => canSeeWorkspace(w, ctx)).sort((a, b) => a.order - b.order);
+}
+
+/**
+ * Módulo al que se entra al pulsar un workspace.
+ *
+ * Un workspace no es una pantalla: es un contenedor. Al elegirlo se abre
+ * directamente su módulo principal y el nivel 2 pasa a mostrar el resto del
+ * árbol, en vez de intercalar una página de tarjetas que obliga a un clic más
+ * para llegar al trabajo real.
+ *
+ * Se respeta la visibilidad del usuario: si el módulo destacado no le
+ * corresponde, entra al primero que sí puede ver.
+ */
+export function workspaceLanding(workspace: Workspace, ctx: NavContext): string {
+  const items = visibleGroups(workspace, ctx)
+    .flatMap((g) => g.items)
+    .filter((i) => !i.external);
+  return items.find((i) => i.primary)?.href || items[0]?.href || workspace.href;
 }
 
 export function workspaceBySlug(slug: string): Workspace | undefined {

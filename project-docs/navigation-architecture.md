@@ -45,6 +45,27 @@ Resultado: **10 workspaces**, 0 módulos eliminados, 0 módulos nuevos, 0 rutas 
 en las plataformas de referencia. No es un cajón de sastre: solo contiene
 organización, gobierno y plataforma.
 
+### La ruta del workspace no es una pantalla
+
+Pulsar un área **entra directamente a su módulo principal**; el menú lateral pasa
+a mostrar el resto del área. La URL del workspace se conserva por compatibilidad,
+pero resuelve el destino y redirige (`enterWorkspace()` en
+`src/lib/workspace-entry.ts`), sin consultar ninguna tabla.
+
+El destino lo decide `workspaceLanding(workspace, ctx)`: el módulo marcado
+`primary` si el usuario puede verlo y, si no, el primero que sí. Así un cajero
+entra a Operaciones por *Check-in* y no por *Despacho*, que no le corresponde.
+
+| Workspace | Entra a | Workspace | Entra a |
+|---|---|---|---|
+| Inicio | `/dashboard` | Clientes | `/dashboard/clientes/directorio` |
+| Comercial | `/dashboard/pos` | Finanzas | `/dashboard/caja` |
+| Operaciones | `/dashboard/operaciones/despacho` | Equipo | `/dashboard/personal` |
+| Parque | `/dashboard/parque/control` | Analítica | `/dashboard/rentabilidad` |
+| Comercio | `/dashboard/comercio/articulos` | Administración | `/dashboard/configuracion` |
+
+*(destinos para un administrador; con menos permisos caen al primer módulo visible)*
+
 ---
 
 ## 3. Nivel 2 — navegación contextual por workspace
@@ -283,15 +304,16 @@ Además, cada módulo puede exigir una capacidad del plan (`modules_enabled`):
 **Ninguna ruta de módulo cambió.** Solo cambia a qué workspace pertenece, y eso
 se resuelve por coincidencia de prefijo más largo en `workspaceOf(pathname)`.
 
-Los cuatro *hubs* de los dominios fusionados sí dejaron de existir como página
-propia y redirigen con `redirect()` del lado del servidor (308, deep link intacto):
+Las rutas de workspace y las de los dominios fusionados no pintan pantalla:
+resuelven el módulo de entrada y redirigen del lado del servidor, con el deep
+link intacto.
 
-| Ruta antigua | Redirige a |
-|---|---|
-| `/dashboard/ventas` | `/dashboard/comercial` |
-| `/dashboard/catalogo` | `/dashboard/comercial` |
-| `/dashboard/distribucion` | `/dashboard/comercial` |
-| `/dashboard/mantenimiento` | `/dashboard/operaciones` |
+| Ruta antigua | Entra al área | Destino típico |
+|---|---|---|
+| `/dashboard/ventas` | Comercial | `/dashboard/pos` |
+| `/dashboard/catalogo` | Comercial | `/dashboard/pos` |
+| `/dashboard/distribucion` | Comercial | `/dashboard/pos` |
+| `/dashboard/mantenimiento` | Operaciones | `/dashboard/operaciones/despacho` |
 
 Sus rutas hijas (`/dashboard/ventas/tickets`, `/dashboard/catalogo/precios`,
 `/dashboard/mantenimiento/activos`, …) **no** se tocaron.
@@ -334,13 +356,49 @@ una. La selección se conserva al cambiar de workspace y entre recargas.
 - La preferencia expandido/contraído se guarda en `localStorage` (`tf:nav-mode`).
 - En contraído el clic **navega** al workspace y el *hover* muestra su árbol: nunca compiten por el mismo gesto y contraer no cuesta perder el nivel 2.
 - Entrar a un workspace **reemplaza** el nivel 2; no hay acordeones anidados.
-- Migas de pan de 3 niveles como máximo: `Workspace / Grupo / Módulo` (el grupo no es enlazable porque no es una página).
+- El panel **no repite** el nombre ni la descripción del área: el riel ya marca cuál está activa y las migas lo dicen en la cabecera. Esa altura se destina al menú, que es lo que se usa. En el flyout del riel contraído sí hay un título de una línea, porque allí el nivel 1 son iconos sueltos.
+- No hay página «Resumen»: los módulos viven en el menú lateral, no en una rejilla de tarjetas en medio de la pantalla.
+- Migas de pan de 3 niveles como máximo: `Workspace / Grupo / Módulo` (el grupo no es enlazable porque no es una página). Ningún grupo puede llamarse igual que un módulo suyo, o la miga se repetiría.
 - Pie del riel: Administración, Perfil y el conmutador de ancho. Pie del panel: Ayuda y búsqueda ⌘K.
 - Acciones rápidas (POS, reserva, check-in, caja) viven en el botón **Crear** de la cabecera y en la paleta ⌘K, nunca como módulos permanentes.
 - Recientes (máx. 5, `tf:recent-modules`) se muestran **sólo dentro de ⌘K**, no como lista permanente en el sidebar. No se implementaron favoritos manuales en esta fase por no añadir complejidad sin demanda real.
 - Los contadores (tareas, aprobaciones, incidencias) sólo se pintan cuando hay algo que hacer.
 
-## 12. Reglas para añadir un módulo nuevo
+---
+
+## 12. Rendimiento de la navegación
+
+Cambiar de módulo dejaba la pantalla anterior bloqueada varios segundos. Eran
+tres causas sumadas, todas medidas:
+
+| Causa | Efecto | Corrección |
+|---|---|---|
+| `import * as Icons from "lucide-react"` en `Icon` | un *namespace import* no se puede tree-shakear, así que `optimizePackageImports` de Next quedaba anulado y el navegador descargaba las ~1.500 exportaciones del paquete | registro explícito de 178 iconos en `src/components/tf/icon.tsx` |
+| Los *hubs* de workspace | cada entrada a un área lanzaba hasta **22 agregaciones** contra la base antes de pintar nada | los hubs ya no existen: se entra al módulo |
+| No había ningún `loading.tsx` | Next mantiene la pantalla anterior hasta que el servidor termina; se lee como app colgada | `src/app/dashboard/loading.tsx` |
+
+Medición del bundle de cliente, mismo build de producción:
+
+```
+antes  3.149.329 B — contiene iconos jamás usados (p. ej. PawPrint)
+ahora  2.557.214 B — 0 iconos no registrados
+        −592 KB (−19 %)
+```
+
+Además:
+
+- `getTenantContext()` va envuelto en `cache()` de React. El layout y la página
+  lo pedían por separado y cada llamada costaba sesión + consulta de usuario;
+  ahora se resuelve una vez por petición.
+- Los enlaces del menú llevan `prefetch`, y con `loading.tsx` presente esa
+  frontera se cachea: el esqueleto aparece de inmediato.
+- Al pulsar, el módulo se marca con un *spinner* y aparece una barra de avance
+  arriba. La espera del servidor sigue existiendo, pero deja de parecer un
+  cuelgue.
+
+---
+
+## 13. Reglas para añadir un módulo nuevo
 
 1. Se declara **solo** en `src/lib/nav.ts`, dentro de un grupo existente.
 2. Nombre corto (una o dos palabras). El detalle va en `description`.
