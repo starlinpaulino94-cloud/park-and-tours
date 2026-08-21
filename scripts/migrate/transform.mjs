@@ -52,6 +52,18 @@ const RELATIONSHIP_TYPES = new Set([
   "distributor", "subagency", "tour_operator", "reseller", "hotel", "agency", "tour_center",
 ]);
 const PARTNER_TYPE_MAP = { ota: "agency" };
+// organization_relationships.status sólo admite estos tres (CHECK en 0002); el
+// `status` de un partner de Totalum puede ser "blocked" o "pending", que harían
+// fallar el INSERT de toda la tanda.
+const RELATIONSHIP_STATUS = new Set(["active", "inactive", "suspended"]);
+const ORG_STATUS = new Set(["active", "inactive", "suspended", "blocked", "pending"]);
+
+/** Quita nulos para que el jsonb de metadata quede limpio (0 y "" se conservan). */
+function pruneNulls(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) if (v != null) out[k] = v;
+  return out;
+}
 const AUTH_REF_FIELDS = new Set([
   "user", "created_by", "checked_in_by", "supervisor", "approved_by", "second_approver",
   "requested_by", "impersonated_by", "owner", "assigned_to", "reported_by", "verified_by",
@@ -62,27 +74,50 @@ const LEAD_SOURCE_MAP = { instagram: "social", ota: "agency", direct: "web" };
 
 export function transformPartnerOrganization(partner) {
   const partnerId = refId(partner._id);
+  const tenant = toUuid(refId(partner.company));
   return {
     id: toUuid(partnerId),
     kind: "partner",
-    parent_org_id: toUuid(refId(partner.parent_partner)),
-    tenant_org_id: toUuid(refId(partner.company)),
-    name: partner.name || partner.business_name || partner.company_name || String(partnerId),
-    slug: partner.slug,
-    legal_name: partner.legal_name,
-    tax_id: partner.tax_id,
-    email: partner.email,
-    phone: partner.phone,
-    country: partner.country,
-    timezone: partner.timezone,
+    // Sin `parent_partner` el nodo cuelga de su propio tenant, no de null.
+    parent_org_id: toUuid(refId(partner.parent_partner)) ?? tenant,
+    tenant_org_id: tenant,
+    // En Totalum `name` es la razón social ("… SRL") y `commercial_name` el
+    // nombre comercial. La app ya muestra `commercial_name || name`
+    // (booking-service.ts), así que organizations.name debe seguir ese criterio.
+    name: partner.commercial_name || partner.name || String(partnerId),
+    slug: partner.slug ?? null,
+    legal_name: partner.legal_name ?? partner.name ?? null,
+    tax_id: partner.tax_id ?? null,
+    email: partner.email ?? null,
+    phone: partner.phone ?? null,
+    country: partner.country ?? null,
+    timezone: partner.timezone ?? null,
     currency: partner.currency || partner.base_currency || "usd",
-    status: partner.status || "active",
+    status: ORG_STATUS.has(partner.status) ? partner.status : "active",
+    // Campos reales de `partner` que no tienen columna en organizations. Sin
+    // esto se perderían en silencio, y la migración es de una sola pasada.
+    // `balance` es una foto histórica: el saldo real se recalcula de
+    // receivables/payments tras la carga.
+    metadata: pruneNulls({
+      contact_name: partner.contact_name,
+      address: partner.address,
+      city: partner.city,
+      whatsapp: partner.whatsapp,
+      logo_url: partner.logo_url,
+      commercial_terms: partner.commercial_terms,
+      notes: partner.notes,
+      legacy_balance: partner.balance,
+      legacy_created_by: refId(partner.createdBy),
+    }),
   };
 }
 
 export function transformPartnerRelationship(partner) {
   const partnerId = refId(partner._id);
   const companyId = refId(partner.company);
+  // from_org_id/to_org_id son NOT NULL: sin ancla no hay fila que insertar, y
+  // colarla haría fallar la tanda entera. El ETL descarta los nulos.
+  if (!companyId || !partnerId) return null;
   const rawType = partner.relationship_type || partner.partner_type;
   const relationshipType = RELATIONSHIP_TYPES.has(rawType)
     ? rawType
@@ -92,13 +127,13 @@ export function transformPartnerRelationship(partner) {
     from_org_id: toUuid(companyId),
     to_org_id: toUuid(partnerId),
     relationship_type: relationshipType,
-    default_commission_pct: partner.default_commission_pct,
-    credit_limit: partner.credit_limit,
-    credit_days: partner.credit_days,
+    default_commission_pct: partner.default_commission_pct ?? null,
+    credit_limit: partner.credit_limit ?? null,
+    credit_days: partner.credit_days ?? null,
     currency: partner.currency || partner.base_currency || "usd",
-    contract_from: partner.contract_from,
-    contract_to: partner.contract_to,
-    status: partner.status === "inactive" ? "inactive" : (partner.status || "active"),
+    contract_from: partner.contract_from ?? null,
+    contract_to: partner.contract_to ?? null,
+    status: RELATIONSHIP_STATUS.has(partner.status) ? partner.status : "active",
   };
 }
 

@@ -119,6 +119,45 @@ describe("ETL transform — lead sources", () => {
   });
 });
 
+describe("ETL transform — partner mapping (registro real de Totalum)", () => {
+  it("maps a real Totalum partner record (name/legal split, type, metadata)", () => {
+    const real = {
+      _id: "6a85d36da48e69b89d475aa8", name: "Caribe Tour Center SRL",
+      commercial_name: "Caribe Tour Center", partner_type: "tour_center",
+      tax_id: "RNC-285121580", contact_name: "Departamento comercial",
+      email: "reservas@caribetourcenter.com", city: "Bávaro",
+      country: "República Dominicana", currency: "usd",
+      default_commission_pct: 18, credit_limit: 15000, credit_days: 15,
+      balance: 0, commercial_terms: "Comisión 18% · crédito 15 días.",
+      status: "active", notes: "Partner de demostración.",
+      company: "6a85d36aa48e69b89d475a96", createdBy: "6a85c404ba68f6c97e410af0",
+    };
+    const org = transformPartnerOrganization(real);
+    expect(org.name).toBe("Caribe Tour Center");          // commercial_name
+    expect(org.legal_name).toBe("Caribe Tour Center SRL"); // name
+    expect(org.country).toBe("República Dominicana");
+    expect(org.metadata).toEqual({
+      contact_name: "Departamento comercial", city: "Bávaro",
+      commercial_terms: "Comisión 18% · crédito 15 días.",
+      notes: "Partner de demostración.", legacy_balance: 0,
+      legacy_created_by: "6a85c404ba68f6c97e410af0",
+    });
+    const rel = transformPartnerRelationship(real);
+    expect(rel.relationship_type).toBe("tour_center");     // partner_type passes the enum
+    expect(rel.default_commission_pct).toBe(18);
+    expect(rel.credit_days).toBe(15);
+  });
+
+  it("clamps an unknown relationship_type to 'agency'", () => {
+    expect(transformPartnerRelationship({ _id: "p", company: "c", relationship_type: "bogus" })
+      .relationship_type).toBe("agency");
+  });
+
+  it("returns null when the partner has no owning company (no FK anchor)", () => {
+    expect(transformPartnerRelationship({ _id: "p" })).toBeNull();
+  });
+});
+
 describe("ETL transform — spec coverage", () => {
   it("covers all 80 business tables with unique targets", () => {
     expect(TABLE_SPECS.length).toBe(80);

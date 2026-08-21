@@ -109,7 +109,12 @@ async function loadOrganizations() {
   const partners = await extractAll("partner");
   backup("partner", partners);
   const partnerOrgs = partners.map(transformPartnerOrganization);
-  const relationships = partners.map(transformPartnerRelationship);
+  // `transformPartnerRelationship` devuelve null cuando el partner no tiene
+  // empresa dueña: from_org_id es NOT NULL, así que colar esa fila haría fallar
+  // el INSERT de toda la tanda. Se descartan avisando, no en silencio.
+  const relationships = partners.map(transformPartnerRelationship).filter(Boolean);
+  const skipped = partners.length - relationships.length;
+  if (skipped > 0) console.warn(`  ⚠ ${skipped} partner(s) sin empresa dueña: sin relación comercial`);
   if (!BACKUP_ONLY) {
     await loadRows("organizations", partnerOrgs);
     await loadRows("organization_relationships", relationships);
