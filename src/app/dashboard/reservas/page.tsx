@@ -68,7 +68,11 @@ export default function BookingsPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE) });
+    const params = new URLSearchParams({
+      limit: String(PAGE_SIZE),
+      offset: String(page * PAGE_SIZE),
+      includeTotal: "false",
+    });
     if (search) params.set("q", search);
     if (statusFilter !== "__all") params.set("filter.status", statusFilter);
     if (channelFilter !== "__all") params.set("filter.channel", channelFilter);

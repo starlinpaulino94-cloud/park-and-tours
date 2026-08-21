@@ -56,9 +56,18 @@ function addCorsHeaders(response: NextResponse, request: NextRequest) {
   return response;
 }
 
-// Set CSP to allow iframe embedding from any domain and remove X-Frame-Options
+function frameAncestors(): string {
+  const configured = (process.env.ALLOWED_FRAME_ANCESTORS || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .join(" ");
+  return configured ? `'self' ${configured}` : "'self'";
+}
+
+// Set CSP frame policy explicitly. Embeds must be allowlisted via env.
 function addCspHeaders(response: NextResponse) {
-  response.headers.set("Content-Security-Policy", "frame-ancestors *");
+  response.headers.set("Content-Security-Policy", `frame-ancestors ${frameAncestors()}`);
   response.headers.delete("X-Frame-Options");
   return response;
 }

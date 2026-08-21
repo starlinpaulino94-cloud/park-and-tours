@@ -6,14 +6,26 @@
  *   DATA_BACKEND=totalum   (default) — legacy Totalum SDK path, unchanged.
  *   DATA_BACKEND=supabase             — Postgres via the Supabase provider.
  *
- * Flipping to `supabase` requires a Supabase project with the M1 migrations
- * applied. Until Supabase Auth lands (M3) the provider runs in service-role +
- * explicit-org-scope mode (see data-provider.ts); set SUPABASE_USE_RLS=true once
- * the JWT carries the org claim.
+ * Flipping to `supabase` requires a Supabase project with the migrations
+ * applied. Non-production environments may use service-role + explicit org scope
+ * for validation. Production is fail-closed: `DATA_BACKEND=supabase` requires
+ * `SUPABASE_USE_RLS=true` so the request JWT and database RLS are active.
  */
 export type DataBackend = "totalum" | "supabase";
 
+export function assertSafeDataBackendConfig(): void {
+  if (process.env.DATA_BACKEND !== "supabase") return;
+  if (process.env.NODE_ENV !== "production") return;
+  if (process.env.SUPABASE_USE_RLS === "true") return;
+
+  throw new Error(
+    "Unsafe production config: DATA_BACKEND=supabase requires SUPABASE_USE_RLS=true. " +
+    "Confirm Supabase Auth memberships/JWT claims before enabling the Supabase data backend in production."
+  );
+}
+
 export function activeBackend(): DataBackend {
+  assertSafeDataBackendConfig();
   return process.env.DATA_BACKEND === "supabase" ? "supabase" : "totalum";
 }
 

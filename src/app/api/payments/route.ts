@@ -1,13 +1,13 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantQuery, tenantCreate, tenantFindOne } from "@/lib/tenant";
+import { requireTenant, requireAtLeast, tenantQuery, tenantCreate, tenantFindOne, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
-import { totalumSdk } from "@/lib/totalum";
 import { syncOrderTotals } from "@/lib/booking-service";
 import { recalcCashSession } from "@/lib/cash";
 import { postPayment } from "@/lib/ledger-events";
 import { resolveExchangeRate } from "@/lib/currency";
 import { newPaymentReference } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
+import { assertSameOriginMutation } from "@/lib/csrf";
 import type { CashSession, Currency, Order, PaymentMethod, Receivable } from "@/lib/types";
 
 /**
@@ -16,6 +16,7 @@ import type { CashSession, Currency, Order, PaymentMethod, Receivable } from "@/
  */
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
     requireAtLeast(ctx, "seller");
 
@@ -185,7 +186,7 @@ export async function POST(req: NextRequest) {
         }
 
         const newBalance = Math.max(0, round2(total - newPaid));
-        await totalumSdk.crud.editRecordById("receivable", r._id, {
+        await tenantUpdate(ctx.companyId, "receivable", r._id, {
           paid_amount: newPaid,
           balance: newBalance,
           status: newBalance <= 0.009 ? "paid" : newPaid > 0.009 ? "partially_paid" : "pending",

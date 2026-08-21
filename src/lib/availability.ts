@@ -1,5 +1,5 @@
 import "server-only";
-import { totalumSdk } from "@/lib/totalum";
+import { tenantQuery, tenantUpdate } from "@/lib/tenant";
 import type { Departure, DepartureStatus } from "@/lib/types";
 
 /**
@@ -51,21 +51,17 @@ export async function recalculateDeparture(
   companyId: string,
   departureId: string
 ): Promise<AvailabilityState> {
-  const [departureRes, bookingsRes] = await Promise.all([
-    totalumSdk.crud.query("departure", {
-      _filter: { company: companyId, _id: departureId },
-      _limit: 1,
-    }),
-    totalumSdk.crud.query("booking", {
-      _filter: { company: companyId, departure: departureId, status: { in: ACTIVE_STATUSES } },
+  const [departures, bookings] = await Promise.all([
+    tenantQuery<Departure>(companyId, "departure", { _filter: { _id: departureId }, _limit: 1 }),
+    tenantQuery<{ status?: string; pax_total?: number }>(companyId, "booking", {
+      _filter: { departure: departureId, status: { in: ACTIVE_STATUSES } },
       _limit: 1000,
     }),
   ]);
 
-  const departure = (departureRes.data?.[0] || null) as Departure | null;
+  const departure = departures[0] ?? null;
   if (!departure) throw new Error("Salida no encontrada");
 
-  const bookings = (bookingsRes.data || []) as { status?: string; pax_total?: number }[];
   let bookedPax = 0;
   let pendingPax = 0;
   for (const b of bookings) {
@@ -78,16 +74,12 @@ export async function recalculateDeparture(
   const availablePax = Math.max(0, capacity - bookedPax - pendingPax);
   const status = deriveStatus(capacity, bookedPax + pendingPax, departure.status);
 
-  const update = await totalumSdk.crud.editRecordById("departure", departureId, {
+  await tenantUpdate(companyId, "departure", departureId, {
     booked_pax: bookedPax,
     pending_pax: pendingPax,
     available_pax: availablePax,
     status,
   });
-  if (update.errors) {
-    console.error("[Availability] failed updating departure counters:", update.errors);
-    throw new Error(update.errors.errorMessage || "Error actualizando la disponibilidad");
-  }
 
   console.log(
     `[Availability] salida ${departureId}: cap=${capacity} conf=${bookedPax} pend=${pendingPax} libre=${availablePax} (${status})`

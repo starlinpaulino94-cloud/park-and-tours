@@ -22,3 +22,6 @@ Validaciones confirmadas:
 - Activar y probar lectura con `DATA_BACKEND=supabase` en entorno controlado.
 - Mantener `SUPABASE_USE_RLS` desactivado hasta confirmar `organization_memberships` y claims JWT.
 - Decidir si los usuarios demo historicos deben tener membership real en `organization_memberships`; si no deben acceder, no crearla.
+
+## Verificacion de memberships
+`node scripts/migrate/verify-memberships.mjs` reporto 5 tenants, 20 partners y 0 memberships activas/primarias. Esto confirma que Supabase Auth/RLS no debe activarse todavia. Primero hay que crear memberships para usuarios reales que deban acceder.

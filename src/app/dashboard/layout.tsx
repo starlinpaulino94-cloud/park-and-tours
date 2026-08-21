@@ -10,7 +10,15 @@ import { AppShell, type NavBadges, type ShellUser } from "@/components/tf/app-sh
 async function loadBadges(companyId: string, userId: string, role: string): Promise<NavBadges> {
   const safe = async (label: string, run: () => Promise<number>) => {
     try {
-      return await run();
+      return await Promise.race([
+        run(),
+        new Promise<number>((resolve) => {
+          setTimeout(() => {
+            console.warn(`[shell] conteo de ${label} omitido por timeout`);
+            resolve(0);
+          }, 1200);
+        }),
+      ]);
     } catch (err) {
       console.error(`[shell] no se pudo contar ${label}:`, err);
       return 0;
@@ -35,6 +43,7 @@ async function loadBadges(companyId: string, userId: string, role: string): Prom
 }
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const started = Date.now();
   const ctx = await getTenantContext();
   if (!ctx) redirect("/login");
   if (!ctx.companyId) redirect("/onboarding");
@@ -54,6 +63,10 @@ export default async function DashboardLayout({ children }: { children: React.Re
   };
 
   const badges = await loadBadges(ctx.companyId, ctx.userId, ctx.role);
+  const elapsed = Date.now() - started;
+  if (process.env.NODE_ENV !== "production" && elapsed > 800) {
+    console.warn(`[shell] DashboardLayout tardó ${elapsed}ms`);
+  }
 
   return <AppShell user={user} badges={badges}>{children}</AppShell>;
 }

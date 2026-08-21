@@ -18,6 +18,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { stripe, APP_URL } from "@/lib/stripe";
 import { requireTenant, requireAtLeast, TenantError } from "@/lib/tenant";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 function serializeError(err: unknown) {
   const e = err as any;
@@ -36,6 +37,7 @@ const schema = z.object({
 
 export async function POST(req: Request) {
   try {
+    assertSameOriginMutation(req);
     // SECURITY (AUD-005): this endpoint previously accepted an arbitrary
     // `customerId` from the body with NO authentication, letting anyone open
     // the Stripe billing portal (invoices, payment methods, cancel) for any

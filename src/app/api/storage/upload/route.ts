@@ -1,11 +1,13 @@
 import { NextRequest } from "next/server";
-import { requireTenant } from "@/lib/tenant";
+import { requireAtLeast, requireTenant, tenantFindOne } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import {
   BUCKETS, type BucketKey, assertUploadable, objectPath, partnerObjectPath,
   uploadObject, signedUrl, publicUrl,
 } from "@/lib/supabase/storage";
 import { TenantError } from "@/lib/tenant";
+import { assertSameOriginMutation } from "@/lib/csrf";
+import { RESOURCES } from "@/lib/resources";
 
 /**
  * POST /api/storage/upload  (M4)
@@ -16,6 +18,7 @@ import { TenantError } from "@/lib/tenant";
  */
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
 
     const form = await req.formData();
@@ -26,6 +29,11 @@ export async function POST(req: NextRequest) {
 
     if (!(file instanceof File)) throw new TenantError("Falta el archivo", 400);
     if (!(bucketKey in BUCKETS)) throw new TenantError("Bucket inválido", 400);
+    if (!entity || !id || id === "general") throw new TenantError("Entidad de destino inválida", 400);
+    const resource = RESOURCES[entity];
+    if (!resource) throw new TenantError("Entidad de destino no permitida", 400);
+    if (bucketKey === "public") requireAtLeast(ctx, "manager");
+    await tenantFindOne(ctx.companyId, resource.table, id);
     assertUploadable({ size: file.size, type: file.type });
 
     // Partner-role users write only under their own partner folder.

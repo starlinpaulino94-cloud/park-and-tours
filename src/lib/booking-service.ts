@@ -1,6 +1,5 @@
 import "server-only";
-import { totalumSdk } from "@/lib/totalum";
-import { tenantCreate, tenantQuery, type TenantContext } from "@/lib/tenant";
+import { tenantCreate, tenantQuery, tenantUpdate, type TenantContext } from "@/lib/tenant";
 import { resolvePrice, resolveCost, billablePax } from "@/lib/pricing";
 import { assertCapacity, recalculateDeparture, OversellError } from "@/lib/availability";
 import { resolveExchangeRate } from "@/lib/currency";
@@ -304,7 +303,7 @@ export async function createOrderWithBookings(
       const state = await recalculateDeparture(companyId, item.departure_id);
       const overrideAllowed = input.capacity_override === true;
       if (!overrideAllowed && state.capacity > 0 && state.bookedPax + state.pendingPax > state.capacity) {
-        await totalumSdk.crud.editRecordById("booking", booking._id, {
+        await tenantUpdate(companyId, "booking", booking._id, {
           status: "cancelled",
           cancel_reason: "Cupo agotado por una reserva simultánea",
           cancelled_at: new Date().toISOString(),
@@ -352,13 +351,10 @@ export async function createOrderWithBookings(
   // ---- promote the order (AUD-F34): the last critical write. Totals and the
   // final status go together, so the order only becomes a real sale once every
   // child exists. A failure before this point triggers the catch below.
-  const promoted = await totalumSdk.crud.editRecordById("order", order._id, {
+  await tenantUpdate(companyId, "order", order._id, {
     ...totals,
     status: "pending_payment",
   });
-  if (promoted.errors) {
-    throw new Error(promoted.errors.errorMessage || "Error finalizando la orden");
-  }
 
   } catch (err) {
     await compensateOrder(companyId, order._id, order.order_number, bookings);
@@ -403,7 +399,7 @@ async function compensateOrder(
   const departures = new Set<string>();
   for (const b of bookings) {
     try {
-      await totalumSdk.crud.editRecordById("booking", b._id, {
+      await tenantUpdate(companyId, "booking", b._id, {
         status: "cancelled",
         cancel_reason: "Orden incompleta: revertida automáticamente",
         cancelled_at: new Date().toISOString(),
@@ -429,7 +425,7 @@ async function compensateOrder(
       _filter: { order: orderId, status: "valid" }, _limit: 50,
     });
     for (const v of vouchers) {
-      await totalumSdk.crud.editRecordById("voucher", v._id, { status: "cancelled" });
+      await tenantUpdate(companyId, "voucher", v._id, { status: "cancelled" });
     }
   } catch (e) {
     console.error("[booking-service] compensación: no se pudieron anular los vouchers", orderId, e);
@@ -439,7 +435,7 @@ async function compensateOrder(
       _filter: { order: orderId, status: { in: ["pending", "approved"] } }, _limit: 50,
     });
     for (const c of commissions) {
-      await totalumSdk.crud.editRecordById("commission", c._id, {
+      await tenantUpdate(companyId, "commission", c._id, {
         status: "cancelled", notes: "Anulada: orden revertida automáticamente",
       });
     }
@@ -451,7 +447,7 @@ async function compensateOrder(
       _filter: { order: orderId, status: { nin: ["paid", "written_off"] } }, _limit: 20,
     });
     for (const r of receivables) {
-      await totalumSdk.crud.editRecordById("receivable", r._id, {
+      await tenantUpdate(companyId, "receivable", r._id, {
         status: "written_off", balance: 0,
         notes: "Anulada: orden revertida automáticamente",
       });
@@ -460,7 +456,7 @@ async function compensateOrder(
     console.error("[booking-service] compensación: no se pudieron anular las cuentas por cobrar", orderId, e);
   }
   try {
-    await totalumSdk.crud.editRecordById("order", orderId, {
+    await tenantUpdate(companyId, "order", orderId, {
       status: "cancelled",
       notes: "Orden revertida automáticamente por un fallo durante su creación",
     });
@@ -624,7 +620,7 @@ export async function syncOrderTotals(companyId: string, orderId: string): Promi
   else if (balance > 0.009) status = "partially_paid";
   else status = "paid";
 
-  await totalumSdk.crud.editRecordById("order", orderId, {
+  await tenantUpdate(companyId, "order", orderId, {
     total, paid_total: paid, balance, status,
   });
 
@@ -640,7 +636,7 @@ export async function syncOrderTotals(companyId: string, orderId: string): Promi
       else if (bookingBalance > 0.009) bStatus = "partially_paid";
       else bStatus = "paid";
     }
-    await totalumSdk.crud.editRecordById("booking", b._id, {
+    await tenantUpdate(companyId, "booking", b._id, {
       paid_amount: bookingPaid, balance_amount: bookingBalance, status: bStatus,
     });
   }

@@ -15,6 +15,8 @@ const nextConfig: NextConfig = {
   },
   allowedDevOrigins: ["*"],
   async headers() {
+    if (process.env.NODE_ENV !== "production") return [];
+
     // Only cache-control headers here. CSP and CORS are handled exclusively in middleware.ts
     return [
       {
@@ -34,22 +36,24 @@ const nextConfig: NextConfig = {
     /**
      * ⭐⭐ SOURCE TAGS FOR THE VISUAL EDITOR — see scripts/totalum-source-tags.js.
      *
-     * Every JSX element in `src/` gets `data-tlm-loc="file:line:col"`, which is what
+     * When TOTALUM_SOURCE_TAGS=1, every JSX element in `src/` gets `data-tlm-loc="file:line:col"`, which is what
      * lets the platform's visual editor edit the exact element the user clicked instead
      * of inferring it from classes and text (and sometimes refusing, because a `cn()`
      * merge or three identical cards are genuinely ambiguous from the outside).
      *
      * ⚠️ `enforce: "pre"` IS LOAD-BEARING: the transform reads TSX and must run BEFORE
-     * next-swc compiles it away. Set `TOTALUM_SOURCE_TAGS=0` to turn it off — the
-     * cloudflare deploy build does, so a published app carries no file paths.
+     * next-swc compiles it away. It is opt-in because it makes local navigation
+     * noticeably slower and should only run while using the visual editor.
      */
-    config.module.rules.push({
-      test: /\.(tsx|jsx)$/,
-      include: path.join(process.cwd(), "src"),
-      exclude: /node_modules/,
-      enforce: "pre",
-      use: [{ loader: path.join(process.cwd(), "scripts", "totalum-source-tags.js") }],
-    });
+    if (process.env.TOTALUM_SOURCE_TAGS === "1") {
+      config.module.rules.push({
+        test: /\.(tsx|jsx)$/,
+        include: path.join(process.cwd(), "src"),
+        exclude: /node_modules/,
+        enforce: "pre",
+        use: [{ loader: path.join(process.cwd(), "scripts", "totalum-source-tags.js") }],
+      });
+    }
 
     if (dev) {
       config.watchOptions = {

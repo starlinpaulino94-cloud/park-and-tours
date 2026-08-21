@@ -1,99 +1,97 @@
-# SYSTEM_MAP.md — Park & Tours
+# System Map — Park & Tours
 
-> Mapa de superficie verificado por conteo mecánico. Fecha: 2026-08-20.
-> Sustituye/actualiza `docs/audit/system-map.md` (PR #1, previo a la migración M1–M5).
+## Entradas
 
-## Métricas del repositorio
+- Browser users: staff, admin, partner, superadmin.
+- Stripe webhooks.
+- ETL scripts ejecutados desde terminal.
+- Supabase/Totalum APIs.
 
-| Área | Ficheros | Líneas |
-|---|---:|---:|
-| `src/app/api` (48 rutas) | 48 | 4 285 |
-| `src/app/dashboard` (95 páginas) | 96 | 9 159 |
-| `src/app/superadmin` | 5 | 1 437 |
-| `src/components` | 56 | 6 084 |
-| `src/lib` | 51 | 9 715 |
-| `supabase/migrations` | 17 | ~2 760 |
-| `scripts` | 7 | 2 055 |
-| **Total `src` (TS/TSX)** | **280** | **34 306** |
+## Rutas Principales
 
-Ficheros mayores: `src/lib/resources.ts` (1 018), `src/lib/nav.ts` (820), `dashboard/configuracion/page.tsx` (792), `dashboard/pos/page.tsx` (750), `components/tf/app-shell.tsx` (694), `src/lib/booking-service.ts` (649).
+| Area | Rutas | Estado |
+|---|---|---|
+| Public/Auth | `/`, `/login`, `/register`, legal, stripe success/cancel | PARTIAL |
+| Dashboard | `/dashboard/**` | PARTIAL |
+| Portal B2B | `/portal/**` | PARTIAL |
+| Superadmin | `/superadmin/**` | PARTIAL |
+| API ERP | `/api/erp/[resource]` | PARTIAL |
+| Payments | `/api/payments`, `/api/stripe/**` | PARTIAL |
+| Storage | `/api/storage/upload` | PARTIAL |
+| Setup/demo | `/api/setup/demo` | RISKY/PARTIAL |
 
-## Flujo de una petición
+## Capas Reales
 
-```
-Navegador
-   │
-   ├─ Página (95)  ── 80/95 son "use client" ──► fetch  /api/…
-   │                    15/95 Server Components
-   ▼
-middleware.ts   (Edge)  ── cookie de sesión, CORS, CSP ── NO cubre /api/*
-   │
-   ▼
-Route Handler (48)  ── requireTenant() / requireSuperadmin()
-   │                   requireAtLeast(rol) · sanitizePayload(allowlist)
-   ▼
-Capa de dominio  src/lib/*  (booking-service · pricing · commission-engine ·
-   │              availability · ledger · cash · inventory · approvals)
-   ▼
-Capa de datos  src/lib/tenant.ts   ◄── ÚNICO punto de scope de tenant
-   │                │
-   │      DATA_BACKEND=totalum (DEFECTO)      DATA_BACKEND=supabase (flag)
-   │                │                                 │
-   ▼                ▼                                 ▼
-           totalum-api-sdk (HTTP)          supabase/data-provider.ts
-                     │                          │        │
-                     ▼                     service-role  cliente RLS
-              Totalum SaaS                      └───► Postgres/Supabase
-              (fuente de verdad hoy)
+```text
+Pages / Client Components
+  ↓
+Route Handlers + Server Components
+  ↓
+src/lib domain helpers and mixed service functions
+  ↓
+tenant wrappers OR direct totalumSdk OR Supabase provider
+  ↓
+Totalum default / Supabase migration target
 ```
 
-**Layouts como frontera secundaria:** `src/app/dashboard/layout.tsx` y `src/app/superadmin/layout.tsx` re-verifican el contexto en servidor y redirigen. Esto es lo que evita que un bypass de middleware (ver `SEC-004`) sea catastrófico para las páginas.
+## Data Paths
 
-## Rutas API por dominio (48)
+### Totalum Default
 
-| Dominio | Endpoints |
-|---|---|
-| CRUD genérico | `erp/[resource]`, `erp/[resource]/[id]` — **77 recursos** |
-| Reservas | `bookings/[id]/checkin`, `bookings/[id]/cancel`, `departures/generate`, `checkin/lookup`, `orders`, `pricing/quote` |
-| Finanzas | `payments`, `cash/sessions`, `cash/sessions/[id]/close`, `cash/movements`, `commissions/bulk`, `settlements/generate`, `settlements/[id]/pay`, `ledger/post`, `ledger/chart`, `ledger/trial-balance`, `reports/aging`, `reports/profitability` |
-| Operación | `operations/dispatch`, `attractions/status`, `assets/[id]/status`, `inventory/movement`, `inventory/low-stock` |
-| Plataforma | `setup`, `setup/demo`, `company`, `team`, `me`, `approvals`, `approvals/[id]/decide`, `dashboard`, `pos/context`, `maintenance/reconcile-drafts` |
-| B2B | `portal/catalog`, `portal/summary` |
-| Superadmin | `superadmin/{stats,companies,plans,audit,impersonate}` |
-| Auth / Pagos / Storage | `auth/[...all]`, `stripe/{webhook,create-checkout-session,customer-portal,products}`, `storage/upload` |
+```text
+API/Page
+  ↓
+requireTenant / tenantQuery / direct totalumSdk
+  ↓
+Totalum API
+```
 
-## Módulos canónicos de dominio (`src/lib`)
+### Supabase Transition
 
-| Módulo | Responsabilidad | Tests |
-|---|---|:--:|
-| `tenant.ts` | Scope multi-tenant, RBAC, impersonación | ❌ |
-| `booking-service.ts` | Write-path único de venta (saga + compensación) | ❌ |
-| `availability.ts` | Guardia de cupo (`assertCapacity`) | ❌ |
-| `pricing.ts` | Precio canónico | ✅ 9 |
-| `commission-engine.ts` | Comisión canónica | ✅ 10 |
-| `ledger.ts` / `ledger-events.ts` | Partida doble | ❌ |
-| `cash.ts` | Sesiones y arqueo de caja | ❌ |
-| `inventory.ts` | Movimientos de stock | ❌ |
-| `approvals.ts` | Flujo four-eyes | ❌ |
-| `audit.ts` | Rastro de auditoría | ❌ |
-| `codes.ts` | Códigos CSPRNG | ✅ 4 |
-| `currency.ts` | Tipo de cambio server-side | ❌ |
-| `resources.ts` | Registro de 77 recursos + allowlists | ❌ |
-| `supabase/query-translator.ts` | Traductor de filtros Totalum→PostgREST | ✅ 7 |
-| `supabase/auth-context.ts` | Contexto de tenant desde JWT | ✅ 7 |
-| `supabase/storage.ts` | Rutas y validación de subida | ✅ 6 |
+```text
+DATA_BACKEND=supabase
+  ↓
+tenant.ts delegates to src/lib/supabase/data-provider.ts
+  ↓
+service_role unless SUPABASE_USE_RLS=true
+  ↓
+Postgres with explicit organization_id filter
+```
 
-## Superficie duplicada (coste del dual-backend)
+### Supabase RLS Target
 
-Cada operación de datos existe **dos veces**: rama Totalum y rama Supabase dentro de `tenant.ts`, más `auth.ts` vs `supabase/auth-context.ts`, más `better-auth-totalum-adapter.ts` (592 líneas) vs Supabase Auth. **Sólo la rama Totalum está en producción; sólo la rama Supabase tiene tests.**
+```text
+AUTH_BACKEND=supabase + SUPABASE_USE_RLS=true
+  ↓
+Supabase session JWT with org_id/app_role/partner_id
+  ↓
+RLS policies
+```
 
-## Integraciones externas
+## Critical Flows
 
-| Servicio | Uso | Criticidad | Timeout |
+| Flow | Entry | Core files | Risk |
 |---|---|---|---|
-| **Totalum** | Base de datos actual (todo) | **P0 — SPOF total** | ❌ ninguno |
-| **Stripe** | Suscripción SaaS | P0 | SDK por defecto |
-| **Supabase** | Destino de migración (DB, Auth, Storage) | P0 (futuro) | ❌ ninguno |
-| **Cloudflare Workers** | Hosting vía OpenNext | P0 | n/a |
+| Create order/booking | `/api/orders`, POS | `booking-service.ts`, `availability.ts` | transaction/concurrency |
+| Register payment | `/api/payments` | `payments/route.ts`, `cash.ts`, `ledger-events.ts` | idempotency/partial failure |
+| Stripe subscription | `/api/stripe/*` | Stripe routes/webhook | forged metadata/public checkout |
+| Upload file | `/api/storage/upload` | `storage.ts`, upload route | resource authorization |
+| Portal partner | `/portal`, `/api/portal/*` | portal routes | partner isolation |
+| ETL migration | `scripts/migrate/*` | transform/etl/reconcile | data loss/secrets |
 
-`grep 'AbortSignal|AbortController|signal:' src/` → **0 resultados**. Ninguna llamada externa tiene timeout explícito.
+## Trust Boundaries
+
+- Browser to API.
+- API to Totalum.
+- API to Supabase service role.
+- Supabase JWT/RLS.
+- Stripe webhook signature.
+- Local `.env.*` files.
+
+## Unverified Areas
+
+- Real production deployment target.
+- Restore test.
+- Load test.
+- Runtime logs/alerts.
+- Full Supabase cutover.

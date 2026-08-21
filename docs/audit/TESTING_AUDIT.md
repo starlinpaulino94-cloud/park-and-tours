@@ -1,105 +1,84 @@
-# TESTING_AUDIT.md — Park & Tours
+# Testing Audit
 
-> Fecha: 2026-08-20 · Suite ejecutada: `npx vitest run` → **9 ficheros, 63 tests, 63 ✅, 1,38 s**. `tsc --noEmit --skipLibCheck` → **limpio**.
+Fecha: 2026-08-21.
 
-## Estado
+## Verificaciones Ejecutadas
 
-Partiendo de **cero tests** (`AUDIT_REPORT.md`: *"Testing 5/100"*), ahora hay una suite real que se ejecuta rápido, pasa limpia y está integrada en CI. Es un progreso genuino.
+- `npm test`: PASS, 9 test files, 69 tests.
+- `npm run check-types-errors`: PASS.
+- `node scripts/migrate/validate-specs.mjs scripts/migrate/schema-columns.json`: PASS, 80 tablas.
+- `node --check` sobre scripts de migracion: PASS.
 
-Pero la cobertura está **invertida respecto al riesgo**.
+## Cobertura Real Detectada
 
-| Fichero de test | Tests | Qué cubre |
-|---|---:|---|
-| `pricing.test.ts` | 9 | Motor de precios — **crítico ✅** |
-| `commission-engine.test.ts` | 10 | Motor de comisiones — **crítico ✅** |
-| `codes.test.ts` | 4 | Formato de códigos CSPRNG |
-| `format.test.ts` | 7 | Utilidades de formato |
-| `data-backend.test.ts` | 3 | Selección de flag |
-| `supabase/query-translator.test.ts` | 7 | Traductor de filtros — rama **no productiva** |
-| `supabase/auth-context.test.ts` | 7 | Contexto JWT — rama **no productiva** |
-| `supabase/storage.test.ts` | 6 | Rutas y validación de subida |
-| `scripts/migrate/transform.test.mjs` | 9 | ETL de migración |
+Tests existentes concentrados en:
+- `pricing`
+- `commission-engine`
+- `codes`
+- `format`
+- Supabase query translator/storage/auth-context
+- data backend switch
+- ETL transform
 
-**23 de 63 tests (37 %) cubren código que no está en producción.** Sólo 19 (`pricing` + `commission-engine`) cubren reglas de negocio críticas del camino vivo.
+## Hallazgos
 
-## Módulos críticos sin ningún test
+### TEST-001 — No hay E2E verificado
 
-| Módulo | Líneas | Riesgo |
-|---|---:|---|
-| `booking-service.ts` | 649 | **Write-path único de ventas.** Saga, compensación, totales, prorrateo |
-| `tenant.ts` | ~300 | **Frontera de aislamiento multi-tenant y RBAC** |
-| `availability.ts` | 155 | **Guardia contra sobreventa** |
-| `resources.ts` | 1 018 | Allowlists de escritura y filtros de 77 recursos |
-| `ledger.ts` / `ledger-events.ts` | ~400 | Partida doble |
-| `cash.ts` | ~200 | Arqueo de caja |
-| `audit.ts` | ~70 | Rastro de auditoría |
-| **48 rutas API** | 4 285 | Ninguna tiene test |
+Severity: P1.
 
-> El fichero más crítico del sistema (`tenant.ts` — lo que impide que la empresa A vea los datos de la empresa B) **no tiene una sola aserción**.
+Evidence: no se detecto `playwright.config.*` ni `cypress.config.*`.
 
-## Pirámide
+Impacto: login, reserva, pago, check-in, caja y permisos no tienen prueba end-to-end.
 
-```
-        E2E              0        ← ningún flujo de usuario probado
-     Integración         0        ← ninguna ruta API, ninguna BD real
-   Unitarios           63         ← funciones puras, aisladas
-```
+Solucion: Playwright minimo para flujos P0/P1.
 
-No es una pirámide: es una base sin edificio. Los tests actuales prueban **funciones puras** (precio, comisión, formato, traducción) — valiosas, pero es precisamente la parte del código donde la IA acierta con más facilidad. **No hay ni un test que ejerza una transacción, una carrera, una petición HTTP o una frontera de autorización.**
+### TEST-002 — No hay pruebas de integracion API/DB reales
 
-## Tests que faltan, por prioridad de riesgo
+Severity: P1.
 
-### Bloqueantes (deben existir antes de producción)
+Evidence: tests actuales son unitarios/pure helpers principalmente.
 
-| # | Test | Qué demuestra | Hallazgo que cubre |
-|---|---|---|---|
-| 1 | **Aislamiento cross-tenant**: usuario del tenant A intenta leer/escribir cada uno de los 77 recursos del tenant B | La garantía central del producto. En Postgres ya está verificado a nivel RLS; falta a nivel de API | `tenant.ts` |
-| 2 | **Cobertura de RLS en CI**: consulta que falla si alguna tabla con `organization_id` tiene `relrowsecurity = false` | Hoy pasa (83/83), pero nada impide que una tabla futura se añada sin RLS | `supabase/verify/` |
-| 3 | **Concurrencia de cupo**: 2, 10 y 100 clientes por la última plaza | Exactamente 1 éxito, 0 auto-cancelaciones | `BIZ-001` |
-| 4 | **Idempotencia de pago**: 2 peticiones concurrentes con la misma `Idempotency-Key` | Un solo pago | `BIZ-004` |
-| 5 | **Aislamiento de partner**: usuario `partner` contra los 77 recursos y contra datos de otro partner | Deny-by-default real | `partnerScopeFor` |
-| 6 | **Matriz de autorización**: cada rol × cada recurso × cada verbo | Los 77 `writeRole`/`readRole` hacen lo que dicen | `resources.ts` |
-| 7 | **Saga**: fallo inyectado en cada paso de `createOrderWithBookings` | Compensación completa, sin plazas retenidas | `BIZ-002` |
-| 8 | **Cuadre contable**: N pagos/reembolsos → suma de `ledger_entry` == suma de `payment` | Los libros cuadran | `BIZ-003` |
+Impacto: APIs criticas pueden fallar en runtime aunque unit tests pasen.
 
-### Importantes
+Solucion: tests con DB/Supabase local o mocks contractuales fuertes para pagos/reservas/auth/storage.
 
-9. Datos inesperados por endpoint (la tabla de la Fase 5): null, negativos, enums inválidos, cadenas largas, Unicode, JSON malformado.
-10. Fallo de dependencia externa: Totalum/Supabase caído, lento, respuesta inválida.
-11. Webhook de Stripe: evento duplicado, firma inválida, orden invertido de eventos.
-12. `recalculateDeparture` con > 1 000 reservas (`DB-005`) — debe fallar hoy.
-13. E2E de los flujos P0: venta en POS → cobro → voucher → check-in; y alta de tenant → onboarding.
+### TEST-003 — No hay pruebas de concurrencia
 
-### Contract tests (Fase 33)
-Ninguno existe. Necesarios para Stripe (webhooks y checkout) y, tras la migración, para el contrato PostgREST.
+Severity: P1.
 
-## Failure testing (Fase 34)
+Evidence: no se detectaron tests que simulen dos usuarios sobre cupo/pago/caja.
 
-**Cero cobertura.** Ningún test ejercita: base de datos no disponible, timeout de API, timeout del proveedor de pagos, respuesta inválida, webhook duplicado, red lenta, fallo parcial. Dado que `BIZ-005` demuestra que **no hay timeouts en ninguna llamada externa**, es probable que estos escenarios se comporten mal — pero **UNVERIFIED**, porque nadie los ha ejecutado.
+Impacto: race conditions no detectadas.
 
-## CI
+Solucion: tests concurrentes para cupo=1, idempotency key, caja abierta, voucher redemption.
 
-`.github/workflows/ci.yml` está **bien planteado**: install → lint → typecheck → tests → build → guard de secretos, en `push a main` y en cada PR.
+### TEST-004 — Lint no esta disponible como script npm
 
-Le falta:
-- ❌ `npm audit` (fallaría hoy: 3 críticas — ver `DEPENDENCY_AUDIT.md`)
-- ❌ Aplicación de migraciones contra un Postgres efímero
-- ❌ Tests de integración con base de datos
-- ❌ E2E (Playwright)
-- ❌ Umbral de cobertura sobre los módulos críticos
-- ❌ Análisis estático de seguridad (CodeQL/Semgrep)
-- ❌ Gate de despliegue: **CI verde no bloquea la publicación**, que se hace desde la plataforma Totalum
+Severity: P2.
 
-## Sobre la cobertura
+Evidence: `package.json` no tiene script `lint`; CI usa `npx next lint`.
 
-No se persigue el 100 %. La prioridad correcta es la que pide la Fase 32 y es exactamente la que falta:
+Impacto: CI puede fallar por comando obsoleto/inconsistente o no representar politica local.
 
-```
-reglas de negocio críticas   → parcial (precio ✅, comisión ✅, cupo ❌, saga ❌)
-dinero                       → parcial (comisión ✅, pago ❌, contabilidad ❌)
-permisos                     → ❌ CERO
-integridad de datos          → ❌ CERO
-concurrencia                 → ❌ CERO
-```
+Solucion: definir `npm run lint` cuando se endurezca ESLint.
 
-**Recomendación:** ningún objetivo numérico de cobertura. En su lugar, la regla dura de `AI_TECHNICAL_DEBT.md` `AID-002`: **toda corrección de un P0/P1 entra con un test que falla sin ella.** Es lo único que habría evitado que `enable_tenant_rls()`, `reserve_departure_capacity` y `reconcileStaleDrafts` se dieran por cerradas sin estar conectadas.
+### TEST-005 — TypeScript no estricto reduce valor del typecheck
+
+Severity: P2.
+
+Evidence: `tsconfig.json` con `strict: false` y `noImplicitAny: false`.
+
+Impacto: typecheck PASS no equivale a contratos seguros.
+
+Solucion: strict por fases.
+
+## Testing Pyramid Requerida
+
+- Unit: pricing, commission, currency, id generation, validation schemas.
+- Integration: API routes P0/P1, Supabase RLS, Totalum/Supabase provider parity.
+- E2E: login, POS/reserva, pago, check-in, portal partner, superadmin.
+- Failure testing: provider timeout, duplicate webhook, DB unavailable, invalid payload.
+
+## Gate Testing
+
+NO PASS para produccion completa. PASS parcial para unit tests actuales.

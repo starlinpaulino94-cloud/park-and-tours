@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantFindOne, tenantQuery } from "@/lib/tenant";
+import { requireTenant, requireAtLeast, tenantCreate, tenantFindOne, tenantQuery, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
-import { totalumSdk } from "@/lib/totalum";
 import { recalculateDeparture } from "@/lib/availability";
 import { syncOrderTotals } from "@/lib/booking-service";
 import { postPayment } from "@/lib/ledger-events";
@@ -67,24 +66,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     if (body.refund_override != null) requireAtLeast(ctx, "manager");
 
-    const updated = await totalumSdk.crud.editRecordById("booking", id, {
+    await tenantUpdate(ctx.companyId, "booking", id, {
       status: refund > 0 ? (refund >= paid ? "refunded" : "partially_refunded") : "cancelled",
       cancelled_at: new Date().toISOString(),
       cancel_reason: body.reason || "Cancelada por el usuario",
       refund_amount: refund,
       balance_amount: 0,
     });
-    if (updated.errors) {
-      console.error("[cancel] failed updating booking:", updated.errors);
-      throw new Error(updated.errors.errorMessage || "No se pudo cancelar la reserva");
-    }
 
     // ---- void commissions --------------------------------------------------
     const commissions = await tenantQuery<{ _id: string; status?: string }>(ctx.companyId, "commission", {
       _filter: { booking: id, status: { in: ["pending", "approved"] } }, _limit: 50,
     });
     for (const c of commissions) {
-      await totalumSdk.crud.editRecordById("commission", c._id, {
+      await tenantUpdate(ctx.companyId, "commission", c._id, {
         status: "cancelled",
         notes: "Anulada por cancelación de la reserva",
       });
@@ -95,7 +90,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       _filter: { booking: id, status: "valid" }, _limit: 10,
     });
     for (const v of vouchers) {
-      await totalumSdk.crud.editRecordById("voucher", v._id, { status: "cancelled" });
+      await tenantUpdate(ctx.companyId, "voucher", v._id, { status: "cancelled" });
     }
 
     // ---- release the seat --------------------------------------------------
@@ -109,8 +104,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // so the order's paid_total reflects it. Otherwise the order kept a stale
     // paid_total and a second refund could pass the payments API's cap.
     if (refund > 0) {
-      const refundPayment = await totalumSdk.crud.createRecord("payment", {
-        company: ctx.companyId,
+      const refundPayment = await tenantCreate<{ _id?: string }>(ctx.companyId, "payment", {
         order: orderId,
         booking: id,
         customer: refId(booking.customer),
@@ -125,7 +119,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         notes: `Reembolso por cancelación (${policyName}, ${refundPct}%)`,
       });
       // Double-entry ledger (AUD-F15), best-effort.
-      const refundPaymentId = (refundPayment.data as { _id?: string } | undefined)?._id;
+      const refundPaymentId = refundPayment._id;
       if (refundPaymentId) {
         await postPayment(ctx.companyId, {
           paymentId: refundPaymentId,
