@@ -145,6 +145,66 @@ export const TABLE_SPECS = [
   { source: "task", target: "task", refs: { assigned_to: "assigned_to_id", created_by: "created_by", booking: "booking_id", order: "order_id", incident: "incident_id", work_order: "work_order_id", guest_case: "guest_case_id", customer: "customer_id", lead: "lead_id" } },
 ];
 
+// ── partner / relationship mappers ───────────────────────────────────────────
+// `partner` and `company` are NOT plain TABLE_SPECS: both become `organizations`
+// rows. A tenant's partners must be loaded (kind='partner') BEFORE any business
+// table that references partner_id, or those FKs won't resolve. Each partner also
+// yields one organization_relationships row carrying the commercial terms
+// (commission / credit / contract) between the principal tenant and the partner.
+
+// Allowed enum values from migration 0002 — anything else is clamped to a default
+// so a stray Totalum value never trips the CHECK constraint on load.
+const RELATIONSHIP_TYPES = new Set([
+  "distributor", "subagency", "tour_operator", "reseller", "hotel", "agency", "tour_center",
+]);
+const RELATIONSHIP_STATUS = new Set(["active", "inactive", "suspended"]);
+const ORG_STATUS = new Set(["active", "inactive", "suspended", "blocked", "pending"]);
+
+/** Totalum `partner` → organizations(kind='partner') row. */
+export function partnerToOrg(p) {
+  const tenant = toUuid(refId(p.company));
+  return {
+    id: toUuid(p._id),
+    kind: "partner",
+    tenant_org_id: tenant,
+    parent_org_id: toUuid(refId(p.parent_partner)) ?? tenant,
+    name: p.name ?? p.legal_name ?? "Partner",
+    slug: p.slug ?? null,
+    legal_name: p.legal_name ?? null,
+    tax_id: p.tax_id ?? null,
+    email: p.email ?? null,
+    phone: p.phone ?? null,
+    country: p.country ?? null,
+    currency: p.currency ?? null,
+    status: ORG_STATUS.has(p.status) ? p.status : "active",
+  };
+}
+
+/**
+ * Totalum `partner` → organization_relationships row (principal → partner), or
+ * null when the partner has no owning company. The id is derived deterministically
+ * from the partner id so re-runs upsert the same row.
+ */
+export function partnerToRelationship(p) {
+  const from = toUuid(refId(p.company));
+  const to = toUuid(p._id);
+  if (!from || !to) return null;
+  const type = p.relationship_type ?? p.partner_type ?? p.type;
+  return {
+    id: toUuid(`rel_${p._id}`),
+    from_org_id: from,
+    to_org_id: to,
+    relationship_type: RELATIONSHIP_TYPES.has(type) ? type : "agency",
+    default_commission_pct: p.default_commission_pct ?? p.commission_pct ?? null,
+    credit_limit: p.credit_limit ?? null,
+    credit_days: p.credit_days ?? null,
+    currency: p.currency ?? "usd",
+    contract_from: p.contract_from ?? null,
+    contract_to: p.contract_to ?? null,
+    status: RELATIONSHIP_STATUS.has(p.status) ? p.status : "active",
+  };
+}
+
 /**
  * Transforms a Totalum record into a Postgres row per its spec.
  * `allowedCols` (a Set of the target table's real columns) drops any pass-through

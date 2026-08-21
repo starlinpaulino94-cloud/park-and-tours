@@ -8,15 +8,18 @@
  * Run:  node scripts/migrate/etl.mjs            # full load
  *       node scripts/migrate/etl.mjs --backup   # dump Totalum to JSON only
  *
- * Loads in FK-dependency order. The company table is promoted to `organizations`
- * (kind='tenant'); partners become organizations(kind='partner') — wire that
- * step in before the business tables when you run against real data.
+ * Loads in FK-dependency order: company → organizations(kind='tenant'), then
+ * partner → organizations(kind='partner') + organization_relationships, then the
+ * business tables. `user` → organization_memberships is done in the Auth migration
+ * (M3), not here, because memberships FK to auth.users.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { TotalumApiSdk } from "totalum-api-sdk";
 import { createClient } from "@supabase/supabase-js";
-import { TABLE_SPECS, transformRecord, toUuid, refId } from "./transform.mjs";
+import {
+  TABLE_SPECS, transformRecord, toUuid, refId, partnerToOrg, partnerToRelationship,
+} from "./transform.mjs";
 
 // Real Postgres columns per table (from the migrations) — used to drop Totalum
 // fields that have no matching column, so upserts never fail on unknown columns.
@@ -99,10 +102,26 @@ async function loadOrganizations() {
     status: c.status || "active",
   }));
   await loadRows("organizations", orgs);
-  // TODO(run): also load `partner` rows as organizations(kind='partner',
-  // parent_org_id/tenant_org_id = toUuid(partner.company)) BEFORE business tables
-  // that reference partner_id, and create organization_memberships from `user`.
   return orgs.length;
+}
+
+// ── partner → organizations(kind='partner') + organization_relationships ───────
+// Must run AFTER tenants (FK tenant_org_id) and BEFORE business tables that
+// reference partner_id. `user`→organization_memberships is deliberately NOT here:
+// memberships FK to auth.users, so they are created during the Auth migration (M3)
+// via the Supabase Auth Admin API, not in this data-only ETL.
+async function loadPartners() {
+  const partners = await extractAll("partner");
+  backup("partner", partners);
+  if (BACKUP_ONLY) return { partners: partners.length, relationships: 0 };
+
+  const orgs = partners.map(partnerToOrg);
+  await loadRows("organizations", orgs); // upsert onConflict:id — tenants already loaded
+
+  const rels = partners.map(partnerToRelationship).filter(Boolean);
+  if (rels.length) await loadRows("organization_relationships", rels);
+
+  return { partners: orgs.length, relationships: rels.length };
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -110,7 +129,13 @@ async function main() {
   console.log(BACKUP_ONLY ? "→ BACKUP ONLY (no load)\n" : "→ ETL Totalum → Supabase\n");
   const counts = {};
   counts.organizations = await loadOrganizations();
-  console.log(`  organizations: ${counts.organizations}`);
+  console.log(`  organizations (tenants): ${counts.organizations}`);
+
+  const partnerCounts = await loadPartners();
+  counts.organizations += partnerCounts.partners;
+  counts.organization_relationships = partnerCounts.relationships;
+  console.log(`  organizations (partners): ${partnerCounts.partners}`);
+  console.log(`  organization_relationships: ${partnerCounts.relationships}`);
 
   for (const spec of TABLE_SPECS) {
     if (spec.source === "company") continue; // handled above
