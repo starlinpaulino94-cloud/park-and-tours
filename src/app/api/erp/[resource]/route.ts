@@ -5,8 +5,11 @@ import { ok, fail, readJson } from "@/lib/api-response";
 
 /** Generic tenant-scoped list endpoint: GET /api/erp/:resource */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ resource: string }> }) {
+  const started = Date.now();
+  let resourceName = "unknown";
   try {
     const { resource } = await params;
+    resourceName = resource;
     const def = getResource(resource);
     if (!def) throw new TenantError(`Recurso desconocido: ${resource}`, 404);
 
@@ -23,6 +26,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
     const limit = Math.min(Number(sp.get("limit") || 50), 1000);
     const offset = Number(sp.get("offset") || 0);
     const q = sp.get("q")?.trim();
+    const includeTotal = sp.get("includeTotal") !== "false";
 
     const filter: Record<string, unknown> = {};
 
@@ -71,6 +75,23 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
       ? { [sortParam.replace(/^-/, "")]: sortParam.startsWith("-") ? "desc" : "asc" }
       : def.sort || { createdAt: "desc" };
 
+    if (!includeTotal) {
+      const rows = await tenantQuery(ctx.companyId, def.table, {
+        ...(def.expand || {}),
+        _filter: filter,
+        _sort: sort,
+        _limit: limit + 1,
+        _offset: offset,
+      });
+      const pageRows = rows.slice(0, limit);
+      const hasMore = rows.length > limit;
+      const elapsed = Date.now() - started;
+      if (process.env.NODE_ENV !== "production" && elapsed > 800) {
+        console.warn(`[api/erp] ${resourceName} sin total tardó ${elapsed}ms`);
+      }
+      return ok(pageRows, { total: offset + pageRows.length + (hasMore ? 1 : 0) });
+    }
+
     const [rows, total] = await Promise.all([
       tenantQuery(ctx.companyId, def.table, {
         ...(def.expand || {}),
@@ -82,8 +103,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
       tenantCount(ctx.companyId, def.table, filter),
     ]);
 
+    const elapsed = Date.now() - started;
+    if (process.env.NODE_ENV !== "production" && elapsed > 800) {
+      console.warn(`[api/erp] ${resourceName} con total tardó ${elapsed}ms`);
+    }
     return ok(rows, { total });
   } catch (err) {
+    const elapsed = Date.now() - started;
+    if (process.env.NODE_ENV !== "production" && elapsed > 800) {
+      console.warn(`[api/erp] ${resourceName} falló tras ${elapsed}ms`);
+    }
     return fail(err);
   }
 }

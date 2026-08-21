@@ -18,11 +18,20 @@ async function request<T>(
   url: string,
   options?: RequestInit
 ): Promise<ApiResponse<T>> {
+  const started = typeof performance !== "undefined" ? performance.now() : Date.now();
   try {
     const res = await fetch(url, options);
     const json = (await res.json()) as ApiResponse<T>;
+    const elapsed = (typeof performance !== "undefined" ? performance.now() : Date.now()) - started;
+    if (process.env.NODE_ENV !== "production" && elapsed > 800) {
+      console.warn(`[api] ${options?.method || "GET"} ${url} tardó ${Math.round(elapsed)}ms`);
+    }
     return json;
   } catch (err) {
+    const elapsed = (typeof performance !== "undefined" ? performance.now() : Date.now()) - started;
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(`[api] ${options?.method || "GET"} ${url} falló tras ${Math.round(elapsed)}ms`);
+    }
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }

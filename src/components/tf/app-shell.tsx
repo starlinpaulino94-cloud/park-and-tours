@@ -200,7 +200,7 @@ function WorkspaceRail({
           <Tooltip>
             <TooltipTrigger asChild>
               <Link
-                href="/profile"
+                href="/dashboard/perfil"
                 onClick={onNavigate}
                 className={cn(
                   "flex items-center justify-center rounded-xl text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
@@ -699,7 +699,7 @@ export function AppShell({
                     </Link>
                   </DropdownMenuItem>
                   <DropdownMenuItem asChild>
-                    <Link href="/profile">
+                    <Link href="/dashboard/perfil">
                       <Icon name="CircleUser" className="mr-2 size-4" /> Mi perfil
                     </Link>
                   </DropdownMenuItem>

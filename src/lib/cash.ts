@@ -1,6 +1,5 @@
 import "server-only";
-import { totalumSdk } from "@/lib/totalum";
-import { tenantQuery } from "@/lib/tenant";
+import { tenantQuery, tenantUpdate } from "@/lib/tenant";
 import type { CashSession } from "@/lib/types";
 
 /** Recomputes the totals of an open cash session from its movements. */
@@ -37,7 +36,7 @@ export async function recalcCashSession(companyId: string, sessionId: string) {
   const cashOnly = cashDelta - card - transfer;
   const expected = Math.round(((session.opening_amount ?? 0) + cashOnly + Number.EPSILON) * 100) / 100;
 
-  await totalumSdk.crud.editRecordById("cash_session", sessionId, {
+  await tenantUpdate(companyId, "cash_session", sessionId, {
     expected_cash: expected,
     card_total: Math.round((card + Number.EPSILON) * 100) / 100,
     transfer_total: Math.round((transfer + Number.EPSILON) * 100) / 100,

@@ -54,14 +54,24 @@ export class TenantError extends Error {
  * context into another's.
  */
 export const getTenantContext = cache(async function getTenantContext(): Promise<TenantContext | null> {
+  const started = Date.now();
+  const logSlow = (result: string) => {
+    const elapsed = Date.now() - started;
+    if (process.env.NODE_ENV !== "production" && elapsed > 800) {
+      console.warn(`[tenant] getTenantContext ${result} tardó ${elapsed}ms`);
+    }
+  };
   // M3: when Supabase Auth is active, the tenant comes from the JWT claims
   // (org_id/app_role/partner_id) — no per-request DB lookup.
   if (isSupabaseAuth()) {
-    return getSupabaseTenantContext();
+    const ctx = await getSupabaseTenantContext();
+    logSlow(ctx ? "supabase" : "sin contexto supabase");
+    return ctx;
   }
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session?.user?.id) {
     console.log("[tenant] no session");
+    logSlow("sin sesión");
     return null;
   }
 
@@ -74,6 +84,7 @@ export const getTenantContext = cache(async function getTenantContext(): Promise
   const record = (res.data?.[0] || null) as AppUser | null;
   if (!record) {
     console.error("[tenant] session user not found in database:", userId);
+    logSlow("usuario no encontrado");
     return null;
   }
 
@@ -83,6 +94,7 @@ export const getTenantContext = cache(async function getTenantContext(): Promise
   // forces the caller to treat the request as unauthenticated.
   if (record.status && record.status !== "active") {
     console.warn(`[tenant] user ${record.email || userId} is ${record.status}; access denied`);
+    logSlow("usuario inactivo");
     return null;
   }
 
@@ -110,12 +122,14 @@ export const getTenantContext = cache(async function getTenantContext(): Promise
       const targetCompany = (impersonated.data?.[0] || null) as Company | null;
       if (targetCompany) {
         console.log(`[tenant] superadmin ${ctx.email} impersonando ${targetCompany.name}`);
+        logSlow("impersonación");
         return { ...ctx, companyId: targetCompany._id, company: targetCompany, impersonating: true };
       }
       console.warn("[tenant] impersonation cookie points to a missing company:", target);
     }
   }
 
+  logSlow("ok");
   return ctx;
 });
 

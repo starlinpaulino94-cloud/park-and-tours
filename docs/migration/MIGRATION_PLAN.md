@@ -35,8 +35,9 @@ Estado: **83 tablas, 83 con RLS, 326 FKs**. Las 15 migraciones (`0001`-`0015`) a
 2. ✅ **Traductor de queries** `src/lib/supabase/query-translator.ts`: `_filter` Mongo→PostgREST (`eq/ne/gt/gte/lt/lte/in/nin/regex→ilike/_or`) + alias de campos (`_id→id`, `company→organization_id`, `partner→partner_id`…) + sort/paginación. **8 tests unit** con builder falso.
 3. ✅ **Proveedor de datos** `src/lib/supabase/data-provider.ts` con las mismas firmas que `tenant.ts` (`spQuery/spCount/spFindOne/spCreate/spUpdate/spDelete`) — listo para conmutar por flag `DATA_BACKEND`.
 4. ✅ **Reserva de cupo atómica** (`supabase/migrations/0008_capacity_txn.sql`, RPC `public.reserve_departure_capacity`): row-lock `FOR UPDATE` → **overbooking imposible** (validado con dos transacciones concurrentes: una gana, la otra recibe `false`). Cierra AUD-B01 de raíz.
-5. ✅ **Switch en `tenant.ts` por flag** `DATA_BACKEND` (`src/lib/data-backend.ts`): los 6 helpers CRUD (`tenantQuery/Count/FindOne/Create/Update/Delete`) delegan al proveedor Supabase cuando `DATA_BACKEND=supabase`; **default `totalum` intacto** (cero cambios de comportamiento). Mapa de tablas (`company→organizations`). Test que fija el default seguro.
+5. ✅ **Switch en `tenant.ts` por flag** `DATA_BACKEND` (`src/lib/data-backend.ts`): los 6 helpers CRUD (`tenantQuery/Count/FindOne/Create/Update/Delete`) delegan al proveedor Supabase cuando `DATA_BACKEND=supabase`; **default `totalum` intacto** (cero cambios de comportamiento). Mapa de tablas (`company→organizations`). Test que fija el default seguro. En produccion, `DATA_BACKEND=supabase` falla cerrado si `SUPABASE_USE_RLS=true` no esta activo.
 6. ⏳ Migrar los 84 callsites directos a los wrappers (con RLS/scoping ya no hay riesgo) y envolver `createOrderWithBookings` en transacción (RPC de cupo + inserts).
+   - Avance: pagos/caja/disponibilidad/booking-service/cancel/check-in ya reducen bypasses directos usando wrappers tenant-safe.
 
 ### Cómo activar (paso de ops, requiere proyecto Supabase)
 ```
@@ -49,6 +50,7 @@ SUPABASE_SERVICE_ROLE_KEY=...        # modo transición (service-role + scope ex
 SUPABASE_USE_RLS=true                 # cambia al cliente con JWT → RLS aplica
 ```
 Modo transición: el proveedor usa service-role con filtro `organization_id` explícito (réplica exacta del aislamiento actual) → la BD Supabase es usable ANTES de migrar Auth. `getTenantContext` (auth) permanece en el camino actual hasta M3.
+Nota de seguridad: en `NODE_ENV=production`, la app falla cerrado si `DATA_BACKEND=supabase` se activa sin `SUPABASE_USE_RLS=true`.
 
 **Gate M2:** typecheck ✅, build ✅, 41 tests ✅. Switch listo por flag. Falta: proyecto Supabase en vivo (ops), migración de callsites y transacción de orden.
 

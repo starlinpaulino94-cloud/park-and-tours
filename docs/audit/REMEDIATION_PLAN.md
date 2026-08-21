@@ -1,140 +1,76 @@
-# REMEDIATION_PLAN.md — Park & Tours
+# Remediation Plan
 
-> Fecha: 2026-08-20 · Deriva de `PRODUCTION_READINESS.md`, `SECURITY_AUDIT.md`, `DATABASE_AUDIT.md`, `BUSINESS_LOGIC_AUDIT.md`, `SCALABILITY_AUDIT.md`, `TESTING_AUDIT.md`, `DEPENDENCY_AUDIT.md`, `AI_TECHNICAL_DEBT.md`.
-> El plan anterior (PR #1, ya ejecutado) se conserva en `REMEDIATION_PLAN_PR1_2026-08.md`.
+Fecha: 2026-08-21.
 
-## Causas raíz
+Regla: no big-bang rewrite. Resolver por piezas, con pruebas y revision independiente.
 
-Los 35 hallazgos **no son 35 problemas**. Son cinco causas y sus síntomas. Corregir síntomas uno a uno es exactamente lo que produjo la deuda que estamos auditando.
+## Phase 0 — Data Loss / Security Blockers
 
-### RC-1 — Se escribe la solución, no se conecta ni se verifica
-**Síntomas:** `DB-003` (RPC atómica escrita y nunca llamada — un solo `.rpc(` en todo `src/`, dentro de su propia definición) · `BIZ-002` (barredora sin cron: sin `triggers`/`scheduled` en ninguna configuración) · logger que no corre en Workers · Sentry en `.env.example` sin código · reset de contraseña comentado.
+1. Rotar secretos si `.env.development`/`.env.production` pudieron exponerse.
+2. ✅ Proteger checkout Stripe: auth requerida, metadata server-side, allowlist de prices.
+3. ⏳ Definir CSRF/Origin policy para todas las mutaciones; aplicado inicialmente a pagos, Stripe y upload.
+4. ✅ Bloquear upload por entidad/id sin autorizacion.
+5. ✅ Decidir uso de `frame-ancestors` y restringir CSP mediante `ALLOWED_FRAME_ANCESTORS`.
 
-> **Nota de autocorrección:** la primera versión encabezaba esta lista con `SEC-001` ("RLS definida, 0 invocaciones"). **Era un error mío de grep**, no un defecto del código: hay 155 invocaciones y la RLS funciona. La causa raíz sigue siendo válida para el resto — pero la lección se amplía: *verificar* también puede fallar, así que la evidencia debe ser **ejecución**, no coincidencia de patrón.
-**Causa:** ninguna corrección de P0/P1 llevó un test que fallara sin ella. Escribir la solución y no cablearla es indistinguible de haberla resuelto.
-**Cura:** regla de proceso — *ningún P0/P1 se cierra sin un test que falle sin la corrección*. Sin ese test, el estado es `UNVERIFIED`.
+Validation: tests de seguridad basicos, revision manual, secret scan.
 
-### RC-2 — El motor de datos no puede dar las garantías que el dominio necesita
-**Síntomas:** `BIZ-001` (sobreventa) · `BIZ-004` (idempotencia) · `BIZ-007` (totales) · `DB-006`/`DB-007` (paginación, N+1) · toda la sección de transacciones.
-**Causa:** Totalum no tiene transacciones, locks ni constraints. Cada mitigación en aplicación es check-then-act, y ya han llegado a su techo.
-**Cura:** completar la migración a Postgres (Opción A de `CURRENT_ARCHITECTURE.md`). Estos defectos desaparecen por construcción, no por más código.
+## Phase 1 — Architecture / Database / Auth
 
-### RC-3 — El sistema es invisible en producción
-**Síntomas:** gate I completo · `SEC-009` (auditoría silenciosa) · `BIZ-003` (contabilidad best-effort sin alerta) · sin health check · sin trazas.
-**Causa:** la observabilidad nunca fue un requisito de ninguna fase de generación.
-**Cura:** tratarla como funcionalidad P0, no como "mejora".
+1. ⏳ Eliminar o encapsular direct `totalumSdk` en dominios criticos; aplicado inicialmente en el update de receivables dentro de `/api/payments`.
+2. Definir dominio canonico: organization/company, order/booking, user/membership.
+3. ✅ Agregar constraints/triggers tenant-aware para FKs criticas futuras (`supabase/migrations/0018_tenant_reference_integrity.sql`). Pendiente ejecutar en staging/prod y hacer reporte de datos historicos antes de constraints validadas.
+4. ⛔ Completar memberships y claims JWT antes de `SUPABASE_USE_RLS=true`; `scripts/migrate/verify-memberships.mjs` reporto 5 tenants, 20 partners y 0 memberships activas/primarias. No activar Supabase Auth/RLS hasta crear memberships reales.
+5. ✅ Agregar guard fail-closed: en produccion `DATA_BACKEND=supabase` requiere `SUPABASE_USE_RLS=true`.
+6. Probar `DATA_BACKEND=supabase` en staging con lectura controlada.
 
-### RC-4 — No hay red de seguridad operativa
-**Síntomas:** sin backups probados · sin rollback · sin staging · sin RPO/RTO · sin cron · sin timeouts · sin circuit breaker.
-**Causa:** el despliegue se heredó de la plataforma generadora y nunca se diseñó como operación propia.
-**Cura:** pipeline propio con staging, rollback ensayado y restore probado.
+Validation: tests de aislamiento multi-tenant y migracion parity.
 
-### RC-5 — La documentación afirma más de lo que el código hace
-**Síntomas:** `AID-003` — tres afirmaciones de garantía que este ciclo no pudo confirmar (RPC conectada, barredora periódica, logger activo).
-**Causa:** cada documento describe la intención del incremento, no su verificación.
-**Cura:** ninguna afirmación de garantía sin comando reproducible al lado.
+## Phase 2 — Critical Business Logic
 
----
+1. Reserva/cupo: usar RPC transaccional real.
+2. Pagos: unique idempotency key, validacion de IDs relacionados, atomicidad con caja/receivables.
+3. Ledger: outbox o reconciliacion durable.
+4. Stripe webhook: idempotencia y contratos.
 
-## Orden de ejecución
+Validation: unit + integration + failure tests.
 
-Regla: **nada de estética ni de UX mientras haya un P0 abierto.** Cada fase termina con verificación y **revisión independiente** (agente/modelo distinto del que implementó — Fase 43).
+## Phase 3 — Concurrency / Reliability
 
----
+1. Tests: cupo=1 con 2/10/100 usuarios simulados.
+2. Tests: doble submit pago, doble webhook, doble check-in.
+3. Timeouts para llamadas externas.
+4. Backpressure para imports/reportes/uploads.
 
-### FASE 0 — Bloqueadores de seguridad y pérdida de datos
+Validation: concurrency suite y chaos/failure testing controlado.
 
-| ID | Acción | Riesgo del cambio | Verificación |
-|---|---|---|---|
-| **SEC-002 / DB-002** | Aplicar `supabase/migrations/0017_rpc_tenant_hardening.sql`: `revoke execute` a `anon`, comprobación de tenant que falla cerrada, y comprobación añadida a `release_departure_capacity` | Bajo — no toca RLS ni datos; sólo privilegios y dos funciones que la aplicación aún no invoca | **Ya verificado**: exploit bloqueado, y tenant legítimo / `service_role` / tenant ajeno sin regresión |
-| **VERIF** | Ejecutar `supabase/verify/RLS_EXPOSURE_CHECK.sql` en el proyecto real para confirmar que coincide con la reproducción local | Nulo — sólo lectura | La propia salida |
-| **SEC-003** | Actualizar `better-auth` a versión parcheada; re-verificar `AUD-S02` | Medio — cambio de versión mayor en auth | Test: usuario desactivado no puede operar; login funciona |
-| **DEP-1** | Actualizar `next` y `@opennextjs/cloudflare`; **añadir `npm audit --audit-level=high` bloqueante a CI** | Medio | CI verde con el nuevo gate |
-| **SEC-004** | `frame-ancestors 'self' https://*.totalum-project.com`; restaurar `X-Frame-Options` fuera del editor visual; añadir `default-src`/`script-src` | Bajo — verificar que el editor visual sigue funcionando | `curl -I` en producción |
-| **SEC-005** | Allowlist explícita de orígenes CORS; eliminar el comodín de desarrollo | Bajo | Petición cross-origin desde origen no permitido → sin cabeceras CORS |
-| **SEC-009** | `writeAudit` de severidad `critical`/`warning` debe abortar la operación si no puede escribir | Medio — cambia el comportamiento ante fallo | Test con escritura de auditoría inyectada como fallo |
-| **BIZ-002** | Cron real para `reconcileStaleDrafts` (`triggers.crons` en `wrangler.jsonc` + handler `scheduled`, iterando tenants) | Bajo | Ejecución observable + registro de auditoría |
-| **DR-1** | **Probar un restore completo** en un entorno aparte. Documentar frecuencia, retención, RPO y RTO | Nulo (no toca producción) | Restore verificado con datos comprobados |
+## Phase 4 — Testing
 
-**Salida de fase:** revisión independiente + los tests 1, 2 y 5 de `TESTING_AUDIT.md` en verde.
+1. Playwright: login, dashboard, POS/reserva, pago, check-in, portal partner.
+2. Integration tests API con DB/Supabase local.
+3. Contract tests Stripe/Totalum/Supabase.
+4. CI debe correr lint/typecheck/test/build/E2E smoke.
 
----
+## Phase 5 — Performance
 
-### FASE 1 — Arquitectura, base de datos y autenticación
+1. EXPLAIN ANALYZE de queries criticas.
+2. Indices justificados.
+3. Load/stress/spike/soak tests.
+4. Performance budget y reportes.
 
-| ID | Acción |
-|---|---|
-| **DECISIÓN** | Ratificar Opción A (completar migración) o B (consolidar en Totalum). Escribir el ADR. **Todo lo que sigue depende de esta decisión** |
-| **DB-008/009** | Adoptar Supabase CLI: migraciones versionadas, con `down`, aplicadas por CI contra Postgres efímero |
-| **DB-004** | Revisar tabla a tabla las 39 cascadas; ninguna puede alcanzar `payment`, `ledger_entry`, `commission`, `receivable` ni `audit_log` |
-| **DB-013** | `audit_log` insert-only: revocar `update`/`delete` incluso al rol de aplicación |
-| **SEC-006** | Activar reset de contraseña y verificación de email + páginas `/forgot-password`, `/reset-password`, `/verify-email` |
-| **SEC-007** | Rate limiting distribuido (Cloudflare Rate Limiting o Upstash) en `/api/auth/*`, `/api/checkin/*`, `/api/setup`, `/api/storage/upload` |
-| **SEC-010** | Fallar al arrancar si falta `TOTALUM_API_KEY` (patrón de `supabase/service.ts`) |
-| **AID-003** | **Corregir la documentación falsa.** `MIGRATION_PLAN.md`, `ARCHITECTURE.md`, `PRODUCTION_READINESS_REPORT.md` |
-| **AID-007** | Limpiar herencia de plantilla: `package.json`, `README.md`, `Cache-Control` |
+## Phase 6 — Observability
 
----
+1. Logger estructurado con requestId/userId/orgId sin PII excesiva.
+2. Sentry o equivalente.
+3. Audit log de negocio para P0/P1.
+4. Alerts por error rate, pagos duplicados, webhooks fallidos, DB latency.
 
-### FASE 2 — Lógica de negocio crítica
+## Phase 7 — UX / Cleanup
 
-| ID | Acción |
-|---|---|
-| **DB-003 / BIZ-001** | Cablear `spReserveCapacity` a `booking-service`; reserva de cupo e inserción del booking en **la misma transacción**. Eliminar el patrón de auto-cancelación |
-| **DB-005** | Agregar la ocupación en base de datos (`sum(pax_total) group by status`), no en JavaScript |
-| **BIZ-004** | Índice único `(organization_id, reference)` sobre `payment`; capturar la violación como "ya procesado". Mismo patrón en `uniqueCode()` y `stripe_event.event_id` |
-| **BIZ-003** | Asiento contable **dentro** de la transacción del pago. Reconciliación periódica `sum(payment)` vs `sum(ledger_entry)` con alerta |
-| **BIZ-006/007** | Residuo de redondeo a la última línea; `syncOrderTotals` con lock de fila |
-| **BIZ-008/009** | Eliminar los límites fijos de la compensación (`_limit: 50/20`) |
-| **VAL-1** | Esquema `zod` en el cuerpo de **cada** ruta API. Entrada inválida → 400 explícito, nunca `null` silencioso |
-| **IDEM-1** | `Idempotency-Key` en `POST /api/orders` |
-| **SEC-012** | Decidir si `moduleEnabled` debe fallar cerrado y aplicar los límites de plan (`max_users`, `max_bookings_month`) |
+1. Dividir componentes gigantes.
+2. Marcar modulos partial/read-only en UI si aplica.
+3. Endurecer TS/ESLint por carpetas.
+4. Eliminar dead code despues de cobertura.
 
----
+## First Recommended Action
 
-### FASE 3 — Concurrencia y fiabilidad
-
-| ID | Acción |
-|---|---|
-| **BIZ-005** | `AbortSignal.timeout()` en toda llamada externa; retry con backoff **sólo en lecturas idempotentes**; circuit breaker sobre el proveedor de datos |
-| **CONC-1** | Suite de concurrencia: cupo, pagos, totales de orden, liquidaciones (2 / 10 / 100 clientes) |
-| **REL-1** | Colas para liquidaciones, informes, importaciones y emails; degradación controlada (backpressure) |
-| **REL-2** | Health check (`/api/health`) que compruebe aplicación, base de datos, storage e integraciones críticas |
-
----
-
-### FASE 4 — Testing
-
-Ejecutar la lista bloqueante de `TESTING_AUDIT.md`, en ese orden: aislamiento cross-tenant → cobertura de RLS → concurrencia de cupo → idempotencia de pago → aislamiento de partner → matriz de autorización → saga → cuadre contable. Después: datos inesperados, fallo de dependencias, contract tests de Stripe y E2E de los flujos P0.
-
-**CI añade:** migraciones contra Postgres efímero, tests de integración, E2E, CodeQL/Semgrep, y **gate de despliegue** (CI roja no publica).
-
----
-
-### FASE 5 — Rendimiento
-
-Definir capacidad objetivo y SLO con negocio → colapsar el N+1 (una transacción por venta, inserciones por lote) → arreglar el cacheo de estáticos → pooling medido bajo carga → `EXPLAIN ANALYZE` sobre las consultas críticas y ajustar los 159 índices con evidencia → **entonces** ejecutar k6 (load / stress / spike / soak) y publicar `LOAD_TEST_REPORT.md`.
-
-> Sólo tras esta fase puede evaluarse el Level 5. Antes, no.
-
----
-
-### FASE 6 — Observabilidad
-
-Sentry (servidor y cliente) → logs estructurados con `request_id`, `user_id`, `organization_id`, operación, duración y resultado, **sin PII** → métricas de negocio (ventas, sobreventas evitadas, fallos de pago, asientos fallidos) → alertas sobre SLO → runbook de incidentes.
-
----
-
-### FASE 7 — UX y limpieza
-
-Estados de error y reintento consistentes, `zod` en formularios alineado con el servidor, revisión de doble submit, retirada de código muerto (documentado antes de borrar), `GLOSSARY.md` con el modelo canónico y unificación de vocabulario (`AID-004`).
-
----
-
-## Qué NO hacer
-
-- **No reescribir desde cero.** La lógica de dominio es el activo del proyecto.
-- **No hacer cutover antes de la Fase 0.** Falta aplicar `0017`, cablear la RPC de capacidad (`DB-003`) y ensayar el cutover con pooling medido.
-- **No sobrearquitectar.** Monolito modular + Postgres. Sin microservicios, Kafka, Kubernetes, event sourcing ni CQRS. Redis sólo si el rate limiting distribuido lo exige.
-- **No tocar estética mientras haya un P0.**
-- **No cerrar un hallazgo sin un test que falle sin la corrección.** Es la causa raíz RC-1 y es la razón por la que existe este segundo ciclo de auditoría.
+Phase 0.1: rotar secretos si hubo exposicion y cerrar `create-checkout-session` publico/manipulable. Luego pagos/reservas.

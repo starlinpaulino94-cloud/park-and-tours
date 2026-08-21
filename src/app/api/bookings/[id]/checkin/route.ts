@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantFindOne, tenantQuery } from "@/lib/tenant";
+import { requireTenant, requireAtLeast, tenantFindOne, tenantQuery, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
-import { totalumSdk } from "@/lib/totalum";
 import { writeAudit } from "@/lib/audit";
 import type { Booking } from "@/lib/types";
 
@@ -71,7 +70,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     if (body.no_show) {
-      await totalumSdk.crud.editRecordById("booking", id, {
+      await tenantUpdate(ctx.companyId, "booking", id, {
         status: "no_show", checkin_status: "no_show",
         checked_in_at: new Date().toISOString(), checked_in_by: ctx.userId,
         internal_notes: body.notes || booking.internal_notes,
@@ -88,7 +87,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const checkedPax = Math.max(0, Math.min(body.pax ?? totalPax, totalPax));
     const complete = checkedPax >= totalPax && totalPax > 0;
 
-    await totalumSdk.crud.editRecordById("booking", id, {
+    await tenantUpdate(ctx.companyId, "booking", id, {
       status: complete ? "checked_in" : booking.status,
       checkin_status: complete ? "done" : checkedPax > 0 ? "partial" : "pending",
       checked_in_pax: checkedPax,
@@ -111,7 +110,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         console.warn(`[checkin] ignorado participante ${pid} ajeno a la reserva ${id}`);
         continue;
       }
-      await totalumSdk.crud.editRecordById("participant", pid, { checkin_status: "done" });
+      await tenantUpdate(ctx.companyId, "participant", pid, { checkin_status: "done" });
     }
 
     // Burn the voucher so it cannot be reused.
@@ -120,7 +119,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         _filter: { booking: id, status: "valid" }, _limit: 5,
       });
       for (const v of vouchers) {
-        await totalumSdk.crud.editRecordById("voucher", v._id, {
+        await tenantUpdate(ctx.companyId, "voucher", v._id, {
           status: "used", used_at: new Date().toISOString(),
         });
       }

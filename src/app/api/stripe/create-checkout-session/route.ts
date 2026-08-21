@@ -18,6 +18,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { stripe, APP_URL } from "@/lib/stripe";
+import { assertSameOriginMutation } from "@/lib/csrf";
+import { requireAtLeast, requireTenant, TenantError } from "@/lib/tenant";
 
 function serializeError(err: unknown) {
   const e = err as any;
@@ -32,14 +34,24 @@ function serializeError(err: unknown) {
 
 const schema = z.object({
   priceId: z.string().min(1, "Price ID is required"),
-  mode: z.enum(["payment", "subscription"]),
-  savePaymentMethod: z.boolean().optional().default(false),
-  customerEmail: z.string().email().optional(),
-  metadata: z.record(z.string(), z.string()).optional(),
+  mode: z.enum(["payment", "subscription"]).default("subscription"),
 });
+
+function allowedPriceIds(): Set<string> {
+  return new Set(
+    (process.env.STRIPE_ALLOWED_PRICE_IDS || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  );
+}
 
 export async function POST(req: Request) {
   try {
+    assertSameOriginMutation(req);
+    const ctx = await requireTenant();
+    requireAtLeast(ctx, "admin");
+
     const body = (await req.json().catch(() => ({}))) as unknown;
     const parsed = schema.safeParse(body);
 
@@ -50,7 +62,14 @@ export async function POST(req: Request) {
       );
     }
 
-    const { priceId, mode, savePaymentMethod, customerEmail, metadata } = parsed.data;
+    const { priceId, mode } = parsed.data;
+    const prices = allowedPriceIds();
+    if (prices.size === 0) {
+      throw new TenantError("Checkout de Stripe no configurado", 503);
+    }
+    if (!prices.has(priceId)) {
+      throw new TenantError("Plan de Stripe no permitido", 400);
+    }
 
     // Build checkout session parameters
     const sessionParams: any = {
@@ -63,22 +82,13 @@ export async function POST(req: Request) {
       ],
       success_url: `${APP_URL}/stripe/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${APP_URL}/stripe/cancel`,
-      metadata: metadata || {},
+      client_reference_id: ctx.companyId,
+      customer_email: ctx.email || undefined,
+      metadata: {
+        company_id: ctx.companyId,
+        requested_by: ctx.userId,
+      },
     };
-
-    // Add customer email if provided
-    if (customerEmail) {
-      sessionParams.customer_email = customerEmail;
-    }
-
-    // For payment mode with savePaymentMethod option
-    if (mode === "payment") {
-      if (savePaymentMethod) {
-        sessionParams.payment_intent_data = {
-          setup_future_usage: "off_session",
-        };
-      }
-    }
 
     // For subscription mode, always save payment method
     if (mode === "subscription") {
@@ -93,6 +103,9 @@ export async function POST(req: Request) {
       data: { sessionId: session.id, url: session.url },
     });
   } catch (err) {
+    if (err instanceof TenantError) {
+      return NextResponse.json({ ok: false, error: { message: err.message } }, { status: err.status });
+    }
     console.error("[API ERROR] /api/stripe/create-checkout-session", err);
     return NextResponse.json(
       { ok: false, error: serializeError(err) },
