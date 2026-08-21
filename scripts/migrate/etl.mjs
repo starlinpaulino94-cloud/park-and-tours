@@ -18,6 +18,13 @@ import { TotalumApiSdk } from "totalum-api-sdk";
 import { createClient } from "@supabase/supabase-js";
 import { TABLE_SPECS, transformRecord, toUuid, refId } from "./transform.mjs";
 
+// Real Postgres columns per table (from the migrations) — used to drop Totalum
+// fields that have no matching column, so upserts never fail on unknown columns.
+const SCHEMA_COLS = JSON.parse(
+  fs.readFileSync(path.resolve(process.cwd(), "scripts/migrate/schema-columns.json"), "utf8")
+);
+const allowedCols = (table) => new Set(SCHEMA_COLS[table] || []);
+
 // ── env ──────────────────────────────────────────────────────────────────────
 const envPath = path.resolve(process.cwd(), ".env");
 if (fs.existsSync(envPath)) {
@@ -111,7 +118,8 @@ async function main() {
     backup(spec.source, raw);
     counts[spec.target] = raw.length;
     if (!BACKUP_ONLY) {
-      const rows = raw.map((r) => transformRecord(spec, r));
+      const cols = allowedCols(spec.target);
+      const rows = raw.map((r) => transformRecord(spec, r, undefined, cols));
       await loadRows(spec.target, rows);
     }
     console.log(`  ${spec.target}: ${raw.length}`);

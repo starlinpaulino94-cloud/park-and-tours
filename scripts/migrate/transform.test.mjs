@@ -58,4 +58,21 @@ describe("ETL transform — transformRecord (booking)", () => {
     const row = transformRecord(spec, { _id: "bk1", company: "co1" }, "ORG-UUID");
     expect(row.organization_id).toBe("ORG-UUID");
   });
+
+  it("drops pass-through fields with no matching column when allowedCols given", () => {
+    const allowed = new Set(["id", "organization_id", "booking_number"]);
+    const row = transformRecord(
+      spec, { _id: "bk1", company: "co1", booking_number: "RSV-1", unknown_totalum_field: "x" },
+      undefined, allowed);
+    expect(row.booking_number).toBe("RSV-1");
+    expect("unknown_totalum_field" in row).toBe(false); // dropped
+  });
+});
+
+describe("ETL transform — spec coverage", () => {
+  it("covers all 80 business tables with unique targets", () => {
+    expect(TABLE_SPECS.length).toBe(80);
+    const targets = new Set(TABLE_SPECS.map((s) => s.target));
+    expect(targets.size).toBe(80); // no duplicates
+  });
 });
