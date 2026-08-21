@@ -24,12 +24,12 @@ import { applyQuery, applyFilter, type QueryShape } from "@/lib/supabase/query-t
 const notFound = (msg = "Registro no encontrado o fuera de tu empresa") =>
   Object.assign(new Error(msg), { status: 404 });
 
-function useRls(): boolean {
+function rlsEnabled(): boolean {
   return process.env.SUPABASE_USE_RLS === "true";
 }
 
 async function client() {
-  return useRls() ? await supabaseServer() : supabaseService();
+  return rlsEnabled() ? await supabaseServer() : supabaseService();
 }
 
 /** Merges the tenant scope into a filter (defense-in-depth in both modes). */
