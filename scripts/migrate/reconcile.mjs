@@ -29,8 +29,10 @@ async function totalumCount(table) {
   const res = await totalum.crud.query(table, { _limit: 1, _aggregate: { _count: true } });
   return res.data?.[0]?._aggregate?._count ?? 0;
 }
-async function supabaseCount(table) {
-  const { count, error } = await supabase.from(table).select("*", { count: "exact", head: true });
+async function supabaseCount(table, filter) {
+  let q = supabase.from(table).select("*", { count: "exact", head: true });
+  if (filter) q = q.eq(filter.col, filter.val);
+  const { count, error } = await q;
   if (error) throw new Error(`${table}: ${error.message}`);
   return count ?? 0;
 }
@@ -68,12 +70,21 @@ async function supabaseSum(table, field) {
 async function main() {
   let ok = true;
   console.log("── Reconciliation: counts ──");
-  const tables = [{ source: "company", target: "organizations" }, ...TABLE_SPECS.filter((s) => s.source !== "company")];
-  for (const { source, target } of tables) {
-    const [a, b] = await Promise.all([totalumCount(source), supabaseCount(target)]);
+  // `organizations` holds BOTH tenants (from company) and partners (from partner),
+  // so each is reconciled against its own `kind`; partners also yield one
+  // organization_relationships row apiece.
+  const tenancy = [
+    { source: "company", target: "organizations", filter: { col: "kind", val: "tenant" } },
+    { source: "partner", target: "organizations", filter: { col: "kind", val: "partner" } },
+    { source: "partner", target: "organization_relationships" },
+  ];
+  const tables = [...tenancy, ...TABLE_SPECS.filter((s) => s.source !== "company")];
+  for (const { source, target, filter } of tables) {
+    const [a, b] = await Promise.all([totalumCount(source), supabaseCount(target, filter)]);
     const match = a === b;
     if (!match) ok = false;
-    console.log(`  ${match ? "✓" : "✗"} ${source}→${target}: Totalum ${a} / Supabase ${b}`);
+    const label = filter ? `${target}[${filter.val}]` : target;
+    console.log(`  ${match ? "✓" : "✗"} ${source}→${label}: Totalum ${a} / Supabase ${b}`);
   }
 
   console.log("\n── Reconciliation: financial totals ──");

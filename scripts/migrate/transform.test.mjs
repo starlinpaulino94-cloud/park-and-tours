@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { toUuid, ynToBool, parseJsonMaybe, refId, transformRecord, TABLE_SPECS } from "./transform.mjs";
+import {
+  toUuid, ynToBool, parseJsonMaybe, refId, transformRecord, TABLE_SPECS,
+  partnerToOrg, partnerToRelationship,
+} from "./transform.mjs";
 
 describe("ETL transform — toUuid (deterministic)", () => {
   it("produces a valid v5 uuid", () => {
@@ -66,6 +69,55 @@ describe("ETL transform — transformRecord (booking)", () => {
       undefined, allowed);
     expect(row.booking_number).toBe("RSV-1");
     expect("unknown_totalum_field" in row).toBe(false); // dropped
+  });
+});
+
+describe("ETL transform — partner → organizations / relationships", () => {
+  const partner = {
+    _id: "pt1", company: "co1", name: "Agencia Sol",
+    tax_id: "B123", email: "sol@x.com", relationship_type: "subagency",
+    default_commission_pct: 12.5, credit_limit: 5000, credit_days: 30,
+    contract_from: "2024-01-01", status: "active",
+  };
+
+  it("maps a partner to an organizations(kind='partner') row scoped to its tenant", () => {
+    const org = partnerToOrg(partner);
+    expect(org.id).toBe(toUuid("pt1"));
+    expect(org.kind).toBe("partner");
+    expect(org.tenant_org_id).toBe(toUuid("co1"));   // scoped to the owning company
+    expect(org.parent_org_id).toBe(toUuid("co1"));   // no parent_partner → the tenant
+    expect(org.name).toBe("Agencia Sol");
+    expect(org.status).toBe("active");
+  });
+
+  it("clamps an out-of-enum org status to 'active'", () => {
+    expect(partnerToOrg({ _id: "p", company: "c", status: "weird" }).status).toBe("active");
+    expect(partnerToOrg({ _id: "p", company: "c", status: "blocked" }).status).toBe("blocked");
+  });
+
+  it("nests a partner under its parent_partner when present", () => {
+    const org = partnerToOrg({ _id: "pt2", company: "co1", parent_partner: "pt1" });
+    expect(org.parent_org_id).toBe(toUuid("pt1"));
+  });
+
+  it("derives one relationship carrying the commercial terms (principal → partner)", () => {
+    const rel = partnerToRelationship(partner);
+    expect(rel.id).toBe(toUuid("rel_pt1"));           // deterministic → idempotent upsert
+    expect(rel.from_org_id).toBe(toUuid("co1"));
+    expect(rel.to_org_id).toBe(toUuid("pt1"));
+    expect(rel.relationship_type).toBe("subagency");
+    expect(rel.default_commission_pct).toBe(12.5);
+    expect(rel.credit_limit).toBe(5000);
+    expect(rel.credit_days).toBe(30);
+  });
+
+  it("clamps an unknown relationship_type to 'agency'", () => {
+    expect(partnerToRelationship({ _id: "p", company: "c", relationship_type: "bogus" })
+      .relationship_type).toBe("agency");
+  });
+
+  it("returns null when the partner has no owning company (no FK anchor)", () => {
+    expect(partnerToRelationship({ _id: "p" })).toBeNull();
   });
 });
 
