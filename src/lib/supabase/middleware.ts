@@ -2,10 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
 /**
- * Supabase session refresh for Next middleware (M3). Rotates the auth cookies on
- * each request and returns the authenticated user (or null). Used behind the
- * AUTH_BACKEND=supabase flag; the better-auth path keeps its own lightweight
- * cookie check. Must run on every non-static request per @supabase/ssr guidance.
+ * Supabase session refresh for Next middleware. Rotates auth cookies on each
+ * protected request and returns the authenticated user (or null).
  */
 export async function updateSupabaseSession(request: NextRequest) {
   let response = NextResponse.next({ request });

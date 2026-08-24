@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, TenantError } from "@/lib/tenant";
+import { requireTenant, requireAtLeast, TenantError, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
-import { totalumSdk } from "@/lib/totalum";
 import { writeAudit } from "@/lib/audit";
 import type { Company } from "@/lib/types";
 
@@ -34,17 +33,18 @@ export async function PUT(req: NextRequest) {
     }
     if (Object.keys(patch).length === 0) throw new TenantError("No se enviaron datos válidos", 400);
 
-    const res = await totalumSdk.crud.editRecordById("company", ctx.companyId, patch);
-    if (res.errors) {
-      console.error("[company] error actualizando la empresa:", res.errors);
-      throw new Error(res.errors.errorMessage || "No se pudo guardar la empresa");
+    const dbPatch = { ...patch };
+    if ("base_currency" in dbPatch) {
+      dbPatch.currency = dbPatch.base_currency;
+      delete dbPatch.base_currency;
     }
+    await tenantUpdate(ctx.companyId, "company", ctx.companyId, dbPatch);
 
     await writeAudit({
       companyId: ctx.companyId, userId: ctx.userId,
       action: "company_updated", entityType: "company", entityId: ctx.companyId,
       description: `${ctx.email} actualizó los datos de la empresa`,
-      metadata: patch,
+      metadata: dbPatch,
     });
 
     console.log(`[company] ${ctx.companyId} actualizada por ${ctx.email}`);

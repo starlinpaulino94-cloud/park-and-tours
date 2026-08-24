@@ -16,10 +16,20 @@
 import { NextResponse } from "next/server";
 import { stripe, STRIPE_WEBHOOK_SECRET, cryptoProvider } from "@/lib/stripe";
 import Stripe from "stripe";
-import { totalumSdk } from "@/lib/totalum";
+import { supabaseService } from "@/lib/supabase/service";
 import type { Company } from "@/lib/types";
 
 const IS_PROD = process.env.NODE_ENV === "production";
+
+function mapCompany(row: any): Company {
+  return {
+    ...row,
+    _id: row.id,
+    base_currency: row.currency || row.base_currency,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  } as Company;
+}
 
 /** Maps a Stripe subscription status to the tenant's `subscription_status`. */
 function mapSubscriptionStatus(status: Stripe.Subscription.Status): Company["subscription_status"] {
@@ -37,17 +47,14 @@ function mapSubscriptionStatus(status: Stripe.Subscription.Status): Company["sub
 
 /** Resolves the tenant company from a customer id and/or metadata company_id. */
 async function resolveCompany(opts: { customerId?: string | null; companyId?: string | null }): Promise<Company | null> {
+  const sb = supabaseService();
   if (opts.companyId) {
-    const byId = await totalumSdk.crud.query("company", { _filter: { _id: opts.companyId }, _limit: 1 });
-    const c = byId.data?.[0] as Company | undefined;
-    if (c) return c;
+    const { data } = await sb.from("organizations").select("*").eq("id", opts.companyId).maybeSingle();
+    if (data) return mapCompany(data);
   }
   if (opts.customerId) {
-    const byCustomer = await totalumSdk.crud.query("company", {
-      _filter: { stripe_customer_id: opts.customerId }, _limit: 1,
-    });
-    const c = byCustomer.data?.[0] as Company | undefined;
-    if (c) return c;
+    const { data } = await sb.from("organizations").select("*").eq("stripe_customer_id", opts.customerId).maybeSingle();
+    if (data) return mapCompany(data);
   }
   return null;
 }
@@ -76,7 +83,7 @@ async function syncSubscription(sub: Stripe.Subscription, deleted = false) {
     const end = periodEndISO(sub);
     if (end) patch.next_billing_at = end;
   }
-  await totalumSdk.crud.editRecordById("company", company._id, patch);
+  await supabaseService().from("organizations").update(patch).eq("id", company._id);
   console.log(`[stripe] empresa ${company._id} → ${patch.subscription_status} (sub ${sub.id})`);
   return { resolved: true, companyId: company._id };
 }
@@ -91,7 +98,7 @@ async function syncInvoice(invoice: Stripe.Invoice, paid: boolean) {
   const patch: Record<string, unknown> = { subscription_status: paid ? "active" : "past_due" };
   const end = (invoice.lines?.data?.[0]?.period?.end as number | undefined);
   if (paid && end) patch.next_billing_at = new Date(end * 1000).toISOString();
-  await totalumSdk.crud.editRecordById("company", company._id, patch);
+  await supabaseService().from("organizations").update(patch).eq("id", company._id);
   console.log(`[stripe] empresa ${company._id} → ${patch.subscription_status} (invoice ${invoice.id})`);
   return { resolved: true, companyId: company._id };
 }
@@ -99,8 +106,9 @@ async function syncInvoice(invoice: Stripe.Invoice, paid: boolean) {
 /** Idempotency: has this Stripe event already been processed? */
 async function alreadyProcessed(eventId: string): Promise<boolean> {
   try {
-    const res = await totalumSdk.crud.query("stripe_event", { _filter: { event_id: eventId }, _limit: 1 });
-    return (res.data || []).length > 0;
+    const { data, error } = await supabaseService().from("stripe_event").select("id").eq("event_id", eventId).limit(1);
+    if (error) throw error;
+    return (data || []).length > 0;
   } catch (err) {
     // If the ledger table is missing we fail open (process the event) rather
     // than dropping it; duplicate processing is idempotent for our updates.
@@ -111,13 +119,13 @@ async function alreadyProcessed(eventId: string): Promise<boolean> {
 
 async function recordEvent(event: Stripe.Event, companyId: string | null, status: string) {
   try {
-    await totalumSdk.crud.createRecord("stripe_event", {
+    const { error } = await supabaseService().from("stripe_event").insert({
       event_id: event.id,
       event_type: event.type,
-      company: companyId || undefined,
       processed_at: new Date().toISOString(),
       status,
     });
+    if (error) throw error;
   } catch (err) {
     console.error("[stripe] no se pudo registrar el evento (idempotencia):", err);
   }
@@ -170,11 +178,11 @@ export async function POST(req: Request) {
         const subId = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
         const company = await resolveCompany({ customerId: custId, companyId: session.metadata?.company_id });
         if (company) {
-          await totalumSdk.crud.editRecordById("company", company._id, {
+          await supabaseService().from("organizations").update({
             stripe_customer_id: custId,
             stripe_subscription_id: subId,
             subscription_status: session.mode === "subscription" ? "active" : company.subscription_status,
-          });
+          }).eq("id", company._id);
           companyId = company._id;
           console.log(`[stripe] checkout completado → empresa ${company._id} vinculada (customer ${custId})`);
         } else {

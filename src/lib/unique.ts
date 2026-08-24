@@ -4,9 +4,7 @@ import { tenantQuery } from "@/lib/tenant";
 /**
  * Application-level uniqueness for document codes (AUD-D01).
  *
- * Totalum cannot declare unique constraints (every property must be
- * `canRepeat: true` or one-to-many relations break), so uniqueness has to be
- * enforced in code. Codes are generated with a CSPRNG over a wide space
+ * Codes are generated with a CSPRNG over a wide space
  * (`codes.ts`), making collisions already unlikely; this helper re-checks the
  * generated value against the tenant and regenerates on the rare hit, so
  * duplicate order/booking/voucher numbers become effectively impossible at

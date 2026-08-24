@@ -1,6 +1,6 @@
 /**
  * TourFlow ERP — database record types.
- * Mirrors the Totalum schema (see scripts/setup-database.mjs).
+ * Domain record types used by the Supabase/Postgres data layer.
  *
  * Convention: object reference fields hold a string id when not expanded,
  * and the full record when expanded via query(). Hence `Ref<T>`.
@@ -21,14 +21,14 @@ export function refObj<T extends { _id?: string }>(ref: Ref<T>): T | undefined {
   return ref;
 }
 
-export interface TotalumFile {
+export interface StoredFile {
   name: string;
   url?: string;
 }
 
 export interface BaseRecord {
   _id: string;
-  /** Totalum returns Date objects from the SDK and ISO strings over HTTP. */
+  /** API records use ISO strings; imported legacy rows may still carry Date objects. */
   createdAt?: string | Date;
   updatedAt?: string | Date;
 }
@@ -63,7 +63,7 @@ export interface Company extends BaseRecord {
   company_type?: CompanyType; group_name?: string;
   email?: string; phone?: string; whatsapp?: string;
   address?: string; city?: string; country?: string; timezone?: string;
-  logo?: TotalumFile; logo_url?: string; brand_color?: string;
+  logo?: StoredFile; logo_url?: string; brand_color?: string;
   base_currency?: Currency; plan?: Ref<Plan>;
   subscription_status?: "trial" | "active" | "past_due" | "cancelled" | "suspended";
   trial_ends_at?: string; next_billing_at?: string;
@@ -106,7 +106,7 @@ export interface Partner extends BaseRecord {
   address?: string; city?: string; country?: string;
   credit_limit?: number; credit_days?: number; currency?: Currency;
   default_commission_pct?: number; balance?: number;
-  logo_url?: string; contract_file?: TotalumFile;
+  logo_url?: string; contract_file?: StoredFile;
   status?: "active" | "inactive" | "blocked" | "pending";
   contract_from?: string; contract_to?: string;
   commercial_terms?: string; notes?: string;
@@ -167,7 +167,7 @@ export interface Product extends BaseRecord {
   cancellation_policy?: Ref<CancellationPolicy>;
   name?: string; code?: string; product_type?: ProductType;
   short_description?: string; description?: string;
-  images?: TotalumFile[]; cover_image_url?: string; video_url?: string;
+  images?: StoredFile[]; cover_image_url?: string; video_url?: string;
   location?: string; meeting_point?: string;
   duration_hours?: number; languages?: Lang[];
   min_age?: number; default_capacity?: number;
@@ -341,7 +341,7 @@ export interface Participant extends BaseRecord {
   company?: Ref<Company>; booking?: Ref<Booking>;
   full_name?: string; age?: number;
   category?: "adult" | "child" | "infant" | "senior";
-  document_id?: string; nationality?: string; document_file?: TotalumFile;
+  document_id?: string; nationality?: string; document_file?: StoredFile;
   checkin_status?: "pending" | "done" | "no_show";
   special_requirements?: string; notes?: string;
 }
@@ -351,7 +351,7 @@ export interface Voucher extends BaseRecord {
   code?: string; qr_data?: string;
   status?: "valid" | "used" | "cancelled" | "expired";
   issued_at?: string; used_at?: string; expires_at?: string;
-  pdf_file?: TotalumFile; notes?: string;
+  pdf_file?: StoredFile; notes?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +414,7 @@ export interface Settlement extends BaseRecord {
   currency?: Currency;
   status?: "pending" | "approved" | "partially_paid" | "paid" | "held" | "disputed" | "void";
   paid_at?: string;
-  issued_at?: string; pdf_file?: TotalumFile; notes?: string;
+  issued_at?: string; pdf_file?: StoredFile; notes?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -450,7 +450,7 @@ export interface Payment extends BaseRecord {
   status?: "pending" | "authorized" | "completed" | "rejected" | "cancelled" | "refunded" | "partially_refunded";
   amount?: number; currency?: Currency; exchange_rate?: number;
   base_currency?: Currency; base_amount?: number;
-  paid_at?: string; receipt_file?: TotalumFile; notes?: string;
+  paid_at?: string; receipt_file?: StoredFile; notes?: string;
 }
 
 export interface CashMovement extends BaseRecord {
@@ -502,7 +502,7 @@ export interface Expense extends BaseRecord {
   expense_date?: string;
   payment_method?: "cash" | "card" | "transfer" | "credit" | "other";
   status?: "pending" | "approved" | "paid" | "rejected";
-  receipt_file?: TotalumFile; notes?: string;
+  receipt_file?: StoredFile; notes?: string;
 }
 
 export interface CurrencyRate extends BaseRecord {
@@ -518,7 +518,7 @@ export interface Staff extends BaseRecord {
   full_name?: string;
   staff_type?: "guide" | "driver" | "photographer" | "coordinator" | "external";
   languages?: Lang[]; phone?: string; email?: string; document_id?: string;
-  document_file?: TotalumFile[]; photo_url?: string;
+  document_file?: StoredFile[]; photo_url?: string;
   daily_rate?: number; currency?: Currency;
   hire_date?: string; license_expiry?: string;
   status?: "active" | "inactive" | "unavailable"; notes?: string;

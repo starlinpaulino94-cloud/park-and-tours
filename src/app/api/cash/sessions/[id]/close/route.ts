@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantFindOne } from "@/lib/tenant";
+import { requireTenant, requireAtLeast, tenantCreate, tenantFindOne, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
-import { totalumSdk } from "@/lib/totalum";
 import { recalcCashSession } from "@/lib/cash";
 import { writeAudit } from "@/lib/audit";
 import type { CashSession } from "@/lib/types";
@@ -26,20 +25,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const expected = refreshed.expected_cash ?? 0;
     const difference = Math.round((counted - expected + Number.EPSILON) * 100) / 100;
 
-    const res = await totalumSdk.crud.editRecordById("cash_session", id, {
+    await tenantUpdate(ctx.companyId, "cash_session", id, {
       closed_at: new Date().toISOString(),
       counted_cash: counted,
       difference,
       status: "closed",
       notes: body.notes || refreshed.notes,
     });
-    if (res.errors) {
-      console.error("[cash] failed closing session:", res.errors);
-      throw new Error(res.errors.errorMessage || "No se pudo cerrar la caja");
-    }
 
-    await totalumSdk.crud.createRecord("cash_movement", {
-      company: ctx.companyId, cash_session: id, user: ctx.userId,
+    await tenantCreate(ctx.companyId, "cash_movement", {
+      cash_session: id, user: ctx.userId,
       movement_type: "closing", amount: counted,
       currency: refreshed.currency, concept: "Cierre de caja / arqueo",
       movement_at: new Date().toISOString(),

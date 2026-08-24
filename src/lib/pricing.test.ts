@@ -1,21 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("@/lib/totalum", () => ({ totalumSdk: { crud: { query: vi.fn() } } }));
+vi.mock("@/lib/tenant", () => ({ tenantQuery: vi.fn() }));
 
 import { billablePax, resolvePrice } from "@/lib/pricing";
-import { totalumSdk } from "@/lib/totalum";
+import { tenantQuery } from "@/lib/tenant";
 import type { PriceRule, Product } from "@/lib/types";
 
-const q = totalumSdk.crud.query as unknown as ReturnType<typeof vi.fn>;
+const q = tenantQuery as unknown as ReturnType<typeof vi.fn>;
 
 /** Wires the three queries resolvePrice issues (product / modality / price_rule). */
 function mockCatalog(opts: { product?: Partial<Product>; rules?: Partial<PriceRule>[] }) {
   const product = { _id: "p", name: "Tour", base_price: 100, currency: "usd", ...opts.product };
-  q.mockImplementation((table: string) => {
-    if (table === "product") return { data: [product] };
-    if (table === "product_modality") return { data: [] };
-    if (table === "price_rule") return { data: opts.rules ?? [] };
-    return { data: [] };
+  q.mockImplementation((_companyId: string, table: string) => {
+    if (table === "product") return [product];
+    if (table === "product_modality") return [];
+    if (table === "price_rule") return opts.rules ?? [];
+    return [];
   });
 }
 

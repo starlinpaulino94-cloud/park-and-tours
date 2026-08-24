@@ -25,9 +25,14 @@ export function fail(err: unknown, fallbackStatus = 500) {
   else if (typeof e?.status === "number") status = e.status;
 
   console.error(`[API ERROR ${status}]`, e?.message, e?.stack);
+  const headers: Record<string, string> = {};
+  if (status === 429 && typeof e?.retryAfter === "number") {
+    headers["Retry-After"] = String(e.retryAfter);
+  }
+
   return NextResponse.json(
     { ok: false, error: serializeError(err), ...(err instanceof OversellError ? { code: "OVERSELL" } : {}) },
-    { status }
+    { status, headers }
   );
 }
 

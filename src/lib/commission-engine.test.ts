@@ -1,9 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
-
-// The engine imports the Totalum SDK at module load; stub it so the pure
-// functions under test import cleanly. `computeAmount/specificityOf/pickRule`
-// never touch the DB.
-vi.mock("@/lib/totalum", () => ({ totalumSdk: { crud: { query: vi.fn() } } }));
+import { describe, it, expect } from "vitest";
 
 import { computeAmount, specificityOf, pickRule } from "@/lib/commission-engine";
 import type { CommissionRule } from "@/lib/types";

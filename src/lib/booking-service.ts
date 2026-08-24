@@ -101,7 +101,7 @@ export async function createOrderWithBookings(
   }
 
   // ---- order shell --------------------------------------------------------
-  // AUD-F34: Totalum has no transactions, so an order is built as a saga. The
+  // AUD-F34: keep this multi-write flow as a saga until the domain has a DB transaction/RPC.
   // order starts as `draft`; only after every child (bookings, vouchers,
   // commissions, receivable) is written does it get PROMOTED to
   // `pending_payment`. If any step fails we COMPENSATE — cancel the bookings
@@ -294,8 +294,7 @@ export async function createOrderWithBookings(
     });
 
     // ---- availability: reserve-then-verify (AUD-B01) ---------------------
-    // Totalum has no transactions or row locks, so the pre-flight
-    // assertCapacity above can race with a concurrent order for the last seat.
+    // The pre-flight assertCapacity above can race with a concurrent order for the last seat.
     // After persisting the booking we recompute occupancy and, if the departure
     // is now oversold, roll THIS booking back so concurrent sales resolve to a
     // single winner instead of silently double-selling the seat.

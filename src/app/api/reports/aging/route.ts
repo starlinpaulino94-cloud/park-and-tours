@@ -3,8 +3,10 @@ import { requireTenant, requireAtLeast, tenantQuery } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import type { AgingBucket, Payable, Receivable } from "@/lib/types";
 import { refId } from "@/lib/types";
+import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 
 const BUCKETS: AgingBucket[] = ["current", "d1_30", "d31_60", "d61_90", "d90_plus"];
+const MAX_ROWS = 750;
 
 function bucketOf(dueDate?: string): AgingBucket {
   if (!dueDate) return "current";
@@ -23,12 +25,13 @@ function bucketOf(dueDate?: string): AgingBucket {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, "reports:aging", ctx.userId), limit: 30, windowMs: 60_000 });
     requireAtLeast(ctx, "manager");
     const type = req.nextUrl.searchParams.get("type") === "payable" ? "payable" : "receivable";
 
     const rows = await tenantQuery<Receivable & Payable>(ctx.companyId, type, {
       _filter: { status: { nin: ["paid", "written_off", "cancelled"] } },
-      _limit: 1000,
+      _limit: MAX_ROWS,
       _sort: { due_date: "asc" },
       partner: true,
       ...(type === "receivable" ? { customer: true } : { supplier: true, seller: true }),
@@ -110,7 +113,7 @@ export async function GET(req: NextRequest) {
       entities,
       documents: documents.sort((a, b) => b.days_overdue - a.days_overdue),
       totals: { ...Object.fromEntries(BUCKETS.map((b) => [b, round2(totals[b])])), total: round2(totals.total) },
-      truncated: rows.length >= 1000,
+      truncated: rows.length >= MAX_ROWS,
     });
   } catch (err) {
     return fail(err);

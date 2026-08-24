@@ -1,7 +1,6 @@
 import "server-only";
-import { totalumSdk } from "@/lib/totalum";
 import { createOrderWithBookings } from "@/lib/booking-service";
-import type { TenantContext } from "@/lib/tenant";
+import { tenantCreate, tenantQuery, tenantUpdate, type TenantContext } from "@/lib/tenant";
 import { FILES } from "../../assets/files";
 import type { Currency } from "@/lib/types";
 
@@ -196,27 +195,19 @@ export async function seedDemoData(ctx: TenantContext & { companyId: string }): 
   const counts: Record<string, number> = {};
 
   const create = async (table: string, data: Record<string, unknown>): Promise<Created> => {
-    const res = await totalumSdk.crud.createRecord(table, { ...data, company: companyId });
-    if (res.errors) {
-      console.error(`[demo-seed] error creando ${table}:`, res.errors);
-      throw new Error(res.errors.errorMessage || `No se pudo crear el registro de ${table}`);
-    }
+    const res = await tenantCreate<Created>(companyId, table, data);
     counts[table] = (counts[table] || 0) + 1;
-    return res.data as Created;
+    return res;
   };
 
   const first = async <T = any>(table: string, filter: Record<string, unknown>): Promise<T | null> => {
-    const res = await totalumSdk.crud.query(table, { _filter: { ...filter, company: companyId }, _limit: 1 });
-    if (res.errors) {
-      console.error(`[demo-seed] error consultando ${table}:`, res.errors);
-      throw new Error(res.errors.errorMessage || `No se pudo consultar ${table}`);
-    }
-    return (res.data?.[0] as T) || null;
+    const rows = await tenantQuery<T>(companyId, table, { _filter: filter, _limit: 1 });
+    return rows[0] || null;
   };
 
   const branch = await first<Created>("branch", {});
   const branchId = branch?._id;
-  const categories = (await totalumSdk.crud.query("product_category", { _filter: { company: companyId }, _limit: 10 })).data || [];
+  const categories = await tenantQuery<any>(companyId, "product_category", { _limit: 10 });
   const categoryByName = new Map<string, string>();
   for (const c of categories as any[]) categoryByName.set(c.name, c._id);
   const policy = await first<Created>("cancellation_policy", {});
@@ -563,12 +554,8 @@ export async function seedDemoData(ctx: TenantContext & { companyId: string }): 
           balance_amount: Math.round((amount - partial) * 100) / 100,
           status: partial >= amount ? "paid" : "partially_paid",
         };
-        const upd = await totalumSdk.crud.editRecordById("booking", booking._id, patch);
-        if (upd.errors) {
-          console.error("[demo-seed] error actualizando pago de reserva:", upd.errors);
-          throw new Error(upd.errors.errorMessage || "No se pudo actualizar la reserva");
-        }
-        await totalumSdk.crud.editRecordById("order", result.order._id, {
+        await tenantUpdate(companyId, "booking", booking._id, patch);
+        await tenantUpdate(companyId, "order", result.order._id, {
           paid_total: partial,
           balance: Math.round(((result.order.total ?? amount) - partial) * 100) / 100,
           status: partial >= amount ? "paid" : "partially_paid",
@@ -581,7 +568,7 @@ export async function seedDemoData(ctx: TenantContext & { companyId: string }): 
   }
 
   // ------------------------------------------------------------------- expenses
-  const expenseCategories = (await totalumSdk.crud.query("expense_category", { _filter: { company: companyId }, _limit: 20 })).data || [];
+  const expenseCategories = await tenantQuery<any>(companyId, "expense_category", { _limit: 20 });
   const expenseSamples = [
     { concept: "Combustible flota semana", amount: 640, cat: "Combustible" },
     { concept: "Mantenimiento Coaster 02", amount: 380, cat: "Mantenimiento" },

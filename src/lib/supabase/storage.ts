@@ -2,7 +2,7 @@ import "server-only";
 import { supabaseServer } from "@/lib/supabase/server";
 
 /**
- * Supabase Storage helpers (M4). Replaces Totalum's declarative FILE fields.
+ * Supabase Storage helpers for files referenced by business records.
  *
  * SECURITY: object paths always start with the caller's organization_id (and,
  * for partner files, their partner_id). The path is built SERVER-SIDE from the

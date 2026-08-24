@@ -1,9 +1,8 @@
 import { cookies } from "next/headers";
 import { requireSuperadmin, IMPERSONATION_COOKIE } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
-import { totalumSdk } from "@/lib/totalum";
 import { writeAudit } from "@/lib/audit";
-import type { Company } from "@/lib/types";
+import { supabaseService } from "@/lib/supabase/service";
 
 /**
  * POST /api/superadmin/impersonate — entra o sale de una empresa.
@@ -27,28 +26,29 @@ export async function POST(req: Request) {
       return ok({ impersonating: false });
     }
 
-    const res = await totalumSdk.crud.query("company", { _filter: { _id: body.company_id }, _limit: 1 });
-    if (res.errors) {
-      console.error("[impersonate] error cargando empresa:", res.errors);
-      throw new Error(res.errors.errorMessage || "Error cargando la empresa");
-    }
-    const company = (res.data?.[0] || null) as Company | null;
+    const { data: company, error } = await supabaseService()
+      .from("organizations")
+      .select("id, name")
+      .eq("id", body.company_id)
+      .eq("kind", "tenant")
+      .maybeSingle();
+    if (error) throw error;
     if (!company) throw Object.assign(new Error("Empresa no encontrada"), { status: 404 });
 
-    jar.set(IMPERSONATION_COOKIE, company._id, {
+    jar.set(IMPERSONATION_COOKIE, company.id, {
       httpOnly: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 2,
       secure: (process.env.NEXT_PUBLIC_APP_URL || "").startsWith("https://"),
     });
 
     await writeAudit({
-      companyId: company._id, userId: ctx.userId, impersonatedBy: ctx.userId,
-      action: "impersonation_started", entityType: "company", entityId: company._id,
+      companyId: company.id, userId: ctx.userId, impersonatedBy: ctx.userId,
+      action: "impersonation_started", entityType: "company", entityId: company.id,
       severity: "critical",
       description: `${ctx.email} inició sesión suplantada en ${company.name}`,
     });
 
     console.log(`[impersonate] ${ctx.email} → ${company.name}`);
-    return ok({ impersonating: true, company: { _id: company._id, name: company.name } });
+    return ok({ impersonating: true, company: { _id: company.id, id: company.id, name: company.name } });
   } catch (err) {
     return fail(err);
   }

@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { signUp } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -39,19 +38,7 @@ export default function RegisterPage() {
     }
 
     try {
-      // M3: Supabase Auth when the flag is set, else better-auth (default).
-      if (process.env.NEXT_PUBLIC_AUTH_BACKEND === "supabase") {
-        const { supabaseAuth } = await import("@/lib/supabase/client");
-        const { error } = await supabaseAuth.signUpEmail(formData.email, formData.password, formData.name);
-        if (error) {
-          setError(error.message || "No se pudo crear la cuenta. Puede que el email ya esté en uso.");
-          setLoading(false);
-          return;
-        }
-        window.location.href = "/dashboard";
-        return;
-      }
-
+      const { signUp } = await import("@/lib/auth-client");
       const result = await signUp.email({
         email: formData.email,
         password: formData.password,
@@ -120,11 +107,11 @@ export default function RegisterPage() {
               <Input
                 id="password"
                 type="password"
-                placeholder="Mínimo 6 caracteres"
+                placeholder="Mínimo 8 caracteres"
                 value={formData.password}
                 onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                 required
-                minLength={6}
+                minLength={8}
                 className="h-11 transition-all focus:ring-2"
               />
             </div>

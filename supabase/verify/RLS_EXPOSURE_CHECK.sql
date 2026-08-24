@@ -40,11 +40,26 @@ union all select 'ledger_entry',count(*) from ledger_entry
 union all select 'organizations', count(*) from organizations
 order by 2 desc;
 
--- 4) Funciones SECURITY DEFINER ejecutables por anon (SEC-002).
-select p.proname, p.prosecdef as security_definer,
+-- 4) Funciones propias de la app ejecutables por anon (SEC-002).
+--    Ignora funciones normales de extensiones como citext/regexp/text.
+select n.nspname as schema,
+       p.proname,
+       p.prosecdef as security_definer,
        has_function_privilege('anon', p.oid, 'EXECUTE') as anon_puede_ejecutar
 from pg_proc p
 join pg_namespace n on n.oid = p.pronamespace
-where n.nspname in ('public','app')
+where n.nspname = 'app'
+  and has_function_privilege('anon', p.oid, 'EXECUTE')
+order by p.prosecdef desc, p.proname;
+
+-- 5) RPCs públicas propias ejecutables por anon. Debe devolver 0 filas.
+select n.nspname as schema,
+       p.proname,
+       p.prosecdef as security_definer,
+       has_function_privilege('anon', p.oid, 'EXECUTE') as anon_puede_ejecutar
+from pg_proc p
+join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public'
+  and p.proname in ('reserve_departure_capacity', 'release_departure_capacity')
   and has_function_privilege('anon', p.oid, 'EXECUTE')
 order by p.prosecdef desc, p.proname;

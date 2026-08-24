@@ -3,6 +3,7 @@ import { requireTenant, requireAtLeast, tenantQuery } from "@/lib/tenant";
 import { ok, fail, resolvePeriod } from "@/lib/api-response";
 import type { Booking, Commission } from "@/lib/types";
 import { refId } from "@/lib/types";
+import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 
 type Bucket = {
   key: string; label: string;
@@ -10,6 +11,8 @@ type Bucket = {
   gross: number; discounts: number; taxes: number; net: number;
   commissions: number; costs: number; margin: number; margin_pct: number;
 };
+
+const MAX_ROWS = 750;
 
 const emptyBucket = (key: string, label: string): Bucket => ({
   key, label, bookings: 0, pax: 0, gross: 0, discounts: 0, taxes: 0,
@@ -23,6 +26,7 @@ const emptyBucket = (key: string, label: string): Bucket => ({
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, "reports:profitability", ctx.userId), limit: 30, windowMs: 60_000 });
     requireAtLeast(ctx, "manager");
 
     const sp = req.nextUrl.searchParams;
@@ -34,7 +38,7 @@ export async function GET(req: NextRequest) {
         booking_date: { gte: from, lte: to },
         status: { nin: ["draft", "cancelled", "refunded"] },
       },
-      _limit: 1000,
+      _limit: MAX_ROWS,
       _sort: { booking_date: "desc" },
       product: true, seller: true, partner: true, departure: true,
     });
@@ -43,7 +47,7 @@ export async function GET(req: NextRequest) {
     const commissions = bookingIds.length
       ? await tenantQuery<Commission>(ctx.companyId, "commission", {
           _filter: { booking: { in: bookingIds }, status: { ne: "cancelled" } },
-          _limit: 1000,
+          _limit: MAX_ROWS,
         })
       : [];
 
@@ -118,7 +122,7 @@ export async function GET(req: NextRequest) {
       group_by: groupBy,
       rows,
       totals: finalize(totals),
-      truncated: bookings.length >= 1000,
+      truncated: bookings.length >= MAX_ROWS,
     });
   } catch (err) {
     return fail(err);

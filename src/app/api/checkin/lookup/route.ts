@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { requireTenant, requireAtLeast, tenantQuery } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
+import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 
 /** Escapes regex metacharacters so user input is matched literally (no ReDoS / injection). */
 function escapeRegex(input: string): string {
@@ -11,6 +12,7 @@ function escapeRegex(input: string): string {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, "checkin:lookup", ctx.userId), limit: 60, windowMs: 60_000 });
     // AUD-B06: check-in is an operations action. Without a role gate any tenant
     // user — including an external B2B `partner` — could enumerate every
     // booking's voucher (the only credential a ticket has) across all partners.

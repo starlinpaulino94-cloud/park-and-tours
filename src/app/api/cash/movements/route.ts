@@ -2,12 +2,16 @@ import { NextRequest } from "next/server";
 import { requireTenant, requireAtLeast, tenantCreate, tenantFindOne } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { recalcCashSession } from "@/lib/cash";
+import { assertSameOriginMutation } from "@/lib/csrf";
+import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import type { CashSession } from "@/lib/types";
 
 /** POST /api/cash/movements — manual cash in/out (withdrawals, deposits, petty expenses). */
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, "cash:movement", ctx.userId), limit: 60, windowMs: 60_000 });
     requireAtLeast(ctx, "cashier");
 
     const body = await readJson<{

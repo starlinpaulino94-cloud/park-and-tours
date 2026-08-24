@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { requireTenant, requireAtLeast, tenantFindOne, tenantQuery, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
+import { assertSameOriginMutation } from "@/lib/csrf";
+import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import type { Booking } from "@/lib/types";
 
 /**
@@ -11,8 +13,10 @@ import type { Booking } from "@/lib/types";
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    assertSameOriginMutation(req);
     const { id } = await params;
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, "bookings:checkin", ctx.userId), limit: 60, windowMs: 60_000 });
     requireAtLeast(ctx, "operations");
 
     const body = await readJson<{

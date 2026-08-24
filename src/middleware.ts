@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { isSupabaseAuth } from "@/lib/auth-backend";
 import { updateSupabaseSession } from "@/lib/supabase/middleware";
 
 const isProduction = process.env.NODE_ENV === "production";
@@ -11,13 +10,13 @@ const appOrigin = appUrl ? new URL(appUrl).origin : "";
 /**
  * Check if an origin is allowed for CORS
  * - Development: any origin
- * - Production: NEXT_PUBLIC_APP_URL, *.totalum-project.com, *.webapp-project.com,
+ * - Production: NEXT_PUBLIC_APP_URL, *.webapp-project.com,
  *   or same-host (custom domains)
  */
 function isAllowedOrigin(origin: string, request: NextRequest): boolean {
   if (!isProduction) return true;
   if (appOrigin && origin === appOrigin) return true;
-  if (/^https:\/\/[^/]+\.(totalum-project|webapp-project)\.com$/.test(origin)) return true;
+  if (/^https:\/\/[^/]+\.webapp-project\.com$/.test(origin)) return true;
 
   // Trust same-host requests — custom domains served by this same worker
   const host = request.headers.get("host");
@@ -104,30 +103,8 @@ export async function middleware(request: NextRequest) {
     return response;
   }
 
-  // M3: when Supabase Auth is active, refresh the session and gate on the user.
-  if (isSupabaseAuth()) {
-    const { response: sessionResponse, user } = await updateSupabaseSession(request);
-    if (!user) {
-      const loginUrl = new URL("/login", request.url);
-      loginUrl.searchParams.set("redirect", pathname);
-      const redirectResponse = NextResponse.redirect(loginUrl);
-      addCorsHeaders(redirectResponse, request);
-      addCspHeaders(redirectResponse);
-      return redirectResponse;
-    }
-    addCorsHeaders(sessionResponse, request);
-    addCspHeaders(sessionResponse);
-    return sessionResponse;
-  }
-
-  // Check session cookie for protected routes (lightweight Edge-compatible check)
-  // Better Auth uses "better-auth.session_token" or "__Secure-better-auth.session_token" (when secure)
-  const sessionCookie =
-    request.cookies.get("better-auth.session_token") ||
-    request.cookies.get("__Secure-better-auth.session_token");
-
-  if (!sessionCookie) {
-    // Redirect to login if no session cookie found
+  const { response: sessionResponse, user } = await updateSupabaseSession(request);
+  if (!user) {
     const loginUrl = new URL("/login", request.url);
     loginUrl.searchParams.set("redirect", pathname);
     const redirectResponse = NextResponse.redirect(loginUrl);
@@ -135,10 +112,9 @@ export async function middleware(request: NextRequest) {
     addCspHeaders(redirectResponse);
     return redirectResponse;
   }
-
-  // Cookie exists - allow access
-  // Note: Full session validation happens in Server Components/API routes
-  return response;
+  addCorsHeaders(sessionResponse, request);
+  addCspHeaders(sessionResponse);
+  return sessionResponse;
 }
 
 export const config = {

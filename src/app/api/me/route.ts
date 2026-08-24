@@ -1,6 +1,6 @@
 import { getTenantContext } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
-import { totalumSdk } from "@/lib/totalum";
+import { supabaseService } from "@/lib/supabase/service";
 import type { Plan } from "@/lib/types";
 
 /** Current session profile + tenant, used to bootstrap the app shell. */
@@ -14,8 +14,8 @@ export async function GET() {
     if (planRef) {
       const planId = typeof planRef === "string" ? planRef : planRef._id;
       if (planId) {
-        const res = await totalumSdk.crud.query("plan", { _filter: { _id: planId }, _limit: 1 });
-        plan = (res.data?.[0] || null) as Plan | null;
+        const { data } = await supabaseService().from("plan").select("*").eq("id", planId).maybeSingle();
+        plan = data ? ({ ...data, _id: data.id, createdAt: data.created_at, updatedAt: data.updated_at } as Plan) : null;
       }
     }
 

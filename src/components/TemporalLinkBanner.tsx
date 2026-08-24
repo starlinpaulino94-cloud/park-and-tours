@@ -10,8 +10,8 @@ import { useEffect, useState } from "react";
  *   2. The page is the top-level document — NOT embedded anywhere
  *
  * So it appears when the development link is opened on its own browser tab, and never
- * when the project is embedded in another page (the Totalum editor preview, or any
- * iframe / frame / object on a third-party site). Published projects use a different
+ * when the project is embedded in another page (iframe / frame / object on a
+ * third-party site). Published projects use a different
  * hostname, so it never shows up for end users either.
  *
  * It renders in the normal document flow at the very top of <body>, so the website

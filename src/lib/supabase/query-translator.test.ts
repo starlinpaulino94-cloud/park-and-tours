@@ -22,7 +22,7 @@ function fakeBuilder() {
 }
 
 describe("query-translator — field aliases", () => {
-  it("maps Totalum names to the Postgres schema", () => {
+  it("maps legacy names to the Postgres schema", () => {
     expect(aliasField("_id")).toBe("id");
     expect(aliasField("company")).toBe("organization_id");
     expect(aliasField("partner")).toBe("partner_id");

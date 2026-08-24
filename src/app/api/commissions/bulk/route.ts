@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantFindOne } from "@/lib/tenant";
+import { requireTenant, requireAtLeast, tenantFindOne, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
-import { totalumSdk } from "@/lib/totalum";
 import { writeAudit } from "@/lib/audit";
 import type { Commission, CommissionStatus } from "@/lib/types";
 
@@ -39,11 +38,7 @@ export async function POST(req: NextRequest) {
       if (status === "approved") patch.approved_at = new Date().toISOString();
       if (body.notes) patch.notes = body.notes;
 
-      const res = await totalumSdk.crud.editRecordById("commission", id, patch);
-      if (res.errors) {
-        console.error("[commissions] error actualizando", id, res.errors);
-        throw new Error(res.errors.errorMessage || "Error actualizando comisiones");
-      }
+      await tenantUpdate(ctx.companyId, "commission", id, patch);
       updated++;
       amount += commission.amount ?? 0;
     }
