@@ -90,6 +90,33 @@ async function loadOrganization(orgId: string): Promise<Company | null> {
   }
 }
 
+async function loadClaimsFromPrimaryMembership(userId: string): Promise<AppClaims | null> {
+  try {
+    const sb = supabaseService();
+    const { data } = await sb
+      .from("organization_memberships")
+      .select("role,status,organizations(id,kind,tenant_org_id)")
+      .eq("user_id", userId)
+      .eq("status", "active")
+      .order("is_primary", { ascending: false })
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    const org = Array.isArray(data?.organizations) ? data?.organizations[0] : data?.organizations;
+    if (!data || !org?.id) return null;
+
+    return {
+      org_id: org.tenant_org_id || org.id,
+      app_role: data.role,
+      status: data.status,
+      partner_id: org.kind === "partner" ? org.id : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function getSupabaseTenantContext(): Promise<TenantContext | null> {
   const sb = await supabaseServer();
   const { data: userRes } = await sb.auth.getUser();      // validates the JWT
@@ -98,9 +125,10 @@ export async function getSupabaseTenantContext(): Promise<TenantContext | null> 
 
   const { data: sessionRes } = await sb.auth.getSession();
   const token = sessionRes?.session?.access_token;
-  const claims = (token ? decodeJwtClaims(token) : {}) as AppClaims;
+  const jwtClaims = (token ? decodeJwtClaims(token) : {}) as AppClaims;
+  const claims = jwtClaims.org_id ? jwtClaims : await loadClaimsFromPrimaryMembership(user.id);
 
-  if (!claims.org_id) return null;                        // no active membership
+  if (!claims?.org_id) return null;                       // no active membership
   const company = await loadOrganization(claims.org_id);
   const ctx = mapClaimsToContext(
     claims,
