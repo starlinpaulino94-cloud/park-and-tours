@@ -1,4 +1,3 @@
-import path from "path";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
@@ -33,28 +32,6 @@ const nextConfig: NextConfig = {
     ];
   },
   webpack: (config, { dev }) => {
-    /**
-     * ⭐⭐ SOURCE TAGS FOR THE VISUAL EDITOR — see scripts/totalum-source-tags.js.
-     *
-     * When TOTALUM_SOURCE_TAGS=1, every JSX element in `src/` gets `data-tlm-loc="file:line:col"`, which is what
-     * lets the platform's visual editor edit the exact element the user clicked instead
-     * of inferring it from classes and text (and sometimes refusing, because a `cn()`
-     * merge or three identical cards are genuinely ambiguous from the outside).
-     *
-     * ⚠️ `enforce: "pre"` IS LOAD-BEARING: the transform reads TSX and must run BEFORE
-     * next-swc compiles it away. It is opt-in because it makes local navigation
-     * noticeably slower and should only run while using the visual editor.
-     */
-    if (process.env.TOTALUM_SOURCE_TAGS === "1") {
-      config.module.rules.push({
-        test: /\.(tsx|jsx)$/,
-        include: path.join(process.cwd(), "src"),
-        exclude: /node_modules/,
-        enforce: "pre",
-        use: [{ loader: path.join(process.cwd(), "scripts", "totalum-source-tags.js") }],
-      });
-    }
-
     if (dev) {
       config.watchOptions = {
         ...config.watchOptions,
@@ -76,15 +53,3 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;
-
-// added by create cloudflare to enable calling `getCloudflareContext()` in `next dev`
-// conditionally initialize based on environment variable
-if (process.env.DISABLE_OPENNEXT !== 'true') {
-  try {
-    const { initOpenNextCloudflareForDev } = require("@opennextjs/cloudflare");
-    initOpenNextCloudflareForDev();
-  } catch (error) {
-    console.warn("OpenNext Cloudflare dev initialization failed:", error instanceof Error ? error.message : String(error));
-    console.warn("Falling back to standard Next.js development mode");
-  }
-}

@@ -4,7 +4,6 @@ import type { Metadata } from "next";
 import { Fraunces, Manrope, Space_Grotesk, Geist_Mono } from "next/font/google";
 import localFont from "next/font/local";
 import "./globals.css";
-import { ScriptExecutor } from "@/components/ScriptExecutor";
 import { DevToolsHandler } from "@/components/DevToolsHandler";
 import { GlobalErrorCatcher } from "@/components/GlobalErrorCatcher";
 import { TemporalLinkBanner } from "@/components/TemporalLinkBanner";
@@ -67,7 +66,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         className={`${figures.variable} ${display.variable} ${body.variable} ${grotesk.variable} ${mono.variable} antialiased`}
       >
         <GlobalErrorCatcher />
-        <ScriptExecutor />
         <DevToolsHandler />
         {/* Development-preview only banner. Kept outside the page wrapper so it never covers content. */}
         <TemporalLinkBanner />

@@ -8,6 +8,7 @@ import { resolveExchangeRate } from "@/lib/currency";
 import { newPaymentReference } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
 import { assertSameOriginMutation } from "@/lib/csrf";
+import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import type { CashSession, Currency, Order, PaymentMethod, Receivable } from "@/lib/types";
 
 /**
@@ -18,6 +19,7 @@ export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, "payments:create", ctx.userId), limit: 30, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<{

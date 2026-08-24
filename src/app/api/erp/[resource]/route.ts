@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { requireTenant, tenantQuery, tenantCreate, tenantCount, requireAtLeast, TenantError } from "@/lib/tenant";
 import { getResource, sanitizePayload, partnerScopeFor, readRoleFor, allowedFilterFields } from "@/lib/resources";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { assertSameOriginMutation } from "@/lib/csrf";
+import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 
 /** Generic tenant-scoped list endpoint: GET /api/erp/:resource */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ resource: string }> }) {
@@ -14,6 +16,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
     if (!def) throw new TenantError(`Recurso desconocido: ${resource}`, 404);
 
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, `erp:list:${def.table}`, ctx.userId), limit: 180, windowMs: 60_000 });
 
     // AUD-004 follow-up: read authorization for sensitive resources. Partners
     // are handled by `partnerScopeFor` below (their rank would misfire here).
@@ -23,7 +26,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
     }
 
     const sp = req.nextUrl.searchParams;
-    const limit = Math.min(Number(sp.get("limit") || 50), 1000);
+    const maxLimit = sp.get("bulk") === "true" ? 500 : 200;
+    const limit = Math.min(Number(sp.get("limit") || 50), maxLimit);
     const offset = Number(sp.get("offset") || 0);
     const q = sp.get("q")?.trim();
     const includeTotal = sp.get("includeTotal") !== "false";
@@ -120,12 +124,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
 /** Generic tenant-scoped create endpoint: POST /api/erp/:resource */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ resource: string }> }) {
   try {
+    assertSameOriginMutation(req);
     const { resource } = await params;
     const def = getResource(resource);
     if (!def) throw new TenantError(`Recurso desconocido: ${resource}`, 404);
     if (def.writable.length === 0) throw new TenantError("Este recurso es de solo lectura", 405);
 
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, `erp:create:${def.table}`, ctx.userId), limit: 60, windowMs: 60_000 });
     // AUD-004: partners are read-only in the generic ERP.
     if (ctx.role === "partner") throw new TenantError("No tienes permisos para crear este recurso", 403);
     if (def.writeRole) requireAtLeast(ctx, def.writeRole);

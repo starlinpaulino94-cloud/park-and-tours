@@ -3,12 +3,15 @@ import { requireTenant, requireAtLeast, tenantQuery, tenantCreate } from "@/lib/
 import { ok, fail, readJson } from "@/lib/api-response";
 import { newCashSessionCode } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
+import { assertSameOriginMutation } from "@/lib/csrf";
+import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import type { CashSession, Currency } from "@/lib/types";
 
 /** GET /api/cash/sessions — sessions, newest first (open ones surface at the top of the UI). */
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, "cash:sessions:list", ctx.userId), limit: 120, windowMs: 60_000 });
     const status = req.nextUrl.searchParams.get("status");
     const filter: Record<string, unknown> = {};
     if (status) filter.status = status;
@@ -28,7 +31,9 @@ export async function GET(req: NextRequest) {
 /** POST /api/cash/sessions — opens a cash session. */
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, "cash:sessions:create", ctx.userId), limit: 20, windowMs: 60_000 });
     requireAtLeast(ctx, "cashier");
 
     const body = await readJson<{ cash_register_id?: string; opening_amount?: number; currency?: Currency; notes?: string }>(req);

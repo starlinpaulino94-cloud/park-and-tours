@@ -10,7 +10,7 @@ import type { TenantContext } from "@/lib/tenant";
  *
  * The tenant scope (org_id, app_role, partner_id, status) lives in the JWT,
  * injected by app.custom_access_token_hook from organization_memberships. This
- * removes the per-request DB lookup the Totalum path did in getTenantContext.
+ * removes per-request membership lookups in getTenantContext.
  *
  * `decodeJwtClaims` and `mapClaimsToContext` are pure and unit-tested; only
  * `getSupabaseTenantContext` performs IO.
@@ -77,6 +77,7 @@ async function loadOrganization(orgId: string): Promise<Company | null> {
     return {
       _id: data.id,
       name: data.name,
+      plan: data.plan_id,
       base_currency: data.currency,
       modules_enabled: data.modules_enabled,
       subscription_status: data.subscription_status,

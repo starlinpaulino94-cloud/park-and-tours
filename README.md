@@ -1,33 +1,30 @@
-# Totalum Next.js Project
+# Park and Tours
 
-This project is a nextjs project that uses TotalumSdk for database operations.
+Plataforma Next.js para gestión turística con Supabase/Postgres como backend de datos y autenticación.
 
-If you are working outside Totalum: Only commit and push to develop branch, totalum handles the auto merge to main branch and the deployment to production environment.
-
-## Getting Started
-
-First, run:
+## Desarrollo
 
 ```bash
 npm install
-
-npm run build
-
-npm start
-
+npm run dev
 ```
 
-the main page is `app/page.tsx`.
+## Verificación
 
-<!-- TOTALUM-GITHUB-NOTICE -->
-## Totalum workflow
+```bash
+npm run check-types-errors
+npm test
+npm run build
+```
 
-- Project documentation lives in the `totalum-docs/` folder. Check it before making changes.
-- Only push to the `develop` branch. Totalum auto-merges `develop` into `main` when you publish from the Totalum platform — do not push directly to `main`.
+## Entorno
 
-### Environment variables
+Usa `.env.example` como referencia. Las variables reales deben vivir en `.env.local` o en el proveedor de despliegue.
 
-To get the `.env` file for this project:
+Variables principales:
 
-- **Recommended:** Open your project on the Totalum website, go to the code page, and click the download button to download the source code. Inside the downloaded archive you will find a `.env` file — copy it to the project root. For production variables, use `.envProd` instead.
-- **Alternative:** Use the Totalum-VCaaS MCP or API to fetch the env file programmatically. Note that this is the **Totalum-VCaaS** MCP/API, not the standard Totalum API/MCP — it exposes a dedicated endpoint/tool for retrieving env files. Prefer the download option above by default.
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_USE_RLS=true`
+- `NEXT_PUBLIC_APP_URL`

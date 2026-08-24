@@ -2,11 +2,13 @@ import { NextRequest } from "next/server";
 import { requireTenant, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { createOrderWithBookings, type CreateOrderInput } from "@/lib/booking-service";
+import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 
 /** POST /api/orders — creates a multi-product order with all its bookings. */
 export async function POST(req: NextRequest) {
   try {
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, "orders:create", ctx.userId), limit: 20, windowMs: 60_000 });
     requireAtLeast(ctx, "partner");
 
     const body = await readJson<CreateOrderInput>(req);
@@ -29,6 +31,7 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, "orders:list", ctx.userId), limit: 120, windowMs: 60_000 });
     const sp = req.nextUrl.searchParams;
     const filter: Record<string, unknown> = {};
     if (sp.get("status")) filter.status = sp.get("status");

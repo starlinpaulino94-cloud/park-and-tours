@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { requireSuperadmin } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
-import { totalumSdk } from "@/lib/totalum";
+import { supabaseService } from "@/lib/supabase/service";
 
 /** GET /api/superadmin/audit — auditoría global de toda la plataforma. */
 export async function GET(req: NextRequest) {
@@ -9,32 +9,27 @@ export async function GET(req: NextRequest) {
     const ctx = await requireSuperadmin();
     const sp = req.nextUrl.searchParams;
 
-    const filter: Record<string, unknown> = {};
-    if (sp.get("severity")) filter.severity = sp.get("severity");
-    if (sp.get("company_id")) filter.company = sp.get("company_id");
+    const limit = Math.min(Number(sp.get("limit") || 100), 500);
+    const offset = Number(sp.get("offset") || 0);
+    let query = supabaseService()
+      .from("audit_log")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (sp.get("severity")) query = query.eq("severity", sp.get("severity"));
+    if (sp.get("company_id")) query = query.eq("organization_id", sp.get("company_id"));
     const q = sp.get("q")?.trim();
     if (q) {
-      filter._or = [
-        { action: { regex: q, options: "i" } },
-        { description: { regex: q, options: "i" } },
-        { entity_type: { regex: q, options: "i" } },
-      ];
+      const safe = q.replace(/[%_,()]/g, "\\$&");
+      query = query.or(`action.ilike.%${safe}%,description.ilike.%${safe}%,entity_type.ilike.%${safe}%`);
     }
 
-    const res = await totalumSdk.crud.query("audit_log", {
-      _filter: filter,
-      _sort: { createdAt: "desc" },
-      _limit: Math.min(Number(sp.get("limit") || 100), 500),
-      _offset: Number(sp.get("offset") || 0),
-      company: true, user: true, impersonated_by: true,
-    });
-    if (res.errors) {
-      console.error("[superadmin/audit] error listando la auditoría:", res.errors);
-      throw new Error(res.errors.errorMessage || "Error cargando la auditoría");
-    }
+    const { data, error } = await query;
+    if (error) throw error;
 
-    console.log(`[superadmin/audit] ${(res.data || []).length} eventos consultados por ${ctx.email}`);
-    return ok(res.data || []);
+    console.log(`[superadmin/audit] ${(data || []).length} eventos consultados por ${ctx.email}`);
+    return ok((data || []).map((row: any) => ({ ...row, _id: row.id, company: row.organization_id, user: row.user_id, createdAt: row.created_at })));
   } catch (err) {
     return fail(err);
   }

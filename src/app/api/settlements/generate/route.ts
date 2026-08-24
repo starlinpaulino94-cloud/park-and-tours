@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantQuery, tenantCreate } from "@/lib/tenant";
+import { requireTenant, requireAtLeast, tenantQuery, tenantCreate, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
-import { totalumSdk } from "@/lib/totalum";
 import { newSettlementCode, newDocumentNumber } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
 import type { BeneficiaryType, Commission, Currency, Settlement } from "@/lib/types";
@@ -93,19 +92,11 @@ export async function POST(req: NextRequest) {
         if (!paid) continue;
       }
 
-      // Link the commission to this settlement. The `settlement` field may not
-      // exist yet in an un-migrated database, so fall back to a status-only
-      // write rather than aborting the whole batch.
-      let res = await totalumSdk.crud.editRecordById("commission", c._id, {
+      // Link the commission to this settlement before calculating totals so a
+      // retry/concurrent run cannot silently double-include the same line.
+      await tenantUpdate(ctx.companyId, "commission", c._id, {
         status: "settled", settlement: settlement._id,
       });
-      if (res.errors) {
-        res = await totalumSdk.crud.editRecordById("commission", c._id, { status: "settled" });
-      }
-      if (res.errors) {
-        console.error("[settlements] no se pudo liquidar la comisión, se omite:", c._id, res.errors);
-        continue;
-      }
 
       claimed++;
       base += fresh.base_amount ?? 0;
@@ -118,12 +109,12 @@ export async function POST(req: NextRequest) {
 
     if (claimed === 0) {
       // Everything was claimed concurrently: void the empty shell.
-      await totalumSdk.crud.editRecordById("settlement", settlement._id, { status: "void", notes: "Sin comisiones que liquidar" });
+      await tenantUpdate(ctx.companyId, "settlement", settlement._id, { status: "void", notes: "Sin comisiones que liquidar" });
       throw Object.assign(new Error("Las comisiones ya fueron liquidadas"), { status: 409 });
     }
 
     // Update the settlement with the totals from the commissions actually claimed.
-    await totalumSdk.crud.editRecordById("settlement", settlement._id, {
+    await tenantUpdate(ctx.companyId, "settlement", settlement._id, {
       sales_total: round2(base + cancellations),
       cancellations_total: round2(cancellations),
       base_total: round2(base),

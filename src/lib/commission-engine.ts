@@ -1,5 +1,5 @@
 import "server-only";
-import { totalumSdk } from "@/lib/totalum";
+import { tenantQuery } from "@/lib/tenant";
 import type {
   BeneficiaryType, CalcType, CommissionRule, CommissionSnapshot,
   CommissionTier, Currency,
@@ -202,15 +202,10 @@ export async function resolveCommissions(
   input: CommissionInput,
   beneficiaries: BeneficiaryDescriptor[]
 ): Promise<ResolvedCommission[]> {
-  const res = await totalumSdk.crud.query("commission_rule", {
-    _filter: { company: input.companyId, status: "active" },
+  const rules = await tenantQuery<CommissionRule>(input.companyId, "commission_rule", {
+    _filter: { status: "active" },
     _limit: 500,
   });
-  if (res.errors) {
-    console.error("[CommissionEngine] failed loading rules:", res.errors);
-    throw new Error(res.errors.errorMessage || "No se pudieron cargar las reglas de comisión");
-  }
-  const rules = (res.data || []) as CommissionRule[];
   console.log(`[CommissionEngine] ${rules.length} reglas activas · base=${input.baseAmount} ${input.currency}`);
 
   const out: ResolvedCommission[] = [];

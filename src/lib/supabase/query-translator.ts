@@ -1,15 +1,14 @@
 /**
- * Query translator: Totalum-style Mongo `_filter` → Supabase/PostgREST.
+ * Query translator: legacy Mongo-like `_filter` → Supabase/PostgREST.
  *
- * The app was written against Totalum's `crud.query(table, { _filter, _sort,
+ * The app still uses `tenantQuery(table, { _filter, _sort,
  * _limit, _offset })` with Mongo-like operators. This module applies the same
  * filter shape onto a Supabase PostgREST query builder so the ~84 call sites can
  * be ported with the SAME filter objects. It is intentionally pure and
  * builder-agnostic (any object exposing the PostgREST filter methods works), so
  * it can be unit-tested without a live database.
  *
- * Field aliases bridge the naming gap between the Totalum schema and the new
- * Postgres schema (`_id`→`id`, `company`→`organization_id`, `partner`→
+ * Field aliases bridge legacy API names and the Postgres schema (`_id`→`id`, `company`→`organization_id`, `partner`→
  * `partner_id`, …). Reads no longer need to inject the tenant filter — RLS does
  * it — but the alias map keeps existing call sites working unchanged.
  */
@@ -31,6 +30,8 @@ export interface PostgrestLike {
 
 export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   _id: "id",
+  createdAt: "created_at",
+  updatedAt: "updated_at",
   company: "organization_id",
   partner: "partner_id",
   seller: "seller_id",
@@ -81,7 +82,7 @@ function toOrClause(field: string, cond: unknown, aliases: Record<string, string
 /**
  * Applies a Mongo-like `_filter` to a PostgREST builder.
  * Supported operators: bare(eq), ne, gt, gte, lt, lte, in, nin, regex(→ilike), _or.
- * Unlike Totalum, real `gt`/`lt` are available (Totalum degraded them to gte/lte).
+ * Real `gt`/`lt` operators are available.
  */
 export function applyFilter<T extends PostgrestLike>(
   builder: T,
@@ -127,7 +128,7 @@ export interface QueryShape {
   _offset?: number;
 }
 
-/** Applies filter + sort + pagination from a Totalum-style options object. */
+/** Applies filter + sort + pagination from a legacy options object. */
 export function applyQuery<T extends PostgrestLike>(
   builder: T,
   options: QueryShape = {},

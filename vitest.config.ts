@@ -4,7 +4,7 @@ import path from "node:path";
 /**
  * Unit-test config for pure business logic (pricing, commissions, codes,
  * formatting, availability). `server-only` is aliased to an empty stub so the
- * lib modules import cleanly under Node; DB access (`@/lib/totalum`) is mocked
+ * lib modules import cleanly under Node; external DB access is mocked
  * per-test with `vi.mock`.
  */
 export default defineConfig({

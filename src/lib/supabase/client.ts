@@ -2,8 +2,7 @@
 import { createBrowserClient } from "@supabase/ssr";
 
 /**
- * Browser Supabase client (M3). Singleton so auth state is shared across the app.
- * Used by the login/register pages when AUTH_BACKEND=supabase.
+ * Browser Supabase client. Singleton so auth state is shared across the app.
  */
 let cached: ReturnType<typeof createBrowserClient> | null = null;
 
@@ -16,8 +15,7 @@ export function supabaseBrowser() {
   return cached;
 }
 
-// Thin facade mirroring the shape the pages use with better-auth, so the
-// login/register flows port with minimal change.
+// Thin auth facade used by login/register and sign-out buttons.
 export const supabaseAuth = {
   signUpEmail: (email: string, password: string, name?: string) =>
     supabaseBrowser().auth.signUp({ email, password, options: { data: name ? { name } : undefined } }),

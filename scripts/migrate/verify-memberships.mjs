@@ -55,7 +55,7 @@ async function main() {
   console.log(`  memberships primary: ${primary}`);
 
   if (active === 0) {
-    console.log("\n❌ No active memberships. Do not enable AUTH_BACKEND=supabase or SUPABASE_USE_RLS=true.");
+    console.log("\n❌ No active memberships. Do not deploy with SUPABASE_USE_RLS=true until memberships are created.");
     process.exit(2);
   }
   if (primary === 0) {

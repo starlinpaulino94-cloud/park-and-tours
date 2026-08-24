@@ -6,6 +6,8 @@ import { syncOrderTotals } from "@/lib/booking-service";
 import { postPayment } from "@/lib/ledger-events";
 import { writeAudit } from "@/lib/audit";
 import { parseJson } from "@/lib/format";
+import { assertSameOriginMutation } from "@/lib/csrf";
+import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import type { Booking, CancellationPolicy, CancellationTier, Product } from "@/lib/types";
 import { refId } from "@/lib/types";
 
@@ -16,8 +18,10 @@ import { refId } from "@/lib/types";
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    assertSameOriginMutation(req);
     const { id } = await params;
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, "bookings:cancel", ctx.userId), limit: 30, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<{ reason?: string; refund_override?: number }>(req);

@@ -1,12 +1,8 @@
 import "server-only";
 import { cache } from "react";
-import { cookies, headers } from "next/headers";
-import { auth, type AppRole } from "@/lib/auth";
-import { totalumSdk } from "@/lib/totalum";
-import type { AppUser, Company, ModuleKey } from "@/lib/types";
-import { refId } from "@/lib/types";
-import { isSupabase, pgTable } from "@/lib/data-backend";
-import { isSupabaseAuth } from "@/lib/auth-backend";
+import type { AppRole } from "@/lib/auth";
+import type { Company, ModuleKey } from "@/lib/types";
+import { pgTable } from "@/lib/data-backend";
 import {
   spQuery, spCount, spFindOne, spCreate, spUpdate, spDelete,
 } from "@/lib/supabase/data-provider";
@@ -35,7 +31,7 @@ export interface TenantContext {
 }
 
 /** Cookie used by the audited superadmin impersonation flow. */
-export const IMPERSONATION_COOKIE = "totalum_impersonate_company";
+export const IMPERSONATION_COOKIE = "tf_impersonate_company";
 
 export class TenantError extends Error {
   constructor(message: string, readonly status = 403) {
@@ -61,75 +57,8 @@ export const getTenantContext = cache(async function getTenantContext(): Promise
       console.warn(`[tenant] getTenantContext ${result} tardó ${elapsed}ms`);
     }
   };
-  // M3: when Supabase Auth is active, the tenant comes from the JWT claims
-  // (org_id/app_role/partner_id) — no per-request DB lookup.
-  if (isSupabaseAuth()) {
-    const ctx = await getSupabaseTenantContext();
-    logSlow(ctx ? "supabase" : "sin contexto supabase");
-    return ctx;
-  }
-  const session = await auth.api.getSession({ headers: await headers() });
-  if (!session?.user?.id) {
-    console.log("[tenant] no session");
-    logSlow("sin sesión");
-    return null;
-  }
-
-  const userId = session.user.id;
-  const res = await totalumSdk.crud.query("user", {
-    _filter: { _id: userId },
-    _limit: 1,
-    company_id: true,
-  });
-  const record = (res.data?.[0] || null) as AppUser | null;
-  if (!record) {
-    console.error("[tenant] session user not found in database:", userId);
-    logSlow("usuario no encontrado");
-    return null;
-  }
-
-  // SECURITY (AUD-S02): a deactivated user must lose access immediately, not
-  // keep operating until the 7-day session expires. Any status other than
-  // "active" (inactive/suspended/pending) resolves to no tenant context, which
-  // forces the caller to treat the request as unauthenticated.
-  if (record.status && record.status !== "active") {
-    console.warn(`[tenant] user ${record.email || userId} is ${record.status}; access denied`);
-    logSlow("usuario inactivo");
-    return null;
-  }
-
-  const companyRef = record.company_id;
-  const company =
-    companyRef && typeof companyRef === "object" ? (companyRef as Company) : null;
-
-  const role = (record.role as AppRole) || "owner";
-  const ctx: TenantContext = {
-    userId,
-    email: record.email || session.user.email,
-    name: record.name || session.user.name,
-    role,
-    companyId: company?._id || (typeof companyRef === "string" ? companyRef : null),
-    partnerId: refId(record.partner_id) || null,
-    company,
-  };
-
-  // Controlled impersonation: only the platform owner may enter a tenant, and
-  // every action performed while impersonating is written to the audit trail.
-  if (role === "superadmin") {
-    const target = (await cookies()).get(IMPERSONATION_COOKIE)?.value;
-    if (target) {
-      const impersonated = await totalumSdk.crud.query("company", { _filter: { _id: target }, _limit: 1 });
-      const targetCompany = (impersonated.data?.[0] || null) as Company | null;
-      if (targetCompany) {
-        console.log(`[tenant] superadmin ${ctx.email} impersonando ${targetCompany.name}`);
-        logSlow("impersonación");
-        return { ...ctx, companyId: targetCompany._id, company: targetCompany, impersonating: true };
-      }
-      console.warn("[tenant] impersonation cookie points to a missing company:", target);
-    }
-  }
-
-  logSlow("ok");
+  const ctx = await getSupabaseTenantContext();
+  logSlow(ctx ? "supabase" : "sin contexto supabase");
   return ctx;
 });
 
@@ -187,22 +116,13 @@ export function moduleEnabled(company: Company | null, moduleKey: ModuleKey): bo
 
 type QueryOptions = Record<string, unknown>;
 
-/**
- * Runs a Totalum query with the tenant filter forcibly merged into `_filter`.
- * The caller cannot override `company` — it is applied last.
- */
+/** Runs a tenant-scoped Supabase query. */
 export async function tenantQuery<T = Record<string, unknown>>(
   companyId: string,
   tableName: string,
   options: QueryOptions = {}
 ): Promise<T[]> {
-  if (isSupabase()) {
-    return spQuery<T>(companyId, pgTable(tableName), options as never);
-  }
-  const filter = { ...((options._filter as Record<string, unknown>) || {}), company: companyId };
-  const res = await totalumSdk.crud.query(tableName, { ...options, _filter: filter });
-  if (res.errors) console.error(`[tenantQuery] ${tableName} errors:`, res.errors);
-  return (res.data || []) as T[];
+  return spQuery<T>(companyId, pgTable(tableName), options as never);
 }
 
 /** Aggregate helper honouring the tenant scope. Returns the `_aggregate` payload or null. */
@@ -221,14 +141,7 @@ export async function tenantCount(
   tableName: string,
   filter: Record<string, unknown> = {}
 ): Promise<number> {
-  if (isSupabase()) {
-    return spCount(companyId, pgTable(tableName), filter);
-  }
-  const agg = await tenantAggregate(companyId, tableName, {
-    _filter: filter,
-    _aggregate: { _count: true },
-  });
-  return agg?._count ?? 0;
+  return spCount(companyId, pgTable(tableName), filter);
 }
 
 /**
@@ -241,18 +154,7 @@ export async function tenantFindOne<T = Record<string, unknown>>(
   id: string,
   expand: QueryOptions = {}
 ): Promise<T> {
-  if (isSupabase()) {
-    return spFindOne<T>(companyId, pgTable(tableName), id);
-  }
-  const rows = await tenantQuery<any>(companyId, tableName, {
-    ...expand,
-    _filter: { _id: id },
-    _limit: 1,
-  });
-  if (rows.length === 0) {
-    throw new TenantError("Registro no encontrado o fuera de tu empresa", 404);
-  }
-  return rows[0] as T;
+  return spFindOne<T>(companyId, pgTable(tableName), id);
 }
 
 /** Creates a record with the tenant scope forced onto it. */
@@ -261,15 +163,7 @@ export async function tenantCreate<T = Record<string, unknown>>(
   tableName: string,
   data: Record<string, unknown>
 ): Promise<T> {
-  if (isSupabase()) {
-    return spCreate<T>(companyId, pgTable(tableName), data);
-  }
-  const res = await totalumSdk.crud.createRecord(tableName, { ...data, company: companyId });
-  if (res.errors) {
-    console.error(`[tenantCreate] ${tableName} errors:`, res.errors);
-    throw new Error(res.errors.errorMessage || "Error creando el registro");
-  }
-  return res.data as T;
+  return spCreate<T>(companyId, pgTable(tableName), data);
 }
 
 /** Updates a record after verifying tenant ownership. */
@@ -279,28 +173,10 @@ export async function tenantUpdate<T = Record<string, unknown>>(
   id: string,
   data: Record<string, unknown>
 ): Promise<T> {
-  if (isSupabase()) {
-    return spUpdate<T>(companyId, pgTable(tableName), id, data);
-  }
-  await tenantFindOne(companyId, tableName, id);
-  const { company: _ignored, ...safe } = data as Record<string, unknown>;
-  const res = await totalumSdk.crud.editRecordById(tableName, id, safe);
-  if (res.errors) {
-    console.error(`[tenantUpdate] ${tableName}/${id} errors:`, res.errors);
-    throw new Error(res.errors.errorMessage || "Error actualizando el registro");
-  }
-  return res.data as T;
+  return spUpdate<T>(companyId, pgTable(tableName), id, data);
 }
 
 /** Deletes a record after verifying tenant ownership. */
 export async function tenantDelete(companyId: string, tableName: string, id: string): Promise<void> {
-  if (isSupabase()) {
-    return spDelete(companyId, pgTable(tableName), id);
-  }
-  await tenantFindOne(companyId, tableName, id);
-  const res = await totalumSdk.crud.deleteRecordById(tableName, id);
-  if (res.errors) {
-    console.error(`[tenantDelete] ${tableName}/${id} errors:`, res.errors);
-    throw new Error(res.errors.errorMessage || "Error eliminando el registro");
-  }
+  return spDelete(companyId, pgTable(tableName), id);
 }

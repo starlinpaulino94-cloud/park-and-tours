@@ -1,5 +1,5 @@
 import "server-only";
-import { totalumSdk } from "@/lib/totalum";
+import { tenantQuery } from "@/lib/tenant";
 import type {
   Channel, Currency, PriceRule, PriceSnapshot, Product, ProductModality,
 } from "@/lib/types";
@@ -103,24 +103,23 @@ function round2(n: number): number {
 }
 
 export async function resolvePrice(input: PriceInput): Promise<PriceResult> {
-  const [productRes, modalityRes, rulesRes] = await Promise.all([
-    totalumSdk.crud.query("product", { _filter: { company: input.companyId, _id: input.productId }, _limit: 1 }),
+  const [products, modalities, rules] = await Promise.all([
+    tenantQuery<Product>(input.companyId, "product", { _filter: { _id: input.productId }, _limit: 1 }),
     input.modalityId
-      ? totalumSdk.crud.query("product_modality", {
-          _filter: { company: input.companyId, _id: input.modalityId },
+      ? tenantQuery<ProductModality>(input.companyId, "product_modality", {
+          _filter: { _id: input.modalityId },
           _limit: 1,
         })
-      : Promise.resolve({ data: [] as unknown[], errors: undefined as any }),
-    totalumSdk.crud.query("price_rule", {
-      _filter: { company: input.companyId, status: "active", product: input.productId },
+      : Promise.resolve([] as ProductModality[]),
+    tenantQuery<PriceRule>(input.companyId, "price_rule", {
+      _filter: { status: "active", product: input.productId },
       _limit: 300,
     }),
   ]);
 
-  const product = (productRes.data?.[0] || null) as Product | null;
+  const product = products[0] ?? null;
   if (!product) throw new Error("Producto no encontrado");
-  const modality = (modalityRes.data?.[0] || null) as ProductModality | null;
-  const rules = (rulesRes.data || []) as PriceRule[];
+  const modality = modalities[0] ?? null;
 
   const candidates = rules.filter((r) => ruleApplies(r, input));
   candidates.sort((a, b) => {
@@ -178,15 +177,10 @@ export async function resolveCost(
   quantity: number,
   fallbackUnitCost = 0
 ): Promise<number> {
-  const res = await totalumSdk.crud.query("product_cost", {
-    _filter: { company: companyId, product: productId, status: "active" },
+  const costs = await tenantQuery<{ cost_type?: string; amount?: number }>(companyId, "product_cost", {
+    _filter: { product: productId, status: "active" },
     _limit: 100,
   });
-  if (res.errors) {
-    console.error("[PricingEngine] cost lookup failed:", res.errors);
-    throw new Error(res.errors.errorMessage || "Error obteniendo costos del producto");
-  }
-  const costs = (res.data || []) as { cost_type?: string; amount?: number }[];
   if (costs.length === 0) return round2(fallbackUnitCost * quantity);
 
   let total = 0;

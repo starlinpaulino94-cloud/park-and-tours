@@ -1,8 +1,8 @@
 import { NextRequest } from "next/server";
 import { requireTenant, tenantQuery, tenantAggregate } from "@/lib/tenant";
 import { ok, fail, resolvePeriod } from "@/lib/api-response";
-import { totalumSdk } from "@/lib/totalum";
 import { refId } from "@/lib/types";
+import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 
 /**
  * Executive dashboard.
@@ -14,7 +14,7 @@ import { refId } from "@/lib/types";
 
 const CANCELLED = ["cancelled", "refunded"];
 const PAGE = 1000;
-const MAX_PAGES = 5;
+const MAX_PAGES = 3;
 
 interface Bucket { key: string; label: string; sales: number; pax: number; bookings: number; margin: number }
 
@@ -44,6 +44,7 @@ async function labelize(table: string, companyId: string, buckets: Bucket[], nam
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, "dashboard", ctx.userId), limit: 90, windowMs: 60_000 });
     const sp = req.nextUrl.searchParams;
     const period = resolvePeriod(sp.get("period"), sp.get("from"), sp.get("to"));
 

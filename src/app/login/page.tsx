@@ -2,7 +2,6 @@
 
 import { useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { signIn } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,19 +25,7 @@ function LoginForm() {
     setLoading(true);
 
     try {
-      // M3: use Supabase Auth when the flag is set, else better-auth (default).
-      if (process.env.NEXT_PUBLIC_AUTH_BACKEND === "supabase") {
-        const { supabaseAuth } = await import("@/lib/supabase/client");
-        const { error } = await supabaseAuth.signInEmail(email, password);
-        if (error) {
-          setError(error.message || "No se pudo iniciar sesión. Revisa tus credenciales.");
-          setLoading(false);
-          return;
-        }
-        setTimeout(() => { window.location.href = redirect; }, 300);
-        return;
-      }
-
+      const { signIn } = await import("@/lib/auth-client");
       const result = await signIn.email({
         email,
         password,
@@ -55,7 +42,7 @@ function LoginForm() {
       // Wait a bit for cookie to be set, then do a full page reload
       setTimeout(() => {
         window.location.href = redirect;
-      }, 500);
+      }, 300);
     } catch (err: any) {
       console.error("Login error:", err);
       setError(err.message || "No se pudo iniciar sesión. Revisa tus credenciales.");

@@ -1,23 +1,15 @@
 import { NextRequest } from "next/server";
-import { headers } from "next/headers";
-import { auth } from "@/lib/auth";
-import { totalumSdk } from "@/lib/totalum";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
-import { seedDemoData } from "@/lib/demo-seed";
-import type { Company, CompanyType, Currency, Plan } from "@/lib/types";
+import { supabaseServer } from "@/lib/supabase/server";
+import { supabaseService } from "@/lib/supabase/service";
+import type { CompanyType, Currency, ModuleKey } from "@/lib/types";
 
-/**
- * Tenant onboarding — creates the company for the signed-in user and seeds the
- * minimum configuration the ERP needs to be usable from minute one.
- */
-
-const DEFAULT_MODULES = [
+const DEFAULT_MODULES: ModuleKey[] = [
   "bookings", "crm", "commissions", "settlements", "payments", "cash_pos",
   "transport", "pickups", "operations", "b2b_portal", "accounting", "reports", "audit",
 ];
 
-/** Modules highlighted per company type (all remain available; this drives the UI order). */
 const TYPE_FOCUS: Record<CompanyType, string[]> = {
   park: ["bookings", "cash_pos", "operations", "b2b_portal"],
   excursion_company: ["bookings", "operations", "pickups", "transport"],
@@ -29,22 +21,38 @@ const TYPE_FOCUS: Record<CompanyType, string[]> = {
   other: ["bookings", "payments"],
 };
 
+function slugify(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+function mapCompany(row: any) {
+  return {
+    ...row,
+    _id: row.id,
+    plan: row.plan_id,
+    base_currency: row.currency,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const session = await auth.api.getSession({ headers: await headers() });
-    if (!session?.user?.id) {
-      return fail(Object.assign(new Error("No autenticado"), { status: 401 }));
-    }
-    const userId = session.user.id;
+    const authClient = await supabaseServer();
+    const { data: userRes } = await authClient.auth.getUser();
+    const user = userRes.user;
+    if (!user) return fail(Object.assign(new Error("No autenticado"), { status: 401 }));
 
-    const existing = await totalumSdk.crud.query("user", { _filter: { _id: userId }, _limit: 1, company_id: true });
-    const userRecord = existing.data?.[0];
-    if (userRecord?.company_id) {
-      // Onboarding already finished (or was retried): send the user into the app
-      // instead of leaving them stuck on a screen they cannot pass.
-      const already = typeof userRecord.company_id === "object" ? userRecord.company_id : null;
-      console.log(`[setup] el usuario ${userId} ya pertenece a una empresa, se omite el alta`);
-      return ok({ company: already, focus: TYPE_FOCUS[(already?.company_type as CompanyType) || "other"], demo: null, alreadySetUp: true });
+    const sb = supabaseService();
+    const { data: existingMembership } = await sb
+      .from("organization_memberships")
+      .select("organization_id, organizations(*)")
+      .eq("user_id", user.id)
+      .eq("is_primary", true)
+      .maybeSingle();
+    if (existingMembership?.organization_id) {
+      const already = mapCompany((existingMembership as any).organizations || { id: existingMembership.organization_id });
+      return ok({ company: already, focus: TYPE_FOCUS[(already.company_type as CompanyType) || "other"], demo: null, alreadySetUp: true });
     }
 
     const body = await readJson<{
@@ -55,172 +63,61 @@ export async function POST(req: NextRequest) {
 
     const name = (body.name || "").trim();
     if (!name) return fail(Object.assign(new Error("El nombre de la empresa es obligatorio"), { status: 400 }));
-
     const companyType = (body.company_type || "excursion_company") as CompanyType;
     const currency = (body.base_currency || "usd") as Currency;
 
-    // Attach the free trial plan when one exists.
-    const planRes = await totalumSdk.crud.query("plan", {
-      _filter: { status: "active" }, _sort: { sort_order: "asc" }, _limit: 1,
-    });
-    const plan = (planRes.data?.[0] || null) as Plan | null;
+    const { data: plan } = await sb
+      .from("plan")
+      .select("*")
+      .eq("status", "active")
+      .order("sort_order", { ascending: true })
+      .limit(1)
+      .maybeSingle();
 
-    const trialEnds = new Date();
-    trialEnds.setDate(trialEnds.getDate() + (plan?.trial_days ?? 14));
-
-    const companyRes = await totalumSdk.crud.createRecord("company", {
+    const slug = slugify(name);
+    const { data: company, error: companyError } = await sb.from("organizations").insert({
+      kind: "tenant",
       name,
-      slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+      slug,
       legal_name: name,
       tax_id: body.tax_id,
       company_type: companyType,
-      group_name: body.group_name,
-      email: session.user.email,
+      email: user.email,
       phone: body.phone,
-      city: body.city,
       country: body.country || "República Dominicana",
       timezone: "America/Santo_Domingo",
-      base_currency: currency,
-      brand_color: "#0E7C86",
-      plan: plan?._id,
+      currency,
+      plan_id: plan?.id || null,
       subscription_status: "trial",
-      trial_ends_at: trialEnds.toISOString(),
-      next_billing_at: trialEnds.toISOString(),
       modules_enabled: DEFAULT_MODULES,
-      storage_used_mb: 0,
       status: "active",
-    });
-    if (companyRes.errors) {
-      console.error("[setup] company creation failed:", companyRes.errors);
-      throw new Error(companyRes.errors.errorMessage || "No se pudo crear la empresa");
-    }
-    const company = companyRes.data as Company;
-    const companyId = company._id;
+      metadata: { city: body.city, group_name: body.group_name, seed_demo_requested: body.seed_demo === true },
+    }).select("*").single();
+    if (companyError) throw companyError;
 
-    // Link the user as owner of the new tenant.
-    const linked = await totalumSdk.crud.editRecordById("user", userId, {
-      company_id: companyId,
+    await sb.from("organizations").update({ tenant_org_id: company.id }).eq("id", company.id);
+
+    const { error: membershipError } = await sb.from("organization_memberships").insert({
+      user_id: user.id,
+      organization_id: company.id,
       role: "owner",
       status: "active",
+      is_primary: true,
     });
-    if (linked.errors) {
-      console.error("[setup] failed linking user to company:", linked.errors);
-      throw new Error(linked.errors.errorMessage || "No se pudo asociar el usuario a la empresa");
-    }
-
-    // From here on the tenant exists and the user is already linked to it, so no
-    // failure may block access: report it, but let the user into the app.
-    let setupError: string | null = null;
-    try {
-      await seedDefaults(companyId, name, currency, companyType);
-    } catch (err) {
-      setupError = err instanceof Error ? err.message : String(err);
-      console.error("[setup] fallo creando la configuración inicial:", err);
-    }
-
-    // A brand-new tenant would otherwise show empty screens everywhere, so the
-    // demo dataset is loaded unless the user explicitly opts out.
-    let demo: Record<string, number> | null = null;
-    let demoError: string | null = null;
-    if (body.seed_demo !== false) {
-      try {
-        const seeded = await seedDemoData({
-          userId, email: session.user.email, name: session.user.name || name,
-          role: "owner", companyId, partnerId: null,
-          company: { ...company, base_currency: currency } as Company,
-        });
-        demo = seeded.created;
-      } catch (err) {
-        // The company already exists and the user is linked to it: a demo-data
-        // failure must be reported, never turned into a locked-out account.
-        demoError = err instanceof Error ? err.message : String(err);
-        console.error("[setup] fallo al cargar los datos de demostración:", err);
-      }
-    }
+    if (membershipError) throw membershipError;
 
     await writeAudit({
-      companyId, userId,
-      action: "company_created",
-      entityType: "company", entityId: companyId,
-      description: `Empresa "${name}" creada (${companyType})`,
+      companyId: company.id,
+      userId: user.id,
+      action: "company_onboarded",
+      entityType: "company",
+      entityId: company.id,
+      description: `Empresa ${name} creada desde onboarding`,
+      metadata: { companyType, currency, seedDemoSkipped: body.seed_demo === true },
     });
 
-    console.log(`[setup] empresa creada: ${name} (${companyId}) para ${session.user.email}`);
-    return ok({ company, focus: TYPE_FOCUS[companyType], demo, demoError: demoError || setupError });
+    return ok({ company: mapCompany(company), focus: TYPE_FOCUS[companyType], demo: null, demoSkipped: body.seed_demo === true });
   } catch (err) {
     return fail(err);
   }
-}
-
-async function seedDefaults(companyId: string, name: string, currency: Currency, type: CompanyType) {
-  const create = async (table: string, data: Record<string, unknown>) => {
-    const res = await totalumSdk.crud.createRecord(table, { ...data, company: companyId });
-    if (res.errors) {
-      console.error(`[setup] no se pudo crear el registro base de ${table}:`, res.errors);
-      throw new Error(res.errors.errorMessage || `No se pudo crear la configuración inicial (${table})`);
-    }
-    return res;
-  };
-
-  const branchType = type === "park" ? "park" : type === "tour_center" ? "tour_center" : "office";
-  const branch = await create("branch", {
-    name: `${name} — Sede principal`, code: "MAIN", branch_type: branchType, status: "active",
-  });
-  const branchId = (branch.data as { _id: string })?._id;
-
-  await create("cash_register", {
-    branch: branchId, name: "Caja principal", code: "CJA-01", terminal: "POS-01",
-    currency, status: "active",
-  });
-
-  const categories = [
-    { name: "Excursiones", color: "#0E7C86", icon: "umbrella-beach", sort_order: 1 },
-    { name: "Entradas y parques", color: "#F4A259", icon: "ticket", sort_order: 2 },
-    { name: "Aventura", color: "#E76F51", icon: "mountain", sort_order: 3 },
-    { name: "Transporte", color: "#6366F1", icon: "bus", sort_order: 4 },
-  ];
-  for (const c of categories) await create("product_category", { ...c, status: "active" });
-
-  const expenseCategories = [
-    "Combustible", "Mantenimiento", "Nómina", "Publicidad", "Transporte",
-    "Alimentación", "Alquiler", "Suministros", "Servicios", "Otros",
-  ];
-  for (const c of expenseCategories) await create("expense_category", { name: c, status: "active" });
-
-  await create("cancellation_policy", {
-    name: "Política estándar",
-    description: "Reembolso completo con más de 48 horas de antelación.",
-    tiers: JSON.stringify([
-      { hours_before: 48, refund_pct: 100, label: "Más de 48 horas" },
-      { hours_before: 24, refund_pct: 50, label: "Entre 24 y 48 horas" },
-      { hours_before: 0, refund_pct: 0, label: "Menos de 24 horas" },
-    ]),
-    no_show_refund_pct: 0,
-    status: "active",
-  });
-
-  await create("commission_rule", {
-    name: "Comisión general de empresa",
-    priority: 8, beneficiary_type: "seller", calc_type: "percentage",
-    value: 5, currency, status: "active",
-    description: "Regla por defecto aplicada cuando no existe una más específica.",
-  });
-  await create("commission_rule", {
-    name: "Comisión estándar de partners",
-    priority: 4, beneficiary_type: "partner", calc_type: "percentage",
-    value: 15, currency, status: "active",
-    description: "Comisión base para tour centers y agencias.",
-  });
-  await create("commission_rule", {
-    name: "Comisión de supervisor",
-    priority: 6, beneficiary_type: "supervisor", calc_type: "percentage",
-    value: 2, currency, status: "active",
-  });
-
-  await create("currency_rate", {
-    currency_from: "usd", currency_to: "dop", rate: 60.5,
-    rate_date: new Date().toISOString(), source: "Configuración inicial",
-  });
-
-  console.log(`[setup] configuración inicial creada para ${companyId}`);
 }

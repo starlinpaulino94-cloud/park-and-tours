@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantFindOne, tenantQuery } from "@/lib/tenant";
+import { requireTenant, requireAtLeast, tenantFindOne, tenantQuery, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
-import { totalumSdk } from "@/lib/totalum";
 import { writeAudit } from "@/lib/audit";
 import { postSettlementPayment } from "@/lib/ledger-events";
 import type { Settlement } from "@/lib/types";
@@ -36,21 +35,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const method = body.method || "transfer";
 
     // 1) Mark the settlement paid.
-    const upd = await totalumSdk.crud.editRecordById("settlement", id, {
+    await tenantUpdate(ctx.companyId, "settlement", id, {
       status: "paid",
       paid_total: total,
       pending_total: 0,
       paid_at: new Date().toISOString(),
       notes: body.notes || settlement.notes,
     });
-    if (upd.errors) throw new Error(upd.errors.errorMessage || "No se pudo actualizar la liquidación");
 
     // 2) Settle the associated payable(s).
     const payables = await tenantQuery<{ _id: string; amount?: number }>(ctx.companyId, "payable", {
       _filter: { settlement: id, status: { nin: ["paid", "written_off"] } }, _limit: 10,
     });
     for (const p of payables) {
-      await totalumSdk.crud.editRecordById("payable", p._id, {
+      await tenantUpdate(ctx.companyId, "payable", p._id, {
         paid_amount: round2(p.amount ?? total),
         balance: 0,
         status: "paid",
@@ -64,7 +62,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       _filter: { settlement: id, status: "settled" }, _limit: 1000,
     });
     for (const c of commissions) {
-      await totalumSdk.crud.editRecordById("commission", c._id, { status: "paid" });
+      await tenantUpdate(ctx.companyId, "commission", c._id, { status: "paid" });
     }
 
     // 4) Double-entry ledger (AUD-F15): Dr commission expense, Cr cash/bank.

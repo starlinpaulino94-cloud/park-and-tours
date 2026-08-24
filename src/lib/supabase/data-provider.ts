@@ -2,11 +2,10 @@ import "server-only";
 import { supabaseService } from "@/lib/supabase/service";
 import { supabaseServer } from "@/lib/supabase/server";
 import { applyQuery, applyFilter, type QueryShape } from "@/lib/supabase/query-translator";
+import { aliasField, DEFAULT_FIELD_ALIASES } from "@/lib/supabase/query-translator";
 
 /**
- * Supabase data provider — the M2 replacement for the Totalum-backed helpers in
- * `tenant.ts`, exposing matching operations so `tenant.ts` can delegate to it
- * behind the `DATA_BACKEND` flag.
+ * Supabase data provider for tenant-scoped CRUD helpers in `tenant.ts`.
  *
  * TENANT SCOPING — two modes:
  *  - TRANSITION (default, pre-M3 auth): uses the SERVICE-ROLE client and applies
@@ -23,6 +22,46 @@ import { applyQuery, applyFilter, type QueryShape } from "@/lib/supabase/query-t
 
 const notFound = (msg = "Registro no encontrado o fuera de tu empresa") =>
   Object.assign(new Error(msg), { status: 404 });
+
+const PG_TO_LEGACY = Object.entries(DEFAULT_FIELD_ALIASES).reduce<Record<string, string>>(
+  (acc, [legacy, pg]) => {
+    acc[pg] = legacy;
+    return acc;
+  },
+  {}
+);
+
+function refValue(value: unknown): unknown {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const row = value as { _id?: unknown; id?: unknown };
+    return row._id ?? row.id ?? value;
+  }
+  return value;
+}
+
+function toPgPayload(data: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (["_id", "id", "createdAt", "updatedAt", "created_at", "updated_at"].includes(key)) continue;
+    out[aliasField(key)] = refValue(value);
+  }
+  return out;
+}
+
+function fromPgRow<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((item) => fromPgRow(item)) as T;
+  if (!value || typeof value !== "object") return value;
+
+  const input = value as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...input };
+  for (const [key, raw] of Object.entries(input)) {
+    const normalised = fromPgRow(raw);
+    out[key] = normalised;
+    const legacy = PG_TO_LEGACY[key];
+    if (legacy && out[legacy] === undefined) out[legacy] = normalised;
+  }
+  return out as T;
+}
 
 function rlsEnabled(): boolean {
   return process.env.SUPABASE_USE_RLS === "true";
@@ -51,7 +90,7 @@ export async function spQuery<T = Record<string, unknown>>(
     console.error(`[spQuery] ${table}:`, error.message);
     throw new Error(error.message);
   }
-  return (data ?? []) as T[];
+  return fromPgRow((data ?? []) as T[]);
 }
 
 export async function spCount(orgId: string, table: string, filter: Record<string, unknown> = {}): Promise<number> {
@@ -74,7 +113,7 @@ export async function spFindOne<T = Record<string, unknown>>(
     .from(table).select(select).eq("id", id).eq("organization_id", orgId).limit(1).maybeSingle();
   if (error) throw new Error(error.message);
   if (!data) throw notFound();
-  return data as T;
+  return fromPgRow(data as T);
 }
 
 export async function spCreate<T = Record<string, unknown>>(
@@ -83,13 +122,13 @@ export async function spCreate<T = Record<string, unknown>>(
   data: Record<string, unknown>
 ): Promise<T> {
   const sb = await client();
-  const payload = { ...data, organization_id: orgId };
+  const payload = { ...toPgPayload(data), organization_id: orgId };
   const { data: row, error } = await sb.from(table).insert(payload).select().single();
   if (error) {
     console.error(`[spCreate] ${table}:`, error.message);
     throw new Error(error.message);
   }
-  return row as T;
+  return fromPgRow(row as T);
 }
 
 export async function spUpdate<T = Record<string, unknown>>(
@@ -101,11 +140,12 @@ export async function spUpdate<T = Record<string, unknown>>(
   const sb = await client();
   // organization_id is immutable through this path.
   const { organization_id: _drop, company: _drop2, ...safe } = data as Record<string, unknown>;
+  const payload = toPgPayload(safe);
   const { data: row, error } = await sb
-    .from(table).update(safe).eq("id", id).eq("organization_id", orgId).select().single();
+    .from(table).update(payload).eq("id", id).eq("organization_id", orgId).select().single();
   if (error) throw new Error(error.message);
   if (!row) throw notFound();
-  return row as T;
+  return fromPgRow(row as T);
 }
 
 export async function spDelete(orgId: string, table: string, id: string): Promise<void> {
