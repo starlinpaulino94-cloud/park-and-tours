@@ -14,6 +14,24 @@ import { formatDateTime, formatMoney } from "@/lib/format";
 export default async function MyDayPage() {
   const ctx = await requireTenant();
 
+  if (ctx.role === "superadmin" && !ctx.impersonating) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          eyebrow="Inicio"
+          title={`Hola, ${ctx.name.split(" ")[0]}`}
+          description="Estás en modo plataforma. Usa el panel superadmin o entra a una empresa para ver pendientes operativos."
+        />
+        <EmptyState
+          icon="Globe2"
+          title="Panel de plataforma activo"
+          description="Las tareas, aprobaciones e incidentes pertenecen a cada empresa. Desde superadmin puedes revisar métricas globales o suplantar un tenant."
+          action={<Link href="/superadmin" className="text-sm font-semibold text-primary hover:underline">Ir a superadmin</Link>}
+        />
+      </div>
+    );
+  }
+
   const [tasks, approvals] = await Promise.all([
     tenantQuery<any>(ctx.companyId, "task", {
       _filter: { assigned_to: ctx.userId, status: { in: ["todo", "in_progress", "blocked", "waiting"] } },

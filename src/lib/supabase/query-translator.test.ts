@@ -26,6 +26,8 @@ describe("query-translator — field aliases", () => {
     expect(aliasField("_id")).toBe("id");
     expect(aliasField("company")).toBe("organization_id");
     expect(aliasField("partner")).toBe("partner_id");
+    expect(aliasField("assigned_to")).toBe("assigned_to_id");
+    expect(aliasField("second_approver")).toBe("second_approver_id");
     expect(aliasField("unknown_field")).toBe("unknown_field");
   });
 });

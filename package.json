@@ -9,6 +9,8 @@
     "preview": "next build && next start",
     "setup:stripe-webhook": "ts-node scripts/setup-stripe-webhook.ts",
     "bootstrap:superadmin": "node scripts/bootstrap-superadmin.mjs",
+    "check:dashboard": "node scripts/check-dashboard-readiness.mjs",
+    "seed:demo-presentation": "node scripts/seed-demo-presentation.mjs",
     "validate:supabase": "node scripts/validate-supabase-readiness.mjs",
     "test": "vitest run",
     "test:watch": "vitest",

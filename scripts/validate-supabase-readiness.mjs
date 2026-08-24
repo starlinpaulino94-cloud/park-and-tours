@@ -54,6 +54,12 @@ const BUSINESS_TABLES = [
   "commission",
 ];
 
+const REQUIRED_COLUMNS = [
+  { table: "booking", columns: "id,booking_date" },
+  { table: "product", columns: "id,sort_order" },
+  { table: "product_modality", columns: "id,sort_order" },
+];
+
 let failed = false;
 let warnings = 0;
 
@@ -115,6 +121,12 @@ async function validateTables(sb) {
     } catch (error) {
       fail(`${table} not reachable (${error.message})`);
     }
+  }
+
+  for (const { table, columns } of REQUIRED_COLUMNS) {
+    const { error } = await sb.from(table).select(columns).limit(1);
+    if (error) fail(`${table} missing required runtime columns (${error.message})`);
+    else pass(`${table} runtime columns reachable`);
   }
 }
 
