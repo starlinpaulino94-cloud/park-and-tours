@@ -1,4 +1,5 @@
 import "server-only";
+import { cookies } from "next/headers";
 import { supabaseServer } from "@/lib/supabase/server";
 import { supabaseService } from "@/lib/supabase/service";
 import type { AppRole } from "@/lib/auth";
@@ -26,6 +27,7 @@ export interface AppClaims {
 const VALID_ROLES = new Set<AppRole>([
   "superadmin", "owner", "admin", "manager", "operations", "cashier", "seller", "partner",
 ]);
+const IMPERSONATION_COOKIE = "tf_impersonate_company";
 
 /** Decodes a JWT payload (base64url) without verifying — the caller must have
  *  already validated the token via supabase.auth.getUser(). */
@@ -100,9 +102,22 @@ export async function getSupabaseTenantContext(): Promise<TenantContext | null> 
 
   if (!claims.org_id) return null;                        // no active membership
   const company = await loadOrganization(claims.org_id);
-  return mapClaimsToContext(
+  const ctx = mapClaimsToContext(
     claims,
     { id: user.id, email: user.email, name: (user.user_metadata?.name as string) ?? user.email },
     company
   );
+  if (!ctx) return null;
+
+  if (ctx.role === "superadmin") {
+    const target = (await cookies()).get(IMPERSONATION_COOKIE)?.value;
+    if (target) {
+      const impersonated = await loadOrganization(target);
+      if (impersonated?._id) {
+        return { ...ctx, companyId: impersonated._id, company: impersonated, impersonating: true };
+      }
+    }
+  }
+
+  return ctx;
 }

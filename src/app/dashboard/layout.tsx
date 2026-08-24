@@ -62,7 +62,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
     trialEndsAt: (ctx.company?.trial_ends_at as string) || null,
   };
 
-  const badges = await loadBadges(ctx.companyId, ctx.userId, ctx.role);
+  const badges = ctx.role === "superadmin" && !ctx.impersonating
+    ? {}
+    : await loadBadges(ctx.companyId, ctx.userId, ctx.role);
   const elapsed = Date.now() - started;
   if (process.env.NODE_ENV !== "production" && elapsed > 800) {
     console.warn(`[shell] DashboardLayout tardó ${elapsed}ms`);

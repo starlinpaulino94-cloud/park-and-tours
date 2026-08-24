@@ -44,6 +44,8 @@ export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   rule: "rule_id",
   settlement: "settlement_id",
   user: "user_id",
+  assigned_to: "assigned_to_id",
+  second_approver: "second_approver_id",
 };
 
 export function aliasField(field: string, aliases = DEFAULT_FIELD_ALIASES): string {
