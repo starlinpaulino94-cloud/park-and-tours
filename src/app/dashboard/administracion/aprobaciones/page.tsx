@@ -2,6 +2,17 @@
 
 import { SimpleResource } from "@/components/tf/simple-resource";
 import { APPROVAL_ACTION, APPROVAL_STATUS } from "@/lib/labels-modules";
+import type { LabelDef } from "@/lib/labels";
+
+/**
+ * El ámbito "Solo las que puedo decidir" se resuelve en el servidor con
+ * `decidableFilter`, la misma función que alimenta el contador de "Mi día" y el
+ * badge del menú: rol mínimo por acción, sin autoaprobaciones, sin expiradas y
+ * sin las que ya firmé. La pantalla no repite ninguna regla de permisos.
+ */
+const APPROVAL_SCOPE: Record<string, LabelDef> = {
+  decidable: { label: "Solo las que puedo decidir", tone: "warning" },
+};
 
 export default function Page() {
   return (
@@ -12,6 +23,7 @@ export default function Page() {
       description="Solicitudes de acciones sensibles pendientes de una segunda firma: descuentos sobre el límite, reembolsos, anulaciones y ajustes de caja."
       emptyIcon="UserCheck"
       filters={[
+        { name: "scope", label: "Ámbito", dict: APPROVAL_SCOPE },
         { name: "status", label: "Estado", dict: APPROVAL_STATUS },
         { name: "action_type", label: "Acción", dict: APPROVAL_ACTION },
       ]}

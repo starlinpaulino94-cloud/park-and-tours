@@ -29,7 +29,7 @@ export default async function PortalLayout({ children }: { children: React.React
       brand="TourFlow"
       badge="B2B"
       subtitle={partnerName}
-      user={{ name: ctx.name, email: ctx.email, role: ctx.role }}
+      user={{ name: ctx.name, role: ctx.role, companyName: partnerName }}
       extraLinks={isStaff ? [{ href: "/dashboard", label: "Volver al panel interno", icon: "ArrowLeft" }] : []}
     >
       <PortalProvider role={ctx.role} partnerId={ctx.partnerId}>{children}</PortalProvider>

@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { requireTenant, requireAtLeast } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { reconcileStaleDrafts } from "@/lib/booking-service";
+import { expireApprovals } from "@/lib/approvals";
 import { writeAudit } from "@/lib/audit";
 
 /**
@@ -25,6 +26,16 @@ export async function POST(req: NextRequest) {
 
     const result = await reconcileStaleDrafts(ctx.companyId, minutes);
 
+    // Las solicitudes de aprobación caducadas ya se descartan al consultarlas;
+    // esto solo hace que el estado guardado se ponga al día para el historial.
+    // Es una escritura, así que vive aquí y nunca en el render de una pantalla.
+    let expiredApprovals = 0;
+    try {
+      expiredApprovals = await expireApprovals(ctx.companyId);
+    } catch (err) {
+      console.error("[maintenance] no se pudieron expirar aprobaciones:", err);
+    }
+
     if (result.reverted > 0) {
       await writeAudit({
         companyId: ctx.companyId, userId: ctx.userId,
@@ -35,7 +46,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    return ok(result);
+    return ok({ ...result, expiredApprovals });
   } catch (err) {
     return fail(err);
   }

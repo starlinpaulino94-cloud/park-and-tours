@@ -28,7 +28,8 @@ export function SideShell({
   subtitle: string;
   badge?: string;
   accent?: "primary" | "ink";
-  user: { name: string; email: string; role: string };
+  /** Identidad visible del usuario. Sin correo: solo `/dashboard/perfil` lo muestra. */
+  user: { name: string; role: string; companyName?: string };
   extraLinks?: { href: string; label: string; icon: string }[];
   children: React.ReactNode;
 }) {
@@ -154,7 +155,8 @@ export function SideShell({
               <DropdownMenuContent align="end" className="w-56">
                 <DropdownMenuLabel className="font-normal">
                   <p className="text-sm font-semibold">{user.name}</p>
-                  <p className="text-xs text-muted-foreground">{user.email}</p>
+                  <p className="text-xs uppercase tracking-wider text-muted-foreground">{user.role}</p>
+                  {user.companyName && <p className="mt-1 text-[11px] text-muted-foreground">{user.companyName}</p>}
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 {extraLinks?.map((l) => (

@@ -19,7 +19,7 @@ export default async function SuperadminLayout({ children }: { children: React.R
       badge="PLATAFORMA"
       subtitle="Panel de plataforma"
       accent="ink"
-      user={{ name: ctx.name, email: ctx.email, role: ctx.role }}
+      user={{ name: ctx.name, role: ctx.role }}
       extraLinks={[{ href: "/dashboard", label: "Ir a un panel de empresa", icon: "LayoutDashboard" }]}
     >
       {children}

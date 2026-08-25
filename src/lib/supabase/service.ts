@@ -6,7 +6,9 @@ import { createClient } from "@supabase/supabase-js";
  * component and never expose SUPABASE_SERVICE_ROLE_KEY to the browser.
  *
  * Restricted to legitimately cross-tenant server flows: superadmin, the Stripe
- * webhook, tenant onboarding/seed, team management, and audited impersonation.
+ * webhook, tenant onboarding/seed, team management, audited impersonation,
+ * platform cron jobs (`/api/cron/*`, authenticated with CRON_SECRET) and the
+ * user-name directory, which reads `auth.users` and returns names only.
  * Every other path must use `supabaseServer()` so RLS applies.
  */
 export function supabaseService() {

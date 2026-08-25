@@ -29,7 +29,13 @@ export type NavBadges = Partial<Record<BadgeKey, number>>;
 
 export interface ShellUser {
   name: string;
-  email: string;
+  /**
+   * El correo del usuario autenticado NO forma parte de la identidad visible
+   * del shell: solo `/dashboard/perfil` puede mostrarlo. Se retiró del tipo a
+   * propósito, para que ningún componente pueda volver a dibujarlo por
+   * descuido. Esto no afecta a los correos de clientes, proveedores o
+   * empleados, que son datos operativos.
+   */
   role: string;
   companyName: string;
   companyType?: string;
@@ -547,6 +553,11 @@ export function AppShell({
 
   const quickActions = QUICK_ACTIONS.filter((a) => canSeeItem(a, ctx));
 
+  // Configuración se ofrece solo a quien realmente puede entrar: la ruta
+  // declara `minRole: "admin"` en el árbol de navegación, pero el menú de
+  // usuario la mostraba a todo el mundo.
+  const canConfigure = ["superadmin", "owner", "admin"].includes(user.role);
+
   const signOut = async () => {
     setBusy(true);
     try {
@@ -687,9 +698,11 @@ export function AppShell({
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-60">
+                  {/* Nombre, rol y empresa. El correo del usuario autenticado
+                      solo se muestra en /dashboard/perfil. */}
                   <DropdownMenuLabel className="font-normal">
                     <p className="text-sm font-semibold">{user.name}</p>
-                    <p className="text-xs text-muted-foreground">{user.email}</p>
+                    <p className="text-xs uppercase tracking-wider text-muted-foreground">{user.role}</p>
                     <p className="mt-1 text-[11px] text-muted-foreground">{user.companyName}</p>
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />
@@ -703,11 +716,13 @@ export function AppShell({
                       <Icon name="CircleUser" className="mr-2 size-4" /> Mi perfil
                     </Link>
                   </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href="/dashboard/configuracion">
-                      <Icon name="Settings" className="mr-2 size-4" /> Configuración
-                    </Link>
-                  </DropdownMenuItem>
+                  {canConfigure && (
+                    <DropdownMenuItem asChild>
+                      <Link href="/dashboard/configuracion">
+                        <Icon name="Settings" className="mr-2 size-4" /> Configuración
+                      </Link>
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={signOut} disabled={busy}>
                     <Icon name="LogOut" className="mr-2 size-4" /> Cerrar sesión

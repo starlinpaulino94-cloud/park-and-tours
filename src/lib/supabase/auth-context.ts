@@ -46,6 +46,28 @@ export function decodeJwtClaims(token: string): Record<string, unknown> {
   }
 }
 
+/**
+ * Nombre presentable del usuario autenticado.
+ *
+ * `ctx.name` se usa en el shell (menú, iniciales). Antes caía directamente al
+ * correo cuando `user_metadata.name` estaba vacío, así que el correo del usuario
+ * autenticado terminaba dibujado en pantallas donde no debe aparecer: solo
+ * `/dashboard/perfil` puede mostrarlo. Aquí se deriva un nombre a partir de la
+ * parte local del correo en vez de exponer la dirección completa.
+ */
+export function resolveDisplayName(name?: string | null, email?: string | null): string {
+  const clean = name?.trim();
+  if (clean && !clean.includes("@")) return clean;
+
+  const local = (clean || email || "").split("@")[0];
+  if (!local) return "Usuario";
+  return local
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ") || "Usuario";
+}
+
 /** Builds a TenantContext from validated claims + the user's identity and org.
  *  Returns null when there is no active tenant membership (deactivated users and
  *  users not attached to a company get no context — AUD-S02). */
@@ -60,8 +82,10 @@ export function mapClaimsToContext(
   const role = (VALID_ROLES.has(claims.app_role as AppRole) ? claims.app_role : "seller") as AppRole;
   return {
     userId: user.id,
+    // El correo sigue disponible en el contexto para `/dashboard/perfil` y para
+    // los registros de auditoría; lo que cambia es que ya no se filtra al nombre.
     email: user.email || "",
-    name: user.name || user.email || "",
+    name: resolveDisplayName(user.name, user.email),
     role,
     companyId: claims.org_id,
     partnerId: claims.partner_id || null,
@@ -84,6 +108,11 @@ async function loadOrganization(orgId: string): Promise<Company | null> {
       modules_enabled: data.modules_enabled,
       subscription_status: data.subscription_status,
       status: data.status,
+      // Necesarios para que la lógica temporal use la zona de la empresa y no
+      // la del servidor (UTC en Vercel). La columna existía en 0002 pero no se
+      // estaba mapeando, así que nunca llegaba al contexto.
+      timezone: data.timezone,
+      country: data.country,
     } as Company;
   } catch {
     return null;

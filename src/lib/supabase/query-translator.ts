@@ -22,6 +22,7 @@ export interface PostgrestLike {
   lte(col: string, val: unknown): PostgrestLike;
   in(col: string, vals: readonly unknown[]): PostgrestLike;
   ilike(col: string, pattern: string): PostgrestLike;
+  is(col: string, val: null | boolean): PostgrestLike;
   not(col: string, op: string, val: unknown): PostgrestLike;
   or(filters: string): PostgrestLike;
   order(col: string, opts: { ascending: boolean }): PostgrestLike;
@@ -54,14 +55,48 @@ export function aliasField(field: string, aliases = DEFAULT_FIELD_ALIASES): stri
 
 type Operand = Record<string, unknown>;
 
-/** Escapes a value for use inside a PostgREST `.or()` string. */
+/**
+ * Serialisation of operands for `.or()` and for `nin` lists.
+ *
+ * Inside an `or=(...)` group the comma separates clauses, the parentheses
+ * delimit the group and the dot separates column, operator and value. PostgREST
+ * accepts a double-quoted value for anything that contains them, and that is
+ * the only form that round-trips reliably.
+ *
+ * This used to escape `,` `.` `(` `)` with a backslash. Backslashes are not an
+ * escape mechanism for PostgREST values, so the marks ended up INSIDE the
+ * value: searching for `S.A.` sent `S\.A\.` and matched nothing, and an ISO
+ * timestamp produced a malformed clause. Quoting fixes both.
+ *
+ * The allowlist is deliberately conservative: identifiers, uuids, numbers and
+ * enum values travel bare — exactly as before — and only richer values get
+ * quoted, so no existing filter changes shape.
+ */
+const BARE_VALUE = /^[A-Za-z0-9_-]*$/;
+
+function quote(raw: string): string {
+  return `"${raw.replace(/(["\\])/g, "\\$1")}"`;
+}
+
 function orValue(v: unknown): string {
-  return String(v).replace(/([,.()])/g, "\\$1");
+  const raw = String(v);
+  return BARE_VALUE.test(raw) ? raw : quote(raw);
+}
+
+/**
+ * Same, for the `ilike` pattern of a `regex` filter: the wildcards are part of
+ * the operand, so the whole `*term*` is quoted as a unit when it needs it.
+ */
+function orLikePattern(v: unknown): string {
+  const raw = String(v);
+  return BARE_VALUE.test(raw) ? `*${raw}*` : quote(`*${raw}*`);
 }
 
 /** Serialises one `{field: value|operand}` pair to PostgREST `.or()` syntax. */
 function toOrClause(field: string, cond: unknown, aliases: Record<string, string>): string[] {
   const col = aliasField(field, aliases);
+  // `{ field: null }` means IS NULL — a bare `eq.null` would never match.
+  if (cond === null) return [`${col}.is.null`];
   if (cond !== null && typeof cond === "object" && !Array.isArray(cond)) {
     const out: string[] = [];
     for (const [op, val] of Object.entries(cond as Operand)) {
@@ -71,8 +106,9 @@ function toOrClause(field: string, cond: unknown, aliases: Record<string, string
         case "lte": out.push(`${col}.lte.${orValue(val)}`); break;
         case "gt": out.push(`${col}.gt.${orValue(val)}`); break;
         case "lt": out.push(`${col}.lt.${orValue(val)}`); break;
+        case "is": out.push(`${col}.is.${val === null ? "null" : String(val)}`); break;
         case "in": out.push(`${col}.in.(${(val as unknown[]).map(orValue).join(",")})`); break;
-        case "regex": out.push(`${col}.ilike.*${orValue(val)}*`); break;
+        case "regex": out.push(`${col}.ilike.${orLikePattern(val)}`); break;
         default: break;
       }
     }
@@ -81,10 +117,26 @@ function toOrClause(field: string, cond: unknown, aliases: Record<string, string
   return [`${col}.eq.${orValue(cond)}`];
 }
 
+/** Builds the clause string for one `_or` group. */
+function orClauses(group: unknown, aliases: Record<string, string>): string[] {
+  const clauses: string[] = [];
+  for (const sub of (group as Record<string, unknown>[]) || []) {
+    for (const [f, c] of Object.entries(sub)) clauses.push(...toOrClause(f, c, aliases));
+  }
+  return clauses;
+}
+
 /**
  * Applies a Mongo-like `_filter` to a PostgREST builder.
- * Supported operators: bare(eq), ne, gt, gte, lt, lte, in, nin, regex(→ilike), _or.
- * Real `gt`/`lt` operators are available.
+ * Supported operators: bare(eq), ne, gt, gte, lt, lte, in, nin, regex(→ilike),
+ * is, `_or` and `_and`.
+ *
+ * `_and` takes a list of sub-filters that are applied one after another. Since
+ * PostgREST joins successive `.or()` calls with AND, this is what makes several
+ * independent OR groups expressible in a single filter object — needed by the
+ * "decidable approval" rule, which ANDs three OR groups.
+ *
+ * A bare `null` value means IS NULL: `eq.null` never matches in SQL.
  */
 export function applyFilter<T extends PostgrestLike>(
   builder: T,
@@ -94,14 +146,21 @@ export function applyFilter<T extends PostgrestLike>(
   let q: PostgrestLike = builder;
   for (const [rawKey, cond] of Object.entries(filter)) {
     if (rawKey === "_or") {
-      const clauses: string[] = [];
-      for (const sub of (cond as Record<string, unknown>[]) || []) {
-        for (const [f, c] of Object.entries(sub)) clauses.push(...toOrClause(f, c, aliases));
-      }
+      const clauses = orClauses(cond, aliases);
       if (clauses.length) q = q.or(clauses.join(","));
       continue;
     }
+    if (rawKey === "_and") {
+      for (const sub of (cond as Record<string, unknown>[]) || []) {
+        q = applyFilter(q, sub, aliases);
+      }
+      continue;
+    }
     const col = aliasField(rawKey, aliases);
+    if (cond === null) {
+      q = q.is(col, null);
+      continue;
+    }
     if (cond !== null && typeof cond === "object" && !Array.isArray(cond)) {
       for (const [op, val] of Object.entries(cond as Operand)) {
         switch (op) {
@@ -110,8 +169,12 @@ export function applyFilter<T extends PostgrestLike>(
           case "lte": q = q.lte(col, val); break;
           case "gt": q = q.gt(col, val); break;
           case "lt": q = q.lt(col, val); break;
+          case "is": q = q.is(col, val as null | boolean); break;
           case "in": q = q.in(col, val as unknown[]); break;
-          case "nin": q = q.not(col, "in", `(${(val as unknown[]).join(",")})`); break;
+          // La lista de `nin` viaja como una cadena cruda hacia PostgREST, así
+          // que sus elementos necesitan el mismo entrecomillado que los de `in`
+          // dentro de un `_or`; sin él, un valor con coma partía la lista.
+          case "nin": q = q.not(col, "in", `(${(val as unknown[]).map(orValue).join(",")})`); break;
           case "regex": q = q.ilike(col, `%${val}%`); break;
           default: break; // unknown operator ignored (defensive)
         }
