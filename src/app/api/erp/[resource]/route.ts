@@ -7,7 +7,23 @@ import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { resolveUserNames } from "@/lib/user-directory";
 
-const USER_REF_FIELDS = new Set(["requested_by", "approved_by", "second_approver", "assigned_to", "created_by", "user"]);
+const USER_REF_FIELDS = new Set([
+  "approved_by", "assigned_to", "created_by", "impersonated_by", "manager", "owner",
+  "performed_by", "reported_by", "requested_by", "second_approver", "user",
+]);
+const RELATION_RESOURCE: Record<string, string> = {
+  assigned_seller: "seller",
+  driver: "staff",
+  guide: "staff",
+  ledger_account: "ledger_account",
+  modality: "product_modality",
+  parent: "ledger_account",
+  parent_partner: "partner",
+  pickup_hotel: "hotel",
+  product_modality: "product_modality",
+  rule: "commission_rule",
+  route: "pickup_route",
+};
 
 function refId(value: unknown): string | null {
   if (!value) return null;
@@ -33,6 +49,65 @@ async function resolveUserRefs<T extends Record<string, unknown>>(rows: T[], exp
     }
     return out as T;
   });
+}
+
+function relationResource(field: string): string | null {
+  if (USER_REF_FIELDS.has(field)) return null;
+  return RELATION_RESOURCE[field] || (getResource(field) ? field : null);
+}
+
+function labelFor(row: Record<string, unknown>): string | undefined {
+  const fullName = [row.first_name, row.last_name].filter(Boolean).join(" ").trim();
+  return fullName || String(
+    row.name || row.commercial_name || row.full_name || row.title || row.code || row.order_number ||
+    row.booking_number || row.document_number || row.reference || ""
+  ).trim() || undefined;
+}
+
+async function resolvePublicRefs<T extends Record<string, unknown>>(
+  orgId: string,
+  rows: T[],
+  expand?: Record<string, unknown>
+): Promise<T[]> {
+  const fields = Object.keys(expand || {}).filter((field) => relationResource(field));
+  if (fields.length === 0 || rows.length === 0) return rows;
+
+  const resolved = new Map<string, Map<string, Record<string, unknown>>>();
+  for (const field of fields) {
+    const resource = relationResource(field);
+    if (!resource) continue;
+
+    const ids = Array.from(new Set(rows.map((row) => refId(row[field])).filter((id): id is string => Boolean(id))));
+    if (ids.length === 0) continue;
+
+    try {
+      const related = await tenantQuery<Record<string, unknown>>(orgId, resource, {
+        _filter: { _id: { in: ids } },
+        _limit: Math.min(ids.length, 500),
+      });
+      resolved.set(field, new Map(related.map((item) => [String(item._id || item.id), item])));
+    } catch (err) {
+      console.error(`[api/erp] no se pudo resolver la referencia ${field}:`, err);
+    }
+  }
+
+  return rows.map((row) => {
+    const out: Record<string, unknown> = { ...row };
+    for (const field of fields) {
+      const id = refId(row[field]);
+      const related = id ? resolved.get(field)?.get(id) : null;
+      if (id && related) out[field] = { ...related, name: labelFor(related) || related.name || id };
+    }
+    return out as T;
+  });
+}
+
+async function resolveRefs<T extends Record<string, unknown>>(
+  orgId: string,
+  rows: T[],
+  expand?: Record<string, unknown>
+): Promise<T[]> {
+  return resolveUserRefs(await resolvePublicRefs(orgId, rows, expand), expand);
 }
 
 /** Generic tenant-scoped list endpoint: GET /api/erp/:resource */
@@ -126,7 +201,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
         _limit: limit + 1,
         _offset: offset,
       });
-      const pageRows = await resolveUserRefs(rows.slice(0, limit), def.expand);
+      const pageRows = await resolveRefs(ctx.companyId, rows.slice(0, limit), def.expand);
       const hasMore = rows.length > limit;
       const elapsed = Date.now() - started;
       if (process.env.NODE_ENV !== "production" && elapsed > 800) {
@@ -145,7 +220,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
       }),
       tenantCount(ctx.companyId, def.table, filter),
     ]);
-    const rows = await resolveUserRefs(rawRows, def.expand);
+    const rows = await resolveRefs(ctx.companyId, rawRows, def.expand);
 
     const elapsed = Date.now() - started;
     if (process.env.NODE_ENV !== "production" && elapsed > 800) {
