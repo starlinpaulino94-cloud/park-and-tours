@@ -29,6 +29,10 @@ describe("query-translator — field aliases", () => {
     expect(aliasField("partner")).toBe("partner_id");
     expect(aliasField("assigned_to")).toBe("assigned_to_id");
     expect(aliasField("second_approver")).toBe("second_approver_id");
+    expect(aliasField("inventory_item")).toBe("inventory_item_id");
+    expect(aliasField("ledger_account")).toBe("ledger_account_id");
+    expect(aliasField("membership_plan")).toBe("membership_plan_id");
+    expect(aliasField("pickup_hotel")).toBe("hotel_id");
     expect(aliasField("unknown_field")).toBe("unknown_field");
   });
 });

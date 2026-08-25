@@ -127,6 +127,13 @@ describe("pantallas satélite de Mi día", () => {
     expect(route).toContain("Usuario sin nombre registrado");
     expect(route).not.toContain("email:");
   });
+
+  it("el ERP resuelve referencias públicas por lote antes de pintar UUID", () => {
+    const route = read("src/app/api/erp/[resource]/route.ts");
+    expect(route).toContain("resolvePublicRefs");
+    expect(route).toContain("relationResource");
+    expect(route).toContain("_filter: { _id: { in: ids } }");
+  });
 });
 
 describe("consistencia de contadores", () => {
