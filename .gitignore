@@ -63,6 +63,8 @@ claude-realtime.log
 .envProd
 
 playwright-dev-server.log
+/playwright-report/
+/test-results/
 **/.playwright-mcp
 **/playwright-screenshots
 *.playwright-screenshot.*
