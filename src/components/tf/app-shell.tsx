@@ -587,7 +587,7 @@ export function AppShell({
   return (
     <NavPendingContext.Provider value={{ pending, start: startNav }}>
     <OrgProvider companyName={user.companyName} companyType={user.companyType}>
-      <div className="flex min-h-screen bg-background">
+      <div className="flex min-h-screen w-full overflow-x-hidden bg-background">
         {/* Señal de que el clic se registró, mientras el servidor prepara la pantalla. */}
         {pending && (
           <div className="fixed inset-x-0 top-0 z-50 h-0.5 overflow-hidden bg-transparent">

@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const port = Number(process.env.PORT || 3000);
-const baseURL = process.env.E2E_BASE_URL || `http://127.0.0.1:${port}`;
+const port = Number(process.env.PORT || 3100);
+const baseURL = process.env.E2E_BASE_URL || `http://localhost:${port}`;
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -18,10 +18,18 @@ export default defineConfig({
   webServer: process.env.E2E_BASE_URL
     ? undefined
     : {
-        command: "npm run test:serve",
-        url: baseURL,
+        command: `npx next start -p ${port}`,
+        url: `${baseURL}/login`,
         reuseExistingServer: !process.env.CI,
         timeout: 120_000,
-        env: { PORT: String(port) },
+        env: {
+          PORT: String(port),
+          TESTING_MODE: "true",
+          NEXT_PUBLIC_APP_URL: baseURL,
+          NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
+          SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || "",
+          SUPABASE_USE_RLS: process.env.SUPABASE_USE_RLS || "true",
+        },
       },
 });
