@@ -814,7 +814,14 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["code", "reason", "target_id"],
     expand: { requested_by: true, approved_by: true },
     sort: { createdAt: "desc" },
-    writable: ["code", "action_type", "status", "requested_at", "decided_at", "amount", "currency", "reason", "decision_notes", "payload", "target_table", "target_id", "requires_two", "expires_at", "requested_by", "approved_by", "second_approver", "order", "booking", "payment", "purchase_order"],
+    // AUD: el ciclo de vida de una aprobación NO es escribible por el ERP
+    // genérico. `status`, `requested_by`, `approved_by`, `second_approver`,
+    // `requires_two` y `decided_at` salieron de aquí porque con `writeRole:
+    // "manager"` cualquier manager podía hacer PUT {"status":"approved"} sobre
+    // su propia solicitud y saltarse por completo `decide()`: sin control de
+    // autoaprobación, sin rango por acción, sin expiración y sin segunda firma.
+    // La única vía para decidir es POST /api/approvals/:id/decide.
+    writable: ["code", "action_type", "requested_at", "amount", "currency", "reason", "payload", "target_table", "target_id", "expires_at", "order", "booking", "payment", "purchase_order"],
     numeric: ["amount"],
     dates: ["requested_at", "decided_at", "expires_at"],
     writeRole: "manager",
@@ -954,6 +961,26 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
 /** Minimum role required to READ a resource (for non-partner roles). */
 export function readRoleFor(table: string): AppRole | null {
   return READ_ROLE[table] ?? null;
+}
+
+/**
+ * Propiedad por fila.
+ *
+ * La RLS aísla por `organization_id`, no por persona, y `task` tiene
+ * `writeRole: "seller"` — el rango más bajo del ERP interno. Sin esta regla
+ * cualquier vendedor podía cerrar o reasignar la tarea de otro compañero. El
+ * responsable asignado siempre puede; el resto necesita rango de gestión.
+ */
+const OWNERSHIP_FIELD: Partial<Record<string, string>> = {
+  task: "assigned_to_id",
+};
+
+/** Rol a partir del cual se puede escribir sobre una fila ajena. */
+export const OWNERSHIP_OVERRIDE_ROLE: AppRole = "manager";
+
+/** Columna que identifica al dueño de la fila, o null si la tabla no tiene dueño. */
+export function ownershipFieldFor(table: string): string | null {
+  return OWNERSHIP_FIELD[table] ?? null;
 }
 
 // Enum-like fields that are always safe to filter on, regardless of a

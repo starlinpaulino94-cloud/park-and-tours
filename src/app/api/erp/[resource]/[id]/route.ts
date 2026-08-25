@@ -1,6 +1,9 @@
 import { NextRequest } from "next/server";
-import { requireTenant, tenantFindOne, tenantUpdate, tenantDelete, requireAtLeast, TenantError } from "@/lib/tenant";
-import { getResource, sanitizePayload, partnerScopeFor, readRoleFor } from "@/lib/resources";
+import { requireTenant, tenantFindOne, tenantUpdate, tenantDelete, requireAtLeast, atLeast, TenantError } from "@/lib/tenant";
+import {
+  getResource, sanitizePayload, partnerScopeFor, readRoleFor,
+  ownershipFieldFor, OWNERSHIP_OVERRIDE_ROLE,
+} from "@/lib/resources";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { refId } from "@/lib/types";
@@ -58,6 +61,21 @@ export async function PUT(req: NextRequest, { params }: Params) {
     // no writeRole, which would otherwise let any authenticated user write).
     if (ctx.role === "partner") throw new TenantError("No tienes permisos para modificar este recurso", 403);
     if (def.writeRole) requireAtLeast(ctx, def.writeRole);
+
+    // Propiedad por fila: la RLS aísla por empresa, no por persona. Sin esto un
+    // vendedor podía cerrar o reasignar la tarea de cualquier compañero.
+    //
+    // Cuesta una lectura extra por escritura para los roles por debajo de
+    // manager. Es deliberado: resolverlo dentro del UPDATE ahorraría el viaje
+    // pero devolvería "no encontrado" en vez de un 403 explicando por qué, y la
+    // lectura es un acceso por clave primaria sobre un índice.
+    const ownerField = ownershipFieldFor(def.table);
+    if (ownerField && !atLeast(ctx.role, OWNERSHIP_OVERRIDE_ROLE)) {
+      const current = await tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id);
+      if (refId(current[ownerField]) !== ctx.userId) {
+        throw new TenantError("Solo puedes modificar registros asignados a ti", 403);
+      }
+    }
 
     const body = await readJson(req);
     const payload = sanitizePayload(def, body);

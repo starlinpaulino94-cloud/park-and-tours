@@ -69,7 +69,6 @@ export default function CheckinPage() {
       setCode(initial);
       void search(initial);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const search = async (value?: string) => {

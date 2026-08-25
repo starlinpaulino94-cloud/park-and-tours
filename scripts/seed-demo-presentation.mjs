@@ -225,7 +225,16 @@ async function main() {
   for (const [i, title] of ["Confirmar pickup de Saona", "Revisar caja del turno", "Preparar liquidación de vendedores", "Actualizar disponibilidad del fin de semana", "Llamar cliente VIP"].entries()) {
     await insert("task", { organization_id: orgId, title, description: "Tarea de demostración para presentación comercial.", status: i === 1 ? "in_progress" : "todo", priority: i < 2 ? "high" : "medium", due_at: at(i, 15, 0), task_type: i === 2 ? "finance" : "operational", source: "manual", assigned_to_id: user.id, created_by: user.id });
   }
+  // Tarea ya vencida y tarea sin fecha: los dos casos límite de "Mi día".
+  await insert("task", { organization_id: orgId, title: "Reponer inventario de la tienda", description: "Quedó pendiente del cierre anterior.", status: "todo", priority: "urgent", due_at: at(-2, 10, 0), task_type: "operational", source: "manual", assigned_to_id: user.id, created_by: user.id });
+  await insert("task", { organization_id: orgId, title: "Revisar plan de mantenimiento anual", description: "Sin fecha de vencimiento definida.", status: "todo", priority: "medium", due_at: null, task_type: "maintenance", source: "manual", assigned_to_id: user.id, created_by: user.id });
+
+  // `requires_two` es un booleano real (columna boolean en 0009), nunca "yes"/"no".
   await insert("approval_request", { organization_id: orgId, code: "AP-DEMO-001", action_type: "discount_over_limit", status: "pending", requested_at: at(-1, 9, 30), expires_at: at(2), amount: 120, currency: "usd", reason: "Cliente corporativo solicita descuento especial para grupo.", payload: { discount_pct: 18 }, requires_two: false, requested_by: null });
+  // Doble firma pendiente de la segunda persona.
+  await insert("approval_request", { organization_id: orgId, code: "AP-DEMO-002", action_type: "payout", status: "pending", requested_at: at(-2, 11, 0), expires_at: at(5), amount: 1800, currency: "usd", reason: "Pago mensual a la red de vendedores.", payload: {}, requires_two: true, requested_by: null });
+  // Expirada: no debe contarse como pendiente ni aparecer como aprobable.
+  await insert("approval_request", { organization_id: orgId, code: "AP-DEMO-003", action_type: "refund", status: "pending", requested_at: at(-10, 9, 0), expires_at: at(-3), amount: 340, currency: "usd", reason: "Reembolso solicitado fuera de plazo.", payload: {}, requires_two: false, requested_by: null });
   await insert("notification", { organization_id: orgId, user_id: user.id, title: "Bienvenido a la demo", message: "Este tenant contiene datos preparados para presentar Havelgo a clientes.", notification_type: "info", link: "/dashboard", read_status: false });
 
   console.log("✅ Demo de presentación creada");

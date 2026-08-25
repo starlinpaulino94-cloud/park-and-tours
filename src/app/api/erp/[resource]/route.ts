@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { requireTenant, tenantQuery, tenantCreate, tenantCount, requireAtLeast, TenantError } from "@/lib/tenant";
 import { getResource, sanitizePayload, partnerScopeFor, readRoleFor, allowedFilterFields } from "@/lib/resources";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { decidableFilter } from "@/lib/approvals";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 
@@ -53,6 +54,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
       if (from) range.gte = new Date(from).toISOString();
       if (to) range.lte = new Date(to).toISOString();
       filter[dateField] = range;
+    }
+
+    // Aprobaciones: el ámbito "solo las que puedo decidir" reutiliza la MISMA
+    // función de dominio que la tarjeta de "Mi día" y el badge del menú, en vez
+    // de reescribir las reglas de permiso en la pantalla.
+    if (def.table === "approval_request" && sp.get("filter.scope") === "decidable") {
+      const decidable = decidableFilter(ctx);
+      if (!decidable) return ok([], { total: 0 });
+      Object.assign(filter, decidable);
     }
 
     if (q && def.search.length > 0) {

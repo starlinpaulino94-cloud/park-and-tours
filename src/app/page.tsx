@@ -75,7 +75,9 @@ export default async function LandingPage() {
           <div className="ml-auto flex items-center gap-2">
             {signedIn ? (
               <>
-                <span className="hidden text-[12px] text-muted-foreground sm:block">{session?.email}</span>
+                {/* Nombre, no correo: la dirección del usuario autenticado solo
+                    se muestra en /dashboard/perfil. */}
+                <span className="hidden text-[12px] text-muted-foreground sm:block">{session?.name}</span>
                 <Link href={appHref}>
                   <Button size="sm" className="gap-1.5 rounded-full px-4">
                     {appLabel} <Icon name="ArrowRight" className="size-3.5" />

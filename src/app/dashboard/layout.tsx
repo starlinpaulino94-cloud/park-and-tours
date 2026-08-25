@@ -1,13 +1,22 @@
 import { redirect } from "next/navigation";
-import { getTenantContext, tenantCount } from "@/lib/tenant";
+import { getTenantContext, tenantCount, type TenantContext } from "@/lib/tenant";
+import { countDecidableFor } from "@/lib/approvals";
+import { OPEN_TASK_STATUSES } from "@/lib/my-day";
 import { AppShell, type NavBadges, type ShellUser } from "@/components/tf/app-shell";
 
 /**
  * Contadores del sidebar. Solo tres, y solo accionables: algo que alguien tiene
  * que resolver hoy. Si alguna cuenta falla no se rompe la navegación: el badge
  * simplemente no aparece.
+ *
+ * El de aprobaciones usa `countDecidableFor`, la misma función de dominio que
+ * alimenta la tarjeta de "Mi día". Antes contaba TODAS las solicitudes
+ * pendientes de la empresa con una lista de roles escrita a mano que ni
+ * coincidía con `DECIDER` (un usuario `operations` veía 0 aunque tuviera
+ * solicitudes que decidir) ni descontaba autoaprobaciones ni expiradas.
  */
-async function loadBadges(companyId: string, userId: string, role: string): Promise<NavBadges> {
+async function loadBadges(ctx: TenantContext & { companyId: string }): Promise<NavBadges> {
+  const { companyId, userId } = ctx;
   const safe = async (label: string, run: () => Promise<number>) => {
     try {
       return await Promise.race([
@@ -25,15 +34,11 @@ async function loadBadges(companyId: string, userId: string, role: string): Prom
     }
   };
 
-  const canApprove = ["superadmin", "owner", "admin", "manager"].includes(role);
-
   const [tasks, approvals, incidents] = await Promise.all([
     safe("tareas", () => tenantCount(companyId, "task", {
-      assigned_to: userId, status: { in: ["todo", "in_progress", "blocked", "waiting"] },
+      assigned_to: userId, status: { in: [...OPEN_TASK_STATUSES] },
     })),
-    canApprove
-      ? safe("aprobaciones", () => tenantCount(companyId, "approval_request", { status: "pending" }))
-      : Promise.resolve(0),
+    safe("aprobaciones", () => countDecidableFor(ctx)),
     safe("incidentes", () => tenantCount(companyId, "incident", {
       status: { in: ["open", "investigating", "action_required", "escalated"] },
     })),
@@ -52,7 +57,6 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   const user: ShellUser = {
     name: ctx.name,
-    email: ctx.email,
     role: ctx.role,
     companyName: ctx.company?.name || "Mi empresa",
     companyType: ctx.company?.company_type,
@@ -64,7 +68,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   const badges = ctx.role === "superadmin" && !ctx.impersonating
     ? {}
-    : await loadBadges(ctx.companyId, ctx.userId, ctx.role);
+    : await loadBadges(ctx as TenantContext & { companyId: string });
   const elapsed = Date.now() - started;
   if (process.env.NODE_ENV !== "production" && elapsed > 800) {
     console.warn(`[shell] DashboardLayout tardó ${elapsed}ms`);

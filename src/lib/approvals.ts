@@ -1,8 +1,9 @@
 import "server-only";
 import {
-  tenantCreate, tenantFindOne, tenantQuery, tenantUpdate,
+  tenantCreate, tenantCount, tenantFindOne, tenantQuery, tenantUpdate,
   TenantError, atLeast, type TenantContext,
 } from "@/lib/tenant";
+import { writeAudit } from "@/lib/audit";
 import type { AppRole } from "@/lib/auth";
 
 /**
@@ -12,6 +13,12 @@ import type { AppRole } from "@/lib/auth";
  * adjustments, waiver bypasses) do not execute on request: they create an
  * `approval_request` that a second person with enough rank must approve.
  * Nobody can approve their own request — not even an admin.
+ *
+ * `requires_two` is a real boolean, matching `approval_request.requires_two` in
+ * migration 0009. It used to be written as the strings "yes"/"no" and compared
+ * with `=== "yes"`, which PostgREST always returned as `true`/`false` — so every
+ * double-signature check silently evaluated to false and the reinforced control
+ * was effectively disabled.
  */
 
 export type ApprovalAction =
@@ -38,7 +45,7 @@ export const DECIDER: Record<ApprovalAction, AppRole> = {
 };
 
 /** Actions that always need two different approvers, not just one. */
-const DOUBLE_SIGN: ApprovalAction[] = ["clawback", "payout", "waiver_bypass"];
+export const DOUBLE_SIGN: ApprovalAction[] = ["clawback", "payout", "waiver_bypass"];
 
 /**
  * Value above which each action needs approval at all. Discounts are compared
@@ -65,11 +72,35 @@ export interface RequestInput {
   refs?: Partial<Record<"order" | "booking" | "payment" | "purchase_order", string>>;
 }
 
+/** Shape the module works with; the row itself is wider. */
+export interface ApprovalRow {
+  _id: string;
+  code?: string | null;
+  action_type?: string | null;
+  status?: string | null;
+  requested_at?: string | null;
+  expires_at?: string | null;
+  decided_at?: string | null;
+  amount?: number | null;
+  currency?: string | null;
+  reason?: string | null;
+  decision_notes?: string | null;
+  requires_two?: boolean | null;
+  requested_by?: unknown;
+  approved_by?: unknown;
+  second_approver_id?: unknown;
+}
+
 /** True when the action exceeds its threshold and therefore needs a second pair of eyes. */
 export function needsApproval(action: ApprovalAction, value: number): boolean {
   const limit = THRESHOLD[action];
   if (limit === undefined) return true;
   return Math.abs(value) > limit;
+}
+
+/** True when the action always requires two distinct signatures. */
+export function requiresTwoSignatures(action: ApprovalAction): boolean {
+  return DOUBLE_SIGN.includes(action);
 }
 
 export async function requestApproval(
@@ -94,21 +125,117 @@ export async function requestApproval(
     payload: input.payload ? JSON.stringify(input.payload) : null,
     target_table: input.targetTable || null,
     target_id: input.targetId || null,
-    requires_two: DOUBLE_SIGN.includes(input.action) ? "yes" : "no",
+    requires_two: requiresTwoSignatures(input.action),
     expires_at: input.expiresAt || null,
     requested_by: ctx.userId,
     ...(input.refs || {}),
   });
 
-  console.log(
-    `[approvals] ${input.action} solicitada por ${ctx.email} → requiere ${DECIDER[input.action]}` +
-    (DOUBLE_SIGN.includes(input.action) ? " (doble firma)" : "")
-  );
+  await writeAudit({
+    companyId: ctx.companyId, userId: ctx.userId,
+    action: "approval_requested", entityType: "approval_request", entityId: row._id,
+    description: `Solicitud de ${input.action} creada`,
+    severity: "info",
+    metadata: { action_type: input.action, amount: input.amount ?? null, requires_two: requiresTwoSignatures(input.action) },
+  });
   return row;
 }
 
-const refOf = (value: unknown) =>
-  value && typeof value === "object" ? (value as { _id?: string })._id : (value as string | null);
+const refOf = (value: unknown): string | null => {
+  if (value && typeof value === "object") return (value as { _id?: string })._id ?? null;
+  return (value as string | null) ?? null;
+};
+
+/** Normalises the boolean coming back from Postgres (it may arrive as a string via legacy rows). */
+export function isTwoSignature(row: Pick<ApprovalRow, "requires_two">): boolean {
+  return row.requires_two === true;
+}
+
+/** Every action the given role is allowed to decide. */
+export function decidableActionsFor(role: AppRole): ApprovalAction[] {
+  return (Object.keys(DECIDER) as ApprovalAction[]).filter((action) => atLeast(role, DECIDER[action]));
+}
+
+/**
+ * THE single definition of "an approval this person can decide right now".
+ *
+ * Expressed as a database filter, not as an in-memory predicate, so the list,
+ * the "Mi día" counter, the sidebar badge and the approvals screen all read the
+ * exact same rule from one place and stay consistent. Returns null when the
+ * caller's role cannot decide anything at all — the caller must short-circuit
+ * instead of querying with an empty `IN ()`.
+ *
+ * The three OR groups are: not my own request, not expired, and not already
+ * signed by me on a double-signature request.
+ */
+export function decidableFilter(
+  ctx: Pick<TenantContext, "userId" | "role">,
+  now: Date = new Date()
+): Record<string, unknown> | null {
+  const actions = decidableActionsFor(ctx.role);
+  if (actions.length === 0) return null;
+
+  const nowIso = now.toISOString();
+  return {
+    status: "pending",
+    action_type: { in: actions },
+    _and: [
+      { _or: [{ requested_by: null }, { requested_by: { ne: ctx.userId } }] },
+      { _or: [{ expires_at: null }, { expires_at: { gt: nowIso } }] },
+      { _or: [{ requires_two: false }, { approved_by: null }, { approved_by: { ne: ctx.userId } }] },
+    ],
+  };
+}
+
+/** Requests waiting on the caller — what "Mi día" shows as pending decisions. */
+export async function pendingFor(
+  ctx: TenantContext & { companyId: string },
+  options: { limit?: number } = {}
+): Promise<ApprovalRow[]> {
+  const filter = decidableFilter(ctx);
+  if (!filter) return [];
+  return tenantQuery<ApprovalRow>(ctx.companyId, "approval_request", {
+    _filter: filter,
+    // Oldest first: a work queue, so the longest-waiting decision is on top.
+    _sort: { requested_at: "asc" },
+    _limit: options.limit ?? 10,
+  });
+}
+
+/** Exact count of decidable requests — same rule as `pendingFor`, no page slicing. */
+export async function countDecidableFor(
+  ctx: TenantContext & { companyId: string }
+): Promise<number> {
+  const filter = decidableFilter(ctx);
+  if (!filter) return 0;
+  return tenantCount(ctx.companyId, "approval_request", filter);
+}
+
+/**
+ * Moves timed-out pending requests to `expired`.
+ *
+ * Deliberately NOT called while rendering a screen: a page load must never
+ * trigger writes on financial records. It runs from the maintenance endpoint
+ * (and opportunistically from `decide`, which has to check anyway). Reads are
+ * already safe without it because `decidableFilter` excludes anything past its
+ * `expires_at`; this only makes the stored state catch up so the history reads
+ * correctly.
+ */
+export async function expireApprovals(companyId: string, limit = 200): Promise<number> {
+  const stale = await tenantQuery<ApprovalRow>(companyId, "approval_request", {
+    // A NULL `expires_at` never satisfies `<`, so open-ended requests are safe.
+    _filter: { status: "pending", expires_at: { lt: new Date().toISOString() } },
+    _sort: { expires_at: "asc" },
+    _limit: limit,
+  });
+  for (const row of stale) {
+    await tenantUpdate(companyId, "approval_request", row._id, { status: "expired" });
+  }
+  if (stale.length > 0) {
+    console.log(`[approvals] ${stale.length} solicitudes marcadas como expiradas`);
+  }
+  return stale.length;
+}
 
 export async function decide(
   ctx: TenantContext & { companyId: string },
@@ -116,7 +243,11 @@ export async function decide(
   action: "approve" | "reject",
   notes?: string
 ) {
-  const row = await tenantFindOne<any>(ctx.companyId, "approval_request", id);
+  if (action !== "approve" && action !== "reject") {
+    throw new TenantError("Acción inválida: solo se puede aprobar o rechazar", 400);
+  }
+
+  const row = await tenantFindOne<ApprovalRow>(ctx.companyId, "approval_request", id);
   if (!row) throw new TenantError("La solicitud no existe", 404);
   if (row.status !== "pending") {
     throw new TenantError(
@@ -142,45 +273,58 @@ export async function decide(
     throw new TenantError(`Se necesita el rol ${required} o superior para decidir esta solicitud`, 403);
   }
 
-  // Double signature: the first approver only signs, the second one closes it.
+  const twoSignatures = isTwoSignature(row);
   const firstApprover = refOf(row.approved_by);
-  if (action === "approve" && row.requires_two === "yes" && !firstApprover) {
-    const partial = await tenantUpdate(ctx.companyId, "approval_request", id, {
-      approved_by: ctx.userId,
-      decision_notes: notes || null,
-    });
-    console.log(`[approvals] ${row.code} primera firma de ${ctx.email} — falta la segunda`);
-    return { ...(partial as object), pendingSecondSignature: true };
-  }
-  if (action === "approve" && row.requires_two === "yes" && firstApprover === ctx.userId) {
+
+  // Double signature: the first approver only signs, the second one closes it.
+  // Rejecting is always allowed to a single person — it is the safe direction.
+  if (action === "approve" && twoSignatures && firstApprover === ctx.userId) {
     throw new TenantError("Ya firmaste esta solicitud: la segunda firma debe ser de otra persona", 403);
   }
+  if (action === "approve" && twoSignatures && !firstApprover) {
+    const partial = await tenantUpdate(ctx.companyId, "approval_request", id, {
+      approved_by: ctx.userId,
+      decision_notes: notes?.trim() || null,
+    });
+    await writeAudit({
+      companyId: ctx.companyId, userId: ctx.userId,
+      action: "approval_signed", entityType: "approval_request", entityId: id,
+      description: `Primera firma de ${row.code ?? id} — falta la segunda`,
+      severity: "warning",
+      metadata: { action_type: row.action_type, amount: row.amount ?? null, notes: notes?.trim() || null },
+    });
+    return { ...(partial as object), pendingSecondSignature: true };
+  }
+
+  // `approved_by` holds the decider on a single-signature flow; on a two-signature
+  // flow it is already taken by the first signer, so the closer goes to
+  // `second_approver` (aliased to `second_approver_id`).
+  const deciderField = twoSignatures && firstApprover
+    ? { second_approver: ctx.userId }
+    : { approved_by: ctx.userId };
 
   const updated = await tenantUpdate(ctx.companyId, "approval_request", id, {
     status: action === "approve" ? "approved" : "rejected",
     decided_at: new Date().toISOString(),
-    decision_notes: notes || null,
-    ...(row.requires_two === "yes" && action === "approve"
-      ? { second_approver: ctx.userId }
-      : { approved_by: ctx.userId }),
+    decision_notes: notes?.trim() || null,
+    ...deciderField,
   });
 
-  console.log(`[approvals] ${row.code} ${action === "approve" ? "aprobada" : "rechazada"} por ${ctx.email}`);
+  await writeAudit({
+    companyId: ctx.companyId, userId: ctx.userId,
+    action: action === "approve" ? "approval_approved" : "approval_rejected",
+    entityType: "approval_request", entityId: id,
+    description: `${row.code ?? id} ${action === "approve" ? "aprobada" : "rechazada"}`,
+    severity: "critical",
+    metadata: {
+      action_type: row.action_type,
+      amount: row.amount ?? null,
+      currency: row.currency ?? null,
+      requires_two: twoSignatures,
+      first_approver: firstApprover,
+      notes: notes?.trim() || null,
+    },
+  });
+
   return updated;
-}
-
-/** Requests waiting on the caller — what "Mi día" shows as pending decisions. */
-export async function pendingFor(ctx: TenantContext & { companyId: string }) {
-  const rows = await tenantQuery<any>(ctx.companyId, "approval_request", {
-    requested_by: true,
-    approved_by: true,
-    _filter: { status: "pending" },
-    _sort: { requested_at: "desc" },
-    _limit: 100,
-  });
-  return rows.filter((r) => {
-    if (refOf(r.requested_by) === ctx.userId) return false;
-    if (r.requires_two === "yes" && refOf(r.approved_by) === ctx.userId) return false;
-    return atLeast(ctx.role, DECIDER[r.action_type as ApprovalAction] || "manager");
-  });
 }
