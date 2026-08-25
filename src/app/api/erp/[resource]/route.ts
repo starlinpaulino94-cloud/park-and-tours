@@ -5,6 +5,35 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { decidableFilter } from "@/lib/approvals";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
+import { resolveUserNames } from "@/lib/user-directory";
+
+const USER_REF_FIELDS = new Set(["requested_by", "approved_by", "second_approver", "assigned_to", "created_by", "user"]);
+
+function refId(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+  if (typeof value === "object") {
+    const row = value as { _id?: unknown; id?: unknown };
+    return typeof row._id === "string" ? row._id : typeof row.id === "string" ? row.id : null;
+  }
+  return null;
+}
+
+async function resolveUserRefs<T extends Record<string, unknown>>(rows: T[], expand?: Record<string, unknown>): Promise<T[]> {
+  const fields = Object.keys(expand || {}).filter((field) => USER_REF_FIELDS.has(field));
+  if (fields.length === 0 || rows.length === 0) return rows;
+
+  const ids = rows.flatMap((row) => fields.map((field) => refId(row[field])));
+  const names = await resolveUserNames(ids);
+  return rows.map((row) => {
+    const out: Record<string, unknown> = { ...row };
+    for (const field of fields) {
+      const id = refId(row[field]);
+      if (id) out[field] = { _id: id, name: names.get(id) || "Usuario sin nombre registrado" };
+    }
+    return out as T;
+  });
+}
 
 /** Generic tenant-scoped list endpoint: GET /api/erp/:resource */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ resource: string }> }) {
@@ -90,14 +119,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
       : def.sort || { createdAt: "desc" };
 
     if (!includeTotal) {
-      const rows = await tenantQuery(ctx.companyId, def.table, {
+      const rows = await tenantQuery<Record<string, unknown>>(ctx.companyId, def.table, {
         ...(def.expand || {}),
         _filter: filter,
         _sort: sort,
         _limit: limit + 1,
         _offset: offset,
       });
-      const pageRows = rows.slice(0, limit);
+      const pageRows = await resolveUserRefs(rows.slice(0, limit), def.expand);
       const hasMore = rows.length > limit;
       const elapsed = Date.now() - started;
       if (process.env.NODE_ENV !== "production" && elapsed > 800) {
@@ -106,8 +135,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
       return ok(pageRows, { total: offset + pageRows.length + (hasMore ? 1 : 0) });
     }
 
-    const [rows, total] = await Promise.all([
-      tenantQuery(ctx.companyId, def.table, {
+    const [rawRows, total] = await Promise.all([
+      tenantQuery<Record<string, unknown>>(ctx.companyId, def.table, {
         ...(def.expand || {}),
         _filter: filter,
         _sort: sort,
@@ -116,6 +145,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
       }),
       tenantCount(ctx.companyId, def.table, filter),
     ]);
+    const rows = await resolveUserRefs(rawRows, def.expand);
 
     const elapsed = Date.now() - started;
     if (process.env.NODE_ENV !== "production" && elapsed > 800) {

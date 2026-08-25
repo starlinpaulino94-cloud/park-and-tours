@@ -1,41 +1,49 @@
-"use client";
+import { requireTenant } from "@/lib/tenant";
+import { decidableActionsFor, pendingFor } from "@/lib/approvals";
+import { resolveUserNames } from "@/lib/user-directory";
+import { companyTimeZone } from "@/lib/time";
+import { PageHeader } from "@/components/tf/page-header";
+import { EmptyState } from "@/components/tf/empty-state";
+import { ApprovalRow } from "../../inicio/mi-dia/_components/approval-row";
+import { refOf, toApprovalRowData } from "../../inicio/mi-dia/_components/sections";
 
-import { SimpleResource } from "@/components/tf/simple-resource";
-import { APPROVAL_ACTION, APPROVAL_STATUS } from "@/lib/labels-modules";
-import type { LabelDef } from "@/lib/labels";
+export default async function Page() {
+  const ctx = await requireTenant();
+  const now = new Date();
+  const tz = companyTimeZone(ctx.company);
 
-/**
- * El ámbito "Solo las que puedo decidir" se resuelve en el servidor con
- * `decidableFilter`, la misma función que alimenta el contador de "Mi día" y el
- * badge del menú: rol mínimo por acción, sin autoaprobaciones, sin expiradas y
- * sin las que ya firmé. La pantalla no repite ninguna regla de permisos.
- */
-const APPROVAL_SCOPE: Record<string, LabelDef> = {
-  decidable: { label: "Solo las que puedo decidir", tone: "warning" },
-};
+  if (decidableActionsFor(ctx.role).length === 0) {
+    return (
+      <div className="space-y-5">
+        <PageHeader title="Aprobaciones" />
+        <EmptyState
+          icon="UserCheck"
+          title="No tienes aprobaciones asignadas"
+          description="Las solicitudes sensibles aparecen aquí solo cuando tu rol puede decidirlas."
+        />
+      </div>
+    );
+  }
 
-export default function Page() {
+  const rows = await pendingFor(ctx, { limit: 50 });
+  const names = await resolveUserNames(rows.map((row) => refOf(row.requested_by)));
+  const approvals = rows.map((row) => toApprovalRowData(row, names, ctx, now, tz));
+
   return (
-    <SimpleResource
-      resource="approval_request"
-      eyebrow="Administración"
-      title="Aprobaciones"
-      description="Solicitudes de acciones sensibles pendientes de una segunda firma: descuentos sobre el límite, reembolsos, anulaciones y ajustes de caja."
-      emptyIcon="UserCheck"
-      filters={[
-        { name: "scope", label: "Ámbito", dict: APPROVAL_SCOPE },
-        { name: "status", label: "Estado", dict: APPROVAL_STATUS },
-        { name: "action_type", label: "Acción", dict: APPROVAL_ACTION },
-      ]}
-      columns={[
-        { key: "code", header: "Código" },
-        { key: "action_type", header: "Acción", kind: "badge", dict: APPROVAL_ACTION },
-        { key: "status", header: "Estado", kind: "badge", dict: APPROVAL_STATUS },
-        { key: "amount", header: "Monto", kind: "money", align:"right" },
-        { key: "reason", header: "Justificación", hideOn:"md" },
-        { key: "requested_by", header: "Solicitada por", kind: "ref" },
-        { key: "requested_at", header: "Solicitada", kind: "datetime" },
-      ]}
-    />
+    <div className="space-y-5">
+      <PageHeader title="Aprobaciones" />
+
+      {approvals.length === 0 ? (
+        <EmptyState
+          icon="UserCheck"
+          title="No hay solicitudes esperando tu decisión"
+          description="Cuando exista una solicitud que puedas aprobar o rechazar aparecerá en esta lista."
+        />
+      ) : (
+        <ul className="space-y-1.5">
+          {approvals.map((approval) => <ApprovalRow key={approval.id} approval={approval} />)}
+        </ul>
+      )}
+    </div>
   );
 }
