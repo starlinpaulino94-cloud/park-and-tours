@@ -109,7 +109,7 @@ export function ApprovalRow({ approval }: { approval: ApprovalRowData }) {
           </p>
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
           <Dialog>
             <DialogTrigger asChild>
               <Button variant="ghost" size="sm" className="h-9">Revisar</Button>
