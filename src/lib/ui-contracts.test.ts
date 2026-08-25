@@ -101,6 +101,34 @@ describe("encabezado de Mi día", () => {
   });
 });
 
+describe("pantallas satélite de Mi día", () => {
+  it("Aprobaciones usa la fila revisable y no el ERP genérico", () => {
+    const source = read("src/app/dashboard/administracion/aprobaciones/page.tsx");
+    expect(source).not.toContain("SimpleResource");
+    expect(source).toContain("<PageHeader title=\"Aprobaciones\" />");
+    expect(source).toContain("<ApprovalRow");
+    expect(source).toContain("pendingFor(ctx");
+    expect(source).not.toContain("eyebrow=");
+  });
+
+  it("Tareas muestra las tareas del usuario y reutiliza la acción rápida", () => {
+    const source = read("src/app/dashboard/inicio/tareas/page.tsx");
+    expect(source).not.toContain("SimpleResource");
+    expect(source).toContain("<PageHeader title=\"Tareas\" />");
+    expect(source).toContain("<TaskRow");
+    expect(source).toContain("listFilter(filter, ctx.userId");
+    expect(source).not.toContain("eyebrow=");
+  });
+
+  it("el ERP resuelve referencias de usuario como nombre, no como correo", () => {
+    const route = read("src/app/api/erp/[resource]/route.ts");
+    expect(route).toContain("resolveUserNames");
+    expect(route).toContain("resolveUserRefs");
+    expect(route).toContain("Usuario sin nombre registrado");
+    expect(route).not.toContain("email:");
+  });
+});
+
 describe("consistencia de contadores", () => {
   it("el badge del menú y el módulo usan la misma función de dominio", () => {
     expect(read("src/app/dashboard/layout.tsx")).toContain("countDecidableFor(ctx)");

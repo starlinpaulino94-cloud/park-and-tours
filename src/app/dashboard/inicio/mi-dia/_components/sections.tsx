@@ -98,10 +98,32 @@ async function loadPrioritizedTasks(ctx: Ctx, now: Date, tz: string): Promise<My
   return sortTasks(mergeUnique(groups), now, tz).slice(0, TASK_LIMIT);
 }
 
+export function toTaskRowData(
+  task: MyDayTask,
+  ctx: Pick<Ctx, "userId" | "role">,
+  now: Date,
+  tz: string
+): TaskRowData {
+  const isManager = atLeast(ctx.role, OWNERSHIP_OVERRIDE_ROLE);
+  return {
+    id: task._id,
+    title: task.title || "Tarea sin título",
+    description: task.description ?? null,
+    status: task.status ?? null,
+    priority: task.priority ?? null,
+    dueLabel: dueLabel(task.due_at, now, tz),
+    dueIso: task.due_at ?? null,
+    dueExact: task.due_at ? formatDateTimeInZone(task.due_at, tz) : "Sin fecha de vencimiento",
+    bucketLabel: BUCKET_LABEL[taskBucket(task, now, tz)],
+    overdue: isOverdue(task.due_at, now),
+    canComplete: canCompleteTask(task, ctx.userId, isManager),
+    timeZone: tz,
+  };
+}
+
 export async function TasksSection({ ctx, filter }: { ctx: Ctx; filter: MyDayFilter }) {
   const tz = companyTimeZone(ctx.company);
   const now = new Date();
-  const isManager = atLeast(ctx.role, OWNERSHIP_OVERRIDE_ROLE);
 
   let tasks: MyDayTask[];
   try {
@@ -124,20 +146,7 @@ export async function TasksSection({ ctx, filter }: { ctx: Ctx; filter: MyDayFil
     );
   }
 
-  const rows: TaskRowData[] = tasks.map((task) => ({
-    id: task._id,
-    title: task.title || "Tarea sin título",
-    description: task.description ?? null,
-    status: task.status ?? null,
-    priority: task.priority ?? null,
-    dueLabel: dueLabel(task.due_at, now, tz),
-    dueIso: task.due_at ?? null,
-    dueExact: task.due_at ? formatDateTimeInZone(task.due_at, tz) : "Sin fecha de vencimiento",
-    bucketLabel: BUCKET_LABEL[taskBucket(task, now, tz)],
-    overdue: isOverdue(task.due_at, now),
-    canComplete: canCompleteTask(task, ctx.userId, isManager),
-    timeZone: tz,
-  }));
+  const rows: TaskRowData[] = tasks.map((task) => toTaskRowData(task, ctx, now, tz));
 
   return (
     <Section
@@ -185,10 +194,37 @@ function FilterChips({ active }: { active: MyDayFilter }) {
 /* Nivel 3 — aprobaciones pendientes                                           */
 /* -------------------------------------------------------------------------- */
 
-const refOf = (value: unknown): string | null => {
+export const refOf = (value: unknown): string | null => {
   if (value && typeof value === "object") return (value as { _id?: string })._id ?? null;
   return (value as string | null) ?? null;
 };
+
+export function toApprovalRowData(
+  row: ApprovalRow,
+  names: Map<string, string>,
+  ctx: Pick<Ctx, "company">,
+  now: Date,
+  tz: string
+): ApprovalRowData {
+  const requesterId = refOf(row.requested_by);
+  return {
+    id: row._id,
+    code: row.code || row._id.slice(0, 8),
+    actionType: row.action_type ?? null,
+    reason: row.reason || "Sin justificación registrada",
+    amountLabel: typeof row.amount === "number"
+      ? formatMoney(row.amount, row.currency || ctx.company?.base_currency || "usd")
+      : null,
+    requesterName: (requesterId && names.get(requesterId)) || UNKNOWN_REQUESTER,
+    requestedAtLabel: formatDateTimeInZone(row.requested_at, tz),
+    requestedAtIso: row.requested_at ?? null,
+    pendingForLabel: humanizeElapsed(row.requested_at, now).replace(/^hace /, ""),
+    expiresLabel: row.expires_at ? formatDateTimeInZone(row.expires_at, tz) : null,
+    requiresTwo: isTwoSignature(row),
+    hasFirstSignature: Boolean(refOf(row.approved_by)),
+    timeZone: tz,
+  };
+}
 
 export async function ApprovalsSection({ ctx }: { ctx: Ctx }) {
   // Permiso insuficiente: la sección no existe, en vez de mostrar un error.
@@ -218,26 +254,7 @@ export async function ApprovalsSection({ ctx }: { ctx: Ctx }) {
     console.error("[mi-dia] no se pudieron resolver los solicitantes:", err);
   }
 
-  const items: ApprovalRowData[] = rows.map((row) => {
-    const requesterId = refOf(row.requested_by);
-    return {
-      id: row._id,
-      code: row.code || row._id.slice(0, 8),
-      actionType: row.action_type ?? null,
-      reason: row.reason || "Sin justificación registrada",
-      amountLabel: typeof row.amount === "number"
-        ? formatMoney(row.amount, row.currency || ctx.company?.base_currency || "usd")
-        : null,
-      requesterName: (requesterId && names.get(requesterId)) || UNKNOWN_REQUESTER,
-      requestedAtLabel: formatDateTimeInZone(row.requested_at, tz),
-      requestedAtIso: row.requested_at ?? null,
-      pendingForLabel: humanizeElapsed(row.requested_at, now).replace(/^hace /, ""),
-      expiresLabel: row.expires_at ? formatDateTimeInZone(row.expires_at, tz) : null,
-      requiresTwo: isTwoSignature(row),
-      hasFirstSignature: Boolean(refOf(row.approved_by)),
-      timeZone: tz,
-    };
-  });
+  const items: ApprovalRowData[] = rows.map((row) => toApprovalRowData(row, names, ctx, now, tz));
 
   return (
     <Section
