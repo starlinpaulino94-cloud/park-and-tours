@@ -118,7 +118,7 @@ export function Donut({
   let offset = 0;
 
   return (
-    <div className="flex items-center gap-5">
+    <div className="flex flex-col items-center gap-5 sm:flex-row">
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Distribución por canal">
         <g transform={`rotate(-90 ${size / 2} ${size / 2})`}>
           <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--muted)" strokeWidth={thickness} />

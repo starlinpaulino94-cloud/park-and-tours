@@ -39,6 +39,7 @@ export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   product: "product_id",
   order: "order_id",
   booking: "booking_id",
+  branch: "branch_id",
   customer: "customer_id",
   departure: "departure_id",
   modality: "modality_id",

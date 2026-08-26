@@ -1,208 +1,177 @@
 import { NextRequest } from "next/server";
-import { requireTenant, tenantQuery, tenantAggregate } from "@/lib/tenant";
-import { ok, fail, resolvePeriod } from "@/lib/api-response";
-import { refId } from "@/lib/types";
+import { requireTenant, tenantQuery, TenantError } from "@/lib/tenant";
+import { ok, fail } from "@/lib/api-response";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
+import { supabaseServer } from "@/lib/supabase/server";
+import {
+  resolveDashboardPeriod,
+  resolveDashboardPermissions,
+  round2,
+  trendPct,
+  type DashboardRankCriterion,
+} from "@/lib/dashboard-metrics";
 
-/**
- * Executive dashboard.
- *
- * Bookings for the period are pulled once (paged, projected to the few fields
- * we need) and every ranking is derived from that single dataset; reference
- * labels are then resolved with one batched query per dimension.
- */
+const UPCOMING_HORIZON_DAYS = 14;
+const CHANNELS = new Set(["direct", "web", "phone", "whatsapp", "walk_in", "b2b_portal", "agency", "tour_center", "ota", "pos"]);
 
-const CANCELLED = ["cancelled", "refunded"];
-const PAGE = 1000;
-const MAX_PAGES = 3;
-
-interface Bucket { key: string; label: string; sales: number; pax: number; bookings: number; margin: number }
-
-function bump(map: Map<string, Bucket>, key: string | undefined, sales: number, pax: number, margin: number) {
-  if (!key) return;
-  const b = map.get(key) || { key, label: key, sales: 0, pax: 0, bookings: 0, margin: 0 };
-  b.sales += sales; b.pax += pax; b.bookings += 1; b.margin += margin;
-  map.set(key, b);
+async function validateIdFilter(companyId: string, table: string, id: string, label: string) {
+  const found = await tenantQuery(companyId, table, { _filter: { _id: id }, _limit: 1 });
+  if (found.length === 0) throw new TenantError(`${label} no pertenece a esta empresa`, 403);
 }
 
-function topOf(map: Map<string, Bucket>, limit = 6): Bucket[] {
-  return [...map.values()].sort((a, b) => b.sales - a.sales).slice(0, limit);
+async function currentSellerId(companyId: string, userId: string): Promise<string | null> {
+  const rows = await tenantQuery<{ _id?: string }>(companyId, "seller", { _filter: { user: userId, status: "active" }, _limit: 1 });
+  return rows[0]?._id || null;
 }
 
-async function labelize(table: string, companyId: string, buckets: Bucket[], nameOf: (r: any) => string) {
-  const ids = buckets.map((b) => b.key).filter(Boolean);
-  if (ids.length === 0) return buckets;
-  const rows = await tenantQuery<any>(companyId, table, { _filter: { _id: { in: ids } }, _limit: ids.length });
-  const byId = new Map(rows.map((r) => [r._id, r]));
-  for (const b of buckets) {
-    const row = byId.get(b.key);
-    if (row) b.label = nameOf(row);
+async function buildScope(req: NextRequest, companyId: string, forcedSellerId?: string, forcedPartnerId?: string) {
+  const sp = req.nextUrl.searchParams;
+  const scope: { product?: string; branch?: string; seller?: string; partner?: string; channel?: string } = {};
+  const product = sp.get("product");
+  const branch = sp.get("branch");
+  const seller = sp.get("seller");
+  const partner = sp.get("partner");
+  const channel = sp.get("channel");
+
+  if (product) { await validateIdFilter(companyId, "product", product, "La excursión"); scope.product = product; }
+  if (branch) { await validateIdFilter(companyId, "branch", branch, "La sucursal"); scope.branch = branch; }
+  if (forcedSellerId) scope.seller = forcedSellerId;
+  else if (seller) { await validateIdFilter(companyId, "seller", seller, "El vendedor"); scope.seller = seller; }
+  if (forcedPartnerId) scope.partner = forcedPartnerId;
+  else if (partner) { await validateIdFilter(companyId, "partner", partner, "El tour center/agencia"); scope.partner = partner; }
+  if (channel) {
+    if (!CHANNELS.has(channel)) throw new TenantError("Canal no válido", 400);
+    scope.channel = channel;
   }
-  return buckets;
+  return scope;
+}
+
+function asRows(value: unknown) {
+  return Array.isArray(value) ? value : [];
 }
 
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
     assertRateLimit({ key: rateLimitKey(req, "dashboard", ctx.userId), limit: 90, windowMs: 60_000 });
+
+    const sellerId = ctx.role === "seller" ? await currentSellerId(ctx.companyId, ctx.userId) : null;
+    const permissions = resolveDashboardPermissions(ctx.role, { userId: ctx.userId, sellerId, partnerId: ctx.partnerId });
     const sp = req.nextUrl.searchParams;
-    const period = resolvePeriod(sp.get("period"), sp.get("from"), sp.get("to"));
+    const period = resolveDashboardPeriod(sp.get("period"), sp.get("from"), sp.get("to"), ctx.company);
+    const rankBy = (["sales", "margin", "bookings", "pax"].includes(sp.get("rankBy") || "") ? sp.get("rankBy") : "sales") as DashboardRankCriterion;
+    const baseCurrency = (ctx.company?.base_currency || "usd").toLowerCase();
+    const scope = await buildScope(req, ctx.companyId, permissions.forcedSellerId, permissions.forcedPartnerId);
 
-    const scope: Record<string, unknown> = {};
-    for (const key of ["product", "branch", "seller", "partner", "channel"]) {
-      const value = sp.get(key);
-      if (value) scope[key] = value;
-    }
-    if (ctx.role === "partner" && ctx.partnerId) scope.partner = ctx.partnerId;
+    const sb = await supabaseServer();
+    const { data: summary, error: summaryError } = await sb.rpc("dashboard_summary", {
+      p_org_id: ctx.companyId,
+      p_from: period.from,
+      p_to: period.to,
+      p_previous_from: period.previousFrom,
+      p_previous_to: period.previousTo,
+      p_base_currency: baseCurrency,
+      p_timezone: period.timezone,
+      p_product_id: scope.product || null,
+      p_branch_id: scope.branch || null,
+      p_seller_id: scope.seller || null,
+      p_partner_id: scope.partner || null,
+      p_channel: scope.channel || null,
+      p_rank_by: rankBy,
+      p_cash_user_id: ctx.role === "cashier" ? ctx.userId : null,
+    });
+    if (summaryError) throw new Error(summaryError.message);
 
-    const periodFilter = { ...scope, booking_date: { gte: period.from, lte: period.to } };
+    const now = new Date();
+    const upcomingRaw = await tenantQuery<any>(ctx.companyId, "departure", {
+      _filter: {
+        ...(scope.product ? { product: scope.product } : {}),
+        departure_at: { gte: now.toISOString(), lte: new Date(now.getTime() + UPCOMING_HORIZON_DAYS * 86_400_000).toISOString() },
+        status: { nin: ["cancelled", "completed"] },
+      },
+      _sort: { departure_at: "asc" },
+      _limit: 200,
+    });
+    const productIds = Array.from(new Set(upcomingRaw.map((row: any) => row.product_id).filter(Boolean)));
+    const products = productIds.length > 0
+      ? await tenantQuery<any>(ctx.companyId, "product", { _filter: { _id: { in: productIds } }, _limit: productIds.length })
+      : [];
+    const productNames = new Map(products.map((row: any) => [row._id, row.name || "Salida"]));
+    const upcoming = upcomingRaw
+      .map((row: any) => {
+        const booked = (row.booked_pax ?? 0) + (row.pending_pax ?? 0);
+        const capacity = row.capacity ?? 0;
+        return {
+          _id: row._id,
+          product: productNames.get(row.product_id) || "Salida",
+          departure_at: row.departure_at,
+          capacity,
+          booked,
+          pending: row.pending_pax ?? 0,
+          available: capacity > 0 ? Math.max(0, capacity - booked) : 0,
+          status: row.status,
+          occupancy: capacity ? Math.round((booked / capacity) * 100) : 0,
+        };
+      })
+      .sort((a: any, b: any) => a.occupancy - b.occupancy || a.departure_at.localeCompare(b.departure_at))
+      .slice(0, 8);
 
-    // ---- period bookings (single projected dataset) ------------------------
-    const rows: any[] = [];
-    let truncated = false;
-    for (let page = 0; page < MAX_PAGES; page++) {
-      const chunk = await tenantQuery<any>(ctx.companyId, "booking", {
-        _filter: periodFilter,
-        _sort: { booking_date: "asc" },
-        _limit: PAGE,
-        _offset: page * PAGE,
-        _select: {
-          booking_date: true, total_amount: true, cost_amount: true, margin_amount: true,
-          pax_total: true, status: true, channel: true, currency: true,
-          product: true, seller: true, partner: true, branch: true, departure: true,
-        },
-      });
-      rows.push(...chunk);
-      if (chunk.length < PAGE) break;
-      if (page === MAX_PAGES - 1) truncated = true;
-    }
-    if (truncated) console.warn(`[dashboard] periodo truncado a ${MAX_PAGES * PAGE} reservas`);
-
-    const active = rows.filter((r) => !CANCELLED.includes(r.status));
-    const cancelled = rows.filter((r) => CANCELLED.includes(r.status));
-
-    const byProduct = new Map<string, Bucket>();
-    const bySeller = new Map<string, Bucket>();
-    const byPartner = new Map<string, Bucket>();
-    const byChannel = new Map<string, Bucket>();
-    const byDay = new Map<string, Bucket>();
-
-    let sales = 0, pax = 0, cost = 0;
-    for (const r of active) {
-      const amount = r.total_amount ?? 0;
-      const paxCount = r.pax_total ?? 0;
-      const margin = r.margin_amount ?? amount - (r.cost_amount ?? 0);
-      sales += amount; pax += paxCount; cost += r.cost_amount ?? 0;
-
-      bump(byProduct, refId(r.product), amount, paxCount, margin);
-      bump(bySeller, refId(r.seller), amount, paxCount, margin);
-      bump(byPartner, refId(r.partner), amount, paxCount, margin);
-      bump(byChannel, r.channel, amount, paxCount, margin);
-      bump(byDay, (r.booking_date || "").slice(0, 10), amount, paxCount, margin);
-    }
-
-    const [topProducts, topSellers, topPartners] = await Promise.all([
-      labelize("product", ctx.companyId, topOf(byProduct), (r) => r.name || "Producto"),
-      labelize("seller", ctx.companyId, topOf(bySeller), (r) => `${r.first_name ?? ""} ${r.last_name ?? ""}`.trim() || "Vendedor"),
-      labelize("partner", ctx.companyId, topOf(byPartner), (r) => r.commercial_name || r.name || "Partner"),
-    ]);
-
-    // ---- today / month headline figures ------------------------------------
-    const today = resolvePeriod("today");
-    const month = resolvePeriod("month");
-    const [todayAgg, monthAgg] = await Promise.all([
-      tenantAggregate(ctx.companyId, "booking", {
-        _filter: { ...scope, status: { nin: CANCELLED }, booking_date: { gte: today.from, lte: today.to } },
-        _aggregate: { _sum: { total_amount: true, pax_total: true }, _count: true },
-      }),
-      tenantAggregate(ctx.companyId, "booking", {
-        _filter: { ...scope, status: { nin: CANCELLED }, booking_date: { gte: month.from, lte: month.to } },
-        _aggregate: { _sum: { total_amount: true, pax_total: true }, _count: true },
-      }),
-    ]);
-
-    // ---- financial position -------------------------------------------------
-    const [commissionsPending, receivables, payables, cashOpen, upcoming] = await Promise.all([
-      tenantAggregate(ctx.companyId, "commission", {
-        _filter: { status: { in: ["pending", "approved", "settled"] } },
-        _aggregate: { _sum: { amount: true }, _count: true },
-      }),
-      tenantAggregate(ctx.companyId, "receivable", {
-        _filter: { status: { nin: ["paid", "written_off"] } },
-        _aggregate: { _sum: { balance: true }, _count: true },
-      }),
-      tenantAggregate(ctx.companyId, "payable", {
-        _filter: { status: { nin: ["paid", "cancelled"] } },
-        _aggregate: { _sum: { balance: true }, _count: true },
-      }),
-      tenantAggregate(ctx.companyId, "cash_session", {
-        _filter: { status: "open" },
-        _aggregate: { _sum: { expected_cash: true }, _count: true },
-      }),
-      tenantQuery<any>(ctx.companyId, "departure", {
-        _filter: { departure_at: { gte: new Date().toISOString() }, status: { nin: ["cancelled", "completed"] } },
-        _sort: { departure_at: "asc" },
-        _limit: 8,
-        product: true,
-      }),
-    ]);
-
-    const lowOccupancy = upcoming
-      .map((d: any) => ({
-        _id: d._id,
-        product: typeof d.product === "object" ? d.product?.name : "Salida",
-        departure_at: d.departure_at,
-        capacity: d.capacity ?? 0,
-        booked: (d.booked_pax ?? 0) + (d.pending_pax ?? 0),
-        available: d.available_pax ?? 0,
-        status: d.status,
-        occupancy: d.capacity ? Math.round((((d.booked_pax ?? 0) + (d.pending_pax ?? 0)) / d.capacity) * 100) : 0,
-      }))
-      .sort((a: any, b: any) => a.occupancy - b.occupancy);
-
-    const totalBookings = rows.length;
-    const cancellationRate = totalBookings > 0 ? (cancelled.length / totalBookings) * 100 : 0;
+    const netSales = Number(summary?.net_sales ?? 0);
+    const previousNetSales = Number(summary?.previous_net_sales ?? 0);
+    const collected = Number(summary?.collected ?? 0);
+    const previousCollected = Number(summary?.previous_collected ?? 0);
+    const commissionCost = Number(summary?.commission_total ?? 0);
+    const contributionMargin = round2(netSales - Number(summary?.cost ?? 0) - commissionCost);
+    const incompleteFinancialData = Boolean(summary?.incomplete_financial_data);
+    const alerts = [];
+    if (incompleteFinancialData) alerts.push({ type: "warning", title: "Datos financieros incompletos", href: "/dashboard/finanzas/divisas" });
+    if (permissions.canViewMargin && contributionMargin < 0) alerts.push({ type: "danger", title: "Margen negativo en el período", href: "/dashboard/rentabilidad" });
+    if (permissions.canViewReceivables && Number(summary?.receivable_overdue_count ?? 0) > 0) alerts.push({ type: "warning", title: "Hay cuentas por cobrar vencidas", href: "/dashboard/deudas" });
+    if (upcoming.some((departure: any) => departure.capacity > 0 && departure.occupancy < 35)) alerts.push({ type: "warning", title: "Salidas próximas con ocupación crítica", href: "/dashboard/salidas" });
 
     return ok({
-      period: { ...period, from: period.from, to: period.to },
-      currency: ctx.company?.base_currency || "usd",
+      period,
+      currency: baseCurrency,
+      permissions,
+      lastUpdatedAt: new Date().toISOString(),
+      rankBy,
+      horizonDays: UPCOMING_HORIZON_DAYS,
+      incompleteFinancialData,
+      truncated: false,
+      alerts,
       kpis: {
-        sales_period: round2(sales),
-        margin_period: round2(sales - cost),
-        cost_period: round2(cost),
-        bookings_period: active.length,
-        pax_period: pax,
-        avg_ticket: active.length > 0 ? round2(sales / active.length) : 0,
-        cancellations: cancelled.length,
-        cancellation_rate: round2(cancellationRate),
-        sales_today: round2(todayAgg?._sum?.total_amount ?? 0),
-        bookings_today: todayAgg?._count ?? 0,
-        pax_today: todayAgg?._sum?.pax_total ?? 0,
-        sales_month: round2(monthAgg?._sum?.total_amount ?? 0),
-        bookings_month: monthAgg?._count ?? 0,
-        pax_month: monthAgg?._sum?.pax_total ?? 0,
-        commissions_pending: round2(commissionsPending?._sum?.amount ?? 0),
-        commissions_count: commissionsPending?._count ?? 0,
-        receivables_balance: round2(receivables?._sum?.balance ?? 0),
-        receivables_count: receivables?._count ?? 0,
-        payables_balance: round2(payables?._sum?.balance ?? 0),
-        payables_count: payables?._count ?? 0,
-        cash_on_hand: round2(cashOpen?._sum?.expected_cash ?? 0),
-        open_cash_sessions: cashOpen?._count ?? 0,
+        net_sales: permissions.canViewRevenue ? round2(netSales) : null,
+        net_sales_trend: permissions.canViewRevenue ? trendPct(netSales, previousNetSales) : null,
+        collected: permissions.canViewCollections ? round2(collected) : null,
+        collected_trend: permissions.canViewCollections ? trendPct(collected, previousCollected) : null,
+        contribution_margin: permissions.canViewMargin ? contributionMargin : null,
+        margin_pct: permissions.canViewMargin && netSales > 0 ? round2((contributionMargin / netSales) * 100) : null,
+        margin_trend: null,
+        bookings: Number(summary?.bookings ?? 0),
+        pax: Number(summary?.pax ?? 0),
+        avg_ticket: permissions.canViewRevenue && Number(summary?.bookings ?? 0) > 0 ? round2(netSales / Number(summary?.bookings)) : null,
+        cancellations: Number(summary?.cancellations ?? 0),
+        refunds: Number(summary?.refunds ?? 0),
+        partial_refunds: Number(summary?.partial_refunds ?? 0),
+        no_shows: Number(summary?.no_shows ?? 0),
+        cancellation_rate: Number(summary?.denominator ?? 0) > 0 ? round2((Number(summary?.cancellations ?? 0) / Number(summary?.denominator)) * 100) : 0,
+        commissions_pending: permissions.canViewCommissions ? round2(commissionCost) : null,
+        commissions_count: permissions.canViewCommissions ? Number(summary?.commission_count ?? 0) : null,
+        receivables_balance: permissions.canViewReceivables ? round2(Number(summary?.receivable_total ?? 0)) : null,
+        receivables_count: permissions.canViewReceivables ? Number(summary?.receivable_count ?? 0) : null,
+        payables_balance: permissions.canViewPayables ? round2(Number(summary?.payable_total ?? 0)) : null,
+        payables_count: permissions.canViewPayables ? Number(summary?.payable_count ?? 0) : null,
+        cash_on_hand: permissions.canViewCash ? round2(Number(summary?.cash_total ?? 0)) : null,
+        open_cash_sessions: permissions.canViewCash ? Number(summary?.cash_count ?? 0) : null,
       },
-      series: [...byDay.values()].sort((a, b) => a.key.localeCompare(b.key)),
-      top_products: topProducts,
-      top_sellers: topSellers,
-      top_partners: topPartners,
-      by_channel: topOf(byChannel, 10),
-      upcoming_departures: lowOccupancy,
-      truncated,
+      series: asRows(summary?.series),
+      by_channel: asRows(summary?.by_channel),
+      top_products: permissions.canViewGlobalRankings || permissions.forcedSellerId ? asRows(summary?.top_products) : [],
+      top_sellers: permissions.canViewGlobalRankings ? asRows(summary?.top_sellers) : [],
+      top_partners: permissions.canViewGlobalRankings ? asRows(summary?.top_partners) : [],
+      upcoming_departures: upcoming,
     });
   } catch (err) {
     return fail(err);
   }
-}
-
-function round2(n: number): number {
-  return Math.round((n + Number.EPSILON) * 100) / 100;
 }
