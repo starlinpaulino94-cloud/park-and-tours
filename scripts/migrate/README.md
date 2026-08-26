@@ -32,6 +32,30 @@ La carga Totalum → Supabase terminó correctamente y la reconciliación cuadr�
 3. No activar `SUPABASE_USE_RLS=true` hasta confirmar memberships y claims JWT.
 4. Migrar los blobs de Totalum (campos FILE) a Supabase Storage y reescribir `TotalumFile.url` → path del bucket.
 
+## Onboarding de usuarios reales (post-ETL)
+El ETL cargó los datos de las empresas pero **no** migró usuarios a Supabase Auth
+(las referencias a usuarios históricos quedaron en `NULL`). Con RLS activa, un
+tenant sin `organization_memberships` falla cerrado: sus usuarios no ven sus datos.
+`onboard-user.mjs` cierra ese hueco de forma segura e idempotente — garantiza el
+usuario Auth y su membresía activa/primaria, para que el access-token hook inyecte
+`org_id` (y `partner_id` si la org es un partner) en el JWT.
+
+```bash
+# Ver el estado (solo conteos, sin PII):
+node scripts/migrate/verify-memberships.mjs
+
+# Alta de un owner en una empresa (por slug o uuid de la organización):
+node scripts/migrate/onboard-user.mjs \
+  --email=persona@empresa.com --org=<slug-o-uuid> --role=owner --password='ClaveSegura123!'
+
+# Alternativa sin fijar clave (envía invitación; requiere SMTP en Auth):
+node scripts/migrate/onboard-user.mjs --email=persona@empresa.com --org=<slug> --role=owner --invite
+```
+Roles válidos: `owner|admin|manager|operations|cashier|seller|partner|superadmin`.
+Para un usuario **nuevo** se exige `--password` o `--invite` (no se generan claves
+en silencio). Re-ejecutar converge (actualiza clave/membresía).
+
 ## Seguridad
 - `scripts/migrate/backup/` está en `.gitignore`: **contiene datos de clientes, nunca se commitea**.
-- El ETL usa la `service_role` (bypass RLS) — solo en este script server-side, nunca en la app.
+- El ETL y `onboard-user.mjs` usan la `service_role` (bypass RLS) — solo en scripts server-side, nunca en la app.
+- Salida segura: los scripts nunca imprimen contraseñas, tokens ni payloads de filas.
