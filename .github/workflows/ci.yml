@@ -14,7 +14,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 22: @supabase/supabase-js deprecó Node 20 y su cliente Realtime
+          # exige WebSocket nativo (ausente en Node 20), lo que hacía fallar el
+          # global-setup del E2E al construir el cliente con service-role.
+          node-version: 22
           cache: npm
 
       - name: Install
