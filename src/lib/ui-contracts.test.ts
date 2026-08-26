@@ -101,6 +101,32 @@ describe("encabezado de Mi día", () => {
   });
 });
 
+describe("Panel ejecutivo", () => {
+  it("el encabezado solo declara el título del módulo", () => {
+    const page = read("src/app/dashboard/page.tsx");
+    expect(page).toContain('title="Panel ejecutivo"');
+    expect(page).not.toContain('eyebrow="Dirección"');
+    expect(page).not.toContain("Todo lo que está pasando");
+    expect(page).not.toContain("user.email");
+  });
+
+  it("no duplica Ventas de hoy ni usa mensajes motivacionales", () => {
+    const page = read("src/app/dashboard/page.tsx");
+    expect(page).not.toContain("Ventas de hoy");
+    expect(page).not.toContain("empujar ventas");
+  });
+
+  it("la API del dashboard aplica permisos y periodo por zona horaria", () => {
+    const route = read("src/app/api/dashboard/route.ts");
+    expect(route).toContain("resolveDashboardPermissions");
+    expect(route).toContain("resolveDashboardPeriod");
+    expect(route).toContain("forcedSellerId");
+    expect(route).toContain('rpc("dashboard_summary"');
+    expect(route).not.toContain("MAX_PAGES");
+    expect(route).not.toContain("PAGE = 1000");
+  });
+});
+
 describe("pantallas satélite de Mi día", () => {
   it("Aprobaciones usa la fila revisable y no el ERP genérico", () => {
     const source = read("src/app/dashboard/administracion/aprobaciones/page.tsx");

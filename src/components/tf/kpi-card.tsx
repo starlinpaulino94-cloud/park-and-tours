@@ -4,13 +4,14 @@ import { cn } from "@/lib/utils";
 import { Icon } from "@/components/tf/icon";
 
 export function KpiCard({
-  label, value, hint, icon, trend, tone = "default", className, style,
+  label, value, hint, icon, trend, definition, tone = "default", className, style,
 }: {
   label: string;
   value: string;
   hint?: string;
   icon?: string;
   trend?: number | null;
+  definition?: string;
   tone?: "default" | "primary" | "coral" | "amber" | "ink";
   className?: string;
   style?: React.CSSProperties;
@@ -30,7 +31,7 @@ export function KpiCard({
   const muted = tone === "default" ? "text-muted-foreground" : "opacity-90";
 
   return (
-    <div className={cn("tf-card tf-rise relative overflow-hidden p-4", tones[tone], className)} style={style}>
+    <div className={cn("tf-card tf-rise relative overflow-hidden p-4", tones[tone], className)} style={style} title={definition}>
       <div className="flex items-start justify-between gap-3">
         <p className={cn("text-[11px] font-semibold uppercase tracking-[0.14em]", muted)}>{label}</p>
         {icon && (
