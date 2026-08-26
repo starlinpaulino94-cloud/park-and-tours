@@ -125,6 +125,14 @@ describe("Panel ejecutivo", () => {
     expect(route).not.toContain("MAX_PAGES");
     expect(route).not.toContain("PAGE = 1000");
   });
+
+  it("los filtros del dashboard usan opciones legibles y no campos manuales por ID", () => {
+    const page = read("src/app/dashboard/page.tsx");
+    expect(page).toContain("function OptionFilter");
+    expect(page).toContain('/api/erp/${resource}?limit=100&includeTotal=false');
+    expect(page).toContain('aria-label={label}');
+    expect(page).not.toContain('placeholder={`${label} ID`}');
+  });
 });
 
 describe("pantallas satélite de Mi día", () => {
