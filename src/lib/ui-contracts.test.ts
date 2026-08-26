@@ -134,6 +134,16 @@ describe("Panel ejecutivo", () => {
     expect(migration).toContain("from departure d");
   });
 
+  it("los cobros del RPC respetan los mismos filtros dimensionales que ventas", () => {
+    const migration = read("supabase/migrations/0025_dashboard_filtered_collections.sql");
+    expect(migration).toContain("left join booking pb on pb.id = p.booking_id");
+    expect(migration).toContain("left join sales_order po on po.id = p.order_id");
+    expect(migration).toContain("p_product_id is null or pb.product_id = p_product_id");
+    expect(migration).toContain("p_branch_id is null or coalesce(pb.branch_id, po.branch_id) = p_branch_id");
+    expect(migration).toContain("p_seller_id is null or coalesce(pb.seller_id, po.seller_id) = p_seller_id");
+    expect(migration).toContain("p_channel is null or coalesce(pb.channel::text, po.channel::text) = p_channel");
+  });
+
   it("los filtros del dashboard usan opciones legibles y no campos manuales por ID", () => {
     const page = read("src/app/dashboard/page.tsx");
     expect(page).toContain("function OptionFilter");
