@@ -13,7 +13,11 @@ test("Mi día no genera desbordamiento horizontal", async ({ page }) => {
   await page.getByLabel("Contraseña").fill(password!);
   await page.getByRole("button", { name: "Entrar" }).click();
 
-  await page.waitForURL(/\/dashboard\/inicio\/mi-dia/, { timeout: 60_000 });
+  // Se compara el pathname, no la URL completa: `/login?redirect=/dashboard/inicio/mi-dia`
+  // contiene la ruta destino en el query, así que un regex sobre la URL entera
+  // daría por buena la navegación aunque el login hubiera fallado y siguiéramos
+  // en /login. Con el pathname, un login fallido produce un timeout claro aquí.
+  await page.waitForURL((url) => url.pathname === "/dashboard/inicio/mi-dia", { timeout: 60_000 });
   await expect(page.getByRole("heading", { name: "Mi día" })).toBeVisible({ timeout: 30_000 });
 
   for (const width of [320, 768, 1280]) {

@@ -8,6 +8,9 @@ export default defineConfig({
   timeout: 45_000,
   fullyParallel: false,
   reporter: "list",
+  // Garantiza el usuario + org + membresía de la cuenta de prueba antes de correr
+  // (idempotente; se omite sin las variables de Supabase). Ver tests/e2e/global-setup.ts.
+  globalSetup: "./tests/e2e/global-setup.ts",
   use: {
     baseURL,
     trace: "retain-on-failure",
