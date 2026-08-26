@@ -2,13 +2,15 @@ import { requireTenant, requireAtLeast, tenantCount } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import { seedDemoData } from "@/lib/demo-seed";
 import { writeAudit } from "@/lib/audit";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 /**
  * POST /api/setup/demo — carga el juego de datos de demostración en el tenant
  * actual. Es idempotente: no hace nada si ya existen productos.
  */
-export async function POST() {
+export async function POST(req: Request) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
     requireAtLeast(ctx, "admin");
 

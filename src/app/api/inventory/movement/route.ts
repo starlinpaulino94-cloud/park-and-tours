@@ -2,10 +2,12 @@ import { NextRequest } from "next/server";
 import { requireTenant, requireAtLeast } from "@/lib/tenant";
 import { postMovement, type MovementInput } from "@/lib/inventory";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 /** POST /api/inventory/movement — the only way stock quantities may change. */
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
     requireAtLeast(ctx, "operations");
 

@@ -2,9 +2,11 @@ import { NextRequest } from "next/server";
 import { requireTenant, requireAtLeast } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { post, reverse, type PostingInput } from "@/lib/ledger";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
     requireAtLeast(ctx, "manager");
     const body = await readJson<PostingInput & { reverseEntry?: string }>(req);

@@ -3,6 +3,7 @@ import { requireTenant, requireAtLeast, tenantFindOne, tenantUpdate } from "@/li
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import type { Commission, CommissionStatus } from "@/lib/types";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 const ALLOWED: CommissionStatus[] = ["approved", "held", "disputed", "cancelled", "paid", "pending"];
 
@@ -12,6 +13,7 @@ const ALLOWED: CommissionStatus[] = ["approved", "held", "disputed", "cancelled"
  */
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
     requireAtLeast(ctx, "manager");
 

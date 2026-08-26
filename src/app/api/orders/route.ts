@@ -3,10 +3,12 @@ import { requireTenant, requireAtLeast, tenantQuery, tenantCount } from "@/lib/t
 import { ok, fail, readJson } from "@/lib/api-response";
 import { createOrderWithBookings, type CreateOrderInput } from "@/lib/booking-service";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 /** POST /api/orders — creates a multi-product order with all its bookings. */
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
     assertRateLimit({ key: rateLimitKey(req, "orders:create", ctx.userId), limit: 20, windowMs: 60_000 });
     requireAtLeast(ctx, "partner");

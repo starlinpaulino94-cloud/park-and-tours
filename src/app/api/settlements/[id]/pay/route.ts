@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { postSettlementPayment } from "@/lib/ledger-events";
 import type { Settlement } from "@/lib/types";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 /**
  * POST /api/settlements/:id/pay — records the pay-out of a settlement (AUD-F12).
@@ -16,6 +17,7 @@ import type { Settlement } from "@/lib/types";
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    assertSameOriginMutation(req);
     const { id } = await params;
     const ctx = await requireTenant();
     requireAtLeast(ctx, "manager");

@@ -3,6 +3,7 @@ import { requireTenant, requireAtLeast, TenantError, tenantUpdate } from "@/lib/
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import type { Company } from "@/lib/types";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 /** Fields the tenant owner/admin may edit about their own company. */
 const EDITABLE = [
@@ -23,6 +24,7 @@ export async function GET() {
 /** PUT /api/company — updates the tenant's own company profile. */
 export async function PUT(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
     requireAtLeast(ctx, "admin");
 

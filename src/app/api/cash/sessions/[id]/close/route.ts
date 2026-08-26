@@ -4,10 +4,12 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { recalcCashSession } from "@/lib/cash";
 import { writeAudit } from "@/lib/audit";
 import type { CashSession } from "@/lib/types";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 /** POST /api/cash/sessions/:id/close — arqueo: counts cash and closes the session. */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    assertSameOriginMutation(req);
     const { id } = await params;
     const ctx = await requireTenant();
     requireAtLeast(ctx, "cashier");

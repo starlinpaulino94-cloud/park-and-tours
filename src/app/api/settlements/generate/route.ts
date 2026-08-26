@@ -5,6 +5,7 @@ import { newSettlementCode, newDocumentNumber } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
 import type { BeneficiaryType, Commission, Currency, Settlement } from "@/lib/types";
 import { refId } from "@/lib/types";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 /**
  * POST /api/settlements/generate
@@ -13,6 +14,7 @@ import { refId } from "@/lib/types";
  */
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
     requireAtLeast(ctx, "manager");
 

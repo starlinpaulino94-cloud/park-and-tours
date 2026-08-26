@@ -4,6 +4,7 @@ import { writeAudit } from "@/lib/audit";
 import { supabaseServer } from "@/lib/supabase/server";
 import { supabaseService } from "@/lib/supabase/service";
 import type { CompanyType, Currency, ModuleKey } from "@/lib/types";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 const DEFAULT_MODULES: ModuleKey[] = [
   "bookings", "crm", "commissions", "settlements", "payments", "cash_pos",
@@ -38,6 +39,7 @@ function mapCompany(row: any) {
 
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const authClient = await supabaseServer();
     const { data: userRes } = await authClient.auth.getUser();
     const user = userRes.user;
