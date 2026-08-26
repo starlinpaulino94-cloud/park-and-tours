@@ -65,14 +65,13 @@ alter table cash_session
   add column if not exists base_expected_cash numeric(14,2);
 
 update cash_session cs
-   set currency = coalesce(cs.currency, cr.currency, o.currency::currency),
+   set currency = coalesce(cs.currency, (select cr.currency from cash_register cr where cr.id = cs.cash_register_id), o.currency::currency),
        exchange_rate = coalesce(cs.exchange_rate, 1),
        base_expected_cash = coalesce(
          cs.base_expected_cash,
-         case when coalesce(cs.currency, cr.currency, o.currency::currency)::text = o.currency then cs.expected_cash else null end
+         case when coalesce(cs.currency, (select cr.currency from cash_register cr where cr.id = cs.cash_register_id), o.currency::currency)::text = o.currency then cs.expected_cash else null end
        )
   from organizations o
-  left join cash_register cr on cr.id = cs.cash_register_id
  where o.id = cs.organization_id;
 
 create index if not exists booking_dashboard_period_idx
