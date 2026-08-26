@@ -580,8 +580,7 @@ export function AppShell({
       return;
     }
     toast.success("Has salido de la empresa");
-    router.push("/superadmin");
-    router.refresh();
+    window.location.href = "/superadmin";
   };
 
   return (
