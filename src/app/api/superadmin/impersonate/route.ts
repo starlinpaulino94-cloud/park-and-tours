@@ -3,6 +3,7 @@ import { requireSuperadmin, IMPERSONATION_COOKIE } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { supabaseService } from "@/lib/supabase/service";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 /**
  * POST /api/superadmin/impersonate — entra o sale de una empresa.
@@ -10,6 +11,7 @@ import { supabaseService } from "@/lib/supabase/service";
  */
 export async function POST(req: Request) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireSuperadmin();
     const body = await readJson<{ company_id?: string | null; stop?: boolean }>(req);
     const jar = await cookies();

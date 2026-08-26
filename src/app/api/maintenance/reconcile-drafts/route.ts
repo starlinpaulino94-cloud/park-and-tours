@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { reconcileStaleDrafts } from "@/lib/booking-service";
 import { expireApprovals } from "@/lib/approvals";
 import { writeAudit } from "@/lib/audit";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 /**
  * POST /api/maintenance/reconcile-drafts (AUD-F34 follow-up)
@@ -16,6 +17,7 @@ import { writeAudit } from "@/lib/audit";
  */
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
     requireAtLeast(ctx, "admin");
 

@@ -1,10 +1,12 @@
 import { requireTenant, requireAtLeast } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import { ensureChart } from "@/lib/ledger";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 /** Creates the missing accounts of the standard chart. Idempotent. */
-export async function POST() {
+export async function POST(req: Request) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
     requireAtLeast(ctx, "admin");
     const created = await ensureChart(ctx.companyId);

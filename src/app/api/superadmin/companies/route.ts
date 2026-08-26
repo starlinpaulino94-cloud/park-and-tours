@@ -3,6 +3,7 @@ import { requireSuperadmin } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { supabaseService } from "@/lib/supabase/service";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 function slugify(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -58,6 +59,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireSuperadmin();
     const body = await readJson<Record<string, any>>(req);
     const sb = supabaseService();

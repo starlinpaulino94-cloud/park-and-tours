@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { requireTenant, requireAtLeast } from "@/lib/tenant";
 import { changeAssetStatus, type AssetStatus } from "@/lib/asset-impact";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 /**
  * POST /api/assets/:id/status — changes an asset's operational status and
@@ -12,6 +13,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    assertSameOriginMutation(req);
     const { id } = await params;
     const ctx = await requireTenant();
     requireAtLeast(ctx, "operations");

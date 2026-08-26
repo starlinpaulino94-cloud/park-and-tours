@@ -3,6 +3,7 @@ import { requireSuperadmin } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { supabaseService } from "@/lib/supabase/service";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 const EDITABLE = [
   "name", "code", "description", "monthly_price", "yearly_price", "currency",
@@ -67,6 +68,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireSuperadmin();
     const body = await readJson<Record<string, any>>(req);
     const patch = sanitize(body);
@@ -90,6 +92,7 @@ export async function POST(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireSuperadmin();
     const id = req.nextUrl.searchParams.get("id");
     if (!id) throw Object.assign(new Error("Falta el identificador del plan"), { status: 400 });

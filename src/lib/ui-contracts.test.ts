@@ -188,6 +188,31 @@ describe("blindaje del flujo de aprobación", () => {
   });
 });
 
+describe("blindaje CSRF de las rutas mutantes", () => {
+  // Toda ruta que acepta POST/PUT/PATCH/DELETE con sesión por cookie debe
+  // verificar el origen. Quedan excluidas las rutas autenticadas por firma o
+  // secreto (stripe/webhook, cron/*) y los cálculos de solo lectura
+  // (pricing/quote), que no mutan estado.
+  const csrfExempt = [
+    /^src\/app\/api\/stripe\/webhook\//,
+    /^src\/app\/api\/cron\//,
+    /^src\/app\/api\/pricing\/quote\//,
+  ];
+
+  it("toda ruta mutante verifica el origen de la solicitud", () => {
+    const offenders: string[] = [];
+    for (const file of walk(path.join(ROOT, "src/app/api"))) {
+      const rel = path.relative(ROOT, file).replace(/\\/g, "/");
+      if (csrfExempt.some((re) => re.test(rel))) continue;
+      const source = readFileSync(file, "utf8");
+      const isMutating = /export async function (POST|PUT|PATCH|DELETE)\(/.test(source);
+      if (!isMutating) continue;
+      if (!source.includes("assertSameOriginMutation(req)")) offenders.push(rel);
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe("acciones sensibles fuera del render", () => {
   it("la expiración de solicitudes ocurre en mantenimiento, no al pintar la pantalla", () => {
     expect(read("src/app/api/maintenance/reconcile-drafts/route.ts")).toContain("expireApprovals(ctx.companyId)");

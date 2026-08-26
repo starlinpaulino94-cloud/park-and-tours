@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { supabaseService } from "@/lib/supabase/service";
 import { writeAudit } from "@/lib/audit";
 import type { AppRole } from "@/lib/auth";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 const ASSIGNABLE_ROLES: AppRole[] = ["owner", "admin", "manager", "operations", "cashier", "seller", "partner"];
 
@@ -54,6 +55,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
     requireAtLeast(ctx, "admin");
 
@@ -99,6 +101,7 @@ export async function POST(req: NextRequest) {
 
 export async function PUT(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
     requireAtLeast(ctx, "admin");
 

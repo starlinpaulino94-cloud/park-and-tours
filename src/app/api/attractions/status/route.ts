@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { requireTenant, requireAtLeast, tenantCreate, tenantFindOne, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { assertSameOriginMutation } from "@/lib/csrf";
 
 /**
  * POST /api/attractions/status — live status change from the park control room.
@@ -11,6 +12,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
  */
 export async function POST(req: NextRequest) {
   try {
+    assertSameOriginMutation(req);
     const ctx = await requireTenant();
     requireAtLeast(ctx, "operations");
 
