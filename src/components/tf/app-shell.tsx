@@ -197,7 +197,7 @@ function WorkspaceRail({
           T
         </Link>
 
-        <div className="tf-scroll flex w-full flex-1 flex-col items-center gap-0.5 overflow-y-auto">
+        <div className="tf-scroll flex w-full min-h-0 flex-1 flex-col items-center gap-0.5 overflow-y-auto">
           {main.map(render)}
         </div>
 
@@ -338,7 +338,7 @@ function ContextPanel({
 
       <nav
         aria-label={`Navegación de ${workspace.label}`}
-        className={cn("tf-scroll flex-1 space-y-4 overflow-y-auto px-3 pb-5 pt-3", flyout && "max-h-[70vh] pt-2")}
+        className={cn("tf-scroll min-h-0 flex-1 space-y-4 overflow-y-auto px-3 pb-5 pt-3", flyout && "max-h-[70vh] pt-2")}
       >
         {groups.map((group) => (
           <div key={group.id}>
