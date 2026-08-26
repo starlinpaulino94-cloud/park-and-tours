@@ -43,6 +43,9 @@ interface DashboardData {
   }[];
 }
 
+interface FilterOption { id: string; label: string }
+interface FilterOptions { products: FilterOption[]; branches: FilterOption[]; sellers: FilterOption[]; partners: FilterOption[] }
+
 const PERIODS = [
   { value: "today", label: "Hoy" },
   { value: "yesterday", label: "Ayer" },
@@ -59,6 +62,8 @@ const RANKS = [
   { value: "pax", label: "Pasajeros" },
 ];
 
+const EMPTY_FILTER_OPTIONS: FilterOptions = { products: [], branches: [], sellers: [], partners: [] };
+
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -68,8 +73,12 @@ export default function DashboardPage() {
   const [rankBy, setRankBy] = useState<DashboardData["rankBy"]>("sales");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState({ product: "", branch: "", seller: "", partner: "", channel: "", from: "", to: "" });
+  const [filterOptions, setFilterOptions] = useState<FilterOptions>(EMPTY_FILTER_OPTIONS);
+  const [filterOptionsLoading, setFilterOptionsLoading] = useState(false);
+  const [filterOptionsError, setFilterOptionsError] = useState<string | null>(null);
   const requestSeq = useRef(0);
   const hasLoaded = useRef(false);
+  const loadedFilterOptions = useRef(false);
 
   const activeFilters = Object.values(filters).filter(Boolean).length + (period === "custom" ? 1 : 0);
   const currency = data?.currency || "usd";
@@ -99,6 +108,32 @@ export default function DashboardPage() {
   }, [filters, period, rankBy]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (!filtersOpen || loadedFilterOptions.current) return;
+    let cancelled = false;
+    setFilterOptionsLoading(true);
+    setFilterOptionsError(null);
+
+    async function loadFilterOptions() {
+      const [products, branches, sellers, partners] = await Promise.all([
+        loadResourceOptions("product", productLabel),
+        loadResourceOptions("branch", nameLabel),
+        loadResourceOptions("seller", sellerLabel),
+        loadResourceOptions("partner", partnerLabel),
+      ]);
+      if (cancelled) return;
+      const responses = [products, branches, sellers, partners];
+      setFilterOptionsLoading(false);
+      const failedCount = responses.filter((res) => !res.ok).length;
+      if (failedCount === responses.length) setFilterOptionsError("No se pudieron cargar las opciones de filtros.");
+      loadedFilterOptions.current = true;
+      setFilterOptions({ products: products.options, branches: branches.options, sellers: sellers.options, partners: partners.options });
+    }
+
+    void loadFilterOptions();
+    return () => { cancelled = true; };
+  }, [filtersOpen]);
 
   const refresh = () => startRefresh(() => { void load(); });
   const clearFilters = () => setFilters({ product: "", branch: "", seller: "", partner: "", channel: "", from: "", to: "" });
@@ -134,18 +169,19 @@ export default function DashboardPage() {
               <InputFilter label="Hasta" type="date" value={filters.to} onChange={(to) => setFilters((f) => ({ ...f, to }))} />
             </>
           )}
-          <InputFilter label="Producto" value={filters.product} onChange={(product) => setFilters((f) => ({ ...f, product }))} />
-          <InputFilter label="Sucursal" value={filters.branch} onChange={(branch) => setFilters((f) => ({ ...f, branch }))} />
-          <InputFilter label="Vendedor" value={filters.seller} onChange={(seller) => setFilters((f) => ({ ...f, seller }))} />
-          <InputFilter label="Tour center" value={filters.partner} onChange={(partner) => setFilters((f) => ({ ...f, partner }))} />
+          <OptionFilter label="Producto" value={filters.product} options={filterOptions.products} loading={filterOptionsLoading} onChange={(product) => setFilters((f) => ({ ...f, product }))} />
+          <OptionFilter label="Sucursal" value={filters.branch} options={filterOptions.branches} loading={filterOptionsLoading} onChange={(branch) => setFilters((f) => ({ ...f, branch }))} />
+          <OptionFilter label="Vendedor" value={filters.seller} options={filterOptions.sellers} loading={filterOptionsLoading} onChange={(seller) => setFilters((f) => ({ ...f, seller }))} />
+          <OptionFilter label="Tour center" value={filters.partner} options={filterOptions.partners} loading={filterOptionsLoading} onChange={(partner) => setFilters((f) => ({ ...f, partner }))} />
           <Select value={filters.channel || "__all"} onValueChange={(channel) => setFilters((f) => ({ ...f, channel: channel === "__all" ? "" : channel }))}>
-            <SelectTrigger><SelectValue placeholder="Canal" /></SelectTrigger>
+            <SelectTrigger aria-label="Canal"><SelectValue placeholder="Canal" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="__all">Todos los canales</SelectItem>
               {Object.keys(CHANNEL).map((channel) => <SelectItem key={channel} value={channel}>{labelOf(CHANNEL, channel).label}</SelectItem>)}
             </SelectContent>
           </Select>
           <Button variant="ghost" onClick={clearFilters}>Limpiar</Button>
+          {filterOptionsError && <p className="text-xs text-destructive sm:col-span-2 lg:col-span-6">{filterOptionsError}</p>}
         </section>
       )}
 
@@ -248,8 +284,39 @@ export default function DashboardPage() {
 }
 
 function InputFilter({ label, value, onChange, type = "text" }: { label: string; value: string; onChange: (value: string) => void; type?: string }) {
-  return <input type={type} aria-label={label} placeholder={`${label} ID`} value={value} onChange={(e) => onChange(e.target.value.trim())} className="h-10 rounded-md border bg-background px-3 text-sm" />;
+  return <input type={type} aria-label={label} placeholder={label} value={value} onChange={(e) => onChange(e.target.value.trim())} className="h-10 rounded-md border bg-background px-3 text-sm" />;
 }
+
+function OptionFilter({ label, value, options, loading, onChange }: { label: string; value: string; options: FilterOption[]; loading: boolean; onChange: (value: string) => void }) {
+  return (
+    <Select value={value || "__all"} onValueChange={(next) => onChange(next === "__all" ? "" : next)} disabled={loading}>
+      <SelectTrigger aria-label={label}><SelectValue placeholder={loading ? `Cargando ${label.toLowerCase()}...` : label} /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value="__all">Todos</SelectItem>
+        {options.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}
+      </SelectContent>
+    </Select>
+  );
+}
+
+async function loadResourceOptions(resource: string, labelOfRow: (row: Record<string, unknown>) => string): Promise<{ ok: true; options: FilterOption[] } | { ok: false; error: string; options: FilterOption[] }> {
+  const res = await api.get<Record<string, unknown>[]>(`/api/erp/${resource}?limit=100&includeTotal=false`);
+  if (!res.ok || !Array.isArray(res.data)) {
+    return { ok: false, error: `No se pudieron cargar las opciones de ${resource}.`, options: [] };
+  }
+  return {
+    ok: true,
+    options: res.data.map((row) => ({ id: String(row._id || row.id || ""), label: labelOfRow(row) })).filter((option) => option.id && option.label),
+  };
+}
+
+const nameLabel = (row: Record<string, unknown>) => String(row.name || row.code || row._id || "Sin nombre");
+const productLabel = (row: Record<string, unknown>) => row.code ? `${row.name || "Producto"} (${row.code})` : nameLabel(row);
+const partnerLabel = (row: Record<string, unknown>) => String(row.commercial_name || row.name || row._id || "Sin nombre");
+const sellerLabel = (row: Record<string, unknown>) => {
+  const fullName = [row.first_name, row.last_name].filter(Boolean).join(" ").trim();
+  return row.code && fullName ? `${fullName} (${row.code})` : fullName || String(row.email || row.code || row._id || "Sin nombre");
+};
 
 function KpiLink({ href, children }: { href: string; children: React.ReactNode }) {
   return <Link href={href} className="block focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2">{children}</Link>;
