@@ -82,39 +82,7 @@ export async function GET(req: NextRequest) {
     });
     if (summaryError) throw new Error(summaryError.message);
 
-    const now = new Date();
-    const upcomingRaw = await tenantQuery<any>(ctx.companyId, "departure", {
-      _filter: {
-        ...(scope.product ? { product: scope.product } : {}),
-        departure_at: { gte: now.toISOString(), lte: new Date(now.getTime() + UPCOMING_HORIZON_DAYS * 86_400_000).toISOString() },
-        status: { nin: ["cancelled", "completed"] },
-      },
-      _sort: { departure_at: "asc" },
-      _limit: 200,
-    });
-    const productIds = Array.from(new Set(upcomingRaw.map((row: any) => row.product_id).filter(Boolean)));
-    const products = productIds.length > 0
-      ? await tenantQuery<any>(ctx.companyId, "product", { _filter: { _id: { in: productIds } }, _limit: productIds.length })
-      : [];
-    const productNames = new Map(products.map((row: any) => [row._id, row.name || "Salida"]));
-    const upcoming = upcomingRaw
-      .map((row: any) => {
-        const booked = (row.booked_pax ?? 0) + (row.pending_pax ?? 0);
-        const capacity = row.capacity ?? 0;
-        return {
-          _id: row._id,
-          product: productNames.get(row.product_id) || "Salida",
-          departure_at: row.departure_at,
-          capacity,
-          booked,
-          pending: row.pending_pax ?? 0,
-          available: capacity > 0 ? Math.max(0, capacity - booked) : 0,
-          status: row.status,
-          occupancy: capacity ? Math.round((booked / capacity) * 100) : 0,
-        };
-      })
-      .sort((a: any, b: any) => a.occupancy - b.occupancy || a.departure_at.localeCompare(b.departure_at))
-      .slice(0, 8);
+    const upcoming = asRows(summary?.upcoming_departures);
 
     const netSales = Number(summary?.net_sales ?? 0);
     const previousNetSales = Number(summary?.previous_net_sales ?? 0);
