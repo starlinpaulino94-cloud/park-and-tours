@@ -124,6 +124,14 @@ describe("Panel ejecutivo", () => {
     expect(route).toContain('rpc("dashboard_summary"');
     expect(route).not.toContain("MAX_PAGES");
     expect(route).not.toContain("PAGE = 1000");
+    expect(route).not.toContain('tenantQuery<any>(ctx.companyId, "departure"');
+  });
+
+  it("el RPC del dashboard devuelve próximas salidas", () => {
+    const migration = read("supabase/migrations/0024_dashboard_upcoming_departures_rpc.sql");
+    expect(migration).toContain("upcoming_rows as");
+    expect(migration).toContain("'upcoming_departures'");
+    expect(migration).toContain("from departure d");
   });
 
   it("los filtros del dashboard usan opciones legibles y no campos manuales por ID", () => {
