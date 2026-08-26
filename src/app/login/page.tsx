@@ -26,14 +26,19 @@ function LoginForm() {
 
     try {
       const { signIn } = await import("@/lib/auth-client");
+      const normalizedEmail = email.trim().toLowerCase();
       const result = await signIn.email({
-        email,
+        email: normalizedEmail,
         password,
       });
 
       // Check if login was successful
       if (result.error) {
-        setError(result.error.message || "No se pudo iniciar sesión. Revisa tus credenciales.");
+        setError(
+          result.error.message === "Invalid login credentials"
+            ? "Email o contraseña incorrectos para este ambiente. Verifica que la cuenta exista en este proyecto."
+            : result.error.message || "No se pudo iniciar sesión. Revisa tus credenciales."
+        );
         setLoading(false);
         return;
       }

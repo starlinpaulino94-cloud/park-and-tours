@@ -168,8 +168,7 @@ export default function SuperadminCompaniesPage() {
     }
     toast.success(`Estás operando dentro de ${impersonating.name}`);
     setImpersonating(null);
-    router.push("/dashboard");
-    router.refresh();
+    window.location.href = "/dashboard/inicio/mi-dia";
   };
 
   const toggleModule = (key: string) => {

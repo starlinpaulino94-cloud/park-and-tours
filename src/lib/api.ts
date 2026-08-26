@@ -44,6 +44,7 @@ export const api = {
   post<T>(url: string, body: unknown): Promise<ApiResponse<T>> {
     return request<T>(url, {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
@@ -52,12 +53,13 @@ export const api = {
   put<T>(url: string, body: unknown): Promise<ApiResponse<T>> {
     return request<T>(url, {
       method: "PUT",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
   },
 
   delete<T>(url: string): Promise<ApiResponse<T>> {
-    return request<T>(url, { method: "DELETE" });
+    return request<T>(url, { method: "DELETE", credentials: "same-origin" });
   },
 };
