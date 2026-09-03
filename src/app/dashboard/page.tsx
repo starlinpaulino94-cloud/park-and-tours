@@ -213,30 +213,32 @@ export default function DashboardPage() {
           </section>
 
           <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {data.permissions.canViewReceivables && <KpiLink href="/dashboard/deudas"><KpiCard icon="ArrowDownToLine" label="Por cobrar" value={money(k.receivables_balance)} hint={`${number(k.receivables_count)} documentos abiertos`} /></KpiLink>}
-            {data.permissions.canViewPayables && <KpiLink href="/dashboard/finanzas/facturas"><KpiCard icon="ArrowUpFromLine" label="Por pagar" value={money(k.payables_balance)} hint={`${number(k.payables_count)} obligaciones abiertas`} /></KpiLink>}
-            {data.permissions.canViewCommissions && <KpiLink href="/dashboard/comisiones"><KpiCard icon="Percent" label="Comisiones pendientes" value={money(k.commissions_pending)} hint={`${number(k.commissions_count)} comisiones sin liquidar`} /></KpiLink>}
+            {data.permissions.canViewReceivables && <KpiLink href="/dashboard/deudas"><KpiCard icon="ArrowDownToLine" label="Por cobrar" value={money(k.receivables_balance)} hint={withExcluded(`${number(k.receivables_count)} documentos abiertos`, k.receivables_excluded_count)} /></KpiLink>}
+            {data.permissions.canViewPayables && <KpiLink href="/dashboard/finanzas/facturas"><KpiCard icon="ArrowUpFromLine" label="Por pagar" value={money(k.payables_balance)} hint={withExcluded(`${number(k.payables_count)} obligaciones abiertas`, k.payables_excluded_count)} /></KpiLink>}
+            {data.permissions.canViewCommissions && <KpiLink href="/dashboard/comisiones"><KpiCard icon="Percent" label="Comisiones pendientes" value={money(k.commissions_pending)} hint={withExcluded(`${number(k.commissions_count)} comisiones sin liquidar`, k.commissions_excluded_count)} /></KpiLink>}
             {data.permissions.canViewCash && <KpiLink href="/dashboard/caja"><KpiCard tone="amber" icon="Wallet" label="Efectivo en caja" value={money(k.cash_on_hand)} hint={`${number(k.open_cash_sessions)} sesiones abiertas`} /></KpiLink>}
           </section>
 
-          <section className="grid gap-4 lg:grid-cols-[1.5fr_1fr]">
-            <div className="tf-card p-5">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-                <h2 className="font-display text-lg font-semibold">Evolución de ventas netas</h2>
-                <span className="text-xs text-muted-foreground">Última actualización: {formatDate(data.lastUpdatedAt)} · {formatTime(data.lastUpdatedAt)}</span>
+          {data.permissions.canViewRevenue && (
+            <section className="grid gap-4 lg:grid-cols-[1.5fr_1fr]">
+              <div className="tf-card p-5">
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="font-display text-lg font-semibold">Evolución de ventas netas</h2>
+                  <span className="text-xs text-muted-foreground">Última actualización: {formatDate(data.lastUpdatedAt)} · {formatTime(data.lastUpdatedAt)}</span>
+                </div>
+                <AreaChart data={data.series.map((point) => ({ label: point.key, value: point.sales }))} currencyFormatter={(v) => formatMoney(v, currency)} />
               </div>
-              <AreaChart data={data.series.map((point) => ({ label: point.key, value: point.sales }))} currencyFormatter={(v) => formatMoney(v, currency)} />
-            </div>
-            <div className="tf-card p-5">
-              <h2 className="mb-4 font-display text-lg font-semibold">Ventas por canal</h2>
-              <Donut
-                slices={data.by_channel.map((channel, i) => ({ label: labelOf(CHANNEL, channel.key).label, value: channel.sales, color: CHART_COLORS[i % CHART_COLORS.length] }))}
-                centerValue={formatCompactMoney((k.net_sales as number) || 0, currency)}
-                centerLabel="ventas netas"
-              />
-              <AccessibleBucketTable data={data.by_channel} currency={currency} />
-            </div>
-          </section>
+              <div className="tf-card p-5">
+                <h2 className="mb-4 font-display text-lg font-semibold">Ventas por canal</h2>
+                <Donut
+                  slices={data.by_channel.map((channel, i) => ({ label: labelOf(CHANNEL, channel.key).label, value: channel.sales, color: CHART_COLORS[i % CHART_COLORS.length] }))}
+                  centerValue={formatCompactMoney((k.net_sales as number) || 0, currency)}
+                  centerLabel="ventas netas"
+                />
+                <AccessibleBucketTable data={data.by_channel} currency={currency} />
+              </div>
+            </section>
+          )}
 
           <section className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -317,6 +319,10 @@ const sellerLabel = (row: Record<string, unknown>) => {
   const fullName = [row.first_name, row.last_name].filter(Boolean).join(" ").trim();
   return row.code && fullName ? `${fullName} (${row.code})` : fullName || String(row.email || row.code || row._id || "Sin nombre");
 };
+
+function withExcluded(base: string, excluded?: number | null) {
+  return typeof excluded === "number" && excluded > 0 ? `${base} · ${formatNumber(excluded)} sin conversión` : base;
+}
 
 function KpiLink({ href, children }: { href: string; children: React.ReactNode }) {
   return <Link href={href} className="block focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2">{children}</Link>;

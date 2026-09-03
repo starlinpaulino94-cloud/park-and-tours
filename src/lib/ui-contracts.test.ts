@@ -144,6 +144,41 @@ describe("Panel ejecutivo", () => {
     expect(migration).toContain("p_channel is null or coalesce(pb.channel::text, po.channel::text) = p_channel");
   });
 
+  it("A1 — series y ventas por canal no se filtran a roles sin acceso a ingresos", () => {
+    const route = read("src/app/api/dashboard/route.ts");
+    // El RPC siempre calcula series/by_channel; la capa API las oculta a quien no ve ingresos.
+    expect(route).toContain("series: permissions.canViewRevenue ? asRows(summary?.series) : []");
+    expect(route).toContain("by_channel: permissions.canViewRevenue ? asRows(summary?.by_channel) : []");
+    // La UI no renderiza la sección de evolución/canales sin canViewRevenue.
+    const page = read("src/app/dashboard/page.tsx");
+    expect(page).toContain("data.permissions.canViewRevenue && (");
+  });
+
+  it("A2 — el margen de series y rankings es margen de contribución (resta comisión)", () => {
+    const migration = read("supabase/migrations/0026_dashboard_exec_audit_high.sql");
+    // Comisión variable atribuida por reserva y restada del margen en cada agregación.
+    expect(migration).toContain("booking_commission as (");
+    expect(migration).toContain("left join booking_commission bc on bc.booking_id = b.id");
+    expect(migration).toContain("sale_base - cost_base - commission_base");
+    // Ya no debe quedar ninguna definición de margen sin comisión.
+    expect(migration).not.toMatch(/sum\(sale_base - cost_base\)/);
+    expect(migration).not.toMatch(/sum\(b\.sale_base - b\.cost_base\)/);
+  });
+
+  it("A3 — los conteos financieros solo cuentan filas en moneda base y exponen las excluidas", () => {
+    const migration = read("supabase/migrations/0026_dashboard_exec_audit_high.sql");
+    expect(migration).toContain("count(*) filter (where amount_base is not null) as count");
+    expect(migration).toContain("count(*) filter (where amount_base is null) as excluded_count");
+    for (const key of ["commission_excluded_count", "receivable_excluded_count", "payable_excluded_count"]) {
+      expect(migration).toContain(`'${key}'`);
+    }
+    // La API propaga los conteos excluidos hacia la UI.
+    const route = read("src/app/api/dashboard/route.ts");
+    for (const key of ["commissions_excluded_count", "receivables_excluded_count", "payables_excluded_count"]) {
+      expect(route).toContain(key);
+    }
+  });
+
   it("los filtros del dashboard usan opciones legibles y no campos manuales por ID", () => {
     const page = read("src/app/dashboard/page.tsx");
     expect(page).toContain("function OptionFilter");
