@@ -37,6 +37,7 @@ interface DashboardData {
   top_sellers: Bucket[];
   top_partners: Bucket[];
   by_channel: Bucket[];
+  cash_by_currency: { currency: string; amount: number; sessions: number; amount_base: number }[];
   upcoming_departures: {
     _id: string; product: string; departure_at: string; capacity: number; booked: number; pending: number;
     available: number; status: string; occupancy: number;
@@ -216,7 +217,7 @@ export default function DashboardPage() {
             {data.permissions.canViewReceivables && <KpiLink href="/dashboard/deudas"><KpiCard icon="ArrowDownToLine" label="Por cobrar" value={money(k.receivables_balance)} hint={withExcluded(`${number(k.receivables_count)} documentos abiertos`, k.receivables_excluded_count)} /></KpiLink>}
             {data.permissions.canViewPayables && <KpiLink href="/dashboard/finanzas/facturas"><KpiCard icon="ArrowUpFromLine" label="Por pagar" value={money(k.payables_balance)} hint={withExcluded(`${number(k.payables_count)} obligaciones abiertas`, k.payables_excluded_count)} /></KpiLink>}
             {data.permissions.canViewCommissions && <KpiLink href="/dashboard/comisiones"><KpiCard icon="Percent" label="Comisiones pendientes" value={money(k.commissions_pending)} hint={withExcluded(`${number(k.commissions_count)} comisiones sin liquidar`, k.commissions_excluded_count)} /></KpiLink>}
-            {data.permissions.canViewCash && <KpiLink href="/dashboard/caja"><KpiCard tone="amber" icon="Wallet" label="Efectivo en caja" value={money(k.cash_on_hand)} hint={`${number(k.open_cash_sessions)} sesiones abiertas`} /></KpiLink>}
+            {data.permissions.canViewCash && <KpiLink href="/dashboard/caja"><KpiCard tone="amber" icon="Wallet" label="Efectivo en caja" value={money(k.cash_on_hand)} hint={cashHint(data.cash_by_currency, currency, number(k.open_cash_sessions))} definition="Efectivo esperado en sesiones de caja abiertas, con el desglose por divisa física." /></KpiLink>}
           </section>
 
           {data.permissions.canViewRevenue && (
@@ -322,6 +323,14 @@ const sellerLabel = (row: Record<string, unknown>) => {
 
 function withExcluded(base: string, excluded?: number | null) {
   return typeof excluded === "number" && excluded > 0 ? `${base} · ${formatNumber(excluded)} sin conversión` : base;
+}
+
+// M2: cuando hay efectivo en más de una divisa física, no se resume a un único
+// total: se listan las divisas para no ocultar cuánto hay en cada una.
+function cashHint(byCurrency: DashboardData["cash_by_currency"], baseCurrency: string, sessions: string) {
+  const rows = byCurrency?.filter((row) => row.amount !== 0) ?? [];
+  if (rows.length > 1) return rows.map((row) => formatMoney(row.amount, row.currency || baseCurrency)).join(" · ");
+  return `${sessions} sesiones abiertas`;
 }
 
 function KpiLink({ href, children }: { href: string; children: React.ReactNode }) {

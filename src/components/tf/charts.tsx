@@ -35,8 +35,11 @@ export function AreaChart({
   const line = data.map((d, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(d.value).toFixed(1)}`).join(" ");
   const area = `${line} L${x(data.length - 1).toFixed(1)},${h - pad.bottom} L${pad.left},${h - pad.bottom} Z`;
 
+  const fmt = (v: number) => (currencyFormatter ? currencyFormatter(v) : String(v));
+
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className={cn("w-full", className)} role="img" aria-label="Evolución de ventas">
+    <figure className="m-0">
+      <svg viewBox={`0 0 ${w} ${h}`} className={cn("w-full", className)} role="img" aria-label="Evolución de ventas">
       <defs>
         <linearGradient id="tf-area" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="var(--chart-1)" stopOpacity="0.35" />
@@ -61,7 +64,13 @@ export function AreaChart({
           )}
         </g>
       ))}
-    </svg>
+      </svg>
+      <table className="sr-only">
+        <caption>Evolución de ventas por fecha</caption>
+        <thead><tr><th scope="col">Fecha</th><th scope="col">Ventas</th></tr></thead>
+        <tbody>{data.map((d) => <tr key={d.label}><th scope="row">{d.label}</th><td>{fmt(d.value)}</td></tr>)}</tbody>
+      </table>
+    </figure>
   );
 }
 

@@ -42,6 +42,7 @@ export function KpiCard({
         )}
       </div>
       <p className="tf-num mt-2.5 text-[27px] leading-none">{value}</p>
+      {definition && <span className="sr-only">{definition}</span>}
       <div className="mt-2 flex items-center gap-2">
         {typeof trend === "number" && Number.isFinite(trend) && (
           <span

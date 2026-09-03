@@ -179,6 +179,42 @@ describe("Panel ejecutivo", () => {
     }
   });
 
+  it("M1/M2/M3/M5 — el RPC de severidad media corrige vencidas, efectivo, orden y caja", () => {
+    const migration = read("supabase/migrations/0027_dashboard_exec_audit_media.sql");
+    // M1: vencidas por due_date real, no por el flag status.
+    expect(migration).toContain("r.due_date < (now() at time zone p_timezone)::date");
+    expect(migration).toContain("count(*) filter (where is_overdue) as overdue_count");
+    // M2: desglose de efectivo por divisa.
+    expect(migration).toContain("cash_currency_rows as");
+    expect(migration).toContain("'cash_by_currency'");
+    // M3: próximas salidas en orden cronológico.
+    expect(migration).toContain("order by departure_at asc");
+    // M5: la caja acota la recaudación al usuario cajero.
+    expect(migration).toContain("p_cash_user_id is null or p.user_id = p_cash_user_id");
+  });
+
+  it("M2 — la API y la UI exponen el efectivo por divisa", () => {
+    expect(read("src/app/api/dashboard/route.ts")).toContain("cash_by_currency: permissions.canViewCash");
+    const page = read("src/app/dashboard/page.tsx");
+    expect(page).toContain("function cashHint");
+    expect(page).toContain("cash_by_currency");
+  });
+
+  it("M4 — los indicadores y la gráfica son accesibles sin ratón", () => {
+    // La definición del KPI llega a lectores de pantalla, no solo por title del ratón.
+    expect(read("src/components/tf/kpi-card.tsx")).toContain('<span className="sr-only">{definition}</span>');
+    // La gráfica de área ofrece una tabla equivalente para lectores de pantalla.
+    const charts = read("src/components/tf/charts.tsx");
+    expect(charts).toContain('<table className="sr-only">');
+    expect(charts).toContain("<caption>Evolución de ventas por fecha</caption>");
+  });
+
+  it("existe una prueba de base de datos de la RPC del panel", () => {
+    const sql = read("supabase/tests/dashboard_summary.test.sql");
+    expect(sql).toContain("public.dashboard_summary");
+    expect(sql).toContain("rollback");
+  });
+
   it("los filtros del dashboard usan opciones legibles y no campos manuales por ID", () => {
     const page = read("src/app/dashboard/page.tsx");
     expect(page).toContain("function OptionFilter");

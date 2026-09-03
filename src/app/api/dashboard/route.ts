@@ -135,6 +135,7 @@ export async function GET(req: NextRequest) {
         cash_on_hand: permissions.canViewCash ? round2(Number(summary?.cash_total ?? 0)) : null,
         open_cash_sessions: permissions.canViewCash ? Number(summary?.cash_count ?? 0) : null,
       },
+      cash_by_currency: permissions.canViewCash ? asRows(summary?.cash_by_currency) : [],
       series: permissions.canViewRevenue ? asRows(summary?.series) : [],
       by_channel: permissions.canViewRevenue ? asRows(summary?.by_channel) : [],
       top_products: permissions.canViewGlobalRankings || permissions.forcedSellerId ? asRows(summary?.top_products) : [],
