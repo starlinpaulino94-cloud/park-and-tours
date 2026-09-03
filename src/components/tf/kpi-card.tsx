@@ -44,18 +44,21 @@ export function KpiCard({
       <p className="tf-num mt-2.5 text-[27px] leading-none">{value}</p>
       {definition && <span className="sr-only">{definition}</span>}
       <div className="mt-2 flex items-center gap-2">
-        {typeof trend === "number" && Number.isFinite(trend) && (
-          <span
-            className={cn(
-              "tf-num inline-flex items-center gap-0.5 text-[11px] font-semibold",
-              trend >= 0 ? "text-emerald-700 dark:text-emerald-400" : "text-rose-700 dark:text-rose-400",
-              tone !== "default" && "text-current"
-            )}
-          >
-            <Icon name={trend >= 0 ? "ArrowUpRight" : "ArrowDownRight"} className="size-3" />
-            {Math.abs(trend).toFixed(1)}%
-          </span>
-        )}
+        {typeof trend === "number" && Number.isFinite(trend) && (() => {
+          // Un cambio exactamente nulo no es "positivo": estado neutro propio
+          // (gris, flecha horizontal) para no leer un 0,0% como subida.
+          const dir = trend > 0 ? "up" : trend < 0 ? "down" : "flat";
+          const color = dir === "up" ? "text-emerald-700 dark:text-emerald-400"
+            : dir === "down" ? "text-rose-700 dark:text-rose-400"
+            : "text-muted-foreground";
+          const arrow = dir === "up" ? "ArrowUpRight" : dir === "down" ? "ArrowDownRight" : "ArrowRight";
+          return (
+            <span className={cn("tf-num inline-flex items-center gap-0.5 text-[11px] font-semibold", color, tone !== "default" && "text-current")}>
+              <Icon name={arrow} className="size-3" />
+              {Math.abs(trend).toFixed(1)}%
+            </span>
+          );
+        })()}
         {hint && <p className={cn("truncate text-xs", muted)}>{hint}</p>}
       </div>
     </div>

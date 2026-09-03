@@ -80,6 +80,8 @@ export default function DashboardPage() {
   const requestSeq = useRef(0);
   const hasLoaded = useRef(false);
   const loadedFilterOptions = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const [urlReady, setUrlReady] = useState(false);
 
   const activeFilters = Object.values(filters).filter(Boolean).length + (period === "custom" ? 1 : 0);
   const currency = data?.currency || "usd";
@@ -88,12 +90,17 @@ export default function DashboardPage() {
   const number = (value?: number | null) => typeof value === "number" ? formatNumber(value) : "Restringido";
 
   const load = useCallback(async () => {
+    // B6: cancela la petición en vuelo anterior para no gastar red ni competir
+    // por el estado (el guard de secuencia ya descarta respuestas obsoletas).
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     const seq = ++requestSeq.current;
     setError(null);
     if (!hasLoaded.current) setLoading(true);
     const params = new URLSearchParams({ period, rankBy });
     for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
-    const res = await api.get<DashboardData>(`/api/dashboard?${params.toString()}`);
+    const res = await api.get<DashboardData>(`/api/dashboard?${params.toString()}`, { signal: controller.signal });
     if (seq !== requestSeq.current) return;
     setLoading(false);
     if (!res.ok || !res.data) {
@@ -109,6 +116,32 @@ export default function DashboardPage() {
   }, [filters, period, rankBy]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  // B1: el periodo, el criterio de ranking y los filtros persisten en la URL,
+  // de modo que recargar o compartir el enlace conserva la vista.
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    const p = sp.get("period");
+    if (p && PERIODS.some((x) => x.value === p)) setPeriod(p);
+    const r = sp.get("rankBy");
+    if (r && RANKS.some((x) => x.value === r)) setRankBy(r as DashboardData["rankBy"]);
+    setFilters({
+      product: sp.get("product") || "", branch: sp.get("branch") || "", seller: sp.get("seller") || "",
+      partner: sp.get("partner") || "", channel: sp.get("channel") || "", from: sp.get("from") || "", to: sp.get("to") || "",
+    });
+    setUrlReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!urlReady) return;
+    const sp = new URLSearchParams();
+    if (period !== "month") sp.set("period", period);
+    if (rankBy !== "sales") sp.set("rankBy", rankBy);
+    for (const [key, value] of Object.entries(filters)) if (value) sp.set(key, value);
+    const qs = sp.toString();
+    window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
+  }, [urlReady, period, rankBy, filters]);
 
   useEffect(() => {
     if (!filtersOpen || loadedFilterOptions.current) return;
@@ -172,8 +205,14 @@ export default function DashboardPage() {
           )}
           <OptionFilter label="Producto" value={filters.product} options={filterOptions.products} loading={filterOptionsLoading} onChange={(product) => setFilters((f) => ({ ...f, product }))} />
           <OptionFilter label="Sucursal" value={filters.branch} options={filterOptions.branches} loading={filterOptionsLoading} onChange={(branch) => setFilters((f) => ({ ...f, branch }))} />
-          <OptionFilter label="Vendedor" value={filters.seller} options={filterOptions.sellers} loading={filterOptionsLoading} onChange={(seller) => setFilters((f) => ({ ...f, seller }))} />
-          <OptionFilter label="Tour center" value={filters.partner} options={filterOptions.partners} loading={filterOptionsLoading} onChange={(partner) => setFilters((f) => ({ ...f, partner }))} />
+          {/* B2: solo los roles con visión global pueden segmentar por vendedor o
+              tour center; a un vendedor/partner su alcance ya viene forzado. */}
+          {data?.permissions.canViewGlobalRankings && (
+            <>
+              <OptionFilter label="Vendedor" value={filters.seller} options={filterOptions.sellers} loading={filterOptionsLoading} onChange={(seller) => setFilters((f) => ({ ...f, seller }))} />
+              <OptionFilter label="Tour center" value={filters.partner} options={filterOptions.partners} loading={filterOptionsLoading} onChange={(partner) => setFilters((f) => ({ ...f, partner }))} />
+            </>
+          )}
           <Select value={filters.channel || "__all"} onValueChange={(channel) => setFilters((f) => ({ ...f, channel: channel === "__all" ? "" : channel }))}>
             <SelectTrigger aria-label="Canal"><SelectValue placeholder="Canal" /></SelectTrigger>
             <SelectContent>

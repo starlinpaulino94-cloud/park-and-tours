@@ -91,10 +91,13 @@ export async function GET(req: NextRequest) {
     const commissionCost = Number(summary?.commission_total ?? 0);
     const contributionMargin = round2(netSales - Number(summary?.cost ?? 0) - commissionCost);
     const incompleteFinancialData = Boolean(summary?.incomplete_financial_data);
+    const denominator = Number(summary?.denominator ?? 0);
+    const cancellationRate = denominator > 0 ? round2((Number(summary?.cancellations ?? 0) / denominator) * 100) : 0;
     const alerts = [];
     if (incompleteFinancialData) alerts.push({ type: "warning", title: "Datos financieros incompletos", href: "/dashboard/finanzas/divisas" });
     if (permissions.canViewMargin && contributionMargin < 0) alerts.push({ type: "danger", title: "Margen negativo en el período", href: "/dashboard/rentabilidad" });
     if (permissions.canViewReceivables && Number(summary?.receivable_overdue_count ?? 0) > 0) alerts.push({ type: "warning", title: "Hay cuentas por cobrar vencidas", href: "/dashboard/deudas" });
+    if (permissions.canViewRevenue && denominator >= 10 && cancellationRate > 15) alerts.push({ type: "warning", title: `Tasa de cancelación elevada (${cancellationRate}%)`, href: "/dashboard/reservas" });
     if (upcoming.some((departure: any) => departure.capacity > 0 && departure.occupancy < 35)) alerts.push({ type: "warning", title: "Salidas próximas con ocupación crítica", href: "/dashboard/salidas" });
 
     return ok({

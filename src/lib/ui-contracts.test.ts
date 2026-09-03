@@ -215,6 +215,35 @@ describe("Panel ejecutivo", () => {
     expect(sql).toContain("rollback");
   });
 
+  it("B1/B2/B6 — la vista persiste en la URL, filtra por rol y cancela peticiones", () => {
+    const page = read("src/app/dashboard/page.tsx");
+    // B1: sincroniza periodo/rankBy/filtros con la URL.
+    expect(page).toContain("window.history.replaceState");
+    expect(page).toContain("window.location.search");
+    // B2: los filtros de vendedor/tour center solo para roles con visión global.
+    expect(page).toContain("data?.permissions.canViewGlobalRankings && (");
+    // B6: aborta la petición anterior en vuelo.
+    expect(page).toContain("new AbortController()");
+    expect(page).toContain("controller.signal");
+  });
+
+  it("B3 — hay una alerta de tasa de cancelación elevada", () => {
+    expect(read("src/app/api/dashboard/route.ts")).toContain("Tasa de cancelación elevada");
+  });
+
+  it("B4 — el RPC agrupa los canales secundarios en 'otros'", () => {
+    const migration = read("supabase/migrations/0028_dashboard_channel_otros.sql");
+    expect(migration).toContain("where rn <= 5");
+    expect(migration).toContain("'otros', 'otros'");
+    expect(read("src/lib/labels.ts")).toContain('otros: def("Otros"');
+  });
+
+  it("B5 — el indicador de tendencia tiene estado neutro para 0%", () => {
+    const card = read("src/components/tf/kpi-card.tsx");
+    expect(card).toContain('"flat"');
+    expect(card).toContain("ArrowRight");
+  });
+
   it("los filtros del dashboard usan opciones legibles y no campos manuales por ID", () => {
     const page = read("src/app/dashboard/page.tsx");
     expect(page).toContain("function OptionFilter");

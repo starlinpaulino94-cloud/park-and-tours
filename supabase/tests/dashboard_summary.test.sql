@@ -29,6 +29,19 @@ values
   ('33333333-3333-3333-3333-333333333331', :'org', 'BK-1', gen_random_uuid(), :'prod', 'paid', 'usd', 'usd', 1000, 1000, 400, 400, 0, 0, 1, 2, now(), 'direct'),
   ('33333333-3333-3333-3333-333333333332', :'org', 'BK-2', gen_random_uuid(), :'prod', 'paid', 'usd', 'usd',  500,  500, 200, 200, 0, 0, 1, 1, now(), 'web');
 
+-- B4: canales adicionales para probar la agrupación en 'otros' (top 5 + resto).
+-- Ventas: direct=1000, phone=900, whatsapp=800, walk_in=700, agency=600 (top 5);
+-- web=500, ota=100, pos=50 (remanente → 'otros' = 650).
+insert into booking (organization_id, booking_number, order_id, product_id, status, currency, base_currency,
+  total_amount, base_amount, cost_amount, base_cost_amount, exchange_rate, pax_total, booking_date, channel)
+values
+  (:'org', 'BK-3', gen_random_uuid(), :'prod', 'paid', 'usd', 'usd', 900, 900, 0, 0, 1, 1, now(), 'phone'),
+  (:'org', 'BK-4', gen_random_uuid(), :'prod', 'paid', 'usd', 'usd', 800, 800, 0, 0, 1, 1, now(), 'whatsapp'),
+  (:'org', 'BK-5', gen_random_uuid(), :'prod', 'paid', 'usd', 'usd', 700, 700, 0, 0, 1, 1, now(), 'walk_in'),
+  (:'org', 'BK-6', gen_random_uuid(), :'prod', 'paid', 'usd', 'usd', 600, 600, 0, 0, 1, 1, now(), 'agency'),
+  (:'org', 'BK-7', gen_random_uuid(), :'prod', 'paid', 'usd', 'usd', 100, 100, 0, 0, 1, 1, now(), 'ota'),
+  (:'org', 'BK-8', gen_random_uuid(), :'prod', 'paid', 'usd', 'usd',  50,  50, 0, 0, 1, 1, now(), 'pos');
+
 -- A2: comisión en moneda base atribuida a BK-1 (resta del margen).
 -- A3: comisión foránea (eur) → excluida del total y del margen, contada aparte.
 insert into commission (organization_id, booking_id, beneficiary_type, amount, currency, status)
@@ -75,13 +88,27 @@ declare
   f timestamptz := now() - interval '1 day'; t timestamptz := now() + interval '1 day';
   pf timestamptz := now() - interval '2 day'; pt timestamptz := now() - interval '1 day';
   series_margin numeric; usd_cash numeric; eur_cash numeric; first_dep timestamptz;
+  direct_margin numeric; otros_sales numeric; channel_sales numeric; n_channels int;
 begin
   -- Vista de administración (sin acotar por cajero).
   admin := public.dashboard_summary(org, f, t, pf, pt, 'usd', 'America/Santo_Domingo');
 
-  -- A2: margen de series = (1000-400-100) + (500-200-0) = 800 (comisión restada).
+  -- A2: el margen resta la comisión variable. Margen total de series =
+  -- direct(1000-400-100=500) + web(300) + phone(900) + whatsapp(800)
+  --   + walk_in(700) + agency(600) + ota(100) + pos(50) = 3950.
   select coalesce(sum((e->>'margin')::numeric),0) from jsonb_array_elements(admin->'series') e into series_margin;
-  assert series_margin = 800, format('A2: series margin esperado 800, obtuvo %s', series_margin);
+  assert series_margin = 3950, format('A2: series margin esperado 3950, obtuvo %s', series_margin);
+  -- A2 en el desglose por canal: el canal 'direct' resta su comisión (1000-400-100).
+  select (x->>'margin')::numeric from jsonb_array_elements(admin->'by_channel') x where x->>'key' = 'direct' into direct_margin;
+  assert direct_margin = 500, format('A2: margen de canal direct esperado 500, obtuvo %s', direct_margin);
+
+  -- B4: 5 canales principales + 'otros'. Suma de porciones = ventas netas (4650).
+  select jsonb_array_length(admin->'by_channel') into n_channels;
+  assert n_channels = 6, format('B4: se esperaban 6 filas (top5 + otros), obtuvo %s', n_channels);
+  select (x->>'sales')::numeric from jsonb_array_elements(admin->'by_channel') x where x->>'key' = 'otros' into otros_sales;
+  assert otros_sales = 650, format('B4: ventas de otros esperado 650 (500+100+50), obtuvo %s', otros_sales);
+  select coalesce(sum((x->>'sales')::numeric),0) from jsonb_array_elements(admin->'by_channel') x into channel_sales;
+  assert channel_sales = (admin->>'net_sales')::numeric, format('B4: suma por canal %s != ventas netas %s', channel_sales, admin->>'net_sales');
 
   -- A3: comisiones — total solo base (100), 1 contada, 1 excluida (eur).
   assert (admin->>'commission_total')::numeric = 100, format('A3 commission_total=%s', admin->>'commission_total');
@@ -118,7 +145,7 @@ begin
     null, null, null, null, null, 'sales', cashier_id);
   assert (cashier->>'collected')::numeric = 400, format('M5 collected cajero=%s (esperado 400)', cashier->>'collected');
 
-  raise notice 'dashboard_summary: TODAS LAS ASERCIONES PASARON (A2, A3, M1, M2, M3, M5)';
+  raise notice 'dashboard_summary: TODAS LAS ASERCIONES PASARON (A2, A3, M1, M2, M3, M5, B4)';
 end $$;
 
 rollback;

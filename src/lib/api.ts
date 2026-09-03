@@ -37,8 +37,8 @@ async function request<T>(
 }
 
 export const api = {
-  get<T>(url: string): Promise<ApiResponse<T>> {
-    return request<T>(url);
+  get<T>(url: string, init?: Pick<RequestInit, "signal">): Promise<ApiResponse<T>> {
+    return request<T>(url, init);
   },
 
   post<T>(url: string, body: unknown): Promise<ApiResponse<T>> {
