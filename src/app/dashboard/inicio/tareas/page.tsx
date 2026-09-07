@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/tf/page-header";
 import { EmptyState } from "@/components/tf/empty-state";
 import { TaskRow } from "../mi-dia/_components/task-row";
 import { toTaskRowData } from "../mi-dia/_components/sections";
+import { CreateTaskDialog } from "./create-task-dialog";
 
 const PAGE_LIMIT = 50;
 
@@ -33,7 +34,10 @@ export default async function Page({
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Tareas" />
+      <PageHeader
+        title="Tareas"
+        actions={<CreateTaskDialog currentUserId={ctx.userId} currentUserName={ctx.name} />}
+      />
       <TaskFilters active={filter} />
 
       {rows.length === 0 ? (
