@@ -219,6 +219,24 @@ describe("Panel ejecutivo", () => {
     expect(dialog).toContain('status: "todo"');
   });
 
+  it("Notificaciones — buzón personal con marcar leídas y alcance por usuario", () => {
+    const page = read("src/app/dashboard/inicio/notificaciones/page.tsx");
+    expect(page).not.toContain("SimpleResource");
+    expect(page).toContain('title="Notificaciones"');
+    expect(page).toContain("Marcar todas como leídas");
+    expect(page).toContain("/api/notifications");
+    // La API acota a las notificaciones propias más los avisos a toda la empresa.
+    const route = read("src/app/api/notifications/route.ts");
+    expect(route).toContain("_or: [{ user_id: userId }, { user_id: null }]");
+    expect(route).toContain("mark_all_read");
+    // La ruta de marcado verifica pertenencia antes de escribir.
+    const readRoute = read("src/app/api/notifications/[id]/read/route.ts");
+    expect(readRoute).toContain("Esta notificación no es tuya");
+    // El sidebar cuenta las no leídas con el mismo alcance personal.
+    expect(read("src/lib/nav.ts")).toContain('badgeKey: "notifications"');
+    expect(read("src/app/dashboard/layout.tsx")).toContain("_or: [{ user_id: userId }, { user_id: null }], read_status: false");
+  });
+
   it("existe una prueba de base de datos de la RPC del panel", () => {
     const sql = read("supabase/tests/dashboard_summary.test.sql");
     expect(sql).toContain("public.dashboard_summary");

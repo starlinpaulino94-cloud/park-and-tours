@@ -19,7 +19,7 @@
  * Client-safe: sin imports de servidor.
  */
 
-export type BadgeKey = "tasks" | "approvals" | "incidents";
+export type BadgeKey = "tasks" | "approvals" | "incidents" | "notifications";
 
 export interface NavItem {
   /** Identificador estable (favoritos, recientes, telemetría). */
@@ -119,7 +119,7 @@ export const WORKSPACES: Workspace[] = [
           { id: "tareas", href: "/dashboard/inicio/tareas", label: "Tareas", icon: "SquareCheck", badgeKey: "tasks",
             description: "Seguimientos manuales y tareas generadas por el sistema.",
             keywords: ["to do", "seguimiento"] },
-          { id: "notificaciones", href: "/dashboard/inicio/notificaciones", label: "Notificaciones", icon: "Bell",
+          { id: "notificaciones", href: "/dashboard/inicio/notificaciones", label: "Notificaciones", icon: "Bell", badgeKey: "notifications",
             description: "Avisos operativos, comerciales y financieros.",
             keywords: ["alertas", "avisos"] },
         ],

@@ -34,7 +34,7 @@ async function loadBadges(ctx: TenantContext & { companyId: string }): Promise<N
     }
   };
 
-  const [tasks, approvals, incidents] = await Promise.all([
+  const [tasks, approvals, incidents, notifications] = await Promise.all([
     safe("tareas", () => tenantCount(companyId, "task", {
       assigned_to: userId, status: { in: [...OPEN_TASK_STATUSES] },
     })),
@@ -42,9 +42,14 @@ async function loadBadges(ctx: TenantContext & { companyId: string }): Promise<N
     safe("incidentes", () => tenantCount(companyId, "incident", {
       status: { in: ["open", "investigating", "action_required", "escalated"] },
     })),
+    // Notificaciones sin leer, con el mismo alcance personal que su buzón:
+    // las del usuario más los avisos a toda la empresa (user_id nulo).
+    safe("notificaciones", () => tenantCount(companyId, "notification", {
+      _or: [{ user_id: userId }, { user_id: null }], read_status: false,
+    })),
   ]);
 
-  return { tasks, approvals, incidents };
+  return { tasks, approvals, incidents, notifications };
 }
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
