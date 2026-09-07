@@ -113,13 +113,14 @@ export function BarList({
 }
 
 export function Donut({
-  slices, size = 168, thickness = 22, centerLabel, centerValue,
+  slices, size = 168, thickness = 22, centerLabel, centerValue, ariaLabel = "Distribución de ventas netas",
 }: {
   slices: { label: string; value: number; color: string }[];
   size?: number;
   thickness?: number;
   centerLabel?: string;
   centerValue?: string;
+  ariaLabel?: string;
 }) {
   const total = slices.reduce((s, x) => s + x.value, 0);
   const r = (size - thickness) / 2;
@@ -128,7 +129,7 @@ export function Donut({
 
   return (
     <div className="flex flex-col items-center gap-5 sm:flex-row">
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Distribución por canal">
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={ariaLabel}>
         <g transform={`rotate(-90 ${size / 2} ${size / 2})`}>
           <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--muted)" strokeWidth={thickness} />
           {total > 0 && slices.map((s) => {
