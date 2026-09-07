@@ -202,7 +202,7 @@ function Team() {
     if (form.password.length < 8) { toast.error("La contraseña debe tener al menos 8 caracteres"); return; }
     if (form.role === "partner" && !form.partner_id) { toast.error("Elige el partner del usuario de portal"); return; }
     setBusy(true);
-    const res = await api.post("/api/team", {
+    const res = await api.post<{ linked?: boolean }>("/api/team", {
       name: form.name.trim(), email: form.email.trim(), password: form.password,
       role: form.role, partner_id: form.partner_id || null,
       branch: form.branch || null, phone: form.phone || null,
@@ -213,7 +213,9 @@ function Team() {
       toast.error(res.error?.message || "No se pudo crear el usuario");
       return;
     }
-    toast.success("Usuario creado. Ya puede entrar con su email y contraseña.");
+    toast.success(res.data?.linked
+      ? "La persona ya tenía una cuenta; se vinculó a esta empresa. Entrará con su contraseña actual."
+      : "Usuario creado. Ya puede entrar con su email y contraseña.");
     setCreateOpen(false);
     setForm({ name: "", email: "", password: "", role: "seller", partner_id: "", branch: "", phone: "" });
     load();
