@@ -1,27 +1,27 @@
 /**
- * Next.js Instrumentation
- * Runs before everything else - ensures logger loads first
+ * Next.js Instrumentation — corre antes que todo lo demás.
  *
- * IMPORTANT: Disabled for Cloudflare Workers deployment
- * The 'nodejs' runtime check prevents this from running in Workers,
- * but we also need to handle the case where the hook itself fails to load
+ * Carga el backend-logger (dev/build en Node) e inicializa Sentry según el
+ * runtime activo. Sentry queda desactivado sin DSN (ver sentry.*.config.ts).
  */
+import * as Sentry from "@sentry/nextjs";
 
-export function register() {
-  // Skip instrumentation in Cloudflare Workers environment
-  // Workers don't have process.env.NEXT_RUNTIME === 'nodejs'
-  // They also don't support require() in this context
-  if (typeof process === 'undefined') {
-    return; // Cloudflare Workers environment
+export async function register() {
+  if (typeof process === "undefined") return;
+
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    try {
+      require("./src/lib/backend-logger");
+    } catch (error) {
+      console.warn("Failed to load backend logger:", error);
+    }
+    await import("./sentry.server.config");
   }
 
-  if (process.env.NEXT_RUNTIME === 'nodejs') {
-    // Only load logger in actual Node.js environment (dev/build)
-    // This won't run in Cloudflare Workers
-    try {
-      require('./src/lib/backend-logger');
-    } catch (error) {
-      console.warn('Failed to load backend logger:', error);
-    }
+  if (process.env.NEXT_RUNTIME === "edge") {
+    await import("./sentry.edge.config");
   }
 }
+
+// Reporta a Sentry los errores de renderizado en servidor (Next 15).
+export const onRequestError = Sentry.captureRequestError;
