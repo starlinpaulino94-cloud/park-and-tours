@@ -250,6 +250,20 @@ describe("Panel ejecutivo", () => {
     expect(page).toContain("Vaciar");
   });
 
+  it("Reservas — exportación CSV, cobro con cambio y KPIs honestos por página", () => {
+    const page = read("src/app/dashboard/reservas/page.tsx");
+    // Exportación de las reservas filtradas (hasta 500) a CSV.
+    expect(page).toContain("const exportCsv");
+    expect(page).toContain('params.set("bulk", "true")');
+    expect(page).toContain("text/csv");
+    // Cobro de saldo con cambio en efectivo, saldo exacto y aviso de sobrepago.
+    expect(page).toContain("payChange");
+    expect(page).toContain("Saldo exacto");
+    expect(page).toContain("overpay");
+    // Los KPIs de importe se declaran por página (no como total filtrado).
+    expect(page).toContain("en esta página");
+  });
+
   it("existe una prueba de base de datos de la RPC del panel", () => {
     const sql = read("supabase/tests/dashboard_summary.test.sql");
     expect(sql).toContain("public.dashboard_summary");
