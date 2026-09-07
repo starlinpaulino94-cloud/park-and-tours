@@ -105,6 +105,7 @@ export default function PosPage() {
   const [payFor, setPayFor] = useState<{ order: any; bookings: any[] } | null>(null);
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState("cash");
+  const [payReceived, setPayReceived] = useState(""); // efectivo entregado, solo para calcular el cambio
 
   const loadContext = useCallback(async () => {
     setLoading(true);
@@ -254,6 +255,9 @@ export default function PosPage() {
 
     setPayFor({ order, bookings });
     setPayAmount(String(order?.total ?? quote?.totals.total ?? ""));
+    // Sin caja abierta el efectivo se rechaza en el servidor: arranca en tarjeta.
+    setPayMethod(ctx?.cash_session ? "cash" : "card");
+    setPayReceived("");
     setCart([]);
     setQuote(null);
     setNotes("");
@@ -266,6 +270,10 @@ export default function PosPage() {
     if (!payFor) return;
     const amount = Number(payAmount);
     if (!Number.isFinite(amount) || amount <= 0) { toast.error("El importe debe ser mayor que cero"); return; }
+    if (payMethod === "cash" && !ctx?.cash_session) {
+      toast.error("Abre una caja para cobrar en efectivo, o elige otro método");
+      return;
+    }
     setBusy(true);
     const res = await api.post("/api/payments", {
       order_id: payFor.order._id,
@@ -281,6 +289,7 @@ export default function PosPage() {
     }
     toast.success("Cobro registrado");
     setPayFor(null);
+    setPayReceived("");
     setCustomerId("");
   };
 
@@ -300,6 +309,14 @@ export default function PosPage() {
     if (!dep) return false;
     return i.adults + i.children + i.infants > (dep.available_pax ?? 0);
   });
+
+  // Ayudas del cobro tras la venta.
+  const canPayCash = Boolean(ctx?.cash_session);
+  const orderTotal = Number(payFor?.order?.total ?? 0);
+  const payAmountNum = Number(payAmount) || 0;
+  const receivedNum = Number(payReceived) || 0;
+  const cashChange = payMethod === "cash" && receivedNum > payAmountNum ? receivedNum - payAmountNum : 0;
+  const pendingAfter = orderTotal > 0 && payAmountNum > 0 && payAmountNum < orderTotal ? orderTotal - payAmountNum : 0;
 
   return (
     <div className="space-y-5">
@@ -460,9 +477,17 @@ export default function PosPage() {
 
           {/* items */}
           <div className="space-y-3">
-            <h2 className="font-display text-base font-semibold">
-              Excursiones en la venta {cart.length > 0 && <span className="text-muted-foreground">({cart.length})</span>}
-            </h2>
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="font-display text-base font-semibold">
+                Excursiones en la venta {cart.length > 0 && <span className="text-muted-foreground">({cart.length})</span>}
+              </h2>
+              {cart.length > 0 && (
+                <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground"
+                  onClick={() => { setCart([]); setQuote(null); }}>
+                  <Icon name="Trash2" className="size-3.5" /> Vaciar
+                </Button>
+              )}
+            </div>
 
             {cart.length === 0 ? (
               <div className="tf-card p-2">
@@ -695,23 +720,62 @@ export default function PosPage() {
             </ul>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5">
-                <Label>Importe a cobrar</Label>
-                <Input type="number" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} />
+                <div className="flex items-center justify-between">
+                  <Label>Importe a cobrar</Label>
+                  {orderTotal > 0 && payAmountNum !== orderTotal && (
+                    <button type="button" className="text-xs font-semibold text-primary hover:underline"
+                      onClick={() => setPayAmount(String(orderTotal))}>
+                      Total exacto ({formatMoney(orderTotal, payFor?.order?.currency || currency)})
+                    </button>
+                  )}
+                </div>
+                <Input type="number" step="0.01" min="0" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} />
               </div>
               <div className="space-y-1.5">
                 <Label>Método</Label>
                 <Select value={payMethod} onValueChange={setPayMethod}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {optionsFrom(PAYMENT_METHOD).map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                    {optionsFrom(PAYMENT_METHOD).map((o) => (
+                      <SelectItem key={o.value} value={o.value} disabled={o.value === "cash" && !canPayCash}>
+                        {o.label}{o.value === "cash" && !canPayCash ? " · sin caja" : ""}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
+
+              {/* Cambio en efectivo: el "recibido" es solo para calcular la vuelta. */}
+              {payMethod === "cash" && (
+                <div className="space-y-1.5">
+                  <Label>Efectivo recibido</Label>
+                  <Input type="number" step="0.01" min="0" value={payReceived} placeholder="0.00"
+                    onChange={(e) => setPayReceived(e.target.value)} />
+                </div>
+              )}
+              {payMethod === "cash" && (
+                <div className="flex items-end">
+                  <div className="w-full rounded-lg bg-muted/50 px-3 py-2 text-sm">
+                    <span className="text-muted-foreground">Cambio</span>
+                    <span className="tf-num float-right font-semibold">
+                      {formatMoney(cashChange, payFor?.order?.currency || currency)}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
+
+            {pendingAfter > 0 && (
+              <p className="rounded-lg bg-amber-50 px-3 py-2 text-[13px] text-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
+                Cobro parcial: quedará un saldo pendiente de {formatMoney(pendingAfter, payFor?.order?.currency || currency)}.
+              </p>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setPayFor(null); setCustomerId(""); }}>Cobrar más tarde</Button>
-            <Button onClick={registerPayment} disabled={busy}>{busy ? "Cobrando…" : "Cobrar ahora"}</Button>
+            <Button onClick={registerPayment} disabled={busy || (payMethod === "cash" && !canPayCash)}>
+              {busy ? "Cobrando…" : "Cobrar ahora"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

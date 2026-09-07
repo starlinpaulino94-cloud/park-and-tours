@@ -237,6 +237,19 @@ describe("Panel ejecutivo", () => {
     expect(read("src/app/dashboard/layout.tsx")).toContain("_or: [{ user_id: userId }, { user_id: null }], read_status: false");
   });
 
+  it("POS — cobro con cambio en efectivo, total exacto y guardas de caja", () => {
+    const page = read("src/app/dashboard/pos/page.tsx");
+    // El efectivo se bloquea sin caja abierta (evita un cobro que el servidor rechaza).
+    expect(page).toContain('disabled={o.value === "cash" && !canPayCash}');
+    expect(page).toContain('payMethod === "cash" && !ctx?.cash_session');
+    // Cálculo del cambio y del saldo pendiente.
+    expect(page).toContain("cashChange");
+    expect(page).toContain("pendingAfter");
+    // Atajo de total exacto y vaciar la venta.
+    expect(page).toContain("Total exacto");
+    expect(page).toContain("Vaciar");
+  });
+
   it("existe una prueba de base de datos de la RPC del panel", () => {
     const sql = read("supabase/tests/dashboard_summary.test.sql");
     expect(sql).toContain("public.dashboard_summary");
