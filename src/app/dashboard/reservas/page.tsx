@@ -63,25 +63,32 @@ export default function BookingsPage() {
   const [paying, setPaying] = useState<Booking | null>(null);
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState("cash");
+  const [payReceived, setPayReceived] = useState(""); // efectivo entregado, solo para el cambio
+  const [exporting, setExporting] = useState(false);
 
   const PAGE_SIZE = 50;
 
+  // Filtros compartidos por el listado y la exportación.
+  const filterParams = useCallback(() => {
+    const p = new URLSearchParams();
+    if (search) p.set("q", search);
+    if (statusFilter !== "__all") p.set("filter.status", statusFilter);
+    if (channelFilter !== "__all") p.set("filter.channel", channelFilter);
+    if (departureFilter) p.set("filter.departure", departureFilter);
+    if (from || to) {
+      p.set("dateField", "travel_date");
+      if (from) p.set("from", from);
+      if (to) p.set("to", `${to}T23:59:59`);
+    }
+    return p;
+  }, [search, statusFilter, channelFilter, departureFilter, from, to]);
+
   const load = useCallback(async () => {
     setLoading(true);
-    const params = new URLSearchParams({
-      limit: String(PAGE_SIZE),
-      offset: String(page * PAGE_SIZE),
-      includeTotal: "false",
-    });
-    if (search) params.set("q", search);
-    if (statusFilter !== "__all") params.set("filter.status", statusFilter);
-    if (channelFilter !== "__all") params.set("filter.channel", channelFilter);
-    if (departureFilter) params.set("filter.departure", departureFilter);
-    if (from || to) {
-      params.set("dateField", "travel_date");
-      if (from) params.set("from", from);
-      if (to) params.set("to", `${to}T23:59:59`);
-    }
+    const params = filterParams();
+    params.set("limit", String(PAGE_SIZE));
+    params.set("offset", String(page * PAGE_SIZE));
+    params.set("includeTotal", "false");
 
     const res = await api.get<Booking[]>(`/api/erp/booking?${params}`);
     setLoading(false);
@@ -93,7 +100,53 @@ export default function BookingsPage() {
     }
     setRows(res.data || []);
     setTotal(res.total ?? (res.data || []).length);
-  }, [search, statusFilter, channelFilter, from, to, page, departureFilter]);
+  }, [filterParams, page]);
+
+  // Exporta a CSV las reservas que cumplen los filtros actuales (hasta 500).
+  const exportCsv = async () => {
+    setExporting(true);
+    const params = filterParams();
+    params.set("bulk", "true");
+    params.set("limit", "500");
+    params.set("includeTotal", "false");
+    const res = await api.get<Booking[]>(`/api/erp/booking?${params}`);
+    setExporting(false);
+    if (!res.ok || !res.data) {
+      toast.error(res.error?.message || "No se pudo exportar");
+      return;
+    }
+    const data = res.data;
+    if (data.length === 0) { toast.error("No hay reservas que exportar con estos filtros"); return; }
+    const headers = ["Reserva", "Cliente", "Excursión", "Fecha viaje", "Pax", "Canal", "Estado", "Total", "Cobrado", "Saldo", "Moneda"];
+    const cell = (v: unknown) => {
+      const s = v === null || v === undefined ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = data.map((b) => [
+      b.booking_number ?? "",
+      customerName(b),
+      typeof b.product === "object" && b.product ? b.product.name : "",
+      b.travel_date ? formatDate(b.travel_date) : "",
+      b.pax_total ?? 0,
+      CHANNEL[b.channel || ""]?.label || b.channel || "",
+      BOOKING_STATUS[b.status || ""]?.label || b.status || "",
+      b.total_amount ?? 0,
+      b.paid_amount ?? 0,
+      b.balance_amount ?? 0,
+      (b.currency || "").toUpperCase(),
+    ].map(cell).join(","));
+    const csv = [headers.join(","), ...lines].join("\n");
+    const blob = new Blob([`﻿${csv}`], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `reservas-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast.success(`${data.length} reserva${data.length === 1 ? "" : "s"} exportada${data.length === 1 ? "" : "s"}`);
+  };
 
   useEffect(() => { load(); }, [load]);
 
@@ -162,6 +215,7 @@ export default function BookingsPage() {
     toast.success("Cobro registrado");
     setPaying(null);
     setPayAmount("");
+    setPayReceived("");
     setDetail(null);
     load();
   };
@@ -178,6 +232,13 @@ export default function BookingsPage() {
       ? [b.customer.first_name, b.customer.last_name].filter(Boolean).join(" ") || "Sin nombre"
       : "Sin cliente";
 
+  // Ayudas del cobro de saldo.
+  const payBalance = Number(paying?.balance_amount ?? 0);
+  const payAmtNum = Number(payAmount) || 0;
+  const payRecNum = Number(payReceived) || 0;
+  const payChange = payMethod === "cash" && payRecNum > payAmtNum ? payRecNum - payAmtNum : 0;
+  const overpay = payAmtNum > payBalance + 0.009;
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -188,6 +249,9 @@ export default function BookingsPage() {
           <>
             <Button variant="outline" size="icon" onClick={load} aria-label="Actualizar">
               <Icon name="RefreshCw" className="size-4" />
+            </Button>
+            <Button variant="outline" className="gap-1.5" onClick={exportCsv} disabled={exporting || loading}>
+              <Icon name="Download" className="size-4" /> {exporting ? "Exportando…" : "Exportar"}
             </Button>
             <Link href="/dashboard/pos">
               <Button className="gap-1.5"><Icon name="Plus" className="size-4" /> Nueva venta</Button>
@@ -210,9 +274,9 @@ export default function BookingsPage() {
         <KpiCard tone="primary" icon="CalendarCheck" label="Reservas en pantalla" value={formatNumber(rows.length)}
           hint={`${formatNumber(total)} en total con estos filtros`} />
         <KpiCard tone="ink" icon="Banknote" label="Facturado" value={formatMoney(sales, currency)}
-          hint={`${formatNumber(pax)} pasajeros`} />
+          hint={`${formatNumber(pax)} pasajeros · en esta página`} />
         <KpiCard tone="amber" icon="Clock" label="Saldo pendiente" value={formatMoney(pendingBalance, currency)}
-          hint="Reservas sin cobrar por completo" />
+          hint="Sin cobrar por completo · en esta página" />
         <KpiCard icon="Ticket" label="Ticket medio"
           value={formatMoney(live.length ? sales / live.length : 0, currency)}
           hint={`${formatNumber(rows.filter((b) => ["cancelled", "refunded"].includes(b.status || "")).length)} canceladas`} />
@@ -467,7 +531,7 @@ export default function BookingsPage() {
 
               <div className="flex flex-wrap gap-2">
                 {(detail.balance_amount ?? 0) > 0.009 && (
-                  <Button className="gap-1.5" onClick={() => { setPaying(detail); setPayAmount(String(detail.balance_amount ?? "")); }}>
+                  <Button className="gap-1.5" onClick={() => { setPaying(detail); setPayAmount(String(detail.balance_amount ?? "")); setPayReceived(""); }}>
                     <Icon name="CreditCard" className="size-4" /> Cobrar saldo
                   </Button>
                 )}
@@ -527,7 +591,7 @@ export default function BookingsPage() {
       </Dialog>
 
       {/* ---- collect balance -------------------------------------------- */}
-      <Dialog open={!!paying} onOpenChange={(v) => !v && setPaying(null)}>
+      <Dialog open={!!paying} onOpenChange={(v) => { if (!v) { setPaying(null); setPayReceived(""); } }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Cobrar {paying?.booking_number}</DialogTitle>
@@ -537,19 +601,49 @@ export default function BookingsPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-1.5">
-              <Label>Importe</Label>
-              <Input type="number" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} autoFocus />
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label>Importe</Label>
+                  {payBalance > 0 && payAmtNum !== payBalance && (
+                    <button type="button" className="text-xs font-semibold text-primary hover:underline"
+                      onClick={() => setPayAmount(String(payBalance))}>
+                      Saldo exacto
+                    </button>
+                  )}
+                </div>
+                <Input type="number" step="0.01" min="0" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} autoFocus />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Método</Label>
+                <Select value={payMethod} onValueChange={setPayMethod}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {optionsFrom(PAYMENT_METHOD).map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              {payMethod === "cash" && (
+                <div className="space-y-1.5">
+                  <Label>Efectivo recibido</Label>
+                  <Input type="number" step="0.01" min="0" value={payReceived} placeholder="0.00"
+                    onChange={(e) => setPayReceived(e.target.value)} />
+                </div>
+              )}
+              {payMethod === "cash" && (
+                <div className="flex items-end">
+                  <div className="w-full rounded-lg bg-muted/50 px-3 py-2 text-sm">
+                    <span className="text-muted-foreground">Cambio</span>
+                    <span className="tf-num float-right font-semibold">{formatMoney(payChange, paying?.currency)}</span>
+                  </div>
+                </div>
+              )}
             </div>
-            <div className="space-y-1.5">
-              <Label>Método</Label>
-              <Select value={payMethod} onValueChange={setPayMethod}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {optionsFrom(PAYMENT_METHOD).map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
+            {overpay && (
+              <p className="rounded-lg bg-amber-50 px-3 py-2 text-[13px] text-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
+                El importe supera el saldo pendiente ({formatMoney(payBalance, paying?.currency)}).
+              </p>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPaying(null)}>Cancelar</Button>
