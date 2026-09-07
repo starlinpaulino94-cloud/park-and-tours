@@ -209,6 +209,16 @@ describe("Panel ejecutivo", () => {
     expect(charts).toContain("<caption>Evolución de ventas por fecha</caption>");
   });
 
+  it("Tareas — la vista permite crear tareas", () => {
+    const page = read("src/app/dashboard/inicio/tareas/page.tsx");
+    expect(page).toContain("CreateTaskDialog");
+    const dialog = read("src/app/dashboard/inicio/tareas/create-task-dialog.tsx");
+    expect(dialog).toContain('api.post("/api/erp/task"');
+    // Por defecto se asigna a uno mismo, para que la tarea aparezca en esta vista.
+    expect(dialog).toContain("assigned_to: assignedTo || currentUserId");
+    expect(dialog).toContain('status: "todo"');
+  });
+
   it("existe una prueba de base de datos de la RPC del panel", () => {
     const sql = read("supabase/tests/dashboard_summary.test.sql");
     expect(sql).toContain("public.dashboard_summary");
@@ -266,7 +276,7 @@ describe("pantallas satélite de Mi día", () => {
   it("Tareas muestra las tareas del usuario y reutiliza la acción rápida", () => {
     const source = read("src/app/dashboard/inicio/tareas/page.tsx");
     expect(source).not.toContain("SimpleResource");
-    expect(source).toContain("<PageHeader title=\"Tareas\" />");
+    expect(source).toContain('title="Tareas"');
     expect(source).toContain("<TaskRow");
     expect(source).toContain("listFilter(filter, ctx.userId");
     expect(source).not.toContain("eyebrow=");
