@@ -144,6 +144,106 @@ describe("Panel ejecutivo", () => {
     expect(migration).toContain("p_channel is null or coalesce(pb.channel::text, po.channel::text) = p_channel");
   });
 
+  it("A1 — series y ventas por canal no se filtran a roles sin acceso a ingresos", () => {
+    const route = read("src/app/api/dashboard/route.ts");
+    // El RPC siempre calcula series/by_channel; la capa API las oculta a quien no ve ingresos.
+    expect(route).toContain("series: permissions.canViewRevenue ? asRows(summary?.series) : []");
+    expect(route).toContain("by_channel: permissions.canViewRevenue ? asRows(summary?.by_channel) : []");
+    // La UI no renderiza la sección de evolución/canales sin canViewRevenue.
+    const page = read("src/app/dashboard/page.tsx");
+    expect(page).toContain("data.permissions.canViewRevenue && (");
+  });
+
+  it("A2 — el margen de series y rankings es margen de contribución (resta comisión)", () => {
+    const migration = read("supabase/migrations/0026_dashboard_exec_audit_high.sql");
+    // Comisión variable atribuida por reserva y restada del margen en cada agregación.
+    expect(migration).toContain("booking_commission as (");
+    expect(migration).toContain("left join booking_commission bc on bc.booking_id = b.id");
+    expect(migration).toContain("sale_base - cost_base - commission_base");
+    // Ya no debe quedar ninguna definición de margen sin comisión.
+    expect(migration).not.toMatch(/sum\(sale_base - cost_base\)/);
+    expect(migration).not.toMatch(/sum\(b\.sale_base - b\.cost_base\)/);
+  });
+
+  it("A3 — los conteos financieros solo cuentan filas en moneda base y exponen las excluidas", () => {
+    const migration = read("supabase/migrations/0026_dashboard_exec_audit_high.sql");
+    expect(migration).toContain("count(*) filter (where amount_base is not null) as count");
+    expect(migration).toContain("count(*) filter (where amount_base is null) as excluded_count");
+    for (const key of ["commission_excluded_count", "receivable_excluded_count", "payable_excluded_count"]) {
+      expect(migration).toContain(`'${key}'`);
+    }
+    // La API propaga los conteos excluidos hacia la UI.
+    const route = read("src/app/api/dashboard/route.ts");
+    for (const key of ["commissions_excluded_count", "receivables_excluded_count", "payables_excluded_count"]) {
+      expect(route).toContain(key);
+    }
+  });
+
+  it("M1/M2/M3/M5 — el RPC de severidad media corrige vencidas, efectivo, orden y caja", () => {
+    const migration = read("supabase/migrations/0027_dashboard_exec_audit_media.sql");
+    // M1: vencidas por due_date real, no por el flag status.
+    expect(migration).toContain("r.due_date < (now() at time zone p_timezone)::date");
+    expect(migration).toContain("count(*) filter (where is_overdue) as overdue_count");
+    // M2: desglose de efectivo por divisa.
+    expect(migration).toContain("cash_currency_rows as");
+    expect(migration).toContain("'cash_by_currency'");
+    // M3: próximas salidas en orden cronológico.
+    expect(migration).toContain("order by departure_at asc");
+    // M5: la caja acota la recaudación al usuario cajero.
+    expect(migration).toContain("p_cash_user_id is null or p.user_id = p_cash_user_id");
+  });
+
+  it("M2 — la API y la UI exponen el efectivo por divisa", () => {
+    expect(read("src/app/api/dashboard/route.ts")).toContain("cash_by_currency: permissions.canViewCash");
+    const page = read("src/app/dashboard/page.tsx");
+    expect(page).toContain("function cashHint");
+    expect(page).toContain("cash_by_currency");
+  });
+
+  it("M4 — los indicadores y la gráfica son accesibles sin ratón", () => {
+    // La definición del KPI llega a lectores de pantalla, no solo por title del ratón.
+    expect(read("src/components/tf/kpi-card.tsx")).toContain('<span className="sr-only">{definition}</span>');
+    // La gráfica de área ofrece una tabla equivalente para lectores de pantalla.
+    const charts = read("src/components/tf/charts.tsx");
+    expect(charts).toContain('<table className="sr-only">');
+    expect(charts).toContain("<caption>Evolución de ventas por fecha</caption>");
+  });
+
+  it("existe una prueba de base de datos de la RPC del panel", () => {
+    const sql = read("supabase/tests/dashboard_summary.test.sql");
+    expect(sql).toContain("public.dashboard_summary");
+    expect(sql).toContain("rollback");
+  });
+
+  it("B1/B2/B6 — la vista persiste en la URL, filtra por rol y cancela peticiones", () => {
+    const page = read("src/app/dashboard/page.tsx");
+    // B1: sincroniza periodo/rankBy/filtros con la URL.
+    expect(page).toContain("window.history.replaceState");
+    expect(page).toContain("window.location.search");
+    // B2: los filtros de vendedor/tour center solo para roles con visión global.
+    expect(page).toContain("data?.permissions.canViewGlobalRankings && (");
+    // B6: aborta la petición anterior en vuelo.
+    expect(page).toContain("new AbortController()");
+    expect(page).toContain("controller.signal");
+  });
+
+  it("B3 — hay una alerta de tasa de cancelación elevada", () => {
+    expect(read("src/app/api/dashboard/route.ts")).toContain("Tasa de cancelación elevada");
+  });
+
+  it("B4 — el RPC agrupa los canales secundarios en 'otros'", () => {
+    const migration = read("supabase/migrations/0028_dashboard_channel_otros.sql");
+    expect(migration).toContain("where rn <= 5");
+    expect(migration).toContain("'otros', 'otros'");
+    expect(read("src/lib/labels.ts")).toContain('otros: def("Otros"');
+  });
+
+  it("B5 — el indicador de tendencia tiene estado neutro para 0%", () => {
+    const card = read("src/components/tf/kpi-card.tsx");
+    expect(card).toContain('"flat"');
+    expect(card).toContain("ArrowRight");
+  });
+
   it("los filtros del dashboard usan opciones legibles y no campos manuales por ID", () => {
     const page = read("src/app/dashboard/page.tsx");
     expect(page).toContain("function OptionFilter");

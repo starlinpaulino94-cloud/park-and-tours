@@ -37,6 +37,7 @@ interface DashboardData {
   top_sellers: Bucket[];
   top_partners: Bucket[];
   by_channel: Bucket[];
+  cash_by_currency: { currency: string; amount: number; sessions: number; amount_base: number }[];
   upcoming_departures: {
     _id: string; product: string; departure_at: string; capacity: number; booked: number; pending: number;
     available: number; status: string; occupancy: number;
@@ -79,6 +80,8 @@ export default function DashboardPage() {
   const requestSeq = useRef(0);
   const hasLoaded = useRef(false);
   const loadedFilterOptions = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const [urlReady, setUrlReady] = useState(false);
 
   const activeFilters = Object.values(filters).filter(Boolean).length + (period === "custom" ? 1 : 0);
   const currency = data?.currency || "usd";
@@ -87,12 +90,17 @@ export default function DashboardPage() {
   const number = (value?: number | null) => typeof value === "number" ? formatNumber(value) : "Restringido";
 
   const load = useCallback(async () => {
+    // B6: cancela la petición en vuelo anterior para no gastar red ni competir
+    // por el estado (el guard de secuencia ya descarta respuestas obsoletas).
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     const seq = ++requestSeq.current;
     setError(null);
     if (!hasLoaded.current) setLoading(true);
     const params = new URLSearchParams({ period, rankBy });
     for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
-    const res = await api.get<DashboardData>(`/api/dashboard?${params.toString()}`);
+    const res = await api.get<DashboardData>(`/api/dashboard?${params.toString()}`, { signal: controller.signal });
     if (seq !== requestSeq.current) return;
     setLoading(false);
     if (!res.ok || !res.data) {
@@ -108,6 +116,32 @@ export default function DashboardPage() {
   }, [filters, period, rankBy]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  // B1: el periodo, el criterio de ranking y los filtros persisten en la URL,
+  // de modo que recargar o compartir el enlace conserva la vista.
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    const p = sp.get("period");
+    if (p && PERIODS.some((x) => x.value === p)) setPeriod(p);
+    const r = sp.get("rankBy");
+    if (r && RANKS.some((x) => x.value === r)) setRankBy(r as DashboardData["rankBy"]);
+    setFilters({
+      product: sp.get("product") || "", branch: sp.get("branch") || "", seller: sp.get("seller") || "",
+      partner: sp.get("partner") || "", channel: sp.get("channel") || "", from: sp.get("from") || "", to: sp.get("to") || "",
+    });
+    setUrlReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!urlReady) return;
+    const sp = new URLSearchParams();
+    if (period !== "month") sp.set("period", period);
+    if (rankBy !== "sales") sp.set("rankBy", rankBy);
+    for (const [key, value] of Object.entries(filters)) if (value) sp.set(key, value);
+    const qs = sp.toString();
+    window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
+  }, [urlReady, period, rankBy, filters]);
 
   useEffect(() => {
     if (!filtersOpen || loadedFilterOptions.current) return;
@@ -171,8 +205,14 @@ export default function DashboardPage() {
           )}
           <OptionFilter label="Producto" value={filters.product} options={filterOptions.products} loading={filterOptionsLoading} onChange={(product) => setFilters((f) => ({ ...f, product }))} />
           <OptionFilter label="Sucursal" value={filters.branch} options={filterOptions.branches} loading={filterOptionsLoading} onChange={(branch) => setFilters((f) => ({ ...f, branch }))} />
-          <OptionFilter label="Vendedor" value={filters.seller} options={filterOptions.sellers} loading={filterOptionsLoading} onChange={(seller) => setFilters((f) => ({ ...f, seller }))} />
-          <OptionFilter label="Tour center" value={filters.partner} options={filterOptions.partners} loading={filterOptionsLoading} onChange={(partner) => setFilters((f) => ({ ...f, partner }))} />
+          {/* B2: solo los roles con visión global pueden segmentar por vendedor o
+              tour center; a un vendedor/partner su alcance ya viene forzado. */}
+          {data?.permissions.canViewGlobalRankings && (
+            <>
+              <OptionFilter label="Vendedor" value={filters.seller} options={filterOptions.sellers} loading={filterOptionsLoading} onChange={(seller) => setFilters((f) => ({ ...f, seller }))} />
+              <OptionFilter label="Tour center" value={filters.partner} options={filterOptions.partners} loading={filterOptionsLoading} onChange={(partner) => setFilters((f) => ({ ...f, partner }))} />
+            </>
+          )}
           <Select value={filters.channel || "__all"} onValueChange={(channel) => setFilters((f) => ({ ...f, channel: channel === "__all" ? "" : channel }))}>
             <SelectTrigger aria-label="Canal"><SelectValue placeholder="Canal" /></SelectTrigger>
             <SelectContent>
@@ -213,30 +253,32 @@ export default function DashboardPage() {
           </section>
 
           <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {data.permissions.canViewReceivables && <KpiLink href="/dashboard/deudas"><KpiCard icon="ArrowDownToLine" label="Por cobrar" value={money(k.receivables_balance)} hint={`${number(k.receivables_count)} documentos abiertos`} /></KpiLink>}
-            {data.permissions.canViewPayables && <KpiLink href="/dashboard/finanzas/facturas"><KpiCard icon="ArrowUpFromLine" label="Por pagar" value={money(k.payables_balance)} hint={`${number(k.payables_count)} obligaciones abiertas`} /></KpiLink>}
-            {data.permissions.canViewCommissions && <KpiLink href="/dashboard/comisiones"><KpiCard icon="Percent" label="Comisiones pendientes" value={money(k.commissions_pending)} hint={`${number(k.commissions_count)} comisiones sin liquidar`} /></KpiLink>}
-            {data.permissions.canViewCash && <KpiLink href="/dashboard/caja"><KpiCard tone="amber" icon="Wallet" label="Efectivo en caja" value={money(k.cash_on_hand)} hint={`${number(k.open_cash_sessions)} sesiones abiertas`} /></KpiLink>}
+            {data.permissions.canViewReceivables && <KpiLink href="/dashboard/deudas"><KpiCard icon="ArrowDownToLine" label="Por cobrar" value={money(k.receivables_balance)} hint={withExcluded(`${number(k.receivables_count)} documentos abiertos`, k.receivables_excluded_count)} /></KpiLink>}
+            {data.permissions.canViewPayables && <KpiLink href="/dashboard/finanzas/facturas"><KpiCard icon="ArrowUpFromLine" label="Por pagar" value={money(k.payables_balance)} hint={withExcluded(`${number(k.payables_count)} obligaciones abiertas`, k.payables_excluded_count)} /></KpiLink>}
+            {data.permissions.canViewCommissions && <KpiLink href="/dashboard/comisiones"><KpiCard icon="Percent" label="Comisiones pendientes" value={money(k.commissions_pending)} hint={withExcluded(`${number(k.commissions_count)} comisiones sin liquidar`, k.commissions_excluded_count)} /></KpiLink>}
+            {data.permissions.canViewCash && <KpiLink href="/dashboard/caja"><KpiCard tone="amber" icon="Wallet" label="Efectivo en caja" value={money(k.cash_on_hand)} hint={cashHint(data.cash_by_currency, currency, number(k.open_cash_sessions))} definition="Efectivo esperado en sesiones de caja abiertas, con el desglose por divisa física." /></KpiLink>}
           </section>
 
-          <section className="grid gap-4 lg:grid-cols-[1.5fr_1fr]">
-            <div className="tf-card p-5">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-                <h2 className="font-display text-lg font-semibold">Evolución de ventas netas</h2>
-                <span className="text-xs text-muted-foreground">Última actualización: {formatDate(data.lastUpdatedAt)} · {formatTime(data.lastUpdatedAt)}</span>
+          {data.permissions.canViewRevenue && (
+            <section className="grid gap-4 lg:grid-cols-[1.5fr_1fr]">
+              <div className="tf-card p-5">
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="font-display text-lg font-semibold">Evolución de ventas netas</h2>
+                  <span className="text-xs text-muted-foreground">Última actualización: {formatDate(data.lastUpdatedAt)} · {formatTime(data.lastUpdatedAt)}</span>
+                </div>
+                <AreaChart data={data.series.map((point) => ({ label: point.key, value: point.sales }))} currencyFormatter={(v) => formatMoney(v, currency)} />
               </div>
-              <AreaChart data={data.series.map((point) => ({ label: point.key, value: point.sales }))} currencyFormatter={(v) => formatMoney(v, currency)} />
-            </div>
-            <div className="tf-card p-5">
-              <h2 className="mb-4 font-display text-lg font-semibold">Ventas por canal</h2>
-              <Donut
-                slices={data.by_channel.map((channel, i) => ({ label: labelOf(CHANNEL, channel.key).label, value: channel.sales, color: CHART_COLORS[i % CHART_COLORS.length] }))}
-                centerValue={formatCompactMoney((k.net_sales as number) || 0, currency)}
-                centerLabel="ventas netas"
-              />
-              <AccessibleBucketTable data={data.by_channel} currency={currency} />
-            </div>
-          </section>
+              <div className="tf-card p-5">
+                <h2 className="mb-4 font-display text-lg font-semibold">Ventas por canal</h2>
+                <Donut
+                  slices={data.by_channel.map((channel, i) => ({ label: labelOf(CHANNEL, channel.key).label, value: channel.sales, color: CHART_COLORS[i % CHART_COLORS.length] }))}
+                  centerValue={formatCompactMoney((k.net_sales as number) || 0, currency)}
+                  centerLabel="ventas netas"
+                />
+                <AccessibleBucketTable data={data.by_channel} currency={currency} />
+              </div>
+            </section>
+          )}
 
           <section className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -317,6 +359,18 @@ const sellerLabel = (row: Record<string, unknown>) => {
   const fullName = [row.first_name, row.last_name].filter(Boolean).join(" ").trim();
   return row.code && fullName ? `${fullName} (${row.code})` : fullName || String(row.email || row.code || row._id || "Sin nombre");
 };
+
+function withExcluded(base: string, excluded?: number | null) {
+  return typeof excluded === "number" && excluded > 0 ? `${base} · ${formatNumber(excluded)} sin conversión` : base;
+}
+
+// M2: cuando hay efectivo en más de una divisa física, no se resume a un único
+// total: se listan las divisas para no ocultar cuánto hay en cada una.
+function cashHint(byCurrency: DashboardData["cash_by_currency"], baseCurrency: string, sessions: string) {
+  const rows = byCurrency?.filter((row) => row.amount !== 0) ?? [];
+  if (rows.length > 1) return rows.map((row) => formatMoney(row.amount, row.currency || baseCurrency)).join(" · ");
+  return `${sessions} sesiones abiertas`;
+}
 
 function KpiLink({ href, children }: { href: string; children: React.ReactNode }) {
   return <Link href={href} className="block focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2">{children}</Link>;

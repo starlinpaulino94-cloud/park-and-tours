@@ -109,6 +109,8 @@ export const CHANNEL: Record<string, LabelDef> = {
   tour_center: def("Tour Center", "accent"),
   ota: def("OTA", "info"),
   pos: def("Punto de venta", "neutral"),
+  // Agrupación del panel ejecutivo para canales fuera del top del gráfico.
+  otros: def("Otros", "neutral"),
 };
 
 export const PARTNER_TYPE: Record<string, LabelDef> = {
