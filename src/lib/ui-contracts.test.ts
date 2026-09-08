@@ -295,6 +295,24 @@ describe("Panel ejecutivo", () => {
     expect(page).not.toMatch(/api\.(post|put|delete)\(/);
   });
 
+  it("Cotizaciones — pipeline, vigencia derivada, margen y desglose de líneas", () => {
+    const page = read("src/app/dashboard/ventas/cotizaciones/page.tsx");
+    expect(page).not.toContain("SimpleResource");
+    expect(page).toContain('title="Cotizaciones"');
+    // La vigencia real manda sobre el `status` almacenado.
+    expect(page).toContain("function ValidityPill");
+    expect(page).toContain("const expired");
+    expect(page).toContain("const live");
+    // El módulo promete margen: ahora se muestra.
+    expect(page).toContain("margin_percent");
+    // Embudo y exportación.
+    expect(page).toContain("Tasa de conversión");
+    expect(page).toContain("const exportCsv");
+    // El detalle trae las líneas expandidas desde el recurso.
+    expect(page).toContain("quote_line");
+    expect(read("src/lib/resources.ts")).toContain("quote_line: { _limit: 100, product: true }");
+  });
+
   it("existe una prueba de base de datos de la RPC del panel", () => {
     const sql = read("supabase/tests/dashboard_summary.test.sql");
     expect(sql).toContain("public.dashboard_summary");

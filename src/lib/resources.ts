@@ -686,6 +686,12 @@ export const RESOURCES: Record<string, ResourceDef> = {
     table: "quote",
     search: ["code", "notes"],
     expand: { customer: true, partner: true, seller: true },
+    // El detalle trae las líneas: una cotización sin su desglose no se puede
+    // revisar ni comparar contra el total que se le prometió al cliente.
+    expandOne: {
+      customer: true, partner: true, seller: true, order: true,
+      quote_line: { _limit: 100, product: true },
+    },
     sort: { createdAt: "desc" },
     writable: ["code", "status", "quote_type", "issued_at", "valid_until", "event_date", "pax", "subtotal", "discount", "tax", "total", "currency", "margin_percent", "terms", "notes", "rejection_reason", "sent_at", "decided_at", "customer", "partner", "seller", "lead", "order", "user"],
     numeric: ["pax", "subtotal", "discount", "tax", "total", "margin_percent"],
