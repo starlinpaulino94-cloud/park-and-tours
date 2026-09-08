@@ -1,7 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+// `expand.ts` arrastra el proveedor de datos al importarse; aquí solo se
+// necesitan sus mapas de relaciones.
+vi.mock("@/lib/supabase/data-provider", () => ({ spQuery: vi.fn() }));
+vi.mock("@/lib/user-directory", () => ({ resolveUserNames: vi.fn() }));
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { DEFAULT_FIELD_ALIASES, TABLE_FIELD_ALIASES } from "@/lib/supabase/query-translator";
+import {
+  RELATION_RESOURCE, TABLE_RELATION_RESOURCE, USER_REF_FIELDS, childForeignKey,
+} from "@/lib/supabase/expand";
 
 /**
  * Lo que la aplicación escribe contra las columnas que existen de verdad.
@@ -248,5 +256,83 @@ describe("el esquema cubre todo lo que la aplicación escribe", () => {
       }
     }
     expect(problems, "columna booleana tratada como texto yes/no").toEqual([]);
+  });
+
+  it("cada relación declarada en resources.ts se puede resolver", () => {
+    // Un `expand` que no corresponde a ninguna referencia real no fallaba
+    // mientras las expansiones se ignoraban: ahora dispara una consulta que la
+    // base rechaza. Se valida el camino completo, incluidas las anidadas.
+    const src = readFileSync(path.join(SRC, "lib/resources.ts"), "utf8");
+    const blocks = new Map<string, string>();
+    for (const block of src.matchAll(/^ {2}(\w+):\s*\{\n([\s\S]*?)^ {2}\},/gm)) blocks.set(block[1], block[2]);
+
+    const tableOf = (resource: string) => {
+      const body = blocks.get(resource);
+      const declared = body ? /table:\s*"(\w+)"/.exec(body)?.[1] : undefined;
+      return TABLE_MAP[declared ?? resource] ?? declared ?? resource;
+    };
+
+    /** Objeto literal de una clave, con sus llaves equilibradas. */
+    const objectAt = (body: string, key: string): string | null => {
+      const at = body.indexOf(`${key}: {`);
+      if (at < 0) return null;
+      const open = body.indexOf("{", at);
+      let depth = 0;
+      for (let i = open; i < body.length; i++) {
+        if (body[i] === "{") depth++;
+        else if (body[i] === "}") { depth--; if (depth === 0) return body.slice(open + 1, i); }
+      }
+      return null;
+    };
+
+    const problems: string[] = [];
+
+    function walk(resource: string, spec: string, trail: string, depth: number) {
+      if (depth > 3) return;
+      const table = tableOf(resource);
+      const columns = SCHEMA.get(table);
+      if (!columns) { problems.push(`${trail}: tabla ${table} desconocida`); return; }
+
+      for (const part of splitTopLevel(spec, "{[(", "}])")) {
+        const key = /^\s*(\w+)\s*:/.exec(part)?.[1];
+        if (!key || key.startsWith("_")) continue;
+
+        const here = `${trail}.${key}`;
+        if (USER_REF_FIELDS.has(key)) continue;
+
+        const target = TABLE_RELATION_RESOURCE[table]?.[key] || RELATION_RESOURCE[key]
+          || (blocks.has(key) ? key : null);
+        const column = TABLE_FIELD_ALIASES[table]?.[key] ?? DEFAULT_FIELD_ALIASES[key] ?? `${key}_id`;
+
+        if (columns.has(column)) {
+          // Uno-a-uno: la columna existe, pero tiene que apuntar a un recurso.
+          if (!target) { problems.push(`${here}: ${table}.${column} existe pero ${key} no es un recurso`); continue; }
+        } else if (target) {
+          // Uno-a-muchos: la tabla hija tiene que apuntar de vuelta al padre.
+          const childTable = tableOf(target);
+          const fk = childForeignKey(resource, childTable);
+          if (!SCHEMA.get(childTable)?.has(fk)) {
+            problems.push(`${here}: ${childTable} no tiene ${fk} para volver a ${resource}`);
+            continue;
+          }
+        } else {
+          problems.push(`${here}: no es columna de ${table} ni un recurso conocido`);
+          continue;
+        }
+
+        const nested = objectAt(spec, key);
+        if (nested && target) walk(target, nested, here, depth + 1);
+      }
+    }
+
+    for (const [resource, body] of blocks) {
+      if (VIRTUAL_RESOURCES.has(resource)) continue;
+      for (const key of ["expand", "expandOne"]) {
+        const spec = objectAt(body, key);
+        if (spec) walk(resource, spec, `${resource}.${key}`, 0);
+      }
+    }
+
+    expect(problems, "resources.ts declara relaciones que no se pueden resolver").toEqual([]);
   });
 });

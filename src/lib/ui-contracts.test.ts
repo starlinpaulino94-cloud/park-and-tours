@@ -337,6 +337,25 @@ describe("Panel ejecutivo", () => {
     }
   });
 
+  it("las relaciones se expanden en la capa de datos, no en cada ruta", () => {
+    // `tenantQuery` ignoraba en silencio las claves de expansión: las
+    // referencias llegaban como uuid y quien las leía como objeto veía
+    // undefined. La ruta genérica de ERP tenía además su propia copia parcial
+    // —solo uno-a-uno— que se separó de la del resto de la aplicación.
+    const tenant = read("src/lib/tenant.ts");
+    expect(tenant).toContain('from "@/lib/supabase/expand"');
+    expect(tenant).toMatch(/tenantQuery[\s\S]*?splitExpand/);
+    expect(tenant).toMatch(/tenantFindOne[\s\S]*?splitExpand/);
+
+    const erp = read("src/app/api/erp/[resource]/route.ts");
+    expect(erp, "la ruta ERP no debe rehidratar por su cuenta").not.toContain("resolvePublicRefs");
+    expect(erp, "el mapa de relaciones vive en lib/supabase/expand").not.toContain("const RELATION_RESOURCE");
+
+    // `tenantAggregate` leía un `_aggregate` que el proveedor nunca produce:
+    // solo podía devolver null.
+    expect(tenant).not.toContain("tenantAggregate");
+  });
+
   it("Cotizaciones — pipeline, vigencia derivada, margen y desglose de líneas", () => {
     const page = read("src/app/dashboard/ventas/cotizaciones/page.tsx");
     expect(page).not.toContain("SimpleResource");
@@ -458,19 +477,24 @@ describe("pantallas satélite de Mi día", () => {
     expect(source).not.toContain("eyebrow=");
   });
 
-  it("el ERP resuelve referencias de usuario como nombre, no como correo", () => {
-    const route = read("src/app/api/erp/[resource]/route.ts");
-    expect(route).toContain("resolveUserNames");
-    expect(route).toContain("resolveUserRefs");
-    expect(route).toContain("Usuario sin nombre registrado");
-    expect(route).not.toContain("email:");
+  // Las dos reglas siguientes valían solo para la ruta genérica de ERP, que
+  // tenía su propia copia de la resolución. Ahora viven en la capa de datos, así
+  // que rigen para TODA consulta con ámbito de empresa.
+  it("las referencias de usuario se resuelven como nombre, no como correo", () => {
+    const expand = read("src/lib/supabase/expand.ts");
+    expect(expand).toContain("resolveUserNames");
+    expect(expand).toContain("USER_REF_FIELDS");
+    expect(expand).toContain("Usuario sin nombre registrado");
+    expect(expand).not.toContain("email:");
+    expect(read("src/app/api/erp/[resource]/route.ts")).not.toContain("email:");
   });
 
-  it("el ERP resuelve referencias públicas por lote antes de pintar UUID", () => {
-    const route = read("src/app/api/erp/[resource]/route.ts");
-    expect(route).toContain("resolvePublicRefs");
-    expect(route).toContain("relationResource");
-    expect(route).toContain("_filter: { _id: { in: ids } }");
+  it("las referencias públicas se resuelven por lote, nunca fila a fila", () => {
+    const expand = read("src/lib/supabase/expand.ts");
+    expect(expand).toContain("relationResource");
+    expect(expand).toContain("_filter: { _id: { in: ids } }");
+    // Una consulta por relación: el `in` recibe todos los ids de la página.
+    expect(expand).toContain("[...new Set(rows.map(");
   });
 });
 

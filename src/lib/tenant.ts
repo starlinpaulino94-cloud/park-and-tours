@@ -7,6 +7,7 @@ import {
   spQuery, spCount, spFindOne, spCreate, spUpdate, spDelete,
 } from "@/lib/supabase/data-provider";
 import { getSupabaseTenantContext } from "@/lib/supabase/auth-context";
+import { splitExpand, expandRows } from "@/lib/supabase/expand";
 
 /**
  * Multi-tenant security core.
@@ -116,23 +117,21 @@ export function moduleEnabled(company: Company | null, moduleKey: ModuleKey): bo
 
 type QueryOptions = Record<string, unknown>;
 
-/** Runs a tenant-scoped Supabase query. */
+/**
+ * Runs a tenant-scoped Supabase query, resolving the relations it asks for.
+ *
+ * Las claves que no empiezan por `_` son relaciones a expandir. Antes se
+ * ignoraban en silencio y las referencias llegaban como uuid: ver
+ * `src/lib/supabase/expand.ts` para lo que eso rompía.
+ */
 export async function tenantQuery<T = Record<string, unknown>>(
   companyId: string,
   tableName: string,
   options: QueryOptions = {}
 ): Promise<T[]> {
-  return spQuery<T>(companyId, pgTable(tableName), options as never);
-}
-
-/** Aggregate helper honouring the tenant scope. Returns the `_aggregate` payload or null. */
-export async function tenantAggregate(
-  companyId: string,
-  tableName: string,
-  options: QueryOptions = {}
-): Promise<Record<string, any> | null> {
-  const rows = await tenantQuery<any>(companyId, tableName, options);
-  return rows.length > 0 ? rows[0]._aggregate ?? null : null;
+  const { query, expand } = splitExpand(options);
+  const rows = await spQuery<T>(companyId, pgTable(tableName), query as never);
+  return expandRows(companyId, tableName, rows as Record<string, unknown>[], expand) as Promise<T[]>;
 }
 
 /** Total count for a table honouring the tenant scope. */
@@ -154,7 +153,11 @@ export async function tenantFindOne<T = Record<string, unknown>>(
   id: string,
   expand: QueryOptions = {}
 ): Promise<T> {
-  return spFindOne<T>(companyId, pgTable(tableName), id);
+  const row = await spFindOne<T>(companyId, pgTable(tableName), id);
+  const spec = splitExpand(expand).expand;
+  if (Object.keys(spec).length === 0) return row;
+  const [expanded] = await expandRows(companyId, tableName, [row as Record<string, unknown>], spec);
+  return expanded as T;
 }
 
 /** Creates a record with the tenant scope forced onto it. */
