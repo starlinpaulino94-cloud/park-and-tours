@@ -16,7 +16,7 @@ const TONES: Record<Tone, string> = {
 export function StatusBadge({
   value, dict, className, dot = true,
 }: {
-  value?: string | null;
+  value?: string | boolean | null;
   dict: Record<string, LabelDef>;
   className?: string;
   dot?: boolean;

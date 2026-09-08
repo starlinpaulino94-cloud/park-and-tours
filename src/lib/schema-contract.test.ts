@@ -254,8 +254,44 @@ describe("el esquema cubre todo lo que la aplicación escribe", () => {
           problems.push(`${path.relative(ROOT, file)}: escribe "yes"/"no" en ${m[1]}`);
         }
       }
+      // Y el literal directo, que es como se escribían y filtraban los asientos
+      // contables: Postgres convertía 'no' al guardar, pero devolvía false.
+      for (const m of src.matchAll(/(\w+)\s*:\s*"(yes|no)"/g)) {
+        if (BOOLEAN_COLUMNS.has(m[1])) {
+          problems.push(`${path.relative(ROOT, file)}: ${m[1]}: "${m[2]}" en una columna booleana`);
+        }
+      }
     }
     expect(problems, "columna booleana tratada como texto yes/no").toEqual([]);
+  });
+
+  it("todo campo booleano escribible está declarado en su recurso", () => {
+    // El formulario genérico manda "yes"/"no"; sin la declaración no se
+    // convierten, y la columna queda a merced de la conversión de Postgres.
+    const src = readFileSync(path.join(SRC, "lib/resources.ts"), "utf8");
+    const missing: string[] = [];
+
+    for (const block of src.matchAll(/^ {2}(\w+):\s*\{\n([\s\S]*?)^ {2}\},/gm)) {
+      const [, name, body] = block;
+      if (VIRTUAL_RESOURCES.has(name)) continue;
+      const table = TABLE_MAP[/table:\s*"(\w+)"/.exec(body)?.[1] ?? name] ?? /table:\s*"(\w+)"/.exec(body)?.[1] ?? name;
+      const columns = SCHEMA.get(table);
+      if (!columns) continue;
+
+      const writable = /writable:\s*\[([^\]]*)\]/.exec(body);
+      if (!writable) continue;
+      const declared = new Set(
+        [...(/booleans:\s*\[([^\]]*)\]/.exec(body)?.[1] ?? "").matchAll(/"(\w+)"/g)].map((m) => m[1])
+      );
+
+      for (const field of [...writable[1].matchAll(/"(\w+)"/g)].map((m) => m[1])) {
+        const column = TABLE_FIELD_ALIASES[table]?.[field] ?? DEFAULT_FIELD_ALIASES[field] ?? field;
+        if (columns.has(column) && BOOLEAN_COLUMNS.has(column) && !declared.has(field)) {
+          missing.push(`${name}.booleans debe incluir "${field}"`);
+        }
+      }
+    }
+    expect(missing, "campo booleano escribible sin declarar").toEqual([]);
   });
 
   it("cada relación declarada en resources.ts se puede resolver", () => {

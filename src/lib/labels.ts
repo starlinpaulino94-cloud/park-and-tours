@@ -338,7 +338,18 @@ export const MODULE_LABEL: Record<string, string> = {
 };
 
 /** Resolves a label from a dictionary, falling back to a humanised key. */
-export function labelOf(dict: Record<string, LabelDef>, key?: string | null): LabelDef {
+/**
+ * Etiqueta de un valor, tolerando los booleanos que devuelve la base.
+ *
+ * Una columna `boolean` llega como `true`/`false`, no como "yes"/"no": con
+ * `true` esta función reventaba —`key.replace` no existe en un booleano— y con
+ * `false` pintaba un guion, así que una insignia de sí/no o no decía nada o
+ * tumbaba la pantalla entera. La normalización va aquí, en el único sitio por
+ * el que pasan todas.
+ */
+export function labelOf(dict: Record<string, LabelDef>, key?: string | boolean | null): LabelDef {
+  if (typeof key === "boolean") key = key ? "yes" : "no";
   if (!key) return def("—");
-  return dict[key] ?? GENERIC_STATUS[key] ?? def(key.replace(/_/g, " "));
+  const text = String(key);
+  return dict[text] ?? GENERIC_STATUS[text] ?? def(text.replace(/_/g, " "));
 }

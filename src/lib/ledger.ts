@@ -86,7 +86,7 @@ export async function ensureChart(companyId: string): Promise<number> {
     await tenantCreate(companyId, "ledger_account", {
       ...account,
       subledger: account.subledger || null,
-      is_postable: "yes",
+      is_postable: true,
       balance: 0,
       status: "active",
     });
@@ -159,7 +159,7 @@ export async function post(companyId: string, input: PostingInput) {
       amount_base: round(amount * rate),
       memo: line.memo || input.memo || null,
       source_type: input.source,
-      reversed: "no",
+      reversed: false,
       user: input.userId || null,
       ...(input.refs || {}),
     });
@@ -181,7 +181,7 @@ export async function post(companyId: string, input: PostingInput) {
 export async function reverse(companyId: string, entryCode: string, userId?: string) {
   const rows = await tenantQuery<any>(companyId, "ledger_entry", {
     ledger_account: true,
-    _filter: { entry_code: entryCode, reversed: "no" },
+    _filter: { entry_code: entryCode, reversed: false },
     _sort: { line_no: "asc" },
     _limit: 200,
   });
@@ -202,7 +202,7 @@ export async function reverse(companyId: string, entryCode: string, userId?: str
   });
 
   for (const r of rows) {
-    await tenantUpdate(companyId, "ledger_entry", r._id, { reversed: "yes", reversal_of: result.entryCode });
+    await tenantUpdate(companyId, "ledger_entry", r._id, { reversed: true, reversal_of: result.entryCode });
   }
   console.log(`[ledger] ${entryCode} reversado por ${result.entryCode}`);
   return result;

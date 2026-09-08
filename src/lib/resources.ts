@@ -24,6 +24,15 @@ export interface ResourceDef {
   numeric?: string[];
   /** Fields coerced to ISO dates before writing. */
   dates?: string[];
+  /**
+   * Campos que la base declara `boolean`.
+   *
+   * El formulario los ofrece como un `select` de sí/no, así que llegan como
+   * "yes"/"no" y hay que convertirlos: Postgres acepta 'yes' por conversión,
+   * pero la vuelta es `true`/`false` y ahí se rompía la insignia y el propio
+   * formulario de edición. Declararlos aquí cierra el ciclo en un solo sitio.
+   */
+  booleans?: string[];
 }
 
 
@@ -480,6 +489,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { zone: true },
     sort: { name: "asc" },
     writable: ["name", "code", "attraction_type", "operational_status", "capacity_hour", "capacity_simultaneous", "queue_minutes", "guests_today", "duration_min", "min_height_cm", "max_height_cm", "min_age", "max_weight_kg", "health_restrictions", "requires_waiver", "weather_sensitive", "downtime_minutes_today", "last_status_at", "cover_image_url", "location", "status", "notes", "zone"],
+    booleans: ["requires_waiver", "weather_sensitive"],
     numeric: ["capacity_hour", "capacity_simultaneous", "queue_minutes", "guests_today", "duration_min", "min_height_cm", "max_height_cm", "min_age", "max_weight_kg", "downtime_minutes_today"],
     dates: ["last_status_at"],
     writeRole: "manager",
@@ -515,6 +525,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["name", "version", "jurisdiction"],
     sort: { name: "asc" },
     writable: ["name", "version", "jurisdiction", "language", "body", "requires_guardian", "min_age_self_sign", "valid_from", "valid_to", "status"],
+    booleans: ["requires_guardian"],
     numeric: ["min_age_self_sign"],
     dates: ["valid_from", "valid_to"],
     writeRole: "admin",
@@ -534,6 +545,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { attraction: true, asset: true, reported_by: true, assigned_to: true },
     sort: { createdAt: "desc" },
     writable: ["code", "occurred_at", "reported_at", "severity", "incident_type", "status", "title", "description", "location", "immediate_action", "root_cause", "witnesses", "medical_attention", "evacuation", "authority_notified", "insurance_claim", "estimated_cost", "currency", "closed_at", "photos", "attraction", "asset", "zone", "participant", "booking", "customer", "vehicle", "reported_by", "assigned_to", "departure"],
+    booleans: ["medical_attention", "evacuation", "authority_notified", "insurance_claim"],
     numeric: ["estimated_cost"],
     dates: ["occurred_at", "reported_at", "closed_at"],
     writeRole: "operations",
@@ -553,6 +565,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { asset: true, attraction: true },
     sort: { name: "asc" },
     writable: ["name", "code", "frequency", "category", "checklist", "pass_threshold", "requires_signature", "blocks_operation_on_fail", "estimated_min", "status", "asset", "attraction"],
+    booleans: ["requires_signature", "blocks_operation_on_fail"],
     numeric: ["pass_threshold", "estimated_min"],
     writeRole: "manager",
   },
@@ -562,6 +575,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { inspection_template: true, asset: true, attraction: true, performed_by: true },
     sort: { createdAt: "desc" },
     writable: ["performed_at", "result", "score", "items_total", "items_failed", "findings", "signature_name", "blocked_operation", "photos", "next_due_at", "inspection_template", "asset", "attraction", "vehicle", "performed_by", "work_order"],
+    booleans: ["blocked_operation"],
     numeric: ["score", "items_total", "items_failed"],
     dates: ["performed_at", "next_due_at"],
     writeRole: "operations",
@@ -572,6 +586,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { zone: true, attraction: true, supplier: true },
     sort: { name: "asc" },
     writable: ["name", "code", "asset_type", "operational_status", "blocks_capacity", "criticality", "serial_number", "location", "capacity", "purchase_date", "purchase_cost", "currency", "warranty_until", "meter_hours", "meter_km", "next_maintenance_at", "downtime_minutes_month", "status", "notes", "zone", "vehicle", "supplier", "branch", "attraction"],
+    booleans: ["blocks_capacity"],
     numeric: ["capacity", "purchase_cost", "meter_hours", "meter_km", "downtime_minutes_month"],
     dates: ["purchase_date", "warranty_until", "next_maintenance_at"],
     writeRole: "manager",
@@ -582,6 +597,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { asset: true, attraction: true, assigned_to: true, supplier: true },
     sort: { createdAt: "desc" },
     writable: ["code", "title", "order_type", "priority", "status", "opened_at", "scheduled_at", "started_at", "finished_at", "description", "work_performed", "downtime_min", "labor_hours", "labor_cost", "parts_cost", "total_cost", "currency", "takes_asset_down", "meter_reading", "asset", "attraction", "vehicle", "assigned_to", "supplier", "incident", "maintenance_plan", "requested_by"],
+    booleans: ["takes_asset_down"],
     numeric: ["downtime_min", "labor_hours", "labor_cost", "parts_cost", "total_cost", "meter_reading"],
     dates: ["opened_at", "scheduled_at", "started_at", "finished_at"],
     writeRole: "operations",
@@ -592,6 +608,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { asset: true, attraction: true, vehicle: true },
     sort: { next_due_at: "asc" },
     writable: ["name", "trigger_type", "interval_days", "interval_hours", "interval_km", "lead_time_days", "task_list", "estimated_min", "estimated_cost", "last_executed_at", "next_due_at", "takes_asset_down", "status", "asset", "attraction", "vehicle", "inspection_template", "staff"],
+    booleans: ["takes_asset_down"],
     numeric: ["interval_days", "interval_hours", "interval_km", "lead_time_days", "estimated_min", "estimated_cost"],
     dates: ["last_executed_at", "next_due_at"],
     writeRole: "manager",
@@ -602,6 +619,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { branch: true, zone: true },
     sort: { name: "asc" },
     writable: ["name", "code", "warehouse_type", "location", "allows_negative", "status", "notes", "branch", "zone"],
+    booleans: ["allows_negative"],
     writeRole: "manager",
   },
   inventory_item: {
@@ -610,6 +628,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { product_category: true, supplier: true },
     sort: { name: "asc" },
     writable: ["name", "sku", "barcode", "item_type", "unit", "cost", "price", "currency", "tax_rate", "min_stock", "max_stock", "reorder_point", "reorder_qty", "shelf_life_days", "is_sellable", "tracks_lots", "image_url", "status", "product_category", "supplier", "product"],
+    booleans: ["is_sellable", "tracks_lots"],
     numeric: ["cost", "price", "tax_rate", "min_stock", "max_stock", "reorder_point", "reorder_qty", "shelf_life_days"],
     writeRole: "manager",
   },
@@ -657,6 +676,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["name", "code"],
     sort: { price: "asc" },
     writable: ["name", "code", "plan_type", "price", "currency", "duration_days", "visits_included", "guest_passes", "discount_percent", "benefits", "blackout_dates", "auto_renew", "image_url", "status"],
+    booleans: ["auto_renew"],
     numeric: ["price", "duration_days", "visits_included", "guest_passes", "discount_percent"],
     writeRole: "manager",
   },
@@ -666,6 +686,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { membership_plan: true, customer: true },
     sort: { createdAt: "desc" },
     writable: ["code", "status", "starts_at", "ends_at", "visits_used", "guest_passes_used", "amount_paid", "currency", "auto_renew", "photo", "last_visit_at", "cancelled_at", "cancel_reason", "membership_plan", "customer", "order"],
+    booleans: ["auto_renew"],
     numeric: ["visits_used", "guest_passes_used", "amount_paid"],
     dates: ["starts_at", "ends_at", "last_visit_at", "cancelled_at"],
     writeRole: "cashier",
@@ -745,6 +766,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     // ledger entries (see trialBalance). Editing it by hand divorces the cached
     // balance from the entries with no audit trail. Chart metadata stays editable.
     writable: ["code", "name", "account_type", "subledger", "normal_side", "is_postable", "currency", "status", "parent"],
+    booleans: ["is_postable"],
     writeRole: "admin",
   },
   ledger_entry: {
@@ -772,6 +794,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["name", "tax_name", "ncf_series"],
     sort: { name: "asc" },
     writable: ["name", "country", "tax_name", "tax_rate", "included_in_price", "tourism_tax_rate", "service_charge_rate", "tax_id_label", "ncf_series", "ncf_next", "ncf_expires", "efac_enabled", "rounding", "status"],
+    booleans: ["included_in_price", "efac_enabled"],
     numeric: ["tax_rate", "tourism_tax_rate", "service_charge_rate", "ncf_next"],
     dates: ["ncf_expires"],
     writeRole: "admin",
@@ -802,6 +825,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { staff: true },
     sort: { expires_at: "asc" },
     writable: ["name", "cert_type", "issuer", "number", "issued_at", "expires_at", "status", "blocks_assignment", "document", "notes", "staff"],
+    booleans: ["blocks_assignment"],
     dates: ["issued_at", "expires_at"],
     writeRole: "manager",
   },
@@ -820,6 +844,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { owner: true },
     sort: { title: "asc" },
     writable: ["title", "doc_type", "version", "body", "file", "url", "effective_from", "expires_at", "requires_ack", "audience", "status", "owner"],
+    booleans: ["requires_ack"],
     dates: ["effective_from", "expires_at"],
     writeRole: "manager",
   },
@@ -856,6 +881,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { partner: true },
     sort: { name: "asc" },
     writable: ["name", "provider", "category", "status", "direction", "endpoint_url", "external_id", "last_sync_at", "last_error", "sync_frequency", "records_synced", "config", "webhook_secret_set", "partner", "user"],
+    booleans: ["webhook_secret_set"],
     numeric: ["records_synced"],
     dates: ["last_sync_at"],
     writeRole: "admin",
@@ -866,6 +892,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expand: { user: true, partner: true },
     sort: { createdAt: "desc" },
     writable: ["read_status", "read_at"],
+    booleans: ["read_status"],
     writeRole: "seller",
   },
 };
@@ -1034,6 +1061,21 @@ export function allowedFilterFields(def: ResourceDef): Set<string> {
 }
 
 /** Filters and coerces an incoming payload down to the resource's writable fields. */
+/**
+ * Convierte a booleano lo que llega del formulario.
+ *
+ * El `select` manda "yes"/"no"; una API externa o una prueba puede mandar el
+ * booleano ya hecho, o "true"/"false". Cualquier otra cosa es un error del
+ * llamante y se rechaza en vez de guardarse como falso por descuido.
+ */
+function coerceBoolean(value: unknown, key: string): boolean {
+  if (typeof value === "boolean") return value;
+  const text = String(value).trim().toLowerCase();
+  if (["yes", "true", "1", "si", "sí"].includes(text)) return true;
+  if (["no", "false", "0"].includes(text)) return false;
+  throw badRequest(`El campo "${key}" debe ser sí o no`);
+}
+
 export function sanitizePayload(def: ResourceDef, body: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const key of def.writable) {
@@ -1059,6 +1101,9 @@ export function sanitizePayload(def: ResourceDef, body: Record<string, unknown>)
     if (value !== null && def.dates?.includes(key)) {
       const d = new Date(value as string);
       value = Number.isNaN(d.getTime()) ? null : d.toISOString();
+    }
+    if (value !== null && def.booleans?.includes(key)) {
+      value = coerceBoolean(value, key);
     }
     if (value !== null && typeof value === "object" && !Array.isArray(value)) {
       value = JSON.stringify(value);
