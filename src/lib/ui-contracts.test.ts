@@ -280,6 +280,21 @@ describe("Panel ejecutivo", () => {
     expect(page).not.toMatch(/api\.(put|post)[^\n]*erp\/departure/);
   });
 
+  it("Tickets — vigencia derivada de la fecha, consumo y exportación", () => {
+    const page = read("src/app/dashboard/ventas/tickets/page.tsx");
+    expect(page).not.toContain("SimpleResource");
+    expect(page).toContain('title="Tickets de acceso"');
+    // La vigencia real manda sobre el `status` almacenado (puede quedar obsoleto).
+    expect(page).toContain("function ValidityPill");
+    expect(page).toContain("const expired");
+    expect(page).toContain("const usable");
+    // Consumo de entradas y exportación de lo filtrado.
+    expect(page).toContain("function UsageBar");
+    expect(page).toContain("const exportCsv");
+    // La vista comercial es de solo lectura: emitir/editar vive en Parque · Accesos.
+    expect(page).not.toMatch(/api\.(post|put|delete)\(/);
+  });
+
   it("existe una prueba de base de datos de la RPC del panel", () => {
     const sql = read("supabase/tests/dashboard_summary.test.sql");
     expect(sql).toContain("public.dashboard_summary");
