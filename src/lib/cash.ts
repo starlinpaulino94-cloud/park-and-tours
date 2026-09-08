@@ -29,7 +29,9 @@ export async function recalcCashSession(companyId: string, sessionId: string) {
   for (const p of payments) {
     const signed = p.payment_type === "refund" ? -(p.amount ?? 0) : p.amount ?? 0;
     if (p.method === "card") card += signed;
-    else if (p.method === "transfer" || p.method === "payment_link" || p.method === "deposit") transfer += signed;
+    // 'link' es el valor real del enum; antes se comparaba con 'payment_link',
+    // que no existe, y el cobro por link inflaba el efectivo esperado en caja.
+    else if (p.method === "transfer" || p.method === "link" || p.method === "deposit") transfer += signed;
   }
 
   // Card/transfer payments never touch the cash drawer.

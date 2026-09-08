@@ -375,7 +375,11 @@ describe("Panel ejecutivo", () => {
     const migration = read("supabase/migrations/0028_dashboard_channel_otros.sql");
     expect(migration).toContain("where rn <= 5");
     expect(migration).toContain("'otros', 'otros'");
-    expect(read("src/lib/labels.ts")).toContain('otros: def("Otros"');
+    // 'otros' es un bucket sintético del RPC, no un canal: se etiqueta en la
+    // pantalla y NO en CHANNEL, que alimenta selects atados al enum
+    // sales_channel y rechazaría ese valor.
+    expect(read("src/app/dashboard/page.tsx")).toContain("function channelLabel");
+    expect(read("src/lib/labels.ts")).not.toContain('otros: def("Otros"');
   });
 
   it("B5 — el indicador de tendencia tiene estado neutro para 0%", () => {

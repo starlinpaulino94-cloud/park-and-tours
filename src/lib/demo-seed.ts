@@ -542,7 +542,7 @@ export async function seedDemoData(ctx: TenantContext & { companyId: string }): 
           branch: branchId,
           reference: `PAY-DEMO-${1000 + i}`,
           payment_type: "payment",
-          method: usesPartner ? "b2b_credit" : (["cash", "card", "transfer", "payment_link"] as const)[i % 4],
+          method: usesPartner ? "credit" : (["cash", "card", "transfer", "link"] as const)[i % 4],
           status: "completed",
           amount: partial, currency, exchange_rate: 1,
           base_currency: currency, base_amount: partial,
