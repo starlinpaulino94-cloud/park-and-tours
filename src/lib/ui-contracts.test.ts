@@ -313,6 +313,42 @@ describe("Panel ejecutivo", () => {
     expect(read("src/lib/resources.ts")).toContain("quote_line: { _limit: 100, product: true }");
   });
 
+  it("CRM — el origen del lead usa el dominio real, no el canal de venta", () => {
+    // BUG corregido: el formulario ofrecía CHANNEL, cuyos valores propios
+    // ('direct', 'b2b_portal', 'tour_center', 'ota', 'pos') violan el check de
+    // `lead.source`, y no dejaba elegir referido, hotel ni campaña.
+    const labels = read("src/lib/labels.ts");
+    expect(labels).toContain("export const LEAD_SOURCE");
+    for (const source of ["walk_in", "referral", "web", "whatsapp", "social", "hotel", "agency", "campaign", "phone", "other"]) {
+      expect(labels).toMatch(new RegExp(`\\n  ${source}: def\\(`));
+    }
+    const page = read("src/app/dashboard/crm/page.tsx");
+    expect(page).toContain('name: "source", label: "Origen", type: "select", options: optionsFrom(LEAD_SOURCE)');
+    expect(page).not.toContain('optionsFrom(CHANNEL)');
+  });
+
+  it("CRM — la bitácora de actividades existe y alimenta la cola de seguimiento", () => {
+    // `crm_activity` ya venía expandida por el recurso `lead` y ninguna
+    // pantalla la usaba, pese a que el módulo prometía "actividades".
+    expect(read("src/lib/resources.ts")).toContain("crm_activity: { _limit: 100");
+    const drawer = read("src/app/dashboard/crm/lead-drawer.tsx");
+    expect(drawer).toContain('api.post("/api/erp/crm_activity"');
+    expect(drawer).toContain("/api/erp/crm_activity/${activity._id}");
+    // Agendar sincroniza la próxima acción del lead, que es de donde sale la cola.
+    expect(drawer).toContain("next_action_at: form.due_at");
+    const page = read("src/app/dashboard/crm/page.tsx");
+    expect(page).toContain("Tu cola de seguimiento");
+    expect(page).toContain("overdueAction");
+  });
+
+  it("CRM — el valor del pipeline no mezcla divisas", () => {
+    const page = read("src/app/dashboard/crm/page.tsx");
+    expect(page).toContain("function sumByCurrency");
+    // Antes: formatMoney(pipelineValue, "usd") sobre leads de cualquier moneda.
+    expect(page).not.toContain('formatMoney(pipelineValue, "usd")');
+    expect(page).not.toContain('formatMoney(wonValue, "usd")');
+  });
+
   it("existe una prueba de base de datos de la RPC del panel", () => {
     const sql = read("supabase/tests/dashboard_summary.test.sql");
     expect(sql).toContain("public.dashboard_summary");
