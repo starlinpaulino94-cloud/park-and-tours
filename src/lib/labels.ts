@@ -98,6 +98,29 @@ export const LEAD_STATUS: Record<string, LabelDef> = {
   lost: def("Perdido", "danger"),
 };
 
+/**
+ * Origen del lead.
+ *
+ * Debe coincidir EXACTAMENTE con el check de `lead.source` en la base de datos
+ * ('walk_in','referral','web','whatsapp','social','hotel','agency','campaign',
+ * 'phone','other'). Antes esta pantalla ofrecía `CHANNEL`, que es el canal de
+ * VENTA: sus valores propios ('direct', 'b2b_portal', 'tour_center', 'ota',
+ * 'pos') violan ese check, y a la vez faltaban orígenes centrales del negocio
+ * turístico como referido, hotel o campaña.
+ */
+export const LEAD_SOURCE: Record<string, LabelDef> = {
+  walk_in: def("Walk-in", "accent"),
+  referral: def("Referido", "success"),
+  web: def("Web", "violet"),
+  whatsapp: def("WhatsApp", "success"),
+  social: def("Redes sociales", "warning"),
+  hotel: def("Hotel", "info"),
+  agency: def("Agencia", "warning"),
+  campaign: def("Campaña", "violet"),
+  phone: def("Teléfono", "neutral"),
+  other: def("Otro", "neutral"),
+};
+
 export const CHANNEL: Record<string, LabelDef> = {
   direct: def("Directo", "info"),
   web: def("Web", "violet"),
