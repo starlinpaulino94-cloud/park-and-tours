@@ -55,7 +55,7 @@ export default function AtraccionesPage() {
           render: (a: any) => (
             <span className="text-xs text-muted-foreground">
               {[a.min_height_cm ? `≥${a.min_height_cm} cm` : null, a.min_age ? `≥${a.min_age} años` : null,
-                a.requires_waiver === "yes" ? "waiver" : null].filter(Boolean).join(" · ") || "Sin restricciones"}
+                a.requires_waiver ? "waiver" : null].filter(Boolean).join(" · ") || "Sin restricciones"}
             </span>
           ),
         },

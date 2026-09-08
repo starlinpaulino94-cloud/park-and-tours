@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import * as labels from "@/lib/labels";
+import * as modules from "@/lib/labels-modules";
 
 /**
  * Los diccionarios de la UI contra el dominio real de la base.
@@ -58,7 +59,7 @@ function allowedFor(table: string, column: string): string[] {
   // Las migraciones se concatenan en orden, así que la última redefinición gana.
   let altered: string[] | null = null;
   for (const m of SQL.matchAll(
-    /alter table\s+(\w+)\s+add constraint\s+\w+\s+check\s*\(\s*(\w+)\s+in\s*\(([\s\S]*?)\)\s*\)/gi
+    /alter table\s+(\w+)\s+add constraint\s+\w+\s+check\s*\(\s*(?:\w+\s+is\s+null\s+or\s+)?(\w+)\s+in\s*\(([\s\S]*?)\)\s*\)/gi
   )) {
     if (m[1] === table && m[2] === column) {
       altered = [...m[3].matchAll(/'([^']+)'/g)].map((v) => v[1]);
@@ -82,32 +83,38 @@ function allowedFor(table: string, column: string): string[] {
   return [];
 }
 
+type Dict = Record<string, unknown>;
+
 /** Diccionario de la UI -> columna que recibe sus valores. */
-const BINDINGS: [keyof typeof labels, string, string][] = [
-  ["PAYMENT_METHOD", "payment", "method"],
-  ["EXPENSE_METHOD", "expense", "payment_method"],
-  ["LEAD_SOURCE", "lead", "source"],
-  ["LEAD_STATUS", "lead", "status"],
-  ["CHANNEL", "booking", "channel"],
-  ["BENEFICIARY_TYPE", "commission", "beneficiary_type"],
-  ["CALC_TYPE", "commission", "calc_type"],
-  ["BOOKING_STATUS", "booking", "status"],
-  ["CHECKIN_STATUS", "booking", "checkin_status"],
-  ["DEPARTURE_STATUS", "departure", "status"],
-  ["PAYMENT_STATUS", "payment", "status"],
-  ["COMMISSION_STATUS", "commission", "status"],
-  ["SETTLEMENT_STATUS", "settlement", "status"],
-  ["VOUCHER_STATUS", "voucher", "status"],
-  ["ACTIVE_STATUS", "hotel", "status"],
+const BINDINGS: [string, Dict, string, string][] = [
+  ["PAYMENT_METHOD", labels.PAYMENT_METHOD, "payment", "method"],
+  ["EXPENSE_METHOD", labels.EXPENSE_METHOD, "expense", "payment_method"],
+  ["LEAD_SOURCE", labels.LEAD_SOURCE, "lead", "source"],
+  ["LEAD_STATUS", labels.LEAD_STATUS, "lead", "status"],
+  ["CHANNEL", labels.CHANNEL, "booking", "channel"],
+  ["BENEFICIARY_TYPE", labels.BENEFICIARY_TYPE, "commission", "beneficiary_type"],
+  ["CALC_TYPE", labels.CALC_TYPE, "commission", "calc_type"],
+  ["BOOKING_STATUS", labels.BOOKING_STATUS, "booking", "status"],
+  ["CHECKIN_STATUS", labels.CHECKIN_STATUS, "booking", "checkin_status"],
+  ["DEPARTURE_STATUS", labels.DEPARTURE_STATUS, "departure", "status"],
+  ["PAYMENT_STATUS", labels.PAYMENT_STATUS, "payment", "status"],
+  ["COMMISSION_STATUS", labels.COMMISSION_STATUS, "commission", "status"],
+  ["SETTLEMENT_STATUS", labels.SETTLEMENT_STATUS, "settlement", "status"],
+  ["VOUCHER_STATUS", labels.VOUCHER_STATUS, "voucher", "status"],
+  ["ACTIVE_STATUS", labels.ACTIVE_STATUS, "hotel", "status"],
+  ["SELLER_ROLE", labels.SELLER_ROLE, "seller", "seller_role"],
+  // 0030 creó estas dos columnas con el dominio que ya usaba la UI del parque.
+  ["ZONE_TYPE", modules.ZONE_TYPE, "zone", "zone_type"],
+  ["YES_NO", modules.YES_NO, "zone", "requires_wristband"],
 ];
 
 describe("los diccionarios de la UI coinciden con el dominio de la base", () => {
-  it.each(BINDINGS)("%s ↔ %s.%s", (dictName, table, column) => {
+  it.each(BINDINGS)("%s ↔ %s.%s", (dictName, dict, table, column) => {
     const allowed = allowedFor(table, column);
     // Si esto falla, la migración cambió de forma y hay que revisar el parser.
     expect(allowed.length, `sin dominio para ${table}.${column}`).toBeGreaterThan(0);
 
-    const offered = Object.keys(labels[dictName] as Record<string, unknown>);
+    const offered = Object.keys(dict);
     const rejected = offered.filter((v) => !allowed.includes(v));
     const notOffered = allowed.filter((v) => !offered.includes(v));
 

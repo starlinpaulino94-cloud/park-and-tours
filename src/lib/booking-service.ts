@@ -238,7 +238,7 @@ export async function createOrderWithBookings(
       voucher_code: voucherCode,
       checkin_status: "pending",
       checked_in_pax: 0,
-      capacity_override: input.capacity_override ? "yes" : "no",
+      capacity_override: input.capacity_override === true,
       override_reason: input.override_reason || undefined,
       notes: item.notes || undefined,
     });

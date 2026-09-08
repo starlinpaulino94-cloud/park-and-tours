@@ -84,7 +84,9 @@ export async function changeAssetStatus(
   }
 
   const goingDown = DOWN.includes(to);
-  const blocksCapacity = asset.blocks_capacity === "yes";
+  // Booleano en la base (0014): comparado con "yes" nunca era cierto y un
+  // activo fuera de servicio no descontaba cupo de ninguna salida.
+  const blocksCapacity = asset.blocks_capacity === true;
   const assetCapacity = Number(asset.capacity ?? 0);
 
   const impact: AssetImpact = {

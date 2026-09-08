@@ -29,41 +29,114 @@ export interface PostgrestLike {
   range(from: number, to: number): PostgrestLike;
 }
 
+/**
+ * Puente entre los nombres de campo de la API y las columnas de Postgres.
+ *
+ * En el esquema TODA columna de referencia se llama `<campo>_id`, así que este
+ * mapa tiene que cubrir las 72 que existen: si a una le falta la entrada, el
+ * campo viaja con su nombre pelado (`quote`, `staff`, `supplier`…), PostgREST
+ * no encuentra esa columna y la escritura falla entera. Faltaban 40 —entre
+ * ellas las de cotizaciones, tareas, turnos, compras e inventario—, de modo que
+ * guardar una línea de cotización o asignar una tarea a un lead devolvía 400.
+ * `src/lib/schema-contract.test.ts` compara este mapa contra las migraciones
+ * para que no vuelva a desfasarse.
+ */
 export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   _id: "id",
   createdAt: "created_at",
   updatedAt: "updated_at",
   company: "organization_id",
-  partner: "partner_id",
-  seller: "seller_id",
-  product: "product_id",
-  order: "order_id",
-  booking: "booking_id",
-  branch: "branch_id",
-  customer: "customer_id",
-  departure: "departure_id",
-  modality: "modality_id",
-  rule: "rule_id",
-  settlement: "settlement_id",
-  user: "user_id",
+  asset: "asset_id",
   assigned_seller: "assigned_seller_id",
   assigned_to: "assigned_to_id",
+  attraction: "attraction_id",
+  booking: "booking_id",
+  branch: "branch_id",
+  cancellation_policy: "cancellation_policy_id",
   cash_register: "cash_register_id",
+  cash_session: "cash_session_id",
+  customer: "customer_id",
+  departure: "departure_id",
   driver: "driver_id",
+  expense: "expense_id",
+  from_org: "from_org_id",
+  gift_card: "gift_card_id",
+  guest_case: "guest_case_id",
   guide: "guide_id",
+  hotel: "hotel_id",
+  incident: "incident_id",
+  inspection_template: "inspection_template_id",
   inventory_item: "inventory_item_id",
+  lead: "lead_id",
   ledger_account: "ledger_account_id",
+  maintenance_plan: "maintenance_plan_id",
   manager: "manager_id",
+  membership: "membership_id",
   membership_plan: "membership_plan_id",
+  modality: "modality_id",
+  order: "order_id",
   owner: "owner_id",
   parent: "parent_id",
+  parent_branch: "parent_branch_id",
+  parent_org: "parent_org_id",
   parent_partner: "parent_partner_id",
+  participant: "participant_id",
+  partner: "partner_id",
+  payable: "payable_id",
+  payment: "payment_id",
   performed_by: "performed_by",
   pickup_hotel: "hotel_id",
+  plan: "plan_id",
+  product: "product_id",
+  promotion: "promotion_id",
+  product_category: "product_category_id",
+  product_modality: "product_modality_id",
+  purchase_order: "purchase_order_id",
+  quote: "quote_id",
+  receivable: "receivable_id",
   reported_by: "reported_by",
   route: "route_id",
+  rule: "rule_id",
   second_approver: "second_approver_id",
+  seller: "seller_id",
+  settlement: "settlement_id",
+  shift: "shift_id",
+  staff: "staff_id",
+  supervisor: "supervisor_id",
+  supplier: "supplier_id",
+  tax_profile: "tax_profile_id",
+  tenant_org: "tenant_org_id",
+  to_org: "to_org_id",
+  to_warehouse: "to_warehouse_id",
+  user: "user_id",
+  vehicle: "vehicle_id",
+  waiver_template: "waiver_template_id",
+  warehouse: "warehouse_id",
+  work_order: "work_order_id",
+  zone: "zone_id",
 };
+
+/**
+ * Referencias que NO pueden vivir en el mapa global porque su nombre choca con
+ * una columna real de otra tabla: `participant.category` y `hotel.category` son
+ * texto, mientras `expense.category_id` apunta a `expense_category` y
+ * `product.category_id`/`commission_rule.category_id` a `product_category`; lo mismo
+ * con `certification.document` (texto) frente a `document_ack.document_id`.
+ * Aliasar esos nombres globalmente rompería escrituras que hoy funcionan, así
+ * que se resuelven por tabla.
+ */
+export const TABLE_FIELD_ALIASES: Record<string, Record<string, string>> = {
+  product: { category: "category_id" },
+  commission_rule: { category: "category_id" },
+  expense: { category: "category_id" },
+  document_ack: { document: "document_id" },
+};
+
+/** Mapa de alias efectivo para una tabla: el global más sus excepciones. */
+export function aliasesFor(table: string): Record<string, string> {
+  const overrides = TABLE_FIELD_ALIASES[table];
+  return overrides ? { ...DEFAULT_FIELD_ALIASES, ...overrides } : DEFAULT_FIELD_ALIASES;
+}
 
 export function aliasField(field: string, aliases = DEFAULT_FIELD_ALIASES): string {
   return aliases[field] ?? field;
