@@ -40,7 +40,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     table: "partner",
     search: ["name", "commercial_name", "tax_id", "email", "contact_name"],
     expand: { parent_partner: true },
-    expandOne: { parent_partner: true, seller: { _limit: 100 }, authorized_products: true },
+    expandOne: { parent_partner: true, seller: { _limit: 100 } },
     sort: { name: "asc" },
     writable: [
       "name", "commercial_name", "partner_type", "tax_id", "contact_name", "email", "phone", "whatsapp",
@@ -55,7 +55,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     table: "seller",
     search: ["first_name", "last_name", "code", "email", "phone"],
     expand: { partner: true, branch: true, supervisor: true },
-    expandOne: { partner: true, branch: true, supervisor: true, user: true, authorized_products: true },
+    expandOne: { partner: true, branch: true, supervisor: true, user: true },
     sort: { first_name: "asc" },
     writable: [
       "user", "partner", "branch", "code", "first_name", "last_name", "email", "phone", "whatsapp",
@@ -202,7 +202,6 @@ export const RESOURCES: Record<string, ResourceDef> = {
   promotion: {
     table: "promotion",
     search: ["name", "code"],
-    expand: { products: true },
     sort: { createdAt: "desc" },
     writable: ["name", "code", "discount_type", "value", "valid_from", "valid_to", "max_uses", "used_count", "min_amount", "channels", "status", "description"],
     numeric: ["value", "max_uses", "used_count", "min_amount"],
@@ -320,6 +319,19 @@ export const RESOURCES: Record<string, ResourceDef> = {
     expandOne: { cash_register: true, branch: true, user: true, cash_movement: { _limit: 300, _sort: { createdAt: "desc" } } },
     sort: { createdAt: "desc" },
     writable: ["notes"],
+    writeRole: "cashier",
+  },
+  // El detalle de una caja lista sus movimientos, y `READ_ROLE` ya los acotaba a
+  // cajero; solo faltaba declararlos. Se crean por `/api/cash/movements`, que
+  // valida el tipo y recalcula la sesión, así que aquí son de solo lectura.
+  cash_movement: {
+    table: "cash_movement",
+    search: ["concept", "reference"],
+    expand: { cash_session: true, user: true, payment: true },
+    sort: { movement_at: "desc" },
+    writable: [],
+    numeric: ["amount"],
+    dates: ["movement_at"],
     writeRole: "cashier",
   },
   payment: {
