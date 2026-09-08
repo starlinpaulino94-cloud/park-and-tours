@@ -149,6 +149,9 @@ export const PARTNER_TYPE: Record<string, LabelDef> = {
   hotel: def("Hotel", "info"),
   ota: def("OTA", "info"),
   reseller: def("Revendedor", "neutral"),
+  // `organization_relationships.relationship_type` lo admite desde 0002 y no se
+  // ofrecía, así que un distribuidor no se podía dar de alta como tal.
+  distributor: def("Distribuidor", "neutral"),
 };
 
 export const COMPANY_TYPE: Record<string, LabelDef> = {

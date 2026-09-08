@@ -33,9 +33,33 @@ export async function GET(req: NextRequest) {
       _filter: { status: { nin: ["paid", "written_off", "cancelled"] } },
       _limit: MAX_ROWS,
       _sort: { due_date: "asc" },
-      partner: true,
-      ...(type === "receivable" ? { customer: true } : { supplier: true, seller: true }),
     });
+
+    // `tenantQuery` no expande referencias —eso solo lo hace la ruta genérica de
+    // ERP—, así que `r.partner` y `r.customer` llegan como uuid. Al leerlos como
+    // objeto, TODA fila caía en la misma entidad "Sin asignar" y el límite de
+    // crédito nunca se comparaba con nada. Se resuelven aquí, en una consulta
+    // por tipo de entidad.
+    const idsOf = (field: "partner" | "customer" | "supplier" | "seller") =>
+      [...new Set(rows.map((r) => refId((r as unknown as Record<string, unknown>)[field])).filter((x): x is string => Boolean(x)))];
+
+    async function directory(resource: string, ids: string[]) {
+      const map = new Map<string, Record<string, unknown>>();
+      if (ids.length === 0) return map;
+      const found = await tenantQuery<Record<string, unknown>>(ctx.companyId, resource, {
+        _filter: { _id: { in: ids } }, _limit: ids.length,
+      });
+      for (const row of found) map.set(String(row._id), row);
+      return map;
+    }
+
+    const [partners, others, sellers] = await Promise.all([
+      directory("partner", idsOf("partner")),
+      type === "receivable"
+        ? directory("customer", idsOf("customer"))
+        : directory("supplier", idsOf("supplier")),
+      type === "payable" ? directory("seller", idsOf("seller")) : Promise.resolve(new Map()),
+    ]);
 
     type Entity = {
       key: string; label: string; type: string;
@@ -57,13 +81,17 @@ export async function GET(req: NextRequest) {
         ? Math.max(Math.floor((Date.now() - new Date(r.due_date).getTime()) / 86_400_000), 0)
         : 0;
 
-      const partner: any = r.partner;
-      const other: any = type === "receivable" ? (r as Receivable).customer : (r as Payable).supplier || (r as Payable).seller;
-      const entityObj = (partner && typeof partner === "object" ? partner : null) ||
-        (other && typeof other === "object" ? other : null);
-      const key = entityObj?._id || "none";
-      const label = entityObj?.commercial_name || entityObj?.name || entityObj?.full_name || "Sin asignar";
-      const entityType = partner && typeof partner === "object" ? partner.partner_type || "partner" : type === "receivable" ? "customer" : "supplier";
+      const partnerId = refId(r.partner);
+      const partner: any = partnerId ? partners.get(partnerId) ?? null : null;
+      const otherId = refId(type === "receivable" ? (r as Receivable).customer : (r as Payable).supplier);
+      const sellerId = type === "payable" ? refId((r as Payable).seller) : null;
+      const other: any = (otherId ? others.get(otherId) : null) ?? (sellerId ? sellers.get(sellerId) : null) ?? null;
+      const entityObj = partner || other;
+      const key = (entityObj?._id as string) || partnerId || otherId || sellerId || "none";
+      const label = entityObj?.commercial_name || entityObj?.name || entityObj?.full_name
+        || [entityObj?.first_name, entityObj?.last_name].filter(Boolean).join(" ").trim()
+        || "Sin asignar";
+      const entityType = partner ? partner.partner_type || "partner" : type === "receivable" ? "customer" : "supplier";
 
       const entity = byEntity.get(key) || {
         key, label, type: entityType, total: 0, documents: 0, oldest_days: 0,

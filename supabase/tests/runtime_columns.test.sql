@@ -128,4 +128,45 @@ begin
   raise notice 'runtime_columns: TODAS LAS ASERCIONES PASARON';
 end $$;
 
+-- ── condiciones comerciales del partner (0031) ─────────────────────────────
+-- El límite de crédito, los días y la comisión viven en la relación, no en la
+-- organización: es donde el esquema los puso desde 0002 y donde el traductor no
+-- los guardaba.
+insert into organizations (id, name, kind, currency, tenant_org_id, parent_org_id, metadata) values
+  ('22222222-0000-0000-0000-000000000001', 'Caribe Tours', 'partner', 'usd', :'org', :'org',
+   '{"commercial_name":"Caribe","contact_name":"Ana"}'::jsonb);
+
+insert into organization_relationships (from_org_id, to_org_id, relationship_type,
+  default_commission_pct, credit_limit, credit_days, contract_from, contract_to)
+values (:'org', '22222222-0000-0000-0000-000000000001', 'agency', 12.5, 25000, 30, current_date, current_date + 365);
+
+do $$
+declare
+  limite numeric;
+begin
+  select credit_limit into limite
+    from organization_relationships
+   where to_org_id = '22222222-0000-0000-0000-000000000001';
+  if limite is distinct from 25000 then
+    raise exception 'el límite de crédito del partner no se guardó (%)', limite;
+  end if;
+
+  -- 'ota' es el valor que ofrecía la UI y que la base rechazaba antes de 0031.
+  begin
+    insert into organization_relationships (from_org_id, to_org_id, relationship_type)
+    values ('11111111-1111-1111-1111-111111111111', '22222222-0000-0000-0000-000000000001', 'ota');
+  exception when check_violation then
+    raise exception 'relationship_type sigue rechazando ota';
+  end;
+
+  begin
+    insert into organization_relationships (from_org_id, to_org_id, relationship_type)
+    values ('11111111-1111-1111-1111-111111111111', '22222222-0000-0000-0000-000000000001', 'marketplace');
+    raise exception 'relationship_type aceptó un valor fuera del diccionario';
+  exception when check_violation then null;
+  end;
+
+  raise notice 'partner_terms: TODAS LAS ASERCIONES PASARON';
+end $$;
+
 rollback;
