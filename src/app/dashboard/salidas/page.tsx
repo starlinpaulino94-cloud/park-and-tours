@@ -38,6 +38,24 @@ const occupancyOf = (d: Departure) => {
   return d.capacity ? Math.round((booked / d.capacity) * 100) : 0;
 };
 
+/** La salida ya zarpó. */
+const isPast = (d: Departure) =>
+  Boolean(d.departure_at && new Date(d.departure_at).getTime() < Date.now());
+
+/** Pasó el cierre de ventas (no se puede vender sin autorización). */
+const cutoffPassed = (d: Departure) => {
+  if (!d.departure_at || d.cutoff_hours == null) return false;
+  return new Date(d.departure_at).getTime() - d.cutoff_hours * 3_600_000 < Date.now();
+};
+
+const OCCUPANCY_FILTERS = [
+  { value: "all", label: "Todas" },
+  { value: "empty", label: "Sin ventas" },
+  { value: "available", label: "Con cupo" },
+  { value: "full", label: "Llenas" },
+] as const;
+type OccupancyFilter = (typeof OCCUPANCY_FILTERS)[number]["value"];
+
 function OccupancyBar({ d }: { d: Departure }) {
   const pct = occupancyOf(d);
   const booked = (d.booked_pax ?? 0) + (d.pending_pax ?? 0);
@@ -55,6 +73,16 @@ function OccupancyBar({ d }: { d: Departure }) {
   );
 }
 
+/**
+ * Ventana de venta de la salida: ya zarpó, o pasó el cierre y no admite venta
+ * normal. Se deriva de la hora de salida y de `cutoff_hours`; no se persiste.
+ */
+function TimingPill({ d }: { d: Departure }) {
+  if (isPast(d)) return <Pill tone="neutral">Ya salió</Pill>;
+  if (cutoffPassed(d)) return <Pill tone="warning">Cierre pasado</Pill>;
+  return null;
+}
+
 export default function DeparturesPage() {
   const [rows, setRows] = useState<Departure[]>([]);
   const [products, setProducts] = useState<any[]>([]);
@@ -65,6 +93,8 @@ export default function DeparturesPage() {
   const [to, setTo] = useState(toDateInput(new Date(Date.now() + 29 * 86_400_000)));
   const [productFilter, setProductFilter] = useState("__all");
   const [statusFilter, setStatusFilter] = useState("__all");
+  const [occupancy, setOccupancy] = useState<OccupancyFilter>("all");
+  const [exporting, setExporting] = useState(false);
 
   const [genOpen, setGenOpen] = useState(false);
   const [gen, setGen] = useState({
@@ -132,16 +162,63 @@ export default function DeparturesPage() {
     load();
   };
 
+  // Filtro de ocupación (sobre lo ya cargado en el rango): conecta los KPIs
+  // con una acción — ver justo las llenas o las que no han vendido nada.
+  const visibleRows = useMemo(() => {
+    if (occupancy === "all") return rows;
+    return rows.filter((d) => {
+      const pct = occupancyOf(d);
+      if (occupancy === "full") return pct >= 100;
+      if (occupancy === "empty") return pct === 0;
+      return pct < 100; // con cupo
+    });
+  }, [rows, occupancy]);
+
+  // Exporta a CSV las salidas visibles con los filtros actuales.
+  const exportCsv = () => {
+    if (visibleRows.length === 0) { toast.error("No hay salidas que exportar con estos filtros"); return; }
+    setExporting(true);
+    const headers = ["Fecha", "Hora", "Excursión", "Punto de encuentro", "Cupo", "Reservados", "Libres", "Ocupación %", "Cierre (h antes)", "Estado"];
+    const cell = (v: unknown) => {
+      const t = v === null || v === undefined ? "" : String(v);
+      return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+    };
+    const lines = visibleRows.map((d) => [
+      d.departure_at ? formatDate(d.departure_at) : "",
+      d.departure_at ? formatTime(d.departure_at) : "",
+      typeof d.product === "object" && d.product ? d.product.name : "",
+      d.meeting_point || "",
+      d.capacity ?? 0,
+      (d.booked_pax ?? 0) + (d.pending_pax ?? 0),
+      d.available_pax ?? 0,
+      occupancyOf(d),
+      d.cutoff_hours ?? "",
+      DEPARTURE_STATUS[d.status || ""]?.label || d.status || "",
+    ].map(cell).join(","));
+    const csv = [headers.join(","), ...lines].join("\n");
+    const blob = new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `salidas-${from}-a-${to}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setExporting(false);
+    toast.success(`${visibleRows.length} salida${visibleRows.length === 1 ? "" : "s"} exportada${visibleRows.length === 1 ? "" : "s"}`);
+  };
+
   // Group by day for the calendar view.
   const byDay = useMemo(() => {
     const map = new Map<string, Departure[]>();
-    for (const d of rows) {
+    for (const d of visibleRows) {
       const key = (d.departure_at || "").slice(0, 10);
       if (!key) continue;
       map.set(key, [...(map.get(key) || []), d]);
     }
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [rows]);
+  }, [visibleRows]);
 
   const totalCapacity = rows.reduce((s, d) => s + (d.capacity ?? 0), 0);
   const totalBooked = rows.reduce((s, d) => s + (d.booked_pax ?? 0) + (d.pending_pax ?? 0), 0);
@@ -158,6 +235,9 @@ export default function DeparturesPage() {
           <>
             <Button variant="outline" size="icon" onClick={load} aria-label="Actualizar">
               <Icon name="RefreshCw" className="size-4" />
+            </Button>
+            <Button variant="outline" className="gap-1.5" onClick={exportCsv} disabled={exporting || loading}>
+              <Icon name="Download" className="size-4" /> Exportar
             </Button>
             <Button className="gap-1.5" onClick={() => setGenOpen(true)}>
               <Icon name="CalendarPlus" className="size-4" /> Generar calendario
@@ -201,6 +281,23 @@ export default function DeparturesPage() {
             {optionsFrom(DEPARTURE_STATUS).map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
           </SelectContent>
         </Select>
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtro por ocupación">
+          {OCCUPANCY_FILTERS.map((f) => (
+            <button
+              key={f.value}
+              type="button"
+              onClick={() => setOccupancy(f.value)}
+              aria-pressed={occupancy === f.value}
+              className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+                occupancy === f.value
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-card text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <Tabs defaultValue="calendar">
@@ -255,7 +352,12 @@ export default function DeparturesPage() {
                             </p>
                           </div>
                           <OccupancyBar d={d} />
+                          <TimingPill d={d} />
                           <StatusBadge value={d.status} dict={DEPARTURE_STATUS} />
+                          <Link href={`/dashboard/reservas?departure=${d._id}`}
+                            className="text-xs font-semibold text-primary hover:underline">
+                            Ver reservas
+                          </Link>
                         </li>
                       ))}
                     </ul>
@@ -294,7 +396,17 @@ export default function DeparturesPage() {
                 render: (d: Departure) => <span className="font-semibold">{formatNumber(d.available_pax ?? 0)}</span> },
               { key: "cutoff", header: "Cierre", align: "right", hideOn: "lg",
                 render: (d: Departure) => (d.cutoff_hours != null ? `${d.cutoff_hours} h antes` : "—") },
+              { key: "timing", header: "Ventana", hideOn: "md", render: (d: Departure) => <TimingPill d={d} /> },
               { key: "status", header: "Estado", render: (d: Departure) => <StatusBadge value={d.status} dict={DEPARTURE_STATUS} /> },
+              {
+                key: "actions", header: "", align: "right",
+                render: (d: Departure) => (
+                  <Link href={`/dashboard/reservas?departure=${d._id}`}
+                    className="text-xs font-semibold text-primary hover:underline">
+                    Ver reservas
+                  </Link>
+                ),
+              },
             ]}
           />
         </TabsContent>

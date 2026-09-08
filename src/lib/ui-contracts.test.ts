@@ -264,6 +264,22 @@ describe("Panel ejecutivo", () => {
     expect(page).toContain("en esta página");
   });
 
+  it("Salidas — drill-down a reservas, filtro por ocupación y ventana de venta", () => {
+    const page = read("src/app/dashboard/salidas/page.tsx");
+    // Cada salida enlaza a sus reservas (la pantalla de reservas ya filtra por salida).
+    expect(page).toContain("/dashboard/reservas?departure=${d._id}");
+    // Filtro de ocupación que hace accionables los KPIs.
+    expect(page).toContain("OCCUPANCY_FILTERS");
+    expect(page).toContain("const visibleRows");
+    // Ventana de venta derivada (nunca persistida) y exportación.
+    expect(page).toContain("function TimingPill");
+    expect(page).toContain("cutoffPassed");
+    expect(page).toContain("const exportCsv");
+    // El estado de la salida lo deriva el servidor: la pantalla no lo edita.
+    expect(page).not.toContain('filter.status": "full"');
+    expect(page).not.toMatch(/api\.(put|post)[^\n]*erp\/departure/);
+  });
+
   it("existe una prueba de base de datos de la RPC del panel", () => {
     const sql = read("supabase/tests/dashboard_summary.test.sql");
     expect(sql).toContain("public.dashboard_summary");
