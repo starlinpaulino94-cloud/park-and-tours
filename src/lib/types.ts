@@ -580,5 +580,5 @@ export interface Notification extends BaseRecord {
   company?: Ref<Company>; user?: Ref<AppUser>; partner?: Ref<Partner>;
   title?: string; message?: string;
   notification_type?: "info" | "booking" | "payment" | "operation" | "alert" | "settlement";
-  link?: string; read_status?: "yes" | "no"; read_at?: string;
+  link?: string; read_status?: boolean; read_at?: string;
 }

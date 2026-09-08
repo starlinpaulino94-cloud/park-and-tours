@@ -105,6 +105,12 @@ export function ResourceForm({
         initial[f.name] = toDateInput(raw);
       } else if (Array.isArray(raw)) {
         initial[f.name] = raw.join(",");
+      } else if (typeof raw === "boolean") {
+        // Una columna booleana vuelve como true/false y el `select` ofrece
+        // "yes"/"no": sin traducir, el campo salía en blanco al editar y, al
+        // guardar, viajaba como null contra una columna `not null` — que hacía
+        // fallar la actualización entera, no solo ese campo.
+        initial[f.name] = raw ? "yes" : "no";
       } else {
         initial[f.name] = String(raw);
       }

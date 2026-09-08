@@ -42,6 +42,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
       if (!key.startsWith("filter.")) continue;
       const field = key.slice(7);
       if (!value || !filterable.has(field)) continue;
+      // Un filtro de sí/no viaja como texto desde la UI, pero la columna es
+      // booleana: se convierte aquí en vez de dejarlo a la conversión implícita
+      // de Postgres, que es lo que escondía el problema en el resto de capas.
+      if (def.booleans?.includes(field)) {
+        filter[field] = value === "yes" || value === "true";
+        continue;
+      }
       filter[field] = value.includes(",") ? { in: value.split(",") } : value;
     }
 
