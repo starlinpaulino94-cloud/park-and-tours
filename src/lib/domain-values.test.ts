@@ -45,9 +45,27 @@ function enumValues(): Record<string, string[]> {
   return out;
 }
 
-/** Dominio permitido de `tabla.columna`, venga de un check o de un enum. */
+/**
+ * Dominio permitido de `tabla.columna`, venga de un check o de un enum.
+ *
+ * Un `alter table ... add constraint ... check` posterior MANDA sobre lo que
+ * declaró el `create table`: así es como 0029 amplió `checkin_status`. Se
+ * evalúa primero para no leer un dominio ya superado.
+ */
 function allowedFor(table: string, column: string): string[] {
   const enums = enumValues();
+
+  // Las migraciones se concatenan en orden, así que la última redefinición gana.
+  let altered: string[] | null = null;
+  for (const m of SQL.matchAll(
+    /alter table\s+(\w+)\s+add constraint\s+\w+\s+check\s*\(\s*(\w+)\s+in\s*\(([\s\S]*?)\)\s*\)/gi
+  )) {
+    if (m[1] === table && m[2] === column) {
+      altered = [...m[3].matchAll(/'([^']+)'/g)].map((v) => v[1]);
+    }
+  }
+  if (altered) return altered;
+
   for (const m of SQL.matchAll(/create table (\w+)\s*\(([\s\S]*?)\n\);/gi)) {
     if (m[1] !== table) continue;
     const body = m[2];

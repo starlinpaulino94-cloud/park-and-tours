@@ -184,9 +184,10 @@ export const MODALITY_TYPE: Record<string, LabelDef> = {
   couple: def("Pareja"),
 };
 
-/** Check real: solo pending, done y no_show ('partial' nunca existió). */
+/** Dominio de `booking.checkin_status` (0029 añadió 'partial'). */
 export const CHECKIN_STATUS: Record<string, LabelDef> = {
   pending: def("Pendiente", "warning"),
+  partial: def("Parcial", "accent"),
   done: def("Realizado", "success"),
   no_show: def("No-show", "danger"),
 };
