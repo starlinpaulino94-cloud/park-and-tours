@@ -295,6 +295,48 @@ describe("Panel ejecutivo", () => {
     expect(page).not.toMatch(/api\.(post|put|delete)\(/);
   });
 
+  it("Accesos — la redención pasa por su acción, no por el formulario", () => {
+    const page = read("src/app/dashboard/parque/accesos/page.tsx");
+    const validator = read("src/app/dashboard/parque/accesos/ticket-validator.tsx");
+    const resources = read("src/lib/resources.ts");
+
+    // El estado de consumo salió del CRUD genérico: editarlo a mano permitía
+    // revivir un pase redimido o devolver el contador de entradas a cero.
+    const block = /access_ticket: \{([\s\S]*?)\n  \},/.exec(resources)![1];
+    const writable = /writable:\s*\[([^\]]*)\]/.exec(block)![1];
+    for (const field of ['"status"', '"entries_used"', '"redeemed_at"']) {
+      expect(writable, `access_ticket.writable no debe incluir ${field}`).not.toContain(field);
+    }
+    // Filtrar por estado sigue estando bien; lo que no puede haber es un campo
+    // de formulario que lo escriba.
+    const fields = /fields=\{\[([\s\S]*?)\n {8}\]\}/.exec(page)![1];
+    for (const field of ['name: "status"', 'name: "entries_used"', 'name: "redeemed_at"']) {
+      expect(fields, `el formulario no debe editar ${field}`).not.toContain(field);
+    }
+
+    // Y en su lugar hay una validación de puerta que consume la entrada.
+    expect(validator).toContain("/redeem");
+    expect(page).toContain("/void");
+    expect(page).toContain("<TicketValidator");
+    // La lista se recarga tras validar o anular, o mostraría el saldo viejo.
+    expect(page).toContain("key={reloadKey}");
+  });
+
+  it("la vigencia de un pase se decide en un solo sitio", () => {
+    // Si el listado y la puerta calcularan la vigencia por su cuenta, podrían
+    // discrepar: la lista diría "vigente" y el torniquete rechazaría el pase.
+    for (const rel of [
+      "src/app/dashboard/ventas/tickets/page.tsx",
+      "src/app/dashboard/parque/accesos/page.tsx",
+      "src/app/dashboard/parque/accesos/ticket-validator.tsx",
+    ]) {
+      const page = read(rel);
+      expect(page, `${rel} debe usar los predicados de lib/tickets`).toContain('from "@/lib/tickets"');
+      expect(page, `${rel} no debe reimplementar la lista de estados cerrados`)
+        .not.toContain('new Set(["redeemed"');
+    }
+  });
+
   it("Cotizaciones — pipeline, vigencia derivada, margen y desglose de líneas", () => {
     const page = read("src/app/dashboard/ventas/cotizaciones/page.tsx");
     expect(page).not.toContain("SimpleResource");
