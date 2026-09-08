@@ -48,14 +48,20 @@ export const DEPARTURE_STATUS: Record<string, LabelDef> = {
   completed: def("Completada", "info"),
 };
 
+/**
+ * Debe coincidir EXACTAMENTE con el enum `payment_method` de la base
+ * ('cash','card','transfer','link','credit','deposit','check','other').
+ * Antes ofrecía 'payment_link', 'b2b_credit' y 'mixed', que no existen en el
+ * enum: elegirlos hacía fallar el cobro. Y ocultaba 'link', 'credit' y 'check'.
+ */
 export const PAYMENT_METHOD: Record<string, LabelDef> = {
   cash: def("Efectivo", "success"),
   card: def("Tarjeta", "info"),
   transfer: def("Transferencia", "violet"),
-  payment_link: def("Link de pago", "accent"),
+  link: def("Link de pago", "accent"),
+  credit: def("Crédito", "warning"),
   deposit: def("Depósito", "info"),
-  b2b_credit: def("Crédito B2B", "warning"),
-  mixed: def("Mixto", "neutral"),
+  check: def("Cheque", "neutral"),
   other: def("Otro", "neutral"),
 };
 
@@ -86,6 +92,7 @@ export const SETTLEMENT_STATUS: Record<string, LabelDef> = {
   paid: def("Pagada", "success"),
   held: def("Retenida", "danger"),
   disputed: def("En disputa", "danger"),
+  void: def("Anulada", "neutral"),
 };
 
 export const LEAD_STATUS: Record<string, LabelDef> = {
@@ -132,8 +139,6 @@ export const CHANNEL: Record<string, LabelDef> = {
   tour_center: def("Tour Center", "accent"),
   ota: def("OTA", "info"),
   pos: def("Punto de venta", "neutral"),
-  // Agrupación del panel ejecutivo para canales fuera del top del gráfico.
-  otros: def("Otros", "neutral"),
 };
 
 export const PARTNER_TYPE: Record<string, LabelDef> = {
@@ -179,9 +184,9 @@ export const MODALITY_TYPE: Record<string, LabelDef> = {
   couple: def("Pareja"),
 };
 
+/** Check real: solo pending, done y no_show ('partial' nunca existió). */
 export const CHECKIN_STATUS: Record<string, LabelDef> = {
   pending: def("Pendiente", "warning"),
-  partial: def("Parcial", "accent"),
   done: def("Realizado", "success"),
   no_show: def("No-show", "danger"),
 };
@@ -199,6 +204,12 @@ export const AGING_BUCKET: Record<string, LabelDef> = {
   d31_60: def("31–60 días", "warning"),
   d61_90: def("61–90 días", "accent"),
   d90_plus: def("+90 días", "danger"),
+};
+
+/** Columnas cuyo check es solo activo/inactivo (p. ej. `hotel.status`). */
+export const ACTIVE_STATUS: Record<string, LabelDef> = {
+  active: def("Activo", "success"),
+  inactive: def("Inactivo", "neutral"),
 };
 
 export const GENERIC_STATUS: Record<string, LabelDef> = {
@@ -279,19 +290,22 @@ export const SUPPLIER_TYPE: Record<string, LabelDef> = {
   other: def("Otro"),
 };
 
+/** Enum `beneficiary_type`: partner, supervisor, seller, company. */
 export const BENEFICIARY_TYPE: Record<string, LabelDef> = {
   seller: def("Vendedor", "info"),
   supervisor: def("Supervisor", "violet"),
   partner: def("Partner", "accent"),
-  guide: def("Guía", "success"),
-  supplier: def("Proveedor", "neutral"),
+  company: def("Empresa", "neutral"),
 };
 
+/** Enum `calc_type`; net_rate y markup son modelos B2B que faltaban. */
 export const CALC_TYPE: Record<string, LabelDef> = {
   percentage: def("Porcentaje", "info"),
   fixed: def("Monto fijo", "accent"),
   tiered: def("Escalonado", "violet"),
   volume: def("Por volumen", "warning"),
+  net_rate: def("Tarifa neta", "success"),
+  markup: def("Markup", "warning"),
 };
 
 export const ACTIVITY_TYPE: Record<string, LabelDef> = {
@@ -304,13 +318,8 @@ export const ACTIVITY_TYPE: Record<string, LabelDef> = {
   meeting: def("Reunión", "info"),
 };
 
-export const EXPENSE_METHOD: Record<string, LabelDef> = {
-  cash: def("Efectivo"),
-  card: def("Tarjeta"),
-  transfer: def("Transferencia"),
-  credit: def("Crédito"),
-  other: def("Otro"),
-};
+/** `expense.payment_method` es el mismo enum que los cobros. */
+export const EXPENSE_METHOD: Record<string, LabelDef> = PAYMENT_METHOD;
 
 export const LANGUAGE: Record<string, LabelDef> = {
   es: def("Español"), en: def("Inglés"), fr: def("Francés"),

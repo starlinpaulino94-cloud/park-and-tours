@@ -437,8 +437,9 @@ export interface CashSession extends BaseRecord {
   cash_movement?: CashMovement[];
 }
 
+/** Enum `payment_method` de la base, literal. */
 export type PaymentMethod =
-  | "cash" | "card" | "transfer" | "payment_link" | "deposit" | "b2b_credit" | "mixed" | "other";
+  | "cash" | "card" | "transfer" | "link" | "credit" | "deposit" | "check" | "other";
 
 export interface Payment extends BaseRecord {
   company?: Ref<Company>; order?: Ref<Order>; booking?: Ref<Booking>;

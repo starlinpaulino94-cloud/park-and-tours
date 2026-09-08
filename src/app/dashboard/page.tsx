@@ -271,7 +271,7 @@ export default function DashboardPage() {
               <div className="tf-card p-5">
                 <h2 className="mb-4 font-display text-lg font-semibold">Ventas por canal</h2>
                 <Donut
-                  slices={data.by_channel.map((channel, i) => ({ label: labelOf(CHANNEL, channel.key).label, value: channel.sales, color: CHART_COLORS[i % CHART_COLORS.length] }))}
+                  slices={data.by_channel.map((channel, i) => ({ label: channelLabel(channel.key), value: channel.sales, color: CHART_COLORS[i % CHART_COLORS.length] }))}
                   centerValue={formatCompactMoney((k.net_sales as number) || 0, currency)}
                   centerLabel="ventas netas"
                 />
@@ -359,6 +359,13 @@ const sellerLabel = (row: Record<string, unknown>) => {
   const fullName = [row.first_name, row.last_name].filter(Boolean).join(" ").trim();
   return row.code && fullName ? `${fullName} (${row.code})` : fullName || String(row.email || row.code || row._id || "Sin nombre");
 };
+
+// 'otros' es el bucket que agrega el RPC con los canales fuera del top; no es
+// un canal real, así que no vive en CHANNEL (que alimenta selects atados al
+// enum sales_channel y rechazaría ese valor).
+function channelLabel(key: string) {
+  return key === "otros" ? "Otros" : labelOf(CHANNEL, key).label;
+}
 
 function withExcluded(base: string, excluded?: number | null) {
   return typeof excluded === "number" && excluded > 0 ? `${base} · ${formatNumber(excluded)} sin conversión` : base;
