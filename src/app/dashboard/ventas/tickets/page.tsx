@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { TICKET_STATUS, TICKET_TYPE } from "@/lib/labels-modules";
 import { formatDate, formatMoney, formatNumber } from "@/lib/format";
 import { optionsFrom } from "@/components/tf/options";
+import { expiresWithin, isExhausted, isExpired, isNotYetValid, isUsable } from "@/lib/tickets";
 
 interface Ticket {
   _id: string; code?: string; wristband_code?: string; holder_name?: string;
@@ -24,22 +25,16 @@ interface Ticket {
   customer?: any; product?: any; booking?: any;
 }
 
-const DAY = 86_400_000;
 const SOON_DAYS = 7;
 
-/** Estados que ya no admiten uso, sea cual sea la vigencia. */
-const CLOSED_STATUSES = new Set(["redeemed", "expired", "void", "transferred"]);
-
-const expired = (t: Ticket) => Boolean(t.valid_to && new Date(t.valid_to).getTime() < Date.now());
-const notYetValid = (t: Ticket) => Boolean(t.valid_from && new Date(t.valid_from).getTime() > Date.now());
-const exhausted = (t: Ticket) =>
-  t.entries_allowed != null && (t.entries_used ?? 0) >= t.entries_allowed;
-const expiringSoon = (t: Ticket) =>
-  Boolean(t.valid_to) && !expired(t) &&
-  new Date(t.valid_to!).getTime() - Date.now() <= SOON_DAYS * DAY;
-/** Utilizable de verdad: la vigencia manda sobre el estado almacenado. */
-const usable = (t: Ticket) =>
-  !CLOSED_STATUSES.has(t.status || "") && !expired(t) && !notYetValid(t) && !exhausted(t);
+// La vigencia real de un pase se decide en `src/lib/tickets.ts`, que es lo mismo
+// que aplica la puerta al validar: si el listado dijera "vigente" y el torniquete
+// dijera otra cosa, el cajero no sabría a cuál creerle.
+const expired = (t: Ticket) => isExpired(t);
+const notYetValid = (t: Ticket) => isNotYetValid(t);
+const exhausted = (t: Ticket) => isExhausted(t);
+const expiringSoon = (t: Ticket) => expiresWithin(t, SOON_DAYS);
+const usable = (t: Ticket) => isUsable(t);
 
 const VALIDITY_FILTERS = [
   { value: "all", label: "Todos" },

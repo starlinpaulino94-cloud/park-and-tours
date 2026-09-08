@@ -487,7 +487,13 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["code", "holder_name", "wristband_code"],
     expand: { customer: true, product: true, booking: true },
     sort: { createdAt: "desc" },
-    writable: ["code", "ticket_type", "status", "valid_from", "valid_to", "entries_allowed", "entries_used", "issued_at", "redeemed_at", "qr_payload", "wristband_code", "holder_name", "price", "currency", "notes", "booking", "participant", "customer", "product", "order", "membership"],
+    // `status`, `entries_used` y `redeemed_at` son estado de consumo y NO se
+    // editan por el CRUD genérico: desde el formulario se podía revivir un pase
+    // ya redimido o devolver el contador a cero, que es rearmar una entrada ya
+    // usada. Se mueven solo por `POST /api/tickets/:id/redeem` y `/void`, con
+    // guardas de estado y auditoría — igual que `voucher.status` (AUD-B02/B14) y
+    // `departure.status` (AUD-B02/B16).
+    writable: ["code", "ticket_type", "valid_from", "valid_to", "entries_allowed", "issued_at", "qr_payload", "wristband_code", "holder_name", "price", "currency", "notes", "booking", "participant", "customer", "product", "order", "membership"],
     numeric: ["entries_allowed", "entries_used", "price"],
     dates: ["valid_from", "valid_to", "issued_at", "redeemed_at"],
     writeRole: "cashier",
