@@ -25,17 +25,22 @@ export async function recalcCashSession(companyId: string, sessionId: string) {
     else { cashDelta += amt; if (amt > 0) sales += amt; }
   }
 
-  let card = 0, transfer = 0;
+  let card = 0, transfer = 0, offDrawer = 0;
   for (const p of payments) {
     const signed = p.payment_type === "refund" ? -(p.amount ?? 0) : p.amount ?? 0;
     if (p.method === "card") card += signed;
     // 'link' es el valor real del enum; antes se comparaba con 'payment_link',
     // que no existe, y el cobro por link inflaba el efectivo esperado en caja.
     else if (p.method === "transfer" || p.method === "link" || p.method === "deposit") transfer += signed;
+    // Cheque y crédito tampoco entran al cajón —el cheque se deposita y el
+    // crédito queda como cuenta por cobrar—, pero no son transferencias: se
+    // descuentan del efectivo esperado sin ensuciar `transfer_total`, que es lo
+    // que el arqueo compara contra el voucher del banco.
+    else if (p.method === "check" || p.method === "credit") offDrawer += signed;
   }
 
-  // Card/transfer payments never touch the cash drawer.
-  const cashOnly = cashDelta - card - transfer;
+  // Solo el efectivo llega al cajón: lo demás se descuenta del esperado.
+  const cashOnly = cashDelta - card - transfer - offDrawer;
   const expected = Math.round(((session.opening_amount ?? 0) + cashOnly + Number.EPSILON) * 100) / 100;
 
   await tenantUpdate(companyId, "cash_session", sessionId, {

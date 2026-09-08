@@ -50,7 +50,7 @@ export interface Plan extends BaseRecord {
   monthly_price?: number; yearly_price?: number; currency?: Currency;
   max_users?: number; max_bookings_month?: number; max_storage_mb?: number;
   max_products?: number; trial_days?: number;
-  modules_enabled?: ModuleKey[]; is_premium?: "yes" | "no";
+  modules_enabled?: ModuleKey[]; is_premium?: boolean;
   status?: "active" | "inactive"; sort_order?: number;
 }
 
@@ -330,7 +330,7 @@ export interface Booking extends BaseRecord {
   checkin_status?: "pending" | "partial" | "done" | "no_show";
   checked_in_at?: string; checked_in_pax?: number;
   cancelled_at?: string; cancel_reason?: string;
-  capacity_override?: "yes" | "no"; override_reason?: string;
+  capacity_override?: boolean; override_reason?: string;
   notes?: string; internal_notes?: string;
   participant?: Participant[]; voucher?: Voucher[];
   commission?: Commission[]; payment?: Payment[]; pickup?: Pickup[];

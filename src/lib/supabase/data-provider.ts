@@ -2,7 +2,7 @@ import "server-only";
 import { supabaseService } from "@/lib/supabase/service";
 import { supabaseServer } from "@/lib/supabase/server";
 import { applyQuery, applyFilter, type QueryShape } from "@/lib/supabase/query-translator";
-import { aliasField, DEFAULT_FIELD_ALIASES } from "@/lib/supabase/query-translator";
+import { aliasField, aliasesFor, DEFAULT_FIELD_ALIASES } from "@/lib/supabase/query-translator";
 
 /**
  * Supabase data provider for tenant-scoped CRUD helpers in `tenant.ts`.
@@ -23,9 +23,18 @@ import { aliasField, DEFAULT_FIELD_ALIASES } from "@/lib/supabase/query-translat
 const notFound = (msg = "Registro no encontrado o fuera de tu empresa") =>
   Object.assign(new Error(msg), { status: 404 });
 
-const PG_TO_LEGACY = Object.entries(DEFAULT_FIELD_ALIASES).reduce<Record<string, string>>(
+/**
+ * Inverso del mapa de alias, de UNA columna a TODOS sus nombres legacy.
+ *
+ * `hotel_id` se lee como `hotel` en `pickup` y como `pickup_hotel` en `booking`:
+ * con un inverso uno-a-uno el último gana y el otro campo llega vacío a la UI.
+ * Poblar los dos cuesta una clave más en el objeto y nunca pisa un valor real,
+ * porque solo se rellena lo que no venía ya en la fila.
+ */
+const PG_TO_LEGACY = Object.entries(DEFAULT_FIELD_ALIASES).reduce<Record<string, string[]>>(
   (acc, [legacy, pg]) => {
-    acc[pg] = legacy;
+    if (legacy === pg) return acc;
+    (acc[pg] ||= []).push(legacy);
     return acc;
   },
   {}
@@ -39,11 +48,14 @@ function refValue(value: unknown): unknown {
   return value;
 }
 
-function toPgPayload(data: Record<string, unknown>): Record<string, unknown> {
+function toPgPayload(
+  data: Record<string, unknown>,
+  aliases: Record<string, string> = DEFAULT_FIELD_ALIASES
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data)) {
     if (["_id", "id", "createdAt", "updatedAt", "created_at", "updated_at"].includes(key)) continue;
-    out[aliasField(key)] = refValue(value);
+    out[aliasField(key, aliases)] = refValue(value);
   }
   return out;
 }
@@ -107,8 +119,9 @@ function fromPgRow<T>(value: T): T {
   for (const [key, raw] of Object.entries(input)) {
     const normalised = fromPgRow(raw);
     out[key] = normalised;
-    const legacy = PG_TO_LEGACY[key];
-    if (legacy && out[legacy] === undefined) out[legacy] = normalised;
+    for (const legacy of PG_TO_LEGACY[key] || []) {
+      if (out[legacy] === undefined) out[legacy] = normalised;
+    }
   }
   return out as T;
 }
@@ -148,7 +161,7 @@ export async function spQuery<T = Record<string, unknown>>(
     return ((data ?? []) as T[]).map((row) => fromPartnerRow(row));
   }
   const scopedOpts: QueryShape = { ...options, _filter: scoped(orgId, options._filter) };
-  const q = applyQuery(sb.from(table).select(select) as any, scopedOpts);
+  const q = applyQuery(sb.from(table).select(select) as any, scopedOpts, aliasesFor(table));
   const { data, error } = await (q as any);
   if (error) {
     console.error(`[spQuery] ${table}:`, error.message);
@@ -167,7 +180,7 @@ export async function spCount(orgId: string, table: string, filter: Record<strin
     return count ?? 0;
   }
   const base = sb.from(table).select("*", { count: "exact", head: true }) as any;
-  const q = applyFilter(base, scoped(orgId, filter));
+  const q = applyFilter(base, scoped(orgId, filter), aliasesFor(table));
   const { count, error } = await (q as any);
   if (error) throw new Error(error.message);
   return count ?? 0;
@@ -208,7 +221,7 @@ export async function spCreate<T = Record<string, unknown>>(
     }
     return fromPartnerRow(row as T);
   }
-  const payload = { ...toPgPayload(data), organization_id: orgId };
+  const payload = { ...toPgPayload(data, aliasesFor(table)), organization_id: orgId };
   const { data: row, error } = await sb.from(table).insert(payload).select().single();
   if (error) {
     console.error(`[spCreate] ${table}:`, error.message);
@@ -237,7 +250,7 @@ export async function spUpdate<T = Record<string, unknown>>(
   }
   // organization_id is immutable through this path.
   const { organization_id: _drop, company: _drop2, ...safe } = data as Record<string, unknown>;
-  const payload = toPgPayload(safe);
+  const payload = toPgPayload(safe, aliasesFor(table));
   const { data: row, error } = await sb
     .from(table).update(payload).eq("id", id).eq("organization_id", orgId).select().single();
   if (error) throw new Error(error.message);

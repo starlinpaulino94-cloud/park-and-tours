@@ -154,10 +154,14 @@ export async function postMovement(companyId: string, input: MovementInput) {
     throw new TenantError(`Tipo de movimiento inválido: ${input.movement_type}`, 400);
   }
 
-  const source = await tenantFindOne<{ allows_negative?: string; name?: string }>(
+  // `allows_negative` es booleano en la base (0013), no la cadena "yes": la
+  // comparación anterior siempre daba falso, así que un almacén configurado
+  // para admitir negativos igual bloqueaba la salida. Mismo fallo que ya se
+  // había corregido en `approval_request.requires_two`.
+  const source = await tenantFindOne<{ allows_negative?: boolean; name?: string }>(
     companyId, "warehouse", input.warehouse
   );
-  const allowNegative = source.allows_negative === "yes";
+  const allowNegative = source.allows_negative === true;
 
   const isTransfer = input.movement_type === "transfer_out" || input.movement_type === "transfer_in";
   if (isTransfer && !input.to_warehouse) {
@@ -177,14 +181,14 @@ export async function postMovement(companyId: string, input: MovementInput) {
   if (!isTransfer) return { legs: [out] };
 
   // Inbound leg of the transfer.
-  const dest = await tenantFindOne<{ allows_negative?: string }>(companyId, "warehouse", input.to_warehouse!);
+  const dest = await tenantFindOne<{ allows_negative?: boolean }>(companyId, "warehouse", input.to_warehouse!);
   const inLeg = await applyLeg(
     companyId,
     { ...input, to_warehouse: input.warehouse },
     input.to_warehouse!,
     "transfer_in",
     Math.abs(quantity),
-    dest.allows_negative === "yes"
+    dest.allows_negative === true
   );
   return { legs: [out, inLeg] };
 }

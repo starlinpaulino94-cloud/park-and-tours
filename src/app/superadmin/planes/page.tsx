@@ -35,7 +35,7 @@ const EMPTY_DRAFT = {
   name: "", code: "", description: "",
   monthly_price: "", yearly_price: "", currency: "usd",
   max_users: "", max_bookings_month: "", max_products: "", max_storage_mb: "",
-  trial_days: "14", is_premium: "no", status: "active", sort_order: "",
+  trial_days: "14", premium: "no", status: "active", sort_order: "",
   modules: [] as string[],
 };
 
@@ -92,7 +92,7 @@ export default function SuperadminPlansPage() {
       max_products: plan.max_products != null ? String(plan.max_products) : "",
       max_storage_mb: plan.max_storage_mb != null ? String(plan.max_storage_mb) : "",
       trial_days: plan.trial_days != null ? String(plan.trial_days) : "14",
-      is_premium: plan.is_premium || "no",
+      premium: plan.is_premium ? "yes" : "no",
       status: plan.status || "active",
       sort_order: plan.sort_order != null ? String(plan.sort_order) : "",
       modules: (plan.modules_enabled as string[]) || [],
@@ -116,7 +116,9 @@ export default function SuperadminPlansPage() {
       max_products: draft.max_products,
       max_storage_mb: draft.max_storage_mb,
       trial_days: draft.trial_days,
-      is_premium: draft.is_premium,
+      // La columna es booleana (0009); el select del formulario trabaja con
+      // "yes"/"no", así que `draft.premium` lleva otro nombre a propósito.
+      is_premium: draft.premium === "yes",
       status: draft.status,
       sort_order: draft.sort_order,
       modules_enabled: draft.modules,
@@ -215,7 +217,7 @@ export default function SuperadminPlansPage() {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <h3 className="font-display text-lg font-semibold">{p.name}</h3>
-                        {p.is_premium === "yes" && <Pill tone="violet"><Icon name="Crown" className="size-3" /> Premium</Pill>}
+                        {p.is_premium && <Pill tone="violet"><Icon name="Crown" className="size-3" /> Premium</Pill>}
                       </div>
                       <p className="font-mono text-[11px] text-muted-foreground">{p.code}</p>
                     </div>
@@ -341,7 +343,7 @@ export default function SuperadminPlansPage() {
               <Text label="Orden" value={draft.sort_order} onChange={(v) => setDraft({ ...draft, sort_order: v })} type="number" />
               <div className="space-y-1.5">
                 <Label>Plan premium</Label>
-                <Select value={draft.is_premium} onValueChange={(v) => setDraft({ ...draft, is_premium: v })}>
+                <Select value={draft.premium} onValueChange={(v) => setDraft({ ...draft, premium: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="no">No</SelectItem>
