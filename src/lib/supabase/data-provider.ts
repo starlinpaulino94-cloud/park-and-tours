@@ -3,6 +3,9 @@ import { supabaseService } from "@/lib/supabase/service";
 import { supabaseServer } from "@/lib/supabase/server";
 import { applyQuery, applyFilter, type QueryShape } from "@/lib/supabase/query-translator";
 import { aliasField, aliasesFor, DEFAULT_FIELD_ALIASES } from "@/lib/supabase/query-translator";
+import {
+  splitPartnerInput, mergePartnerRow, resolveRelationshipType,
+} from "@/lib/partners";
 
 /**
  * Supabase data provider for tenant-scoped CRUD helpers in `tenant.ts`.
@@ -60,54 +63,81 @@ function toPgPayload(
   return out;
 }
 
-function toPartnerPayload(orgId: string, data: Record<string, unknown>): Record<string, unknown> {
-  const payload = toPgPayload(data);
-  const metadata = {
-    ...(payload.metadata && typeof payload.metadata === "object" && !Array.isArray(payload.metadata) ? payload.metadata : {}),
-    commercial_name: data.commercial_name ?? payload.commercial_name,
-    partner_type: data.partner_type ?? payload.partner_type,
-    contact_name: data.contact_name ?? payload.contact_name,
-    whatsapp: data.whatsapp ?? payload.whatsapp,
-    address: data.address ?? payload.address,
-    city: data.city ?? payload.city,
-    notes: data.notes ?? payload.notes,
-    commercial_terms: data.commercial_terms ?? payload.commercial_terms,
-  };
-  for (const key of [
-    "commercial_name", "partner_type", "contact_name", "whatsapp", "address", "city",
-    "credit_limit", "credit_days", "default_commission_pct", "balance", "contract_from",
-    "contract_to", "commercial_terms", "notes", "parent_partner_id", "authorized_products",
-  ]) {
-    delete payload[key];
-  }
-
-  return {
-    ...payload,
-    kind: "partner",
-    parent_org_id: orgId,
-    tenant_org_id: orgId,
-    name: String(payload.name || payload.legal_name || data.commercial_name || "Partner"),
-    metadata,
-  };
+/**
+ * Fila de `organization_relationships` de un partner, si existe.
+ *
+ * Se ordena por antigüedad para que la lectura sea estable: la tabla admite
+ * varias relaciones por pareja (su clave única incluye el tipo) y la aplicación
+ * trabaja con una sola.
+ */
+async function partnerRelationship(
+  sb: Awaited<ReturnType<typeof client>>,
+  orgId: string,
+  partnerId: string
+): Promise<Record<string, unknown> | null> {
+  const { data } = await sb
+    .from("organization_relationships")
+    .select("*")
+    .eq("from_org_id", orgId)
+    .eq("to_org_id", partnerId)
+    .order("created_at", { ascending: true })
+    .limit(1);
+  return (data?.[0] as Record<string, unknown>) ?? null;
 }
 
-function fromPartnerRow<T>(value: T): T {
-  const row = fromPgRow(value) as Record<string, unknown>;
-  const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
-    ? row.metadata as Record<string, unknown>
-    : {};
-  return {
-    ...row,
-    company: row.tenant_org_id,
-    commercial_name: metadata.commercial_name ?? row.legal_name ?? row.name,
-    partner_type: metadata.partner_type,
-    contact_name: metadata.contact_name,
-    whatsapp: metadata.whatsapp,
-    address: metadata.address,
-    city: metadata.city,
-    notes: metadata.notes,
-    commercial_terms: metadata.commercial_terms,
-  } as T;
+/** Las relaciones de varios partners de una vez, indexadas por partner. */
+async function partnerRelationships(
+  sb: Awaited<ReturnType<typeof client>>,
+  orgId: string,
+  partnerIds: string[]
+): Promise<Map<string, Record<string, unknown>>> {
+  const out = new Map<string, Record<string, unknown>>();
+  if (partnerIds.length === 0) return out;
+  const { data } = await sb
+    .from("organization_relationships")
+    .select("*")
+    .eq("from_org_id", orgId)
+    .in("to_org_id", partnerIds)
+    .order("created_at", { ascending: true });
+  for (const row of (data ?? []) as Record<string, unknown>[]) {
+    const key = String(row.to_org_id);
+    if (!out.has(key)) out.set(key, row);
+  }
+  return out;
+}
+
+/**
+ * Guarda las condiciones comerciales del partner en su relación.
+ *
+ * `relationship_type` es obligatorio, así que una edición que no toca el tipo lo
+ * hereda de la fila existente o de `metadata`. Si no hay nada que guardar y
+ * tampoco existía relación, no se crea una vacía.
+ */
+async function savePartnerRelationship(
+  sb: Awaited<ReturnType<typeof client>>,
+  orgId: string,
+  partnerId: string,
+  relationship: Record<string, unknown>,
+  metadata: Record<string, unknown>
+): Promise<void> {
+  const existing = await partnerRelationship(sb, orgId, partnerId);
+  const { relationship_type: incomingType, ...rest } = relationship;
+  if (!existing && Object.keys(rest).length === 0 && incomingType === undefined) return;
+
+  const payload = {
+    ...rest,
+    relationship_type: resolveRelationshipType(incomingType, existing ?? undefined, metadata),
+  };
+
+  const { error } = existing
+    ? await sb.from("organization_relationships").update(payload).eq("id", existing.id as string)
+    : await sb.from("organization_relationships").insert({
+        ...payload, from_org_id: orgId, to_org_id: partnerId,
+      });
+  if (error) {
+    console.error("[partner] no se pudo guardar la relación comercial:", error.message);
+    throw new Error(error.message);
+  }
 }
 
 function fromPgRow<T>(value: T): T {
@@ -158,7 +188,9 @@ export async function spQuery<T = Record<string, unknown>>(
       console.error(`[spQuery] partner:`, error.message);
       throw new Error(error.message);
     }
-    return ((data ?? []) as T[]).map((row) => fromPartnerRow(row));
+    const rows = (data ?? []) as Record<string, unknown>[];
+    const relationships = await partnerRelationships(sb, orgId, rows.map((r) => String(r.id)));
+    return rows.map((row) => mergePartnerRow(fromPgRow(row), relationships.get(String(row.id)))) as T[];
   }
   const scopedOpts: QueryShape = { ...options, _filter: scoped(orgId, options._filter) };
   const q = applyQuery(sb.from(table).select(select) as any, scopedOpts, aliasesFor(table));
@@ -198,7 +230,8 @@ export async function spFindOne<T = Record<string, unknown>>(
       .from("organizations").select(select).eq("id", id).eq("kind", "partner").eq("tenant_org_id", orgId).limit(1).maybeSingle();
     if (error) throw new Error(error.message);
     if (!data) throw notFound();
-    return fromPartnerRow(data as T);
+    const relationship = await partnerRelationship(sb, orgId, id);
+    return mergePartnerRow(fromPgRow(data as unknown as Record<string, unknown>), relationship) as T;
   }
   const { data, error } = await sb
     .from(table).select(select).eq("id", id).eq("organization_id", orgId).limit(1).maybeSingle();
@@ -214,12 +247,24 @@ export async function spCreate<T = Record<string, unknown>>(
 ): Promise<T> {
   const sb = await client();
   if (table === "partner") {
-    const { data: row, error } = await sb.from("organizations").insert(toPartnerPayload(orgId, data)).select().single();
+    const split = splitPartnerInput(data);
+    const { data: row, error } = await sb.from("organizations").insert({
+      ...split.org,
+      kind: "partner",
+      // Una subagencia cuelga de su agencia matriz; el resto, del inquilino.
+      parent_org_id: split.parentPartnerId || orgId,
+      tenant_org_id: orgId,
+      name: String(split.org.name || split.org.legal_name || split.metadata.commercial_name || "Partner"),
+      metadata: split.metadata,
+    }).select().single();
     if (error) {
       console.error(`[spCreate] partner:`, error.message);
       throw new Error(error.message);
     }
-    return fromPartnerRow(row as T);
+    const created = row as Record<string, unknown>;
+    await savePartnerRelationship(sb, orgId, String(created.id), split.relationship, split.metadata);
+    const relationship = await partnerRelationship(sb, orgId, String(created.id));
+    return mergePartnerRow(fromPgRow(created), relationship) as T;
   }
   const payload = { ...toPgPayload(data, aliasesFor(table)), organization_id: orgId };
   const { data: row, error } = await sb.from(table).insert(payload).select().single();
@@ -238,15 +283,33 @@ export async function spUpdate<T = Record<string, unknown>>(
 ): Promise<T> {
   const sb = await client();
   if (table === "partner") {
-    const payload = toPartnerPayload(orgId, data);
-    delete payload.kind;
-    delete payload.parent_org_id;
-    delete payload.tenant_org_id;
+    const split = splitPartnerInput(data);
+
+    // `metadata` se fusiona con lo GUARDADO, no con lo que trae el formulario:
+    // al serializarse, una clave ausente desaparece del JSON, así que editar
+    // solo el crédito borraba el nombre comercial y el contacto del partner.
+    const current = await sb
+      .from("organizations").select("metadata")
+      .eq("id", id).eq("kind", "partner").eq("tenant_org_id", orgId).limit(1).maybeSingle();
+    if (current.error) throw new Error(current.error.message);
+    if (!current.data) throw notFound();
+    const stored = (current.data as { metadata?: unknown }).metadata;
+    const metadata = {
+      ...(stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {}),
+      ...split.metadata,
+    };
+
+    const payload: Record<string, unknown> = { ...split.org, metadata };
+    if (split.parentPartnerId) payload.parent_org_id = split.parentPartnerId;
+
     const { data: row, error } = await sb
       .from("organizations").update(payload).eq("id", id).eq("kind", "partner").eq("tenant_org_id", orgId).select().single();
     if (error) throw new Error(error.message);
     if (!row) throw notFound();
-    return fromPartnerRow(row as T);
+
+    await savePartnerRelationship(sb, orgId, id, split.relationship, metadata);
+    const relationship = await partnerRelationship(sb, orgId, id);
+    return mergePartnerRow(fromPgRow(row as Record<string, unknown>), relationship) as T;
   }
   // organization_id is immutable through this path.
   const { organization_id: _drop, company: _drop2, ...safe } = data as Record<string, unknown>;

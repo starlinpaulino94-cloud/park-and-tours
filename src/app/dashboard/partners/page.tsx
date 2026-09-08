@@ -1,13 +1,33 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import { api } from "@/lib/api";
 import { ResourcePage } from "@/components/tf/resource-page";
-import { StatusBadge } from "@/components/tf/status-badge";
+import { StatusBadge, Pill } from "@/components/tf/status-badge";
+import { Icon } from "@/components/tf/icon";
 import { GENERIC_STATUS, PARTNER_TYPE } from "@/lib/labels";
 import { formatMoney, formatPercent } from "@/lib/format";
 import { optionsFrom, CURRENCY_OPTIONS } from "@/components/tf/options";
-import type { Partner } from "@/lib/types";
+
+interface PartnerBalance { balance: number; documents: number; overdue: number; currency?: string }
 
 export default function PartnersPage() {
+  // El saldo no vive en la ficha del partner: son sus cuentas por cobrar
+  // abiertas. Se traen una vez y se cruzan por id, que es lo que da sentido al
+  // límite de crédito de al lado.
+  const [balances, setBalances] = useState<Record<string, PartnerBalance>>({});
+
+  useEffect(() => {
+    let alive = true;
+    api.get<Record<string, PartnerBalance>>("/api/partners/balances").then((res) => {
+      if (alive && res.ok && res.data) setBalances(res.data);
+    });
+    return () => { alive = false; };
+  }, []);
+
+  const balanceOf = (id: string) => balances[id]?.balance ?? 0;
+  const overLimit = (p: any) => Boolean(p.credit_limit) && balanceOf(p._id) > p.credit_limit;
+
   return (
     <ResourcePage
       resource="partner"
@@ -38,16 +58,31 @@ export default function PartnersPage() {
         { key: "credit", header: "Crédito", align: "right", hideOn: "md",
           render: (p: any) => (
             <div>
-              <p>{formatMoney(p.credit_limit ?? 0, p.currency || "usd")}</p>
+              <p>{p.credit_limit ? formatMoney(p.credit_limit, p.currency || "usd") : "Sin límite"}</p>
               <p className="text-[11px] text-muted-foreground">{p.credit_days ?? 0} días</p>
             </div>
           ) },
         { key: "balance", header: "Saldo", align: "right",
-          render: (p: any) => (
-            <span className={(p.balance ?? 0) > 0 ? "font-semibold text-amber-700 dark:text-amber-300" : ""}>
-              {formatMoney(p.balance ?? 0, p.currency || "usd")}
-            </span>
-          ) },
+          render: (p: any) => {
+            const balance = balanceOf(p._id);
+            const entry = balances[p._id];
+            return (
+              <div>
+                <span className={overLimit(p) ? "font-semibold text-danger" : balance > 0 ? "font-semibold text-amber-700 dark:text-amber-300" : ""}>
+                  {formatMoney(balance, entry?.currency || p.currency || "usd")}
+                </span>
+                {entry && entry.overdue > 0 && (
+                  <p className="text-[11px] text-muted-foreground">
+                    {formatMoney(entry.overdue, entry.currency || p.currency || "usd")} vencido
+                  </p>
+                )}
+              </div>
+            );
+          } },
+        { key: "limit", header: "", align: "right", hideOn: "sm",
+          render: (p: any) => overLimit(p)
+            ? <Pill tone="danger"><Icon name="TriangleAlert" className="size-3" /> Sobre el límite</Pill>
+            : null },
         { key: "status", header: "Estado", render: (p: any) => <StatusBadge value={p.status} dict={GENERIC_STATUS} /> },
       ]}
       fields={[

@@ -106,6 +106,8 @@ const BINDINGS: [string, Dict, string, string][] = [
   // 0030 creó estas dos columnas con el dominio que ya usaba la UI del parque.
   ["ZONE_TYPE", modules.ZONE_TYPE, "zone", "zone_type"],
   ["YES_NO", modules.YES_NO, "zone", "requires_wristband"],
+  // 0031: el tipo de partner ES el tipo de la relación comercial.
+  ["PARTNER_TYPE", labels.PARTNER_TYPE, "organization_relationships", "relationship_type"],
 ];
 
 describe("los diccionarios de la UI coinciden con el dominio de la base", () => {
