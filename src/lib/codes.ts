@@ -37,3 +37,6 @@ export const newSettlementCode = () => `LIQ-${yymm()}-${randomPart(6)}`;
 export const newPaymentReference = () => `PAY-${yymm()}-${randomPart(7)}`;
 export const newCashSessionCode = () => `CJA-${yymm()}-${randomPart(6)}`;
 export const newDocumentNumber = (prefix: string) => `${prefix}-${yymm()}-${randomPart(7)}`;
+// El código de una gift card es al portador: quien lo conoce puede gastar el
+// saldo, igual que un voucher, así que lleva la misma parte aleatoria ancha.
+export const newGiftCardCode = () => `GC-${randomPart(5)}-${randomPart(5)}`;

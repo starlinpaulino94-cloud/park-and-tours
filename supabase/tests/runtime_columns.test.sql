@@ -169,4 +169,34 @@ begin
   raise notice 'partner_terms: TODAS LAS ASERCIONES PASARON';
 end $$;
 
+-- ── gift cards: el saldo no puede quedar negativo ──────────────────────────
+-- La acción rechaza consumir más que el saldo, y la base lo respalda con su
+-- propio `check (balance >= 0)`: dos redes para el mismo dinero.
+insert into gift_card (id, organization_id, code, status, initial_amount, balance, currency)
+values ('33333333-0000-0000-0000-000000000001', :'org', 'GC-TEST-1', 'active', 100, 100, 'usd');
+
+insert into gift_card_movement (organization_id, gift_card_id, movement_type, amount, balance_after)
+values (:'org', '33333333-0000-0000-0000-000000000001', 'issue', 100, 100);
+
+do $$
+begin
+  update gift_card set balance = 70, status = 'partially_used'
+   where id = '33333333-0000-0000-0000-000000000001';
+
+  begin
+    update gift_card set balance = -10 where id = '33333333-0000-0000-0000-000000000001';
+    raise exception 'gift_card.balance aceptó un saldo negativo';
+  exception when check_violation then null;
+  end;
+
+  begin
+    insert into gift_card_movement (organization_id, gift_card_id, movement_type, amount, balance_after)
+    values ('11111111-1111-1111-1111-111111111111', '33333333-0000-0000-0000-000000000001', 'canje', 10, 60);
+    raise exception 'movement_type aceptó un valor fuera del diccionario';
+  exception when check_violation then null;
+  end;
+
+  raise notice 'gift_cards: TODAS LAS ASERCIONES PASARON';
+end $$;
+
 rollback;

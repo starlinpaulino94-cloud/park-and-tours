@@ -295,6 +295,40 @@ describe("Panel ejecutivo", () => {
     expect(page).not.toMatch(/api\.(post|put|delete)\(/);
   });
 
+  it("Gift cards — el saldo solo se mueve por sus acciones", () => {
+    const page = read("src/app/dashboard/clientes/gift-cards/page.tsx");
+    const drawer = read("src/app/dashboard/clientes/gift-cards/gift-card-drawer.tsx");
+    const resources = read("src/lib/resources.ts");
+    const service = read("src/lib/gift-card-service.ts");
+
+    // El saldo de una gift card es dinero del cliente: como campo de formulario
+    // cualquiera con permiso de escritura podía ponerle el número que quisiera.
+    // Anclado al inicio de línea: `expandOne` menciona `gift_card_movement: {`
+    // dentro del propio bloque y un regex laxo capturaba el bloque equivocado.
+    const card = /^ {2}gift_card: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    const writable = /writable:\s*\[([^\]]*)\]/.exec(card)![1];
+    for (const field of ['"balance"', '"initial_amount"', '"status"']) {
+      expect(writable, `gift_card.writable no debe incluir ${field}`).not.toContain(field);
+    }
+    // Y los movimientos son el libro de la tarjeta: se leen, no se escriben.
+    const movement = /^ {2}gift_card_movement: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[([^\]]*)\]/.exec(movement)![1].trim()).toBe("");
+
+    // Un solo punto del código escribe un saldo de gift card: incluso la emisión
+    // crea la tarjeta en cero y la funde con su movimiento.
+    const writers = walk(path.join(ROOT, "src")).filter((file) =>
+      /tenantUpdate\([^)]*"gift_card"/.test(readFileSync(file, "utf8"))
+    );
+    expect(writers.map((f) => path.relative(ROOT, f)))
+      .toEqual(["src/lib/gift-card-service.ts"]);
+    expect(service).toContain('tenantUpdate(ctx.companyId, "gift_card"');
+    expect(page, "el alta pasa por la acción, no por el formulario genérico").toContain("canWrite={false}");
+    expect(page).toContain('api.post<{ code: string }>("/api/gift-cards"');
+    expect(drawer).toMatch(/\/api\/gift-cards\/\$\{card\._id\}\/\$\{action\}/);
+    // La lista se recarga tras cada movimiento, o mostraría el saldo viejo.
+    expect(page).toContain("key={reloadKey}");
+  });
+
   it("Accesos — la redención pasa por su acción, no por el formulario", () => {
     const page = read("src/app/dashboard/parque/accesos/page.tsx");
     const validator = read("src/app/dashboard/parque/accesos/ticket-validator.tsx");

@@ -108,6 +108,9 @@ const BINDINGS: [string, Dict, string, string][] = [
   ["YES_NO", modules.YES_NO, "zone", "requires_wristband"],
   // 0031: el tipo de partner ES el tipo de la relación comercial.
   ["PARTNER_TYPE", labels.PARTNER_TYPE, "organization_relationships", "relationship_type"],
+  ["GIFT_CARD_STATUS", modules.GIFT_CARD_STATUS, "gift_card", "status"],
+  ["GIFT_MOVEMENT_TYPE", modules.GIFT_MOVEMENT_TYPE, "gift_card_movement", "movement_type"],
+  ["DELIVERY_CHANNEL", modules.DELIVERY_CHANNEL, "gift_card", "delivery_channel"],
 ];
 
 describe("los diccionarios de la UI coinciden con el dominio de la base", () => {

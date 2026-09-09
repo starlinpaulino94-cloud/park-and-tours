@@ -77,8 +77,8 @@ export default function AccesosPage() {
           const expired = rows.filter((t) => !isClosed(t) && isExpired(t)).length;
           return (
             <p className="text-xs text-muted-foreground">
-              {formatNumber(total)} pases · <span className="text-success">{formatNumber(usable)} vigentes</span>
-              {expired > 0 && <> · <span className="text-danger">{formatNumber(expired)} vencidos sin cerrar</span></>}
+              {formatNumber(total)} pases · <span className="text-emerald-700 dark:text-emerald-300">{formatNumber(usable)} vigentes</span>
+              {expired > 0 && <> · <span className="text-rose-700 dark:text-rose-300">{formatNumber(expired)} vencidos sin cerrar</span></>}
               {" "}(en esta página)
             </p>
           );
