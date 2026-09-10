@@ -295,6 +295,69 @@ describe("Panel ejecutivo", () => {
     expect(page).not.toMatch(/api\.(post|put|delete)\(/);
   });
 
+  it("todo recurso escribible se puede crear desde alguna pantalla", () => {
+    /**
+     * Un recurso con `writable` pero sin formulario es un módulo muerto: la
+     * tabla se pinta, la API acepta escrituras y la aplicación no ofrece ninguna
+     * forma de dar de alta el primer registro. Pasaba en 37 de los 72 recursos —
+     * categorías del catálogo, tasas de cambio, cajas, turnos, cotizaciones —
+     * porque `SimpleResource` nació como vista de solo lectura provisional y el
+     * "provisional" se quedó.
+     *
+     * Lo que sí debe seguir sin alta manual es lo que genera otro flujo: un
+     * voucher lo emite la reserva, una comisión el motor de comisiones, un
+     * `stock_level` sale de los movimientos. Van aquí con su motivo, para que
+     * añadir un recurso obligue a decidir a cuál de los dos grupos pertenece.
+     */
+    const FLOW_CREATED: Record<string, string> = {
+      approval_request: "la crea el flujo de aprobaciones",
+      commission: "la genera el motor de comisiones al vender",
+      notification: "las emite el sistema",
+      order: "nace en el punto de venta o en booking-service",
+      participant: "se crea con su reserva",
+      payable: "la genera el cierre de liquidaciones",
+      pickup: "lo arma el despacho de operaciones",
+      purchase_order_line: "es hija de su orden de compra",
+      receivable: "la genera la venta a crédito",
+      settlement: "la genera el proceso de liquidación",
+      stock_level: "es el saldo derivado de los movimientos de inventario",
+      voucher: "lo emite la reserva al confirmarse",
+    };
+
+    const resources = read("src/lib/resources.ts");
+    const writable = new Set<string>();
+    for (const block of resources.matchAll(/^ {2}(\w+):\s*\{\n([\s\S]*?)^ {2}\},/gm)) {
+      const list = /writable:\s*\[([^\]]*)\]/.exec(block[2]);
+      if (list && /"\w+"/.test(list[1])) writable.add(block[1]);
+    }
+    expect(writable.size, "no se pudo leer resources.ts").toBeGreaterThan(50);
+
+    // Pantallas que ofrecen un formulario, y llamadas de alta a cualquier ruta.
+    const creatable = new Set<string>();
+    const DEDICATED: Record<string, string> = {
+      gift_card: "/api/gift-cards", access_ticket: "/api/tickets",
+      booking: "/api/bookings", payment: "/api/payments",
+      cash_session: "/api/cash", departure: "/api/departures", task: "/api/tasks",
+    };
+    for (const file of walk(path.join(ROOT, "src/app"))) {
+      const src = readFileSync(file, "utf8");
+      const resource = /resource="(\w+)"/.exec(src)?.[1];
+      const hasForm = /fields=\{\[\s*\n?\s*\{/.test(src) && !/canWrite=\{false\}/.test(src);
+      if (resource && hasForm) creatable.add(resource);
+      for (const m of src.matchAll(/api\.post[^(]*\(\s*[`"']\/api\/erp\/(\w+)/g)) creatable.add(m[1]);
+      for (const [name, route] of Object.entries(DEDICATED)) {
+        if (src.includes(`api.post`) && src.includes(route)) creatable.add(name);
+      }
+    }
+
+    const orphans = [...writable].filter((r) => !creatable.has(r) && !(r in FLOW_CREATED)).sort();
+    expect(orphans, "recursos escribibles sin ninguna forma de crearlos").toEqual([]);
+
+    // Y al revés: si un recurso de la lista gana su formulario, sobra la excusa.
+    const stale = Object.keys(FLOW_CREATED).filter((r) => creatable.has(r)).sort();
+    expect(stale, "estos ya se crean desde una pantalla: quítalos de FLOW_CREATED").toEqual([]);
+  });
+
   it("Gift cards — el saldo solo se mueve por sus acciones", () => {
     const page = read("src/app/dashboard/clientes/gift-cards/page.tsx");
     const drawer = read("src/app/dashboard/clientes/gift-cards/gift-card-drawer.tsx");

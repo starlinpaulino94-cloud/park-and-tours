@@ -1,7 +1,8 @@
 "use client";
 
 import { SimpleResource } from "@/components/tf/simple-resource";
-import { GENERIC_STATUS, MODALITY_TYPE } from "@/lib/labels";
+import { ACTIVE_STATUS, GENERIC_STATUS, MODALITY_TYPE } from "@/lib/labels";
+import { optionsFrom, CURRENCY_OPTIONS } from "@/components/tf/options";
 
 export default function Page() {
   return (
@@ -13,6 +14,25 @@ export default function Page() {
       emptyIcon="Layers"
       filters={[
         { name: "modality_type", label: "Tipo", dict: MODALITY_TYPE },
+      ]}
+      emptyTitle="Sin modalidades"
+      emptyDescription="Cada producto necesita al menos una modalidad vendible con su precio."
+      createLabel="Nueva modalidad"
+      fields={[
+        { name: "product", label: "Producto", type: "reference", resource: "product", required: true },
+        { name: "name", label: "Modalidad", required: true },
+        { name: "code", label: "Código" },
+        { name: "modality_type", label: "Tipo", type: "select", defaultValue: "adult", options: optionsFrom(MODALITY_TYPE) },
+        { name: "price", label: "Precio", type: "number" },
+        { name: "cost", label: "Costo", type: "number" },
+        { name: "currency", label: "Moneda", type: "select", options: CURRENCY_OPTIONS },
+        { name: "min_pax", label: "Pax mínimo", type: "number" },
+        { name: "max_pax", label: "Pax máximo", type: "number" },
+        { name: "age_from", label: "Edad desde", type: "number" },
+        { name: "age_to", label: "Edad hasta", type: "number" },
+        { name: "capacity_weight", label: "Peso en el cupo", type: "number", help: "Cuánto ocupa una unidad de esta modalidad en la capacidad de la salida." },
+        { name: "sort_order", label: "Orden", type: "number" },
+        { name: "status", label: "Estado", type: "select", defaultValue: "active", options: optionsFrom(ACTIVE_STATUS) },
       ]}
       columns={[
         { key: "name", header: "Modalidad" },

@@ -1,7 +1,8 @@
 "use client";
 
 import { SimpleResource } from "@/components/tf/simple-resource";
-import { INTEGRATION_CATEGORY, INTEGRATION_PROVIDER, INTEGRATION_STATUS } from "@/lib/labels-modules";
+import { INTEGRATION_CATEGORY, INTEGRATION_PROVIDER, INTEGRATION_STATUS, SYNC_FREQUENCY } from "@/lib/labels-modules";
+import { optionsFrom } from "@/components/tf/options";
 
 export default function Page() {
   return (
@@ -14,6 +15,21 @@ export default function Page() {
       filters={[
         { name: "status", label: "Estado", dict: INTEGRATION_STATUS },
         { name: "category", label: "Categoría", dict: INTEGRATION_CATEGORY },
+      ]}
+      emptyTitle="Sin integraciones"
+      emptyDescription="Conecta canales de distribución, pagos o contabilidad."
+      createLabel="Nueva integración"
+      fields={[
+        { name: "name", label: "Integración", required: true },
+        { name: "provider", label: "Proveedor", type: "select", options: optionsFrom(INTEGRATION_PROVIDER) },
+        { name: "category", label: "Categoría", type: "select", options: optionsFrom(INTEGRATION_CATEGORY) },
+        { name: "status", label: "Estado", type: "select", defaultValue: "pending", options: optionsFrom(INTEGRATION_STATUS) },
+        { name: "direction", label: "Dirección" },
+        { name: "endpoint_url", label: "Endpoint", type: "url" },
+        { name: "external_id", label: "Identificador externo" },
+        { name: "sync_frequency", label: "Frecuencia", type: "select", options: optionsFrom(SYNC_FREQUENCY) },
+        { name: "partner", label: "Socio", type: "reference", resource: "partner", optionLabel: (p: any) => p.commercial_name || p.name },
+        { name: "config", label: "Configuración", type: "textarea", span: 2, help: "JSON con los parámetros del proveedor. Las credenciales no se guardan aquí." },
       ]}
       columns={[
         { key: "name", header: "Integración" },
