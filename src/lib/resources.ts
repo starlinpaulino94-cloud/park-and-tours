@@ -695,18 +695,28 @@ export const RESOURCES: Record<string, ResourceDef> = {
     table: "gift_card",
     search: ["code", "recipient_name", "recipient_email"],
     expand: { customer: true },
+    expandOne: { customer: true, order: true, product: true, gift_card_movement: { _limit: 200, _sort: { moved_at: "desc" }, user: true } },
     sort: { createdAt: "desc" },
-    writable: ["code", "status", "initial_amount", "balance", "currency", "issued_at", "expires_at", "recipient_name", "recipient_email", "message", "delivery_channel", "customer", "order", "product"],
+    // `status`, `initial_amount` y `balance` NO se editan por aquí: el saldo de
+    // una gift card es dinero del cliente, y como campo de formulario cualquiera
+    // con permiso de escritura podía ponerle el número que quisiera sin dejar
+    // rastro. Se mueven solo por `/api/gift-cards` y sus acciones, que escriben
+    // el movimiento correspondiente y auditan. Mismo criterio que
+    // `access_ticket.status` (AUD-B02), `voucher.status` (AUD-B02/B14) y
+    // `departure.status` (AUD-B02/B16).
+    writable: ["code", "currency", "expires_at", "recipient_name", "recipient_email", "message", "delivery_channel", "customer", "order", "product"],
     numeric: ["initial_amount", "balance"],
     dates: ["issued_at", "expires_at"],
     writeRole: "cashier",
   },
+  // Los movimientos son el libro de la tarjeta: se leen, no se escriben a mano.
+  // `balance_after` escribible era una segunda vía para inventar un saldo.
   gift_card_movement: {
     table: "gift_card_movement",
     search: ["notes"],
     expand: { gift_card: true, user: true },
-    sort: { createdAt: "desc" },
-    writable: ["movement_type", "amount", "balance_after", "moved_at", "notes", "gift_card", "order", "user"],
+    sort: { moved_at: "desc" },
+    writable: [],
     numeric: ["amount", "balance_after"],
     dates: ["moved_at"],
     writeRole: "cashier",

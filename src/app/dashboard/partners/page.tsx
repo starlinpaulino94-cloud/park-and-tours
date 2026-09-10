@@ -68,7 +68,7 @@ export default function PartnersPage() {
             const entry = balances[p._id];
             return (
               <div>
-                <span className={overLimit(p) ? "font-semibold text-danger" : balance > 0 ? "font-semibold text-amber-700 dark:text-amber-300" : ""}>
+                <span className={overLimit(p) ? "font-semibold text-rose-700 dark:text-rose-300" : balance > 0 ? "font-semibold text-amber-700 dark:text-amber-300" : ""}>
                   {formatMoney(balance, entry?.currency || p.currency || "usd")}
                 </span>
                 {entry && entry.overdue > 0 && (
