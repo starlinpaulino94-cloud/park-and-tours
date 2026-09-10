@@ -2,6 +2,7 @@
 
 import { SimpleResource } from "@/components/tf/simple-resource";
 import { SHIFT_STATUS } from "@/lib/labels-modules";
+import { optionsFrom, CURRENCY_OPTIONS } from "@/components/tf/options";
 
 export default function Page() {
   return (
@@ -13,6 +14,24 @@ export default function Page() {
       emptyIcon="BriefcaseBusiness"
       filters={[
         { name: "status", label: "Estado", dict: SHIFT_STATUS },
+      ]}
+      emptyTitle="Sin turnos planificados"
+      emptyDescription="Planifica quién cubre cada día antes de que llegue la operación."
+      createLabel="Nuevo turno"
+      fields={[
+        { name: "staff", label: "Personal", type: "reference", resource: "staff", optionLabel: (s: any) => s.full_name || s.code },
+        { name: "shift_date", label: "Fecha", type: "date", required: true },
+        { name: "starts_at", label: "Entrada", type: "datetime" },
+        { name: "ends_at", label: "Salida", type: "datetime" },
+        { name: "role_label", label: "Rol", placeholder: "Guía, cajero, conductor…" },
+        { name: "status", label: "Estado", type: "select", defaultValue: "planned", options: optionsFrom(SHIFT_STATUS) },
+        { name: "break_min", label: "Descanso", type: "number", suffix: "min" },
+        { name: "hours_planned", label: "Horas planificadas", type: "number" },
+        { name: "hourly_rate", label: "Tarifa por hora", type: "number" },
+        { name: "currency", label: "Moneda", type: "select", options: CURRENCY_OPTIONS },
+        { name: "branch", label: "Sucursal", type: "reference", resource: "branch" },
+        { name: "zone", label: "Zona", type: "reference", resource: "zone" },
+        { name: "notes", label: "Notas", type: "textarea", span: 2 },
       ]}
       columns={[
         { key: "shift_date", header: "Fecha", kind: "date" },

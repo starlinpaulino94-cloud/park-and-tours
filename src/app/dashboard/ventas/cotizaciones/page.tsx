@@ -12,6 +12,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { CURRENCY_OPTIONS } from "@/components/tf/options";
+import { lineTotal, quoteTotals } from "@/lib/quotes";
 import { QUOTE_STATUS, QUOTE_TYPE } from "@/lib/labels-modules";
 import { formatDate, formatMoney, formatNumber, formatPercent } from "@/lib/format";
 import { optionsFrom } from "@/components/tf/options";
@@ -78,6 +82,12 @@ const customerName = (q?: Quote | null) => {
 
 const PAGE_SIZE = 50;
 
+const EMPTY_QUOTE = {
+  quote_type: "group", customer: "", pax: "", event_date: "", valid_until: "",
+  currency: "usd", terms: "", notes: "",
+};
+const EMPTY_LINE = { description: "", quantity: "1", unit_price: "", discount_percent: "" };
+
 export default function QuotesPage() {
   const [rows, setRows] = useState<Quote[]>([]);
   const [total, setTotal] = useState(0);
@@ -92,6 +102,10 @@ export default function QuotesPage() {
 
   const [detail, setDetail] = useState<Quote | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [draft, setDraft] = useState(EMPTY_QUOTE);
+  const [line, setLine] = useState(EMPTY_LINE);
+  const [saving, setSaving] = useState(false);
 
   const filterParams = useCallback(() => {
     const p = new URLSearchParams();
@@ -137,6 +151,91 @@ export default function QuotesPage() {
       return;
     }
     setDetail(res.data || row);
+  };
+
+  // ---- alta -----------------------------------------------------------------
+  const createQuote = async () => {
+    setSaving(true);
+    const res = await api.post<Quote>("/api/erp/quote", {
+      quote_type: draft.quote_type,
+      status: "draft",
+      customer: draft.customer || undefined,
+      pax: draft.pax || undefined,
+      event_date: draft.event_date || undefined,
+      valid_until: draft.valid_until || undefined,
+      currency: draft.currency,
+      terms: draft.terms || undefined,
+      notes: draft.notes || undefined,
+      issued_at: new Date().toISOString(),
+      subtotal: 0, discount: 0, total: 0,
+    });
+    setSaving(false);
+    if (!res.ok || !res.data) {
+      toast.error(res.error?.message || "No se pudo crear la cotización");
+      return;
+    }
+    toast.success("Cotización creada. Añádele sus líneas.");
+    setCreating(false);
+    setDraft(EMPTY_QUOTE);
+    await load();
+    await openDetail(res.data);
+  };
+
+  /**
+   * Los totales de la cabecera se recalculan desde las líneas después de cada
+   * cambio: una cotización cuyo total no cuadra con su desglose es una promesa
+   * que no se puede sostener delante del cliente.
+   */
+  const syncTotals = async (quote: Quote, lines: QuoteLine[]) => {
+    const totals = quoteTotals(lines, quote.tax ?? 0);
+    await api.put(`/api/erp/quote/${quote._id}`, totals);
+    return totals;
+  };
+
+  const addLine = async () => {
+    if (!detail) return;
+    const quantity = Number(line.quantity) || 0;
+    const unit_price = Number(line.unit_price) || 0;
+    if (!line.description.trim() || quantity <= 0) {
+      toast.error("La línea necesita descripción y una cantidad mayor que cero");
+      return;
+    }
+    setSaving(true);
+    const payload = {
+      quote: detail._id,
+      description: line.description.trim(),
+      quantity, unit_price,
+      discount_percent: Number(line.discount_percent) || 0,
+      line_total: lineTotal({ quantity, unit_price, discount_percent: Number(line.discount_percent) || 0 }),
+    };
+    const res = await api.post<QuoteLine>("/api/erp/quote_line", payload);
+    if (!res.ok || !res.data) {
+      setSaving(false);
+      toast.error(res.error?.message || "No se pudo añadir la línea");
+      return;
+    }
+    const lines = [...(detail.quote_line || []), res.data];
+    const totals = await syncTotals(detail, lines);
+    setSaving(false);
+    setLine(EMPTY_LINE);
+    setDetail({ ...detail, quote_line: lines, ...totals });
+    void load();
+  };
+
+  const removeLine = async (lineId: string) => {
+    if (!detail) return;
+    setSaving(true);
+    const res = await api.delete(`/api/erp/quote_line/${lineId}`);
+    if (!res.ok) {
+      setSaving(false);
+      toast.error(res.error?.message || "No se pudo eliminar la línea");
+      return;
+    }
+    const lines = (detail.quote_line || []).filter((l) => l._id !== lineId);
+    const totals = await syncTotals(detail, lines);
+    setSaving(false);
+    setDetail({ ...detail, quote_line: lines, ...totals });
+    void load();
   };
 
   // La vigencia se deriva en el cliente, así que el filtro actúa sobre la página.
@@ -217,6 +316,9 @@ export default function QuotesPage() {
             </Button>
             <Button variant="outline" className="gap-1.5" onClick={exportCsv} disabled={exporting || loading}>
               <Icon name="Download" className="size-4" /> {exporting ? "Exportando…" : "Exportar"}
+            </Button>
+            <Button className="gap-1.5" onClick={() => setCreating(true)}>
+              <Icon name="Plus" className="size-4" /> Nueva cotización
             </Button>
           </>
         }
@@ -370,9 +472,15 @@ export default function QuotesPage() {
                 <Row label="Margen" value={detail.margin_percent == null ? "Sin calcular" : formatPercent(detail.margin_percent)} />
               </section>
 
-              {(detail.quote_line || []).length > 0 && (
-                <section className="space-y-2">
-                  <h3 className="font-display text-sm font-semibold">Líneas ({detail.quote_line?.length})</h3>
+              <section className="space-y-2">
+                <h3 className="font-display text-sm font-semibold">
+                  Líneas ({(detail.quote_line || []).length})
+                </h3>
+                {(detail.quote_line || []).length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    Todavía no tiene desglose. Añade la primera línea abajo.
+                  </p>
+                ) : (
                   <ul className="tf-card divide-y divide-border">
                     {detail.quote_line?.map((l) => (
                       <li key={l._id} className="flex items-start justify-between gap-3 px-4 py-2.5">
@@ -386,14 +494,35 @@ export default function QuotesPage() {
                             {l.service_date ? ` · ${formatDate(l.service_date)}` : ""}
                           </p>
                         </div>
-                        <span className="tf-num shrink-0 font-semibold">
-                          {formatMoney(l.line_total ?? 0, detail.currency)}
-                        </span>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <span className="tf-num font-semibold">
+                            {formatMoney(l.line_total ?? 0, detail.currency)}
+                          </span>
+                          <Button variant="ghost" size="sm" disabled={saving}
+                            aria-label="Eliminar línea" onClick={() => removeLine(l._id)}>
+                            <Icon name="Trash2" className="size-4" />
+                          </Button>
+                        </div>
                       </li>
                     ))}
                   </ul>
-                </section>
-              )}
+                )}
+
+                {/* Alta de línea: el total de la cabecera se recalcula solo. */}
+                <div className="tf-card grid gap-2 p-3 sm:grid-cols-[1fr_5rem_7rem_5rem_auto]">
+                  <Input placeholder="Concepto" value={line.description}
+                    onChange={(e) => setLine({ ...line, description: e.target.value })} />
+                  <Input type="number" min="0" step="1" placeholder="Cant." className="tf-num"
+                    value={line.quantity} onChange={(e) => setLine({ ...line, quantity: e.target.value })} />
+                  <Input type="number" min="0" step="0.01" placeholder="Precio" className="tf-num"
+                    value={line.unit_price} onChange={(e) => setLine({ ...line, unit_price: e.target.value })} />
+                  <Input type="number" min="0" max="100" step="0.01" placeholder="% dto." className="tf-num"
+                    value={line.discount_percent} onChange={(e) => setLine({ ...line, discount_percent: e.target.value })} />
+                  <Button size="sm" disabled={saving} onClick={addLine}>
+                    <Icon name="Plus" className="size-4" /> Añadir
+                  </Button>
+                </div>
+              </section>
 
               {(detail.terms || detail.notes || detail.rejection_reason) && (
                 <section className="tf-card space-y-2 p-4">
@@ -410,6 +539,70 @@ export default function QuotesPage() {
           )}
         </SheetContent>
       </Sheet>
+
+      <Dialog open={creating} onOpenChange={(o) => { if (!o) { setCreating(false); setDraft(EMPTY_QUOTE); } }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Nueva cotización</DialogTitle>
+            <DialogDescription>
+              Nace como borrador y sin importe: el total sale de las líneas que le añadas después.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="q-type">Tipo</Label>
+              <Select value={draft.quote_type} onValueChange={(v) => setDraft({ ...draft, quote_type: v })}>
+                <SelectTrigger id="q-type"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {optionsFrom(QUOTE_TYPE).map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="q-currency">Moneda</Label>
+              <Select value={draft.currency} onValueChange={(v) => setDraft({ ...draft, currency: v })}>
+                <SelectTrigger id="q-currency"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {CURRENCY_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="q-pax">Pasajeros</Label>
+              <Input id="q-pax" type="number" min="0" className="tf-num"
+                value={draft.pax} onChange={(e) => setDraft({ ...draft, pax: e.target.value })} />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="q-event">Fecha del evento</Label>
+              <Input id="q-event" type="date" value={draft.event_date}
+                onChange={(e) => setDraft({ ...draft, event_date: e.target.value })} />
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label htmlFor="q-valid">Vigente hasta</Label>
+              <Input id="q-valid" type="date" value={draft.valid_until}
+                onChange={(e) => setDraft({ ...draft, valid_until: e.target.value })} />
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label htmlFor="q-terms">Condiciones</Label>
+              <Input id="q-terms" value={draft.terms}
+                onChange={(e) => setDraft({ ...draft, terms: e.target.value })} />
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label htmlFor="q-notes">Notas</Label>
+              <Input id="q-notes" value={draft.notes}
+                onChange={(e) => setDraft({ ...draft, notes: e.target.value })} />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => { setCreating(false); setDraft(EMPTY_QUOTE); }}>Cancelar</Button>
+            <Button onClick={createQuote} disabled={saving}>
+              {saving ? "Creando…" : "Crear cotización"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -4,29 +4,33 @@ import { SimpleResource } from "@/components/tf/simple-resource";
 import { ACTIVE_STATUS, GENERIC_STATUS } from "@/lib/labels";
 import { optionsFrom } from "@/components/tf/options";
 
+/**
+ * Categorías de gasto.
+ *
+ * El formulario de gastos pide la categoría con un selector de referencia, pero
+ * no existía ninguna pantalla para darlas de alta: el selector salía siempre
+ * vacío y todo gasto quedaba sin clasificar.
+ */
 export default function Page() {
   return (
     <SimpleResource
-      resource="product_category"
-      eyebrow="Catálogo"
-      title="Categorías"
-      description="Agrupación comercial del catálogo. Ordena cómo se presentan los productos en el punto de venta y el portal B2B."
+      resource="expense_category"
+      eyebrow="Finanzas"
+      title="Categorías de gasto"
+      description="Clasificación de los gastos operativos. Es lo que agrupa el desglose por categoría del informe de gastos."
       emptyIcon="FolderTree"
-      emptyTitle="Sin categorías"
-      emptyDescription="Agrupa el catálogo para que el punto de venta y el portal lo presenten ordenado."
       createLabel="Nueva categoría"
+      emptyTitle="Sin categorías de gasto"
+      emptyDescription="Sin categorías, el selector del formulario de gastos sale vacío y nada queda clasificado."
       fields={[
         { name: "name", label: "Nombre", required: true },
         { name: "description", label: "Descripción", type: "textarea", span: 2 },
-        { name: "color", label: "Color", placeholder: "#0EA5E9" },
-        { name: "icon", label: "Icono", placeholder: "Palmtree", help: "Nombre del icono de Lucide." },
-        { name: "sort_order", label: "Orden", type: "number" },
+        { name: "color", label: "Color", placeholder: "#F97316" },
         { name: "status", label: "Estado", type: "select", defaultValue: "active", options: optionsFrom(ACTIVE_STATUS) },
       ]}
       columns={[
         { key: "name", header: "Categoría" },
-        { key: "description", header: "Descripción", hideOn:"md" },
-        { key: "sort_order", header: "Orden", kind: "number", align:"right" },
+        { key: "description", header: "Descripción", hideOn: "md" },
         { key: "status", header: "Estado", kind: "badge", dict: GENERIC_STATUS },
       ]}
     />

@@ -493,6 +493,9 @@ export const WORKSPACES: Workspace[] = [
             keywords: ["cxp", "cuentas por pagar"] },
           { id: "gastos", href: "/dashboard/gastos", label: "Gastos", icon: "ReceiptText", module: "accounting", minRole: "manager",
             description: "Gastos por categoría, centro de costo y método." },
+          { id: "categorias-gasto", href: "/dashboard/gastos/categorias", label: "Categorías de gasto", icon: "FolderTree", module: "accounting", minRole: "manager",
+            description: "Clasificación de los gastos operativos.",
+            keywords: ["categoria", "gasto", "clasificacion"] },
         ],
       },
       {
