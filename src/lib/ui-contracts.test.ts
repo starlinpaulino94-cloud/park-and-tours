@@ -371,14 +371,16 @@ describe("Panel ejecutivo", () => {
      */
     const page = read("src/app/dashboard/salidas/[id]/manifiesto/page.tsx");
     const route = read("src/app/api/departures/[id]/manifest/route.ts");
+    // El armado vive en el servicio, que comparten la pantalla y el PDF.
+    const service = read("src/lib/manifest-service.ts");
 
     // El orden es el de la ruta, no el de la venta, y lo decide el dominio.
-    expect(route).toContain("sortByRoute");
-    expect(route).toContain("pickupStops");
-    expect(route).toContain("manifestAlerts");
+    expect(service).toContain("sortByRoute");
+    expect(service).toContain("pickupStops");
+    expect(service).toContain("manifestAlerts");
     // Una reserva cancelada no viaja: contarla manda al guía a buscar a alguien
     // que no existe y da la salida por llena.
-    expect(route).toContain("DEAD_BOOKING_STATUSES");
+    expect(service).toContain("DEAD_BOOKING_STATUSES");
     // Es una lista de clientes: un partner no ve las reservas de la competencia.
     expect(route).toMatch(/role === "partner"/);
 
@@ -505,6 +507,72 @@ describe("Panel ejecutivo", () => {
     // como tal llenaría la bandeja de fallos permanentes, uno por cada cliente
     // que solo dio correo, hasta tapar los fallos de verdad.
     expect(events).toContain("const reachable = CHANNELS.filter");
+  });
+
+  it("Documentos — los tres papeles existen y se descargan", () => {
+    /**
+     * El sistema no producía ni un documento: el voucher viajaba como un código
+     * de texto dentro de un correo, la cotización había que copiarla a mano a
+     * otro documento, y el manifiesto solo existía como pantalla —que exige
+     * sesión, justo lo que el guía no tiene a las 6 de la mañana.
+     */
+    for (const route of [
+      "src/app/api/bookings/[id]/voucher/route.ts",
+      "src/app/api/quotes/[id]/pdf/route.ts",
+      "src/app/api/departures/[id]/manifest/pdf/route.ts",
+    ]) {
+      expect(read(route), `${route} debe devolver un PDF`).toContain("pdfResponse");
+    }
+
+    // Y se llega a ellos desde donde se usa cada uno.
+    expect(read("src/app/dashboard/reservas/page.tsx")).toContain("/voucher");
+    expect(read("src/app/dashboard/ventas/cotizaciones/quote-drawer.tsx")).toContain("/pdf");
+    expect(read("src/app/dashboard/salidas/[id]/manifiesto/page.tsx")).toContain("/manifest/pdf");
+
+    // El voucher lleva QR: sin él el check-in vuelve a teclearse a mano.
+    expect(read("src/lib/pdf/documents.ts")).toContain("QRCode.toBuffer");
+
+    // Un documento con importes no puede quedarse cacheado entre usuarios.
+    expect(read("src/lib/pdf/doc.ts")).toContain('"Cache-Control": "private, no-store"');
+
+    // Las notas internas de una cotización —coste del proveedor, margen
+    // negociable— no salen en el papel del cliente.
+    const documents = read("src/lib/pdf/documents.ts");
+    expect(documents).not.toContain("quote.internal_notes");
+  });
+
+  it("Documentos — el manifiesto de la pantalla y el del papel se arman igual", () => {
+    // Con la consulta duplicada bastaba con que una olvidara excluir las
+    // reservas canceladas para que papel y pantalla dieran cuentas distintas.
+    for (const route of [
+      "src/app/api/departures/[id]/manifest/route.ts",
+      "src/app/api/departures/[id]/manifest/pdf/route.ts",
+    ]) {
+      expect(read(route)).toContain("loadManifest");
+    }
+    expect(read("src/lib/manifest-service.ts")).toContain("DEAD_BOOKING_STATUSES");
+  });
+
+  it("Documentos — el adjunto se compone al entregar, no al encolar", () => {
+    /**
+     * Entre que se encola la confirmación y sale el correo puede haberse
+     * cobrado el saldo o cambiado la hora de recogida: un voucher con datos
+     * viejos es peor que ninguno, porque el cliente se presenta a la hora que
+     * dice el papel.
+     */
+    const outbox = read("src/lib/messaging/outbox.ts");
+    expect(outbox).toContain("resolveAttachment");
+    // La fila guarda QUÉ documento, no el documento: un PDF en base64 por fila
+    // haría inmanejable la bandeja.
+    expect(outbox).toContain("attachment_kind");
+    expect(outbox).not.toMatch(/content:\s*base64/);
+
+    // Y solo el correo lleva ficheros.
+    expect(outbox).toContain('input.channel === "email" ? input.attachmentKind');
+
+    // Un fallo del adjunto no puede perder el aviso: la hora de recogida sigue
+    // sirviendo aunque el PDF no se haya podido generar.
+    expect(read("src/lib/messaging/attachments.ts")).toMatch(/try\s*\{[\s\S]*catch[\s\S]*return null/);
   });
 
   it("los registros derivados no se borran desde el CRUD genérico", () => {

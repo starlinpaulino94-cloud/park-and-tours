@@ -369,4 +369,26 @@ begin
   raise notice 'comunicaciones: TODAS LAS ASERCIONES PASARON';
 end $$;
 
+-- ── documento adjunto (0035) ───────────────────────────────────────────────
+-- La fila guarda QUÉ documento acompaña al aviso, no el documento: el PDF se
+-- compone al entregar para que nunca viaje una versión vieja.
+do $$
+begin
+  update message set attachment_kind = 'voucher'
+   where dedupe_key = 'booking_confirmation:email:b1';
+
+  begin
+    update message set attachment_kind = 'factura'
+     where dedupe_key = 'booking_confirmation:email:b1';
+    raise exception 'attachment_kind aceptó un documento que no se sabe componer';
+  exception when check_violation then null;
+  end;
+
+  -- Un mensaje sin adjunto es lo normal y sigue siendo válido.
+  update message set attachment_kind = null
+   where dedupe_key = 'booking_confirmation:whatsapp:b1';
+
+  raise notice 'adjuntos: TODAS LAS ASERCIONES PASARON';
+end $$;
+
 rollback;

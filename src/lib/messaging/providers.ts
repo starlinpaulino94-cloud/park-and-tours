@@ -25,6 +25,12 @@ export interface OutgoingMessage {
   body: string;
   fromName?: string | null;
   replyTo?: string | null;
+  /**
+   * Documentos que viajan con el mensaje. Solo el correo los admite: WhatsApp
+   * por la API de texto no lleva ficheros, y mandar el voucher solo por correo
+   * es mejor que no mandarlo.
+   */
+  attachments?: { filename: string; content: string }[];
 }
 
 /**
@@ -78,6 +84,7 @@ async function sendEmail(message: OutgoingMessage): Promise<DeliveryResult> {
         // los clientes de correo y lo que se puede leer desde el móvil del guía.
         text: message.body,
         ...(message.replyTo ? { reply_to: message.replyTo } : {}),
+        ...(message.attachments?.length ? { attachments: message.attachments } : {}),
       }),
     });
     const payload = (await res.json().catch(() => ({}))) as { id?: string; message?: string; name?: string };

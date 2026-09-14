@@ -315,6 +315,13 @@ export function QuoteDrawer({
                 blocker={blockers.revise && BLOCK_MESSAGE[blockers.revise]}
                 disabled={busy} onClick={() => openDialog("revise")}
               />
+              {/* La propuesta en PDF: el desglose y las alternativas no caben
+                  en el cuerpo de un correo, y son lo que decide la venta. */}
+              <a href={`/api/quotes/${quote._id}/pdf`} target="_blank" rel="noopener noreferrer">
+                <Button variant="outline" size="sm" className="gap-1.5">
+                  <Icon name="Download" className="size-4" /> Descargar PDF
+                </Button>
+              </a>
               <Button variant="outline" size="sm" className="gap-1.5" disabled={busy} onClick={() => onEdit(quote)}>
                 <Icon name="Pencil" className="size-4" /> Editar documento
               </Button>

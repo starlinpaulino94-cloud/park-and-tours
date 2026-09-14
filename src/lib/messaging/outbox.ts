@@ -7,6 +7,7 @@ import {
 } from "@/lib/messaging/render";
 import { defaultTemplate } from "@/lib/messaging/templates";
 import { deliver, type DeliveryResult } from "@/lib/messaging/providers";
+import { resolveAttachment } from "@/lib/messaging/attachments";
 
 /**
  * La bandeja de salida: el único camino por el que un mensaje llega al cliente.
@@ -27,6 +28,9 @@ const MAX_ATTEMPTS = 5;
 export interface MessageRow {
   _id: string;
   channel: MessageChannel;
+  attachment_kind?: string | null;
+  booking_id?: string | null;
+  quote_id?: string | null;
   template_key?: string | null;
   language?: string | null;
   status?: string | null;
@@ -60,6 +64,8 @@ export interface EnqueueInput {
   dedupeKey?: string | null;
   /** Fecha a la que se ancla un mensaje programado (la salida, el viaje). */
   anchor?: string | Date | null;
+  /** Documento que se compone y adjunta al entregar (no se guarda en la fila). */
+  attachmentKind?: "voucher" | "quote" | null;
   userId?: string | null;
 }
 
@@ -107,6 +113,9 @@ export async function enqueueMessage(
     body: rendered.body,
     scheduled_at: scheduledAt(input.anchor, template.offset_hours).toISOString(),
     dedupe_key: input.dedupeKey || undefined,
+    // Solo el correo lleva ficheros: pedirle un adjunto a un WhatsApp de texto
+    // solo produciría un fallo de entrega en cada envío.
+    attachment_kind: input.channel === "email" ? input.attachmentKind || undefined : undefined,
     customer: input.refs?.customer || undefined,
     booking: input.refs?.booking || undefined,
     order: input.refs?.order || undefined,
@@ -248,6 +257,17 @@ export async function dispatchQueue(
   const report: DispatchReport = { picked: pending.length, sent: 0, failed: 0, waiting: 0, notConfigured: [] };
 
   for (const row of pending) {
+    // El documento se compone AHORA, no al encolar: entre una cosa y otra puede
+    // haberse cobrado el saldo o cambiado la hora de recogida, y un voucher con
+    // datos viejos es peor que ninguno.
+    const attachment = row.attachment_kind
+      ? await resolveAttachment(companyId, company, {
+          kind: row.attachment_kind,
+          bookingId: row.booking_id ?? null,
+          quoteId: row.quote_id ?? null,
+        })
+      : null;
+
     const result: DeliveryResult = await deliver({
       channel: row.channel,
       to: row.to_address || "",
@@ -256,6 +276,7 @@ export async function dispatchQueue(
       body: row.body || "",
       fromName: company?.name,
       replyTo: company?.email,
+      attachments: attachment ? [attachment] : undefined,
     });
 
     if (result.status === "not_configured") {

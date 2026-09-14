@@ -189,6 +189,13 @@ export default function ManifestPage({ params }: { params: Promise<{ id: string 
               <Button variant="outline" className="gap-1.5" onClick={() => window.print()}>
                 <Icon name="Printer" className="size-4" /> Imprimir
               </Button>
+              {/* El PDF es para mandárselo al guía la noche antes: lo abre sin
+                  sesión y lo lee sin conexión a las 6 de la mañana. */}
+              <a href={`/api/departures/${id}/manifest/pdf`} target="_blank" rel="noopener noreferrer">
+                <Button variant="outline" className="gap-1.5">
+                  <Icon name="FileText" className="size-4" /> PDF
+                </Button>
+              </a>
               {!closed && (
                 <Button className="gap-1.5" onClick={() => setClosing(true)} disabled={busy}>
                   <Icon name="CircleCheck" className="size-4" /> Cerrar salida

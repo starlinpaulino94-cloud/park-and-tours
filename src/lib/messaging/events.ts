@@ -47,6 +47,7 @@ interface FanOutInput {
   vars: EnqueueInput["vars"];
   refs?: EnqueueInput["refs"];
   anchor?: EnqueueInput["anchor"];
+  attachmentKind?: EnqueueInput["attachmentKind"];
   userId?: string | null;
   /** Lo que identifica el aviso; el canal se le añade para la clave final. */
   dedupeSeed: string;
@@ -77,6 +78,7 @@ async function fanOut(
         vars: base.vars,
         refs: base.refs,
         anchor: base.anchor,
+        attachmentKind: base.attachmentKind,
         userId: base.userId,
         dedupeKey: `${key}:${channel}:${base.dedupeSeed}`,
       }, store);
@@ -137,6 +139,9 @@ export async function notifyBookingCreated(
       voucher: booking.voucher_code,
       punto_encuentro: product?.meeting_point,
     },
+    // El voucher viaja con la confirmación: es el papel que el cliente enseña
+    // en la puerta, y mandarlo aparte significa que nunca lo tiene a mano.
+    attachmentKind: "voucher",
     refs, userId, dedupeSeed: booking._id,
   });
 
@@ -277,6 +282,9 @@ export async function notifyQuoteSent(
       vendedor: extra.sellerName,
     },
     refs: { customer: customerId, quote: quote._id },
+    // La propuesta completa va adjunta: el desglose y las alternativas no caben
+    // en el cuerpo de un mensaje, y son justo lo que decide la venta.
+    attachmentKind: "quote",
     userId: extra.userId,
     // Reenviar una propuesta es legítimo —el cliente pidió que se la mandaran de
     // nuevo—, así que el número de envío entra en la clave.
