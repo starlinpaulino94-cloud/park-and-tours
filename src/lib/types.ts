@@ -306,6 +306,14 @@ export interface PriceSnapshot {
   currency: Currency;
   exchange_rate: number;
   captured_at: string;
+  /**
+   * De dónde salió `unit_price`: 'catalog' es el catálogo y sus reglas;
+   * 'quote' es un precio negociado que se pactó en una cotización aceptada y
+   * que el motor de precios NO debe volver a calcular.
+   */
+  price_source?: "catalog" | "quote";
+  /** Cotización que fijó el precio, cuando `price_source` es 'quote'. */
+  quote_id?: string | null;
 }
 
 export interface Booking extends BaseRecord {

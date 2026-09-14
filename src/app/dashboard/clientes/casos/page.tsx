@@ -21,6 +21,10 @@ export default function Page() {
       emptyDescription="Quejas, reclamos y objetos perdidos, con su seguimiento y compensación."
       createLabel="Nuevo caso"
       fields={[
+        // `guest_case.code` es `not null`: sin este campo el alta la rechazaba la
+        // base entera, no solo el código. Lo piden igual incidentes, compras y
+        // órdenes de trabajo; `src/lib/schema-contract.test.ts` lo vigila.
+        { name: "code", label: "Código del caso", required: true, placeholder: "CASO-0001" },
         { name: "subject", label: "Asunto", required: true },
         { name: "case_type", label: "Tipo", type: "select", defaultValue: "complaint", options: optionsFrom(CASE_TYPE) },
         { name: "priority", label: "Prioridad", type: "select", defaultValue: "medium", options: optionsFrom(PRIORITY) },

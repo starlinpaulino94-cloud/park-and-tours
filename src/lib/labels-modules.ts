@@ -192,7 +192,18 @@ export const COMPENSATION_TYPE = dict(
 export const QUOTE_STATUS = dict(
   ["draft", "Borrador"], ["sent", "Enviada", "info"], ["negotiating", "En negociación", "warning"],
   ["accepted", "Aceptada", "success"], ["rejected", "Rechazada", "danger"], ["expired", "Expirada"],
-  ["converted", "Convertida", "success"]
+  ["converted", "Convertida", "success"], ["superseded", "Reemplazada"]
+);
+/** Qué es cada línea del documento: ordena la propuesta y agrupa el coste. */
+export const QUOTE_LINE_TYPE = dict(
+  ["service", "Servicio", "info"], ["transport", "Transporte", "violet"],
+  ["accommodation", "Alojamiento", "accent"], ["meal", "Alimentación", "success"],
+  ["guide", "Guía", "warning"], ["ticket", "Entradas", "info"],
+  ["fee", "Tasas y cargos"], ["insurance", "Seguro", "warning"], ["other", "Otro"]
+);
+/** Cómo se pacta el anticipo que sostiene la reserva del grupo. */
+export const DEPOSIT_TYPE = dict(
+  ["none", "Sin anticipo"], ["percent", "Porcentaje del total", "info"], ["amount", "Importe fijo", "accent"]
 );
 export const QUOTE_TYPE = dict(
   ["group", "Grupo", "info"], ["corporate", "Corporativa", "violet"], ["wedding", "Boda", "warning"],

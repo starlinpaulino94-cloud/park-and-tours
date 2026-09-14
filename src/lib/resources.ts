@@ -733,28 +733,59 @@ export const RESOURCES: Record<string, ResourceDef> = {
   },
   quote: {
     table: "quote",
-    search: ["code", "notes"],
+    search: ["code", "title", "notes", "company_name", "contact_name"],
     expand: { customer: true, partner: true, seller: true },
-    // El detalle trae las líneas: una cotización sin su desglose no se puede
+    // El detalle trae el documento entero: sus alternativas, sus líneas y la
+    // versión de la que viene. Una cotización sin su desglose no se puede
     // revisar ni comparar contra el total que se le prometió al cliente.
     expandOne: {
-      customer: true, partner: true, seller: true, order: true,
-      quote_line: { _limit: 100, product: true },
+      customer: true, partner: true, seller: true, order: true, lead: true,
+      revision_of: true, selected_option: true,
+      quote_option: { _limit: 20 },
+      quote_line: { _limit: 200, product: true, supplier: true, option: true },
     },
     sort: { createdAt: "desc" },
-    writable: ["code", "status", "quote_type", "issued_at", "valid_until", "event_date", "pax", "subtotal", "discount", "tax", "total", "currency", "margin_percent", "terms", "notes", "rejection_reason", "sent_at", "decided_at", "customer", "partner", "seller", "lead", "order", "user"],
-    numeric: ["pax", "subtotal", "discount", "tax", "total", "margin_percent"],
-    dates: ["issued_at", "valid_until", "event_date", "sent_at", "decided_at"],
+    // El ciclo de vida y el dinero NO son campos de formulario: `status`,
+    // `sent_at`, `decided_at` y los totales los escriben las acciones de
+    // /api/quotes, igual que con `voucher.status` o el saldo de una gift card.
+    // Editarlos a mano permitía dar por aceptada una propuesta que el cliente
+    // nunca recibió, o prometer un total que no cuadra con sus líneas.
+    writable: [
+      "title", "quote_type", "issued_at", "valid_until", "event_date", "pax", "currency",
+      "contact_name", "contact_email", "contact_phone", "company_name",
+      "tax_percent",
+      "deposit_type", "deposit_percent", "deposit_amount", "deposit_due_date", "balance_due_date",
+      "terms", "inclusions", "exclusions", "cancellation_policy", "payment_terms",
+      "notes", "internal_notes", "follow_up_at",
+      "customer", "partner", "seller", "lead", "user",
+    ],
+    numeric: ["pax", "tax_percent", "deposit_percent", "deposit_amount"],
+    dates: ["issued_at", "valid_until", "event_date", "deposit_due_date", "balance_due_date", "follow_up_at"],
     writeRole: "seller",
   },
+  // Las líneas y las alternativas son el desglose del que sale el total: se leen
+  // desde aquí, pero se escriben por /api/quotes/:id/lines y /options, que
+  // recalculan la cabecera en el mismo movimiento. Dejarlas en el CRUD genérico
+  // permitía añadir una línea de 5.000 sin que el total de la propuesta se
+  // enterara.
   quote_line: {
     table: "quote_line",
     search: ["description"],
-    expand: { quote: true, product: true },
-    sort: { createdAt: "desc" },
-    writable: ["description", "quantity", "unit_price", "unit_cost", "discount_percent", "line_total", "service_date", "quote", "product", "product_modality", "departure"],
-    numeric: ["quantity", "unit_price", "unit_cost", "discount_percent", "line_total"],
+    expand: { quote: true, product: true, supplier: true, option: true },
+    sort: { sort_order: "asc" },
+    writable: [],
+    numeric: ["quantity", "unit_price", "unit_cost", "discount_percent", "line_total", "adults", "children", "infants", "sort_order"],
     dates: ["service_date"],
+    writeRole: "seller",
+  },
+  quote_option: {
+    table: "quote_option",
+    search: ["name"],
+    expand: { quote: true },
+    sort: { sort_order: "asc" },
+    writable: [],
+    numeric: ["sort_order", "subtotal", "discount", "tax", "total", "cost_total", "margin_amount"],
+    booleans: ["is_recommended", "is_selected"],
     writeRole: "seller",
   },
   allotment: {

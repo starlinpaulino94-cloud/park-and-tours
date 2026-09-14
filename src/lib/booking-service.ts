@@ -37,6 +37,19 @@ export interface BookingItemInput {
   room_number?: string | null;
   notes?: string | null;
   participants?: { full_name: string; age?: number; category?: string; document_id?: string; special_requirements?: string }[];
+  /**
+   * Precio y coste pactados que sustituyen a los del catálogo.
+   *
+   * Solo los fija el servidor al convertir una cotización aceptada: es el precio
+   * que el cliente firmó. La ruta HTTP los borra del payload (`/api/orders`),
+   * porque de lo contrario cualquiera con permiso de venta podría venderse un
+   * tour al precio que quisiera.
+   */
+  unit_price_override?: number | null;
+  /** Coste TOTAL de la línea pactado con el proveedor (no unitario). */
+  cost_override?: number | null;
+  /** Cotización de la que sale ese precio, para el snapshot inmutable. */
+  quote_id?: string | null;
 }
 
 export interface CreateOrderInput {
@@ -177,6 +190,9 @@ export async function createOrderWithBookings(
       discountPct: item.discount_pct ?? 0,
       taxPct: item.tax_pct ?? 0,
       exchangeRate,
+      unitPriceOverride: item.unit_price_override ?? null,
+      overrideCurrency: currency,
+      quoteId: item.quote_id ?? null,
     });
 
     // AUD-F03: an order carries a single currency. If a line resolves to a
@@ -195,7 +211,11 @@ export async function createOrderWithBookings(
       _filter: { _id: item.product_id }, _limit: 1,
     }))[0];
 
-    const cost = await resolveCost(companyId, item.product_id, billable, productRow?.base_cost ?? 0);
+    // Un coste pactado con el proveedor para este grupo manda sobre la tarifa
+    // general del catálogo: si no, el margen de la venta no es el que se negoció.
+    const cost = item.cost_override !== null && item.cost_override !== undefined
+      ? round2(Math.max(Number(item.cost_override) || 0, 0))
+      : await resolveCost(companyId, item.product_id, billable, productRow?.base_cost ?? 0);
     const voucherCode = await uniqueCode(companyId, "voucher", "code", newVoucherCode);
 
     const booking = await tenantCreate<Booking>(companyId, "booking", {

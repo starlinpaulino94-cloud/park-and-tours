@@ -338,11 +338,14 @@ describe("Panel ejecutivo", () => {
       gift_card: "/api/gift-cards", access_ticket: "/api/tickets",
       booking: "/api/bookings", payment: "/api/payments",
       cash_session: "/api/cash", departure: "/api/departures", task: "/api/tasks",
+      quote: "/api/quotes",
     };
     for (const file of walk(path.join(ROOT, "src/app"))) {
       const src = readFileSync(file, "utf8");
       const resource = /resource="(\w+)"/.exec(src)?.[1];
-      const hasForm = /fields=\{\[\s*\n?\s*\{/.test(src) && !/canWrite=\{false\}/.test(src);
+      // Tolerante a un comentario entre el corchete y el primer campo: el
+      // formulario se reconoce por tener campos, no por cómo esté formateado.
+      const hasForm = /fields=\{\[[\s\S]{0,600}?\{\s*name:/.test(src) && !/canWrite=\{false\}/.test(src);
       if (resource && hasForm) creatable.add(resource);
       for (const m of src.matchAll(/api\.post[^(]*\(\s*[`"']\/api\/erp\/(\w+)/g)) creatable.add(m[1]);
       for (const [name, route] of Object.entries(DEDICATED)) {
@@ -356,6 +359,31 @@ describe("Panel ejecutivo", () => {
     // Y al revés: si un recurso de la lista gana su formulario, sobra la excusa.
     const stale = Object.keys(FLOW_CREATED).filter((r) => creatable.has(r)).sort();
     expect(stale, "estos ya se crean desde una pantalla: quítalos de FLOW_CREATED").toEqual([]);
+  });
+
+  it("los registros derivados no se borran desde el CRUD genérico", () => {
+    /**
+     * Un recurso con `writable` vacío es un libro: el registro de auditoría, los
+     * asientos contables, los movimientos de caja y de gift card, las líneas de
+     * una cotización. La ruta genérica no los dejaba escribir pero SÍ borrar con
+     * rango de gestión, y borrar la fila que explica un saldo lo descuadra sin
+     * dejar rastro de por qué.
+     */
+    const route = read("src/app/api/erp/[resource]/[id]/route.ts");
+    expect(route).toMatch(/if \(!def\.writable \|\| def\.writable\.length === 0\)/);
+    // La guarda va ANTES de resolver el inquilino: es una decisión del recurso.
+    const del = route.slice(route.indexOf("export async function DELETE"));
+    expect(del.indexOf("def.writable.length === 0")).toBeLessThan(del.indexOf("tenantDelete"));
+
+    // Y sigue habiendo libros que proteger: si esta lista se vacía, la guarda
+    // dejó de cubrir nada y hay que revisar por qué.
+    const resources = read("src/lib/resources.ts");
+    const ledgers = [...resources.matchAll(/^ {2}(\w+): \{\n([\s\S]*?)^ {2}\},/gm)]
+      .filter((m) => /writable:\s*\[\s*\]/.test(m[2]))
+      .map((m) => m[1]);
+    expect(ledgers).toEqual(expect.arrayContaining([
+      "audit_log", "ledger_entry", "cash_movement", "gift_card_movement", "quote_line", "quote_option",
+    ]));
   });
 
   it("Gift cards — el saldo solo se mueve por sus acciones", () => {
@@ -453,22 +481,93 @@ describe("Panel ejecutivo", () => {
     expect(tenant).not.toContain("tenantAggregate");
   });
 
-  it("Cotizaciones — pipeline, vigencia derivada, margen y desglose de líneas", () => {
+  it("Cotizaciones — el documento completo, no una cabecera con líneas", () => {
     const page = read("src/app/dashboard/ventas/cotizaciones/page.tsx");
+    const drawer = read("src/app/dashboard/ventas/cotizaciones/quote-drawer.tsx");
+    const fields = read("src/app/dashboard/ventas/cotizaciones/quote-fields.ts");
+    const resources = read("src/lib/resources.ts");
+
     expect(page).not.toContain("SimpleResource");
     expect(page).toContain('title="Cotizaciones"');
-    // La vigencia real manda sobre el `status` almacenado.
+    // La vigencia real manda sobre el `status` almacenado, y se decide en el
+    // dominio: la pantalla ya no lleva su propia copia de la regla.
     expect(page).toContain("function ValidityPill");
-    expect(page).toContain("const expired");
-    expect(page).toContain("const live");
-    // El módulo promete margen: ahora se muestra.
-    expect(page).toContain("margin_percent");
-    // Embudo y exportación.
+    expect(page).toContain("isExpired");
+    expect(page).toContain("derivedStatus");
     expect(page).toContain("Tasa de conversión");
     expect(page).toContain("const exportCsv");
-    // El detalle trae las líneas expandidas desde el recurso.
-    expect(page).toContain("quote_line");
-    expect(read("src/lib/resources.ts")).toContain("quote_line: { _limit: 100, product: true }");
+
+    // El alta pasa por su acción: `quote.code` es not null y único, y ninguna
+    // pantalla lo pedía ni lo generaba — "Nueva cotización" fallaba en la base.
+    expect(page).toContain('createPath="/api/quotes"');
+
+    // El formulario cubre el documento entero, no seis campos sueltos.
+    for (const field of [
+      "contact_email", "deposit_type", "deposit_due_date", "balance_due_date",
+      "inclusions", "exclusions", "cancellation_policy", "payment_terms",
+      "internal_notes", "tax_percent", "follow_up_at",
+    ]) {
+      expect(fields, `falta ${field} en el formulario de cotización`).toContain(`"${field}"`);
+    }
+
+    // Las cuatro acciones del ciclo comercial existen y salen del dominio.
+    for (const action of ["send", "decide", "convert", "revise"]) {
+      expect(drawer).toContain(`/api/quotes/${"${quote._id}"}/${action}`);
+    }
+    for (const blocker of ["sendBlocker", "decideBlocker", "convertBlocker", "reviseBlocker"]) {
+      expect(drawer, `${blocker} debe decidirlo el dominio`).toContain(blocker);
+    }
+    // Y las alternativas, que es lo que convierte una propuesta en una oferta.
+    expect(drawer).toContain("optionBreakdown");
+    expect(drawer).toContain("/options");
+  });
+
+  it("Cotizaciones — el total lo escribe el servidor, nunca el formulario", () => {
+    const resources = read("src/lib/resources.ts");
+    const quote = /^ {2}quote: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    const writable = /writable:\s*\[([\s\S]*?)\]/.exec(quote)![1];
+
+    // Un total editable a mano es una promesa que el desglose no sostiene, y un
+    // `status` editable deja marcar "aceptada" una propuesta que nadie recibió.
+    for (const field of ['"subtotal"', '"discount"', '"total"', '"margin_percent"',
+                         '"status"', '"sent_at"', '"decided_at"', '"code"', '"version"', '"order"']) {
+      expect(writable, `quote.writable no debe incluir ${field}`).not.toContain(field);
+    }
+
+    // Las líneas y las alternativas se leen desde el CRUD pero se escriben por
+    // las rutas que recalculan la cabecera en el mismo movimiento.
+    const line = /^ {2}quote_line: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[([^\]]*)\]/.exec(line)![1].trim()).toBe("");
+    const option = /^ {2}quote_option: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[([^\]]*)\]/.exec(option)![1].trim()).toBe("");
+
+    // Los totales se recalculan en un solo módulo del dominio: las rutas de
+    // acción tocan el estado (enviada, aceptada, convertida), nunca el importe.
+    const libWriters = walk(path.join(ROOT, "src/lib")).filter((file) =>
+      /tenantUpdate\([^)]*"quote"/.test(readFileSync(file, "utf8"))
+    ).map((f) => path.relative(ROOT, f)).sort();
+    expect(libWriters).toEqual(["src/lib/quote-service.ts"]);
+    for (const route of ["send", "decide", "revise", "convert"]) {
+      const src = read(`src/app/api/quotes/[id]/${route}/route.ts`);
+      expect(src, `${route} no debe escribir importes a mano`).not.toMatch(/tenantUpdate\([^)]*"quote"[\s\S]{0,400}?subtotal/);
+    }
+  });
+
+  it("Cotizaciones — la reserva se cobra al precio pactado, no al del catálogo", () => {
+    const convert = read("src/app/api/quotes/[id]/convert/route.ts");
+    const orders = read("src/app/api/orders/route.ts");
+    const pricing = read("src/lib/pricing.ts");
+
+    // Volver a calcular el precio al convertir le cobraría al cliente algo
+    // distinto de lo que aceptó: esa es la razón de ser de una cotización.
+    expect(convert).toContain("unit_price_override");
+    expect(pricing).toContain("unitPriceOverride");
+    expect(pricing).toContain('price_source: negotiated ? "quote" : "catalog"');
+
+    // Y ese precio solo lo fija el servidor: por HTTP no entra, o el punto de
+    // venta se convertiría en un formulario de "pon tú el precio".
+    expect(orders).toContain("delete item.unit_price_override");
+    expect(orders).toContain("delete item.cost_override");
   });
 
   it("CRM — el origen del lead usa el dominio real, no el canal de venta", () => {

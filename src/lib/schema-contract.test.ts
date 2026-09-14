@@ -128,6 +128,37 @@ function readBooleanColumns(): Set<string> {
 
 const BOOLEAN_COLUMNS = readBooleanColumns();
 
+/**
+ * Columnas `not null` sin valor por defecto que son el CÓDIGO de un documento.
+ *
+ * `name` o `title` los teclea quien rellena el formulario; un código —el número
+ * de una orden, de una reserva, de una cotización— no: lo genera el servidor y
+ * no puede repetirse dentro del inquilino. Cuando ninguna de las dos cosas
+ * ocurre, la pantalla ofrece un botón de alta que la base rechaza.
+ */
+function readRequiredCodeColumns(): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  const isCode = (c: string) => c === "code" || c === "number" || c === "reference" || /_number$/.test(c);
+  for (const file of readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort()) {
+    const sql = readFileSync(path.join(MIGRATIONS, file), "utf8").replace(/--[^\n]*/g, "");
+    const create = /create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?(\w+)\s*\(/gi;
+    let m: RegExpExecArray | null;
+    while ((m = create.exec(sql))) {
+      const { body, end } = balanced(sql, create.lastIndex);
+      create.lastIndex = end;
+      for (const raw of splitTopLevel(body)) {
+        const line = raw.trim();
+        if (!line || CONSTRAINT.test(line)) continue;
+        const col = /^(\w+)\s+text\s+not null\s*$/.exec(line);
+        if (col && isCode(col[1])) out.set(m[1], [...(out.get(m[1]) ?? []), col[1]]);
+      }
+    }
+  }
+  return out;
+}
+
+const REQUIRED_CODE_COLUMNS = readRequiredCodeColumns();
+
 function columnFor(table: string, field: string): string {
   return TABLE_FIELD_ALIASES[table]?.[field] ?? DEFAULT_FIELD_ALIASES[field] ?? field;
 }
@@ -292,6 +323,66 @@ describe("el esquema cubre todo lo que la aplicación escribe", () => {
       }
     }
     expect(missing, "campo booleano escribible sin declarar").toEqual([]);
+  });
+
+  it("todo documento con código obligatorio sabe de dónde sale ese código", () => {
+    /**
+     * PostgREST rechaza el INSERT entero cuando falta una columna `not null`, y
+     * el formulario genérico solo manda los campos que declara. Así se rompió el
+     * alta de cotizaciones en cuanto se le puso el botón: `quote.code` es `not
+     * null` y único por inquilino, y ni la pantalla lo pedía ni nadie lo
+     * generaba, de modo que "Nueva cotización" devolvía un error de base.
+     *
+     * Solo hay dos respuestas válidas, y esta prueba obliga a elegir una:
+     * generarlo en una acción del servidor, o pedirlo en el formulario.
+     */
+    const GENERATED_BY_ACTION: Record<string, string> = {
+      sales_order: "booking-service genera order_number",
+      booking: "booking-service genera booking_number",
+      voucher: "lo emite la reserva",
+      quote: "/api/quotes lo genera con uniqueCode",
+      gift_card: "/api/gift-cards lo genera",
+      access_ticket: "/api/tickets lo genera",
+      settlement: "el proceso de liquidación lo genera",
+      payment: "el cobro genera su referencia",
+      approval_request: "lo genera el flujo de aprobaciones",
+      stripe_event: "viene del webhook de Stripe",
+      subscription_invoice: "la numera la facturación de la plataforma",
+      purchase_order_line: "es hija de su orden de compra",
+    };
+
+    const resources = readFileSync(path.join(SRC, "lib/resources.ts"), "utf8");
+    const tableOf = new Map<string, string>();
+    for (const block of resources.matchAll(/^ {2}(\w+): \{\n([\s\S]*?)^ {2}\},/gm)) {
+      const table = /table:\s*"(\w+)"/.exec(block[2])?.[1];
+      if (table) tableOf.set(block[1], table);
+    }
+    expect(tableOf.size, "no se pudo leer resources.ts").toBeGreaterThan(50);
+
+    // Pantallas que ofrecen un formulario para un recurso, con los campos que declara.
+    const formFields = new Map<string, string>();
+    for (const file of sourceFiles(path.join(ROOT, "src/app"))) {
+      const src = readFileSync(file, "utf8");
+      const resource = /resource="(\w+)"/.exec(src)?.[1];
+      if (!resource || !/fields=\{\[/.test(src)) continue;
+      formFields.set(resource, (formFields.get(resource) ?? "") + src);
+    }
+
+    const broken: string[] = [];
+    for (const [resource, table] of tableOf) {
+      const columns = REQUIRED_CODE_COLUMNS.get(table);
+      if (!columns || !formFields.has(resource)) continue;
+      if (table in GENERATED_BY_ACTION) continue;
+      const src = formFields.get(resource)!;
+      for (const column of columns) {
+        // El formulario de alta tiene que declarar el campo, con el nombre de la
+        // columna o con el alias con el que viaja.
+        if (!new RegExp(`name:\\s*"${column}"`).test(src)) {
+          broken.push(`${resource}: el formulario no manda ${table}.${column}, que es not null`);
+        }
+      }
+    }
+    expect(broken, "altas que la base va a rechazar por falta del código").toEqual([]);
   });
 
   it("cada relación declarada en resources.ts se puede resolver", () => {

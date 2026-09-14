@@ -74,6 +74,7 @@ export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   membership: "membership_id",
   membership_plan: "membership_plan_id",
   modality: "modality_id",
+  option: "option_id",
   order: "order_id",
   owner: "owner_id",
   parent: "parent_id",
@@ -95,9 +96,11 @@ export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   quote: "quote_id",
   receivable: "receivable_id",
   reported_by: "reported_by",
+  revision_of: "revision_of_id",
   route: "route_id",
   rule: "rule_id",
   second_approver: "second_approver_id",
+  selected_option: "selected_option_id",
   seller: "seller_id",
   settlement: "settlement_id",
   shift: "shift_id",
@@ -124,12 +127,19 @@ export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
  * con `certification.document` (texto) frente a `document_ack.document_id`.
  * Aliasar esos nombres globalmente rompería escrituras que hoy funcionan, así
  * que se resuelven por tabla.
+ *
+ * El caso contrario también existe: un campo aliasado globalmente que en UNA
+ * tabla es texto. `quote.cancellation_policy` es la política escrita que lee el
+ * cliente —"sin cargo hasta 15 días antes"—, no una referencia a la tabla
+ * `cancellation_policy` que usan producto y reserva. Se apunta a sí mismo para
+ * que el traductor lo deje pasar tal cual.
  */
 export const TABLE_FIELD_ALIASES: Record<string, Record<string, string>> = {
   product: { category: "category_id" },
   commission_rule: { category: "category_id" },
   expense: { category: "category_id" },
   document_ack: { document: "document_id" },
+  quote: { cancellation_policy: "cancellation_policy" },
 };
 
 /** Mapa de alias efectivo para una tabla: el global más sus excepciones. */

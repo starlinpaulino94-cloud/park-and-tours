@@ -199,4 +199,83 @@ begin
   raise notice 'gift_cards: TODAS LAS ASERCIONES PASARON';
 end $$;
 
+-- ── cotizaciones: alternativas, versiones y aislamiento (0032) ─────────────
+-- Una propuesta se negocia por rondas y puede ofrecer varias alternativas; las
+-- líneas de una alternativa tienen que caer con ella, y nada puede apuntar a la
+-- cotización de otra organización.
+insert into quote (id, organization_id, code, status, quote_type, currency, valid_until, deposit_type, tax_percent)
+values ('44444444-0000-0000-0000-000000000001', :'org', 'COT-TEST-1', 'draft', 'group', 'usd',
+        now() + interval '15 days', 'percent', 18);
+
+insert into quote_option (id, organization_id, quote_id, name, sort_order, is_recommended)
+values ('44444444-0000-0000-0000-00000000000a', :'org', '44444444-0000-0000-0000-000000000001', 'Hotel 4*', 10, false),
+       ('44444444-0000-0000-0000-00000000000b', :'org', '44444444-0000-0000-0000-000000000001', 'Hotel 5*', 20, true);
+
+insert into quote_line (organization_id, quote_id, option_id, description, quantity, unit_price, line_total, line_type, is_optional)
+values (:'org', '44444444-0000-0000-0000-000000000001', null, 'Transporte', 1, 300, 300, 'transport', false),
+       (:'org', '44444444-0000-0000-0000-000000000001', '44444444-0000-0000-0000-00000000000a', 'Hotel 4*', 1, 700, 700, 'accommodation', false),
+       (:'org', '44444444-0000-0000-0000-000000000001', '44444444-0000-0000-0000-00000000000b', 'Hotel 5*', 1, 1200, 1200, 'accommodation', false);
+
+do $$
+declare
+  n integer;
+begin
+  -- 'superseded' es el estado que 0032 necesita para sacar del embudo la
+  -- versión que una revisión reemplaza.
+  begin
+    update quote set status = 'superseded' where id = '44444444-0000-0000-0000-000000000001';
+  exception when check_violation then
+    raise exception 'quote.status sigue rechazando superseded';
+  end;
+  update quote set status = 'draft' where id = '44444444-0000-0000-0000-000000000001';
+
+  begin
+    update quote set deposit_type = 'cuota' where id = '44444444-0000-0000-0000-000000000001';
+    raise exception 'deposit_type aceptó un valor fuera del diccionario';
+  exception when check_violation then null;
+  end;
+
+  begin
+    insert into quote_line (organization_id, quote_id, description, quantity, unit_price, line_total, line_type)
+    values ('11111111-1111-1111-1111-111111111111', '44444444-0000-0000-0000-000000000001', 'Algo', 1, 10, 10, 'excursion');
+    raise exception 'line_type aceptó un valor fuera del diccionario';
+  exception when check_violation then null;
+  end;
+
+  -- Retirar una alternativa se lleva sus líneas: si sobrevivieran, sumarían a
+  -- un precio que ya no se ofrece.
+  delete from quote_option where id = '44444444-0000-0000-0000-00000000000a';
+  select count(*) into n from quote_line
+   where quote_id = '44444444-0000-0000-0000-000000000001'
+     and option_id = '44444444-0000-0000-0000-00000000000a';
+  if n <> 0 then
+    raise exception 'las líneas de la alternativa retirada sobrevivieron (%)', n;
+  end if;
+  select count(*) into n from quote_line where quote_id = '44444444-0000-0000-0000-000000000001';
+  if n <> 2 then
+    raise exception 'la línea común no debía caer con la alternativa (quedan %)', n;
+  end if;
+
+  -- Y una línea no puede colgarse de la cotización de otro inquilino: es la
+  -- lista de referencias que 0018 protege con su disparador.
+  begin
+    insert into quote_line (organization_id, quote_id, description, quantity, unit_price, line_total)
+    values ('99999999-9999-9999-9999-999999999999', '44444444-0000-0000-0000-000000000001', 'Fuga', 1, 10, 10);
+    raise exception 'quote_line aceptó una cotización de otra organización';
+  exception when others then
+    if sqlstate not in ('23514', '23503') then raise; end if;
+  end;
+
+  -- Lo mismo con la alternativa escogida que guarda la cabecera.
+  begin
+    insert into quote_option (organization_id, quote_id, name)
+    values ('99999999-9999-9999-9999-999999999999', '44444444-0000-0000-0000-000000000001', 'Ajena');
+    raise exception 'quote_option aceptó una cotización de otra organización';
+  exception when others then
+    if sqlstate not in ('23514', '23503') then raise; end if;
+  end;
+
+  raise notice 'cotizaciones: TODAS LAS ASERCIONES PASARON';
+end $$;
+
 rollback;
