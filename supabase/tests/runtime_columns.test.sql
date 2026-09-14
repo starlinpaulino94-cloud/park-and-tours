@@ -311,4 +311,62 @@ begin
   raise notice 'cierre_salida: TODAS LAS ASERCIONES PASARON';
 end $$;
 
+-- ── bandeja de salida (0034) ───────────────────────────────────────────────
+-- Un aviso se manda UNA vez: el índice único de `dedupe_key` es lo que sostiene
+-- esa promesa aunque dos pasadas del cron se solapen.
+insert into customer (id, organization_id, first_name, last_name, email)
+values ('66666666-0000-0000-0000-000000000001', :'org', 'Ana', 'Pérez', 'ana@example.com');
+
+insert into message (organization_id, channel, template_key, status, to_address, body, dedupe_key, customer_id)
+values (:'org', 'email', 'booking_confirmation', 'queued', 'ana@example.com',
+        'Hola Ana', 'booking_confirmation:email:b1', '66666666-0000-0000-0000-000000000001');
+
+do $$
+declare
+  n integer;
+begin
+  begin
+    insert into message (organization_id, channel, template_key, status, to_address, body, dedupe_key)
+    values ('11111111-1111-1111-1111-111111111111', 'email', 'booking_confirmation', 'queued',
+            'ana@example.com', 'Hola Ana otra vez', 'booking_confirmation:email:b1');
+    raise exception 'la bandeja aceptó dos veces el mismo aviso';
+  exception when unique_violation then null;
+  end;
+
+  -- Pero el mismo aviso por OTRO canal sí es otro mensaje: quien dio correo y
+  -- WhatsApp recibe por los dos.
+  insert into message (organization_id, channel, template_key, status, to_address, body, dedupe_key)
+  values ('11111111-1111-1111-1111-111111111111', 'whatsapp', 'booking_confirmation', 'queued',
+          '+18095550101', 'Hola Ana', 'booking_confirmation:whatsapp:b1');
+
+  -- Y los mensajes sin clave no se estorban entre sí: un reenvío a mano puede
+  -- repetirse tantas veces como el cliente lo pida.
+  insert into message (organization_id, channel, status, to_address, body)
+  values ('11111111-1111-1111-1111-111111111111', 'email', 'queued', 'ana@example.com', 'Reenvío 1'),
+         ('11111111-1111-1111-1111-111111111111', 'email', 'queued', 'ana@example.com', 'Reenvío 2');
+
+  select count(*) into n from message where organization_id = '11111111-1111-1111-1111-111111111111';
+  if n <> 4 then
+    raise exception 'la bandeja no tiene los mensajes esperados (%)', n;
+  end if;
+
+  begin
+    update message set status = 'entregado' where dedupe_key = 'booking_confirmation:email:b1';
+    raise exception 'message.status aceptó un valor fuera del diccionario';
+  exception when check_violation then null;
+  end;
+
+  -- Un mensaje no puede colgarse del cliente de otra organización.
+  begin
+    insert into message (organization_id, channel, status, to_address, body, customer_id)
+    values ('99999999-9999-9999-9999-999999999999', 'email', 'queued', 'x@example.com', 'Fuga',
+            '66666666-0000-0000-0000-000000000001');
+    raise exception 'message aceptó un cliente de otra organización';
+  exception when others then
+    if sqlstate not in ('23514', '23503') then raise; end if;
+  end;
+
+  raise notice 'comunicaciones: TODAS LAS ASERCIONES PASARON';
+end $$;
+
 rollback;

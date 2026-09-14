@@ -373,6 +373,27 @@ export const NCF_TYPE = dict(
   ["e34", "e-CF 34 · Nota de crédito", "warning"], ["e44", "e-CF 44 · Régimen especial", "violet"],
   ["e45", "e-CF 45 · Gubernamental"]
 );
+/* ------------------------------------------------------- comunicaciones */
+/** Por dónde sale un aviso al cliente. */
+export const MESSAGE_CHANNEL = dict(
+  ["email", "Correo", "info"], ["whatsapp", "WhatsApp", "success"], ["sms", "SMS", "violet"]
+);
+/** Estado de un mensaje en la bandeja de salida. */
+export const MESSAGE_STATUS = dict(
+  ["queued", "En cola", "warning"], ["sending", "Enviando", "info"], ["sent", "Enviado", "success"],
+  ["failed", "Fallido", "danger"], ["cancelled", "Cancelado"]
+);
+/** Qué hecho dispara cada plantilla. */
+export const MESSAGE_TEMPLATE_KEY = dict(
+  ["booking_confirmation", "Confirmación de reserva", "success"],
+  ["booking_cancelled", "Reserva cancelada", "danger"],
+  ["pre_tour_reminder", "Recordatorio de la víspera", "info"],
+  ["payment_receipt", "Recibo de pago", "accent"],
+  ["balance_due", "Saldo pendiente", "warning"],
+  ["quote_sent", "Cotización enviada", "violet"],
+  ["post_tour_thanks", "Agradecimiento post-tour"]
+);
+
 export const DELIVERY_CHANNEL = dict(
   ["email", "Email", "info"], ["print", "Impresa"], ["physical", "Física", "violet"],
   ["whatsapp", "WhatsApp", "success"]

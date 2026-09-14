@@ -6,6 +6,8 @@ import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { sendBlocker, BLOCK_MESSAGE, versionedCode } from "@/lib/quotes";
 import { loadQuoteBundle, recalculateQuote } from "@/lib/quote-service";
+import { depositDue } from "@/lib/quotes";
+import { notifyQuoteSent } from "@/lib/messaging/events";
 
 /**
  * POST /api/quotes/:id/send — registra que la propuesta salió hacia el cliente.
@@ -44,6 +46,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       sent_count: sentCount,
       ...(body.follow_up_at ? { follow_up_at: body.follow_up_at } : {}),
     });
+
+    // Y sale de verdad hacia el cliente. Hasta ahora "enviar" solo cambiaba un
+    // estado: el vendedor tenía que copiar los números a un correo a mano.
+    try {
+      await notifyQuoteSent(ctx.company, ctx.companyId, quote, {
+        total: totals.total,
+        deposit: depositDue(quote, totals.total).deposit,
+        sellerName: ctx.name || null,
+        sentCount,
+        userId: ctx.userId,
+      });
+    } catch (err) {
+      console.error("[cotizaciones] no se pudo encolar el envío:", err);
+    }
 
     await writeAudit({
       companyId: ctx.companyId, userId: ctx.userId,

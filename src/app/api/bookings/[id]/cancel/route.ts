@@ -5,6 +5,7 @@ import { recalculateDeparture } from "@/lib/availability";
 import { syncOrderTotals } from "@/lib/booking-service";
 import { postPayment } from "@/lib/ledger-events";
 import { writeAudit } from "@/lib/audit";
+import { notifyBookingCancelled } from "@/lib/messaging/events";
 import { parseJson } from "@/lib/format";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -148,6 +149,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       severity: "warning",
       metadata: { refund, refundPct, policyName, reason: body.reason },
     });
+
+    // El cliente tiene que saberlo antes de presentarse en el lobby.
+    try {
+      await notifyBookingCancelled(
+        ctx.company, ctx.companyId, booking,
+        body.reason || "Cancelada por la agencia", ctx.userId
+      );
+    } catch (err) {
+      console.error("[cancel] no se pudo encolar el aviso de cancelación:", err);
+    }
 
     console.log(`[cancel] reserva ${booking.booking_number} cancelada · reembolso ${refund}`);
     return ok({ cancelled: true, refund, refund_pct: refundPct, policy: policyName, commissions_voided: commissions.length });

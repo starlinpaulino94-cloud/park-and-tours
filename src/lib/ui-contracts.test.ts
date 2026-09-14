@@ -415,6 +415,98 @@ describe("Panel ejecutivo", () => {
     expect(close).toContain("necesita un motivo");
   });
 
+  it("Comunicaciones — nada se manda por fuera de la bandeja de salida", () => {
+    /**
+     * La plataforma no mandaba nada: las confirmaciones y los recordatorios
+     * salían del WhatsApp personal de quien atendiera, y "¿se le avisó?" no
+     * tenía respuesta. Ahora todo pasa por la bandeja, que es el registro.
+     */
+    const files = walk(path.join(ROOT, "src")).filter((f) => !f.includes("messaging/providers"));
+    const direct = files.filter((f) => {
+      const src = readFileSync(f, "utf8");
+      return /api\.resend\.com|graph\.facebook\.com/.test(src);
+    });
+    expect(direct.map((f) => path.relative(ROOT, f)),
+      "solo providers.ts habla con el proveedor").toEqual([]);
+
+    // La bandeja es un libro: se lee desde el CRUD, se escribe por su acción.
+    const resources = read("src/lib/resources.ts");
+    const message = /^ {2}message: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[([^\]]*)\]/.exec(message)![1].trim()).toBe("");
+
+    // Y las credenciales no se guardan por inquilino: la pantalla de
+    // integraciones manda esas filas al navegador.
+    const providers = read("src/lib/messaging/providers.ts");
+    expect(providers).toContain("process.env");
+    const outbox = read("src/lib/messaging/outbox.ts");
+    expect(outbox).not.toMatch(/api_key|apiKey|token/i);
+  });
+
+  it("Comunicaciones — un aviso no puede tumbar la operación que lo provoca", () => {
+    /**
+     * Que el proveedor de correo esté caído no puede revertir una venta ya
+     * cobrada ni hacer esperar al cajero con el cliente delante. Cada enganche
+     * se traga su error y lo deja en la bandeja.
+     */
+    for (const file of [
+      "src/lib/booking-service.ts",
+      "src/app/api/payments/route.ts",
+      "src/app/api/bookings/[id]/cancel/route.ts",
+      "src/app/api/quotes/[id]/send/route.ts",
+    ]) {
+      const src = read(file);
+      // La LLAMADA, no el import: `await notify…(`.
+      const call = /await\s+(notifyBookingCreated|notifyPaymentReceived|notifyBookingCancelled|notifyQuoteSent)\s*\(/.exec(src);
+      expect(call, `${file} debe encolar su aviso`).toBeTruthy();
+      const at = src.indexOf(call![0]);
+      const around = src.slice(Math.max(0, at - 400), at + 800);
+      expect(around, `${file} no protege el encolado`).toMatch(/try\s*\{[\s\S]*catch/);
+    }
+
+    // El despacho de la cola es un trabajo programado y con credencial.
+    const cron = read("src/app/api/cron/dispatch-messages/route.ts");
+    expect(cron).toContain("CRON_SECRET");
+    expect(cron).toMatch(/Bearer \$\{secret\}/);
+    expect(read("vercel.json")).toContain("/api/cron/dispatch-messages");
+
+    // Y lee con el cliente de servicio: con RLS activo, las ayudas de inquilino
+    // resuelven el cliente desde las cookies de la petición, y un cron no las
+    // tiene. Escrito contra ellas no se rompería — leería cero mensajes y diría
+    // que la cola está al día, que es el peor fallo posible aquí.
+    expect(cron).toContain("supabaseService()");
+    expect(cron).toContain("serviceStore()");
+    expect(cron).toMatch(/eq\("organization_id", companyId\)/);
+
+    // El recordatorio de la víspera también se barre: si solo se encolara al
+    // vender, la cartera que ya compró antes de que hubiera comunicaciones se
+    // quedaría sin avisar, que es justo el grupo que ya pagó.
+    expect(cron).toContain("sweepReminders");
+    expect(cron).toContain("enqueuePreTourReminder");
+
+    // El insert en crudo tiene que aplicar el MISMO mapa de alias que las
+    // ayudas de inquilino: los payloads del módulo dicen `customer`, la columna
+    // se llama `customer_id`, y sin traducir no se encolaba ni un recordatorio.
+    expect(cron).toContain("aliasesFor(\"message\")");
+  });
+
+  it("Comunicaciones — un aviso se manda una vez", () => {
+    // Cada pasada del cron volviendo a escribirle al cliente es la forma más
+    // rápida de que marque la dirección como spam.
+    const sql = readFileSync(path.join(ROOT, "supabase/migrations/0034_messaging_outbox.sql"), "utf8");
+    expect(sql).toContain("create unique index if not exists message_dedupe_idx");
+    const events = read("src/lib/messaging/events.ts");
+    expect(events).toContain("dedupeKey: `${key}:${channel}:${base.dedupeSeed}`");
+
+    // Y el envío manual NO lleva dedupe: reenviar a petición del cliente es
+    // legítimo y no puede quedar bloqueado por el aviso automático.
+    expect(read("src/app/api/messages/route.ts")).toContain("dedupeKey: null");
+
+    // Un canal que el cliente nunca dio no es un fallo de entrega: registrarlo
+    // como tal llenaría la bandeja de fallos permanentes, uno por cada cliente
+    // que solo dio correo, hasta tapar los fallos de verdad.
+    expect(events).toContain("const reachable = CHANNELS.filter");
+  });
+
   it("los registros derivados no se borran desde el CRUD genérico", () => {
     /**
      * Un recurso con `writable` vacío es un libro: el registro de auditoría, los

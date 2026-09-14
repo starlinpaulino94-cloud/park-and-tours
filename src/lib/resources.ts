@@ -788,6 +788,30 @@ export const RESOURCES: Record<string, ResourceDef> = {
     booleans: ["is_recommended", "is_selected"],
     writeRole: "seller",
   },
+  // La bandeja de salida es un libro: cada fila es constancia de lo que se le
+  // dijo a un cliente. Se lee desde aquí; encolar, reintentar y cancelar pasan
+  // por /api/messages, que es quien compone el texto y respeta el dedupe.
+  message: {
+    table: "message",
+    search: ["to_address", "subject", "to_name"],
+    expand: { customer: true, booking: true, quote: true },
+    expandOne: { customer: true, booking: true, order: true, quote: true, departure: true, payment: true },
+    sort: { createdAt: "desc" },
+    writable: [],
+    numeric: ["attempts"],
+    dates: ["scheduled_at", "sent_at"],
+    writeRole: "manager",
+  },
+  // Las plantillas sí son un formulario: cada empresa reescribe el texto con su
+  // voz y en los idiomas que atiende.
+  message_template: {
+    table: "message_template",
+    search: ["key", "subject", "body"],
+    sort: { key: "asc" },
+    writable: ["key", "channel", "language", "subject", "body", "status", "offset_hours", "notes"],
+    numeric: ["offset_hours"],
+    writeRole: "manager",
+  },
   allotment: {
     table: "allotment",
     search: ["notes"],

@@ -7,6 +7,7 @@ import { uniqueCode } from "@/lib/unique";
 import { resolveCommissions, type BeneficiaryDescriptor } from "@/lib/commission-engine";
 import { writeAudit } from "@/lib/audit";
 import { newBookingNumber, newOrderNumber, newVoucherCode, newDocumentNumber } from "@/lib/codes";
+import { notifyBookingCreated } from "@/lib/messaging/events";
 import type {
   Booking, Channel, Currency, Departure, Order, Partner, Product, Seller,
 } from "@/lib/types";
@@ -397,6 +398,19 @@ export async function createOrderWithBookings(
     entityType: "order", entityId: order._id,
     description: `Orden ${order.order_number} creada con ${bookings.length} reserva(s) por ${totals.total} ${currency}`,
   });
+
+  // Confirmación al cliente y recordatorio de la víspera. Va DESPUÉS de que la
+  // orden esté promovida y fuera del try/catch de la saga a propósito: que el
+  // proveedor de correo esté caído no puede revertir una venta ya cobrada, ni
+  // hacer esperar al cajero con el cliente delante. Lo que no salga queda en la
+  // bandeja con su motivo.
+  for (const booking of bookings) {
+    try {
+      await notifyBookingCreated(ctx.company, companyId, booking, ctx.userId);
+    } catch (err) {
+      console.error("[booking-service] no se pudo encolar el aviso de la reserva", booking._id, err);
+    }
+  }
 
   console.log(`[booking-service] orden ${order.order_number} creada · ${bookings.length} reservas · total ${totals.total} ${currency}`);
 
