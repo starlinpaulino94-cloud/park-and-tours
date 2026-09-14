@@ -59,6 +59,7 @@ export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   departure: "departure_id",
   driver: "driver_id",
   expense: "expense_id",
+  extra: "extra_id",
   from_org: "from_org_id",
   gift_card: "gift_card_id",
   guest_case: "guest_case_id",

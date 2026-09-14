@@ -44,10 +44,16 @@ export interface VoucherData {
   paid_amount?: number | null;
   balance_amount?: number | null;
   currency?: string | null;
+  inclusions?: string | null;
+  exclusions?: string | null;
+  recommendations?: string | null;
+  restrictions?: string | null;
+  instructions?: string | null;
   conditions?: string | null;
   cancellation_policy?: string | null;
   notes?: string | null;
   sold_by?: string | null;
+  extras?: { description: string; quantity: number; amount: number }[];
 }
 
 /**
@@ -100,6 +106,15 @@ export async function buildVoucherPdf(company: CompanyInfo | null, data: Voucher
   }
   pdf.gap(8);
 
+  if (data.extras?.length) {
+    pdf.eyebrow("Extras contratados");
+    pdf.table(
+      [{ header: "Concepto", width: 4 }, { header: "Cant.", width: 0.8, align: "right" }, { header: "Importe", width: 1.2, align: "right" }],
+      data.extras.map((e) => [e.description, formatNumber(e.quantity), formatMoney(e.amount, currency)])
+    );
+    pdf.gap(10);
+  }
+
   pdf.eyebrow("Importe");
   pdf.row("Total", formatMoney(data.total_amount ?? 0, currency), { strong: true });
   pdf.row("Pagado", formatMoney(data.paid_amount ?? 0, currency));
@@ -115,6 +130,11 @@ export async function buildVoucherPdf(company: CompanyInfo | null, data: Voucher
     pdf.notice("Presenta este voucher —impreso o en el móvil— el día de la excursión. Te recomendamos estar en el punto de recogida 10 minutos antes.");
   }
 
+  pdf.block("Qué incluye", data.inclusions);
+  pdf.block("Qué no incluye", data.exclusions);
+  pdf.block("Qué llevar", data.recommendations);
+  pdf.block("Restricciones", data.restrictions);
+  pdf.block("Instrucciones", data.instructions);
   pdf.block("Condiciones", data.conditions);
   pdf.block("Política de cancelación", data.cancellation_policy);
   pdf.block("Notas", data.notes);

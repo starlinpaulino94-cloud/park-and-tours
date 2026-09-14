@@ -26,11 +26,17 @@ interface CatalogDeparture {
 interface CatalogModality {
   _id: string; name?: string; modality_type?: string; price?: number; min_pax?: number; max_pax?: number;
 }
+interface CatalogExtra {
+  _id: string; name?: string; description?: string;
+  price_type?: string; price: number; currency?: string;
+  is_required: boolean; max_quantity?: number | null;
+}
 interface CatalogProduct {
   _id: string; name?: string; code?: string; product_type?: string; short_description?: string;
   cover_image_url?: string; location?: string; duration_hours?: number;
   base_price: number; currency: string; category?: string; meeting_point?: string;
   modalities: CatalogModality[];
+  extras: CatalogExtra[];
   departures: CatalogDeparture[];
 }
 interface PosContext {
@@ -56,6 +62,8 @@ interface CartItem {
   room_number: string;
   pickup_time: string;
   notes: string;
+  /** Extras escogidos: id -> cantidad. Los obligatorios los añade el servidor. */
+  extras: Record<string, number>;
 }
 
 interface QuoteLine {
@@ -182,6 +190,7 @@ export default function PosPage() {
       departure_id: departure?._id || "",
       modality_id: modality?._id || "",
       adults: 1, children: 0, infants: 0,
+      extras: {},
       discount_pct: 0,
       pickup_hotel_id: "", room_number: "", pickup_time: "", notes: "",
     }]);
@@ -239,6 +248,12 @@ export default function PosPage() {
         pickup_time: i.pickup_time || null,
         room_number: i.room_number || null,
         notes: i.notes || null,
+        // Los obligatorios los añade el servidor: aquí solo viaja lo que el
+        // cliente escogió, para que retirar un extra del catálogo no deje
+        // vendiéndose algo que ya no existe.
+        extras: Object.entries(i.extras)
+          .filter(([, quantity]) => quantity > 0)
+          .map(([extra_id, quantity]) => ({ extra_id, quantity })),
       })),
     });
     setBusy(false);
@@ -556,6 +571,54 @@ export default function PosPage() {
                       </div>
                     </div>
 
+                    {item.product.extras?.length > 0 && (
+                      <div className="space-y-1.5">
+                        <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Extras
+                        </Label>
+                        <ul className="divide-y divide-border rounded-md border border-border">
+                          {item.product.extras.map((extra) => {
+                            const chosen = item.extras[extra._id] ?? 0;
+                            const perPerson = extra.price_type !== "per_booking";
+                            return (
+                              <li key={extra._id} className="flex items-center justify-between gap-3 px-3 py-2">
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-medium">
+                                    {extra.name}
+                                    {extra.is_required && (
+                                      <span className="ml-2 text-[11px] font-normal text-muted-foreground">
+                                        obligatorio
+                                      </span>
+                                    )}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {formatMoney(extra.price, extra.currency || ctx?.currency)}
+                                    {perPerson ? " por persona" : " por reserva"}
+                                    {extra.description ? ` · ${extra.description}` : ""}
+                                  </p>
+                                </div>
+                                {extra.is_required ? (
+                                  // Una tasa no se marca ni se desmarca: se cobra.
+                                  <span className="shrink-0 text-xs font-semibold text-muted-foreground">
+                                    Incluido
+                                  </span>
+                                ) : (
+                                  <Counter
+                                    label=""
+                                    srLabel={extra.name}
+                                    value={chosen}
+                                    onChange={(v) => patchItem(item.uid, {
+                                      extras: { ...item.extras, [extra._id]: Math.max(v, 0) },
+                                    })}
+                                  />
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    )}
+
                     <div className="grid gap-3 sm:grid-cols-3">
                       <div className="space-y-1.5">
                         <Label className="text-xs">Hotel de recogida</Label>
@@ -783,18 +846,29 @@ export default function PosPage() {
   );
 }
 
-function Counter({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+/**
+ * Contador de más y menos.
+ *
+ * `srLabel` existe para los extras, donde el nombre ya se lee al lado y
+ * repetirlo encima del contador sería ruido — pero sin él los botones se
+ * anunciarían como "Menos" y "Más" a secas, que con seis extras en pantalla no
+ * dice a cuál pertenecen.
+ */
+function Counter({ label, value, onChange, srLabel }: {
+  label: string; value: number; onChange: (v: number) => void; srLabel?: string;
+}) {
+  const name = srLabel || label;
   return (
     <div className="space-y-1">
-      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</Label>
+      {label && <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</Label>}
       <div className="flex items-center rounded-lg border border-border">
-        <button type="button" aria-label={`Menos ${label}`}
+        <button type="button" aria-label={`Menos ${name}`}
           className="grid size-8 place-items-center text-muted-foreground transition-colors hover:text-foreground"
           onClick={() => onChange(Math.max(0, value - 1))}>
           <Icon name="Minus" className="size-3.5" />
         </button>
         <span className="tf-num flex-1 text-center text-sm">{value}</span>
-        <button type="button" aria-label={`Más ${label}`}
+        <button type="button" aria-label={`Más ${name}`}
           className="grid size-8 place-items-center text-muted-foreground transition-colors hover:text-foreground"
           onClick={() => onChange(value + 1)}>
           <Icon name="Plus" className="size-3.5" />

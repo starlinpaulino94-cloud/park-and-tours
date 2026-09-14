@@ -50,6 +50,7 @@ export const USER_REF_FIELDS = new Set([
 export const RELATION_RESOURCE: Record<string, string> = {
   assigned_seller: "seller",
   driver: "staff",
+  extra: "product_extra",
   guide: "staff",
   ledger_account: "ledger_account",
   modality: "product_modality",

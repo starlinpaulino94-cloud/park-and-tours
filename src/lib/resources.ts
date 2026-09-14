@@ -241,6 +241,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
       customer: true, product: true, departure: true, seller: true, partner: true, branch: true,
       modality: true, pickup_hotel: true, order: true, created_by: true, checked_in_by: true,
       participant: { _limit: 100 },
+      booking_extra: { _limit: 30 },
       voucher: { _limit: 10 },
       commission: { _limit: 20, seller: true, partner: true },
       payment: { _limit: 50, _sort: { createdAt: "desc" } },
@@ -810,6 +811,30 @@ export const RESOURCES: Record<string, ResourceDef> = {
     sort: { key: "asc" },
     writable: ["key", "channel", "language", "subject", "body", "status", "offset_hours", "notes"],
     numeric: ["offset_hours"],
+    writeRole: "manager",
+  },
+  // Lo que se vende JUNTO al tour: el almuerzo, la foto, el transfer premium.
+  // Es donde está el margen, porque el tour compite por precio y el extra no.
+  product_extra: {
+    table: "product_extra",
+    search: ["name", "description"],
+    expand: { product: true },
+    sort: { sort_order: "asc" },
+    writable: ["product", "name", "description", "price_type", "price", "cost", "currency",
+               "is_required", "max_quantity", "sort_order", "status"],
+    numeric: ["price", "cost", "max_quantity", "sort_order"],
+    booleans: ["is_required"],
+    writeRole: "manager",
+  },
+  // Lo contratado, con su precio congelado: si mañana sube el almuerzo, la
+  // reserva de ayer sigue valiendo lo que el cliente pagó. Se lee, no se edita.
+  booking_extra: {
+    table: "booking_extra",
+    search: ["name"],
+    expand: { booking: true, extra: true },
+    sort: { createdAt: "asc" },
+    writable: [],
+    numeric: ["quantity", "unit_price", "unit_cost", "total_amount", "cost_amount"],
     writeRole: "manager",
   },
   allotment: {

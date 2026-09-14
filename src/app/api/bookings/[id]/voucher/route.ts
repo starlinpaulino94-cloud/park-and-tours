@@ -67,6 +67,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       _filter: { booking: id, status: "valid" }, _limit: 1,
     });
 
+    // Los extras contratados salen en el papel: el guía tiene que saber quién
+    // lleva almuerzo pagado, y el cliente, qué compró.
+    const extras = await tenantQuery<{ name?: string; quantity?: number; total_amount?: number }>(
+      ctx.companyId, "booking_extra", { _filter: { booking: id }, _limit: 30 }
+    );
+
     const bytes = await buildVoucherPdf(ctx.company, {
       booking_number: booking.booking_number,
       voucher_code: vouchers[0]?.code || booking.voucher_code,
@@ -86,12 +92,17 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       paid_amount: booking.paid_amount,
       balance_amount: booking.balance_amount,
       currency: booking.currency,
-      // El catálogo todavía no separa "qué incluye" de "qué no incluye" —es una
-      // brecha de la ficha de producto, no de este documento—, así que va lo que
-      // sí existe: las condiciones del producto y su política de cancelación.
+      inclusions: (product?.inclusions as string) ?? null,
+      exclusions: (product?.exclusions as string) ?? null,
+      recommendations: (product?.recommendations as string) ?? null,
+      restrictions: (product?.restrictions as string) ?? null,
+      instructions: (product?.instructions as string) ?? null,
       conditions: (product?.terms as string) ?? null,
       cancellation_policy: policyText(product?.cancellation_policy),
       notes: booking.notes,
+      extras: extras.map((e) => ({
+        description: e.name || "Extra", quantity: Number(e.quantity) || 0, amount: Number(e.total_amount) || 0,
+      })),
       sold_by: personName(booking.partner) || personName(booking.seller) || null,
     });
 

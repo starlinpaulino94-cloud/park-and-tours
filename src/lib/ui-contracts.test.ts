@@ -575,6 +575,49 @@ describe("Panel ejecutivo", () => {
     expect(read("src/lib/messaging/attachments.ts")).toMatch(/try\s*\{[\s\S]*catch[\s\S]*return null/);
   });
 
+  it("Catálogo — los extras se venden con el tour, no como un producto suelto", () => {
+    /**
+     * Sin modelarlos, el vendedor tenía dos salidas y las dos malas: crear un
+     * producto "Almuerzo langosta" que ensucia el catálogo y descuadra la
+     * ocupación de las salidas —cada extra contaba como una reserva más—, o
+     * cobrarlo por fuera, donde no aparece ni en la rentabilidad del tour ni en
+     * el voucher que el cliente enseña al guía.
+     */
+    const service = read("src/lib/booking-service.ts");
+    expect(service).toContain("priceExtras");
+    // Un extra que el catálogo no reconoce se rechaza: cobrar de menos en
+    // silencio es peor que fallar.
+    expect(service).toContain("unknownSelections");
+
+    // El impuesto cae también sobre los extras. Sumarlos después los dejaba
+    // exentos, y en un grupo de 40 con almuerzo de 35 son 1.400 sin ITBIS.
+    expect(service).toContain("const taxAmount = round2((netAmount * taxPct) / 100)");
+
+    // El precio se congela con la reserva: si mañana sube el almuerzo, la de
+    // ayer sigue valiendo lo que el cliente pagó.
+    const resources = read("src/lib/resources.ts");
+    const contracted = /^ {2}booking_extra: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[([^\]]*)\]/.exec(contracted)![1].trim()).toBe("");
+
+    // Se ofrecen en el punto de venta y viajan en el voucher.
+    expect(read("src/app/api/pos/context/route.ts")).toContain("product_extra");
+    expect(read("src/app/dashboard/pos/page.tsx")).toContain("item.product.extras");
+    expect(read("src/app/api/bookings/[id]/voucher/route.ts")).toContain("booking_extra");
+  });
+
+  it("Catálogo — el voucher dice lo que el producto promete", () => {
+    // El contenido de la ficha existía desde 0030 y ningún documento lo usaba:
+    // el cliente recibía un papel sin qué incluye, qué no, ni qué llevar.
+    const route = read("src/app/api/bookings/[id]/voucher/route.ts");
+    for (const field of ["inclusions", "exclusions", "recommendations", "restrictions", "instructions"]) {
+      expect(route, `el voucher debe llevar ${field}`).toContain(field);
+    }
+    // Y el mismo contenido va en el adjunto del correo, no una versión pobre.
+    const attachments = read("src/lib/messaging/attachments.ts");
+    expect(attachments).toContain("inclusions");
+    expect(attachments).toContain("recommendations");
+  });
+
   it("los registros derivados no se borran desde el CRUD genérico", () => {
     /**
      * Un recurso con `writable` vacío es un libro: el registro de auditoría, los
@@ -818,6 +861,13 @@ describe("Panel ejecutivo", () => {
     // Antes: formatMoney(pipelineValue, "usd") sobre leads de cualquier moneda.
     expect(page).not.toContain('formatMoney(pipelineValue, "usd")');
     expect(page).not.toContain('formatMoney(wonValue, "usd")');
+  });
+
+  it("las pruebas de base de datos se ejecutan en cada cambio", () => {
+    // Un `check` que solo corre si alguien se acuerda no protege nada: las
+    // pruebas de dominio, cascada y aislamiento entre inquilinos estaban
+    // escritas y ninguna tubería las lanzaba.
+    expect(read(".github/workflows/ci.yml")).toContain("bash scripts/db-test.sh");
   });
 
   it("existe una prueba de base de datos de la RPC del panel", () => {

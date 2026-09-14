@@ -373,6 +373,11 @@ export const NCF_TYPE = dict(
   ["e34", "e-CF 34 · Nota de crédito", "warning"], ["e44", "e-CF 44 · Régimen especial", "violet"],
   ["e45", "e-CF 45 · Gubernamental"]
 );
+/** Cómo se cobra un extra del catálogo. */
+export const EXTRA_PRICE_TYPE = dict(
+  ["per_person", "Por persona", "info"], ["per_booking", "Por reserva", "accent"]
+);
+
 /* ------------------------------------------------------- comunicaciones */
 /** Por dónde sale un aviso al cliente. */
 export const MESSAGE_CHANNEL = dict(

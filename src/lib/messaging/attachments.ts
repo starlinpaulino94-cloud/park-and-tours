@@ -38,7 +38,7 @@ async function voucherFor(companyId: string, bookingId: string, company: Company
       "id, booking_number, voucher_code, status, travel_date, adults, children, infants, pax_total, " +
       "pickup_time, pickup_location, room_number, total_amount, paid_amount, balance_amount, currency, notes, " +
       "customer:customer_id (first_name, last_name), " +
-      "product:product_id (name, meeting_point, terms), " +
+      "product:product_id (name, meeting_point, terms, inclusions, exclusions, recommendations, restrictions, instructions), " +
       "modality:modality_id (name), " +
       "hotel:hotel_id (name)"
     )
@@ -63,6 +63,13 @@ async function voucherFor(companyId: string, bookingId: string, company: Company
     .limit(1)
     .maybeSingle();
 
+  const { data: extras } = await supabaseService()
+    .from("booking_extra")
+    .select("name, quantity, total_amount")
+    .eq("organization_id", companyId)
+    .eq("booking_id", bookingId)
+    .limit(30);
+
   const bytes = await buildVoucherPdf(company, {
     booking_number: row.booking_number,
     voucher_code: voucher?.code || row.voucher_code,
@@ -81,8 +88,18 @@ async function voucherFor(companyId: string, bookingId: string, company: Company
     paid_amount: row.paid_amount,
     balance_amount: row.balance_amount,
     currency: row.currency,
+    inclusions: row.product?.inclusions ?? null,
+    exclusions: row.product?.exclusions ?? null,
+    recommendations: row.product?.recommendations ?? null,
+    restrictions: row.product?.restrictions ?? null,
+    instructions: row.product?.instructions ?? null,
     conditions: row.product?.terms ?? null,
     notes: row.notes,
+    extras: (extras ?? []).map((e) => ({
+      description: (e.name as string) || "Extra",
+      quantity: Number(e.quantity) || 0,
+      amount: Number(e.total_amount) || 0,
+    })),
   });
 
   return { filename: `voucher-${row.booking_number || bookingId}.pdf`, content: base64(bytes) };

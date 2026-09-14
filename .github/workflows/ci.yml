@@ -56,6 +56,14 @@ jobs:
           SUPABASE_USE_RLS: ${{ secrets.SUPABASE_USE_RLS }}
           NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
 
+      # Las pruebas de esquema (dominios, cascadas, aislamiento entre inquilinos)
+      # se escribieron contra Postgres de verdad y hasta ahora solo corrían si
+      # alguien se acordaba de lanzarlas a mano. Un `check` que no se ejecuta no
+      # protege nada: una migración podía romper el aislamiento y llegar a main.
+      # El script levanta su propio cluster efímero; no toca ninguna base remota.
+      - name: Pruebas de base de datos
+        run: bash scripts/db-test.sh
+
       - name: Guard — service role key never in client bundle
         run: |
           if grep -rn "SUPABASE_SERVICE_ROLE_KEY" src/ 2>/dev/null | grep -v "server-only\|process.env" | grep -iE "NEXT_PUBLIC|client"; then

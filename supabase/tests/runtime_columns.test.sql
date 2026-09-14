@@ -391,4 +391,48 @@ begin
   raise notice 'adjuntos: TODAS LAS ASERCIONES PASARON';
 end $$;
 
+-- ── extras vendibles (0036) ────────────────────────────────────────────────
+-- El precio de lo contratado se congela con la reserva, y retirar un extra del
+-- catálogo no puede borrar lo que un cliente ya compró.
+insert into product_extra (id, organization_id, product_id, name, price_type, price, cost, is_required)
+values ('77777777-0000-0000-0000-000000000001', :'org', 'bbbbbbbb-0000-0000-0000-000000000001',
+        'Almuerzo langosta', 'per_person', 35, 18, false);
+
+insert into booking_extra (organization_id, booking_id, extra_id, name, price_type, quantity, unit_price, total_amount, cost_amount)
+values (:'org', 'dddddddd-0000-0000-0000-000000000001', '77777777-0000-0000-0000-000000000001',
+        'Almuerzo langosta', 'per_person', 2, 35, 70, 36);
+
+do $$
+declare
+  guardado numeric;
+  quedan integer;
+begin
+  begin
+    update product_extra set price_type = 'por_grupo'
+     where id = '77777777-0000-0000-0000-000000000001';
+    raise exception 'price_type aceptó un valor fuera del diccionario';
+  exception when check_violation then null;
+  end;
+
+  -- Retirar el extra del catálogo deja la venta en pie: el voucher de una
+  -- reserva vieja tiene que seguir diciendo qué se compró y por cuánto.
+  delete from product_extra where id = '77777777-0000-0000-0000-000000000001';
+  select count(*), max(unit_price) into quedan, guardado
+    from booking_extra where booking_id = 'dddddddd-0000-0000-0000-000000000001';
+  if quedan <> 1 or guardado is distinct from 35 then
+    raise exception 'la venta del extra no sobrevivió a su retirada del catálogo (% filas, precio %)', quedan, guardado;
+  end if;
+
+  -- Y un extra no puede colgarse de la reserva de otra organización.
+  begin
+    insert into booking_extra (organization_id, booking_id, name, quantity, unit_price, total_amount)
+    values ('99999999-9999-9999-9999-999999999999', 'dddddddd-0000-0000-0000-000000000001', 'Fuga', 1, 10, 10);
+    raise exception 'booking_extra aceptó una reserva de otra organización';
+  exception when others then
+    if sqlstate not in ('23514', '23503') then raise; end if;
+  end;
+
+  raise notice 'extras: TODAS LAS ASERCIONES PASARON';
+end $$;
+
 rollback;

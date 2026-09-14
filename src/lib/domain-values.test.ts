@@ -119,6 +119,8 @@ const BINDINGS: [string, Dict, string, string][] = [
   ["MESSAGE_CHANNEL", modules.MESSAGE_CHANNEL, "message", "channel"],
   ["MESSAGE_STATUS", modules.MESSAGE_STATUS, "message", "status"],
   ["MESSAGE_TEMPLATE_KEY", modules.MESSAGE_TEMPLATE_KEY, "message_template", "key"],
+  // 0036: los extras que se venden con la excursión.
+  ["EXTRA_PRICE_TYPE", modules.EXTRA_PRICE_TYPE, "product_extra", "price_type"],
 ];
 
 describe("los diccionarios de la UI coinciden con el dominio de la base", () => {
