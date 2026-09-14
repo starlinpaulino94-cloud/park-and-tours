@@ -232,6 +232,13 @@ export default function OperationsPage() {
                     </div>
 
                     <footer className="flex flex-wrap gap-2 border-t border-border bg-muted/20 px-4 py-2.5">
+                      {/* El despacho dice cuánta gente va; el manifiesto, quién
+                          es y dónde se le recoge. Es la hoja que se imprime. */}
+                      <Link href={`/dashboard/salidas/${item._id}/manifiesto`}>
+                        <Button size="sm" className="gap-1.5">
+                          <Icon name="ClipboardList" className="size-3.5" /> Manifiesto
+                        </Button>
+                      </Link>
                       <Link href={`/dashboard/checkin?departure=${item._id}`}>
                         <Button size="sm" variant="outline" className="gap-1.5">
                           <Icon name="ScanLine" className="size-3.5" /> Check-in

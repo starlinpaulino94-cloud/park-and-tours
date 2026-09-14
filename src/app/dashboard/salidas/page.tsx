@@ -401,10 +401,18 @@ export default function DeparturesPage() {
               {
                 key: "actions", header: "", align: "right",
                 render: (d: Departure) => (
-                  <Link href={`/dashboard/reservas?departure=${d._id}`}
-                    className="text-xs font-semibold text-primary hover:underline">
-                    Ver reservas
-                  </Link>
+                  <div className="flex justify-end gap-3">
+                    {/* El manifiesto es lo que la operación necesita de una
+                        salida: quién viaja y dónde se le recoge. */}
+                    <Link href={`/dashboard/salidas/${d._id}/manifiesto`}
+                      className="text-xs font-semibold text-primary hover:underline">
+                      Manifiesto
+                    </Link>
+                    <Link href={`/dashboard/reservas?departure=${d._id}`}
+                      className="text-xs font-semibold text-muted-foreground hover:underline">
+                      Reservas
+                    </Link>
+                  </div>
                 ),
               },
             ]}

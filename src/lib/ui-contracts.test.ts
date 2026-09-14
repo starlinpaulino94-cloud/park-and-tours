@@ -361,6 +361,60 @@ describe("Panel ejecutivo", () => {
     expect(stale, "estos ya se crean desde una pantalla: quítalos de FLOW_CREATED").toEqual([]);
   });
 
+  it("Operación — la salida tiene manifiesto, y sale del dominio", () => {
+    /**
+     * El despacho decía cuántos pax llevaba cada salida; quiénes eran, dónde se
+     * les recoge y qué necesitan no estaba en ninguna pantalla, aunque los datos
+     * llevaban ahí desde la primera migración repartidos en cinco tablas. Sin
+     * esa hoja la operación se lleva en una hoja de cálculo aparte, y lo que se
+     * cobra a bordo no vuelve nunca al sistema.
+     */
+    const page = read("src/app/dashboard/salidas/[id]/manifiesto/page.tsx");
+    const route = read("src/app/api/departures/[id]/manifest/route.ts");
+
+    // El orden es el de la ruta, no el de la venta, y lo decide el dominio.
+    expect(route).toContain("sortByRoute");
+    expect(route).toContain("pickupStops");
+    expect(route).toContain("manifestAlerts");
+    // Una reserva cancelada no viaja: contarla manda al guía a buscar a alguien
+    // que no existe y da la salida por llena.
+    expect(route).toContain("DEAD_BOOKING_STATUSES");
+    // Es una lista de clientes: un partner no ve las reservas de la competencia.
+    expect(route).toMatch(/role === "partner"/);
+
+    // Y está hecha para imprimirse.
+    expect(page).toContain("window.print()");
+    expect(page).toContain("no-print");
+    expect(page).toContain("print-block");
+    expect(read("src/app/globals.css")).toContain("@media print");
+
+    // Se llega desde donde se planifica el día y desde el calendario de salidas.
+    expect(read("src/app/dashboard/operaciones/despacho/page.tsx")).toContain("/manifiesto");
+    expect(read("src/app/dashboard/salidas/page.tsx")).toContain("/manifiesto");
+  });
+
+  it("Operación — cerrar una salida no es editar un campo", () => {
+    const resources = read("src/lib/resources.ts");
+    const departure = /^ {2}departure: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    const writable = /writable:\s*\[([\s\S]*?)\]/.exec(departure)![1];
+
+    // `actual_pax` es el número del que salen la ocupación real y la comisión
+    // del guía: se cuenta desde los check-in, no se teclea. Y `status` lleva
+    // fuera del CRUD desde AUD-B02 porque editarlo reabría una salida llena.
+    for (const field of ['"status"', '"actual_pax"', '"no_show_pax"', '"closed_at"', '"booked_pax"']) {
+      expect(writable, `departure.writable no debe incluir ${field}`).not.toContain(field);
+    }
+
+    const close = read("src/app/api/departures/[id]/close/route.ts");
+    expect(close).toContain("closeBlocker");
+    expect(close).toContain("closeTotals");
+    // Un no-show se vendió y no viajó: el cierre los separa.
+    expect(close).toContain("no_show_pax: totals.no_show_pax");
+    // Saltarse una comprobación es excepción de gestión, con motivo y auditada.
+    expect(close).toMatch(/requireAtLeast\(ctx, "manager"\)/);
+    expect(close).toContain("necesita un motivo");
+  });
+
   it("los registros derivados no se borran desde el CRUD genérico", () => {
     /**
      * Un recurso con `writable` vacío es un libro: el registro de auditoría, los

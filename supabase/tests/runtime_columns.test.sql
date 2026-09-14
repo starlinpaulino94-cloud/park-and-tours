@@ -278,4 +278,37 @@ begin
   raise notice 'cotizaciones: TODAS LAS ASERCIONES PASARON';
 end $$;
 
+-- ── cierre de salida (0033) ────────────────────────────────────────────────
+-- Cerrar una salida es afirmar cuánta gente viajó DE VERDAD, que no es lo
+-- vendido: un no-show se cobró y no ocupó asiento.
+insert into departure (id, organization_id, product_id, departure_at, capacity, booked_pax)
+values ('55555555-0000-0000-0000-000000000001', :'org', 'bbbbbbbb-0000-0000-0000-000000000001',
+        now() - interval '2 hours', 20, 8);
+
+do $$
+declare
+  pax integer;
+begin
+  update departure
+     set status = 'completed', closed_at = now(), departed_at = now() - interval '2 hours',
+         actual_pax = 6, no_show_pax = 2,
+         incident_notes = 'Retraso de 40 minutos por avería',
+         guide_notes = 'Grupo puntual'
+   where id = '55555555-0000-0000-0000-000000000001';
+
+  select actual_pax into pax from departure where id = '55555555-0000-0000-0000-000000000001';
+  if pax is distinct from 6 then
+    raise exception 'el cierre no guardó los pax embarcados (%)', pax;
+  end if;
+
+  -- Un recuento negativo no existe: son plazas ocupadas.
+  begin
+    update departure set actual_pax = -1 where id = '55555555-0000-0000-0000-000000000001';
+    raise exception 'actual_pax aceptó un recuento negativo';
+  exception when check_violation then null;
+  end;
+
+  raise notice 'cierre_salida: TODAS LAS ASERCIONES PASARON';
+end $$;
+
 rollback;
