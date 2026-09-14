@@ -127,7 +127,17 @@ drop trigger if exists quote_option_touch on quote_option;
 create trigger quote_option_touch before update on quote_option
   for each row execute function app.touch_updated_at();
 
-select app.enable_tenant_rls('public.quote_option');
+-- `app.enable_tenant_rls` crea sus políticas sin `if not exists`, así que
+-- volver a ejecutar esta migración fallaba ahí. Todo lo demás del archivo es
+-- re-ejecutable; esto lo iguala, que es lo que hace segura una reaplicación
+-- tras un fallo a mitad.
+do $$
+begin
+  if not exists (select 1 from pg_policies where schemaname = 'public'
+                   and tablename = 'quote_option' and policyname = 'tenant_select') then
+    perform app.enable_tenant_rls('public.quote_option');
+  end if;
+end $$;
 
 drop trigger if exists quote_option_same_tenant_refs on quote_option;
 create trigger quote_option_same_tenant_refs

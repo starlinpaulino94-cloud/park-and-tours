@@ -66,7 +66,17 @@ drop trigger if exists message_template_touch on message_template;
 create trigger message_template_touch before update on message_template
   for each row execute function app.touch_updated_at();
 
-select app.enable_tenant_rls('public.message_template');
+-- `app.enable_tenant_rls` crea sus políticas sin `if not exists`, así que
+-- volver a ejecutar esta migración fallaba ahí. Todo lo demás del archivo es
+-- re-ejecutable; esto lo iguala, que es lo que hace segura una reaplicación
+-- tras un fallo a mitad.
+do $$
+begin
+  if not exists (select 1 from pg_policies where schemaname = 'public'
+                   and tablename = 'message_template' and policyname = 'tenant_select') then
+    perform app.enable_tenant_rls('public.message_template');
+  end if;
+end $$;
 
 -- ── bandeja de salida ──────────────────────────────────────────────────────
 create table if not exists message (
@@ -124,7 +134,17 @@ drop trigger if exists message_touch on message;
 create trigger message_touch before update on message
   for each row execute function app.touch_updated_at();
 
-select app.enable_tenant_rls('public.message');
+-- `app.enable_tenant_rls` crea sus políticas sin `if not exists`, así que
+-- volver a ejecutar esta migración fallaba ahí. Todo lo demás del archivo es
+-- re-ejecutable; esto lo iguala, que es lo que hace segura una reaplicación
+-- tras un fallo a mitad.
+do $$
+begin
+  if not exists (select 1 from pg_policies where schemaname = 'public'
+                   and tablename = 'message' and policyname = 'tenant_select') then
+    perform app.enable_tenant_rls('public.message');
+  end if;
+end $$;
 
 -- ── integridad de referencias entre inquilinos ─────────────────────────────
 drop trigger if exists message_same_tenant_refs on message;
