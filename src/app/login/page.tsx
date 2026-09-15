@@ -14,6 +14,17 @@ function LoginForm() {
   const searchParams = useSearchParams();
   const redirect = searchParams.get("redirect") || "/dashboard";
 
+  // Un SSO de MembeGo rechazado aterriza aquí con el motivo GRUESO; el detalle
+  // exacto queda en el log del servidor, nunca en el navegador.
+  const ssoError = searchParams.get("error") === "membego"
+    ? {
+        token: "El enlace desde MembeGo caducó o no es válido. Vuelve a abrir Park & Tours desde MembeGo.",
+        vinculo: "Esta empresa de MembeGo aún no está vinculada. Pide a un administrador que entre primero desde MembeGo.",
+        cuenta: "Tu cuenta no puede entrar por este acceso. Consulta con el administrador de tu empresa.",
+        sesion: "No se pudo abrir la sesión. Inténtalo de nuevo en unos minutos.",
+      }[searchParams.get("motivo") || "sesion"] || "No se pudo completar el acceso desde MembeGo."
+    : "";
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -69,6 +80,11 @@ function LoginForm() {
             {error && (
               <Alert variant="destructive" className="animate-in fade-in slide-in-from-top-2">
                 <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+            {!error && ssoError && (
+              <Alert variant="destructive" className="animate-in fade-in slide-in-from-top-2">
+                <AlertDescription>{ssoError}</AlertDescription>
               </Alert>
             )}
             <div className="space-y-2">

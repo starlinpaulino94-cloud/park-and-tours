@@ -816,4 +816,107 @@ begin
   raise notice 'liquidacion_proveedor: TODAS LAS ASERCIONES PASARON';
 end $$;
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 0041 — Park & Tours como satélite de MembeGo
+--
+-- Lo que se comprueba: que el vínculo empresa↔organización sea uno-a-uno en
+-- las DOS direcciones, que el mapa de identidad sea por `sub` único, que el
+-- espejo del cliente no pueda cruzar la ficha de otra organización, y que las
+-- dos idempotencias del contrato (evento y jti) choquen de verdad en el
+-- segundo insert — que es todo lo que las hace idempotencias.
+-- ─────────────────────────────────────────────────────────────────────────────
+do $$
+declare
+  org   uuid := '11111111-1111-1111-1111-111111111111';
+  other uuid := '99999999-9999-9999-9999-999999999999';
+  usr  uuid;
+  cust uuid;
+begin
+  insert into auth.users (email) values ('membego-admin@ejemplo.com') returning id into usr;
+
+  insert into membego_link (organization_id, membego_company_id, linked_by)
+  values (org, 'cmre-empresa-1', usr);
+
+  -- Una organización tiene UN vínculo…
+  begin
+    insert into membego_link (organization_id, membego_company_id) values (org, 'cmre-empresa-2');
+    raise exception 'se admitió un segundo vínculo para la misma organización';
+  exception when unique_violation then null;
+  end;
+
+  -- …y una empresa de MembeGo también: dos organizaciones leyendo los
+  -- clientes de la misma empresa sería un cruce de datos, no una integración.
+  begin
+    insert into membego_link (organization_id, membego_company_id) values (other, 'cmre-empresa-1');
+    raise exception 'se admitió la misma empresa de MembeGo en dos organizaciones';
+  exception when unique_violation then null;
+  end;
+
+  begin
+    update membego_link set status = 'roto' where organization_id = org;
+    raise exception 'el vínculo admitió un estado inventado';
+  exception when check_violation then null;
+  end;
+  update membego_link set status = 'suspended' where organization_id = org;
+  update membego_link set status = 'active'    where organization_id = org;
+
+  -- El mapa de identidad es por sub, y el sub es único: un cambio de correo
+  -- en MembeGo no puede fabricar una segunda cuenta local.
+  insert into membego_user (organization_id, membego_sub, user_id, membego_role, role_managed)
+  values (org, 'sub-123', usr, 'ADMIN_EMPRESA', true);
+  begin
+    insert into membego_user (organization_id, membego_sub, user_id) values (org, 'sub-123', usr);
+    raise exception 'se admitió el mismo sub de MembeGo dos veces';
+  exception when unique_violation then null;
+  end;
+
+  -- El espejo del cliente, y su cruce prohibido entre organizaciones.
+  insert into customer (organization_id, first_name, last_name, email)
+  values (org, 'Cliente', 'Membego', 'cliente-membego@ejemplo.com')
+  returning id into cust;
+
+  insert into membego_customer (organization_id, membego_cliente_id, customer_id, plan_name, visits)
+  values (org, 'cli-1', cust, 'Plan Oro', 1);
+
+  begin
+    insert into membego_customer (organization_id, membego_cliente_id, customer_id)
+    values (other, 'cli-2', cust);
+    raise exception 'el espejo apuntó a la ficha de otra organización';
+  exception when others then
+    if position('Cross-tenant' in sqlerrm) = 0 then
+      raise exception 'el rechazo entre inquilinos no se explica: %', sqlerrm;
+    end if;
+  end;
+
+  -- El upsert de efectos usa la clave natural (organización, cliente).
+  insert into membego_customer (organization_id, membego_cliente_id, visits)
+  values (org, 'cli-1', 2)
+  on conflict (organization_id, membego_cliente_id) do update set visits = excluded.visits;
+
+  -- La idempotencia del evento ES la clave primaria: el reintento choca aquí.
+  insert into membego_event (event_id, organization_id, tipo, payload)
+  values ('evt-1', org, 'cliente.visita', '{"clienteId":"cli-1"}');
+  begin
+    insert into membego_event (event_id, organization_id, tipo) values ('evt-1', org, 'cliente.visita');
+    raise exception 'el mismo evento entró dos veces';
+  exception when unique_violation then null;
+  end;
+  begin
+    update membego_event set status = 'pendiente' where event_id = 'evt-1';
+    raise exception 'el evento admitió un estado inventado';
+  exception when check_violation then null;
+  end;
+  update membego_event set status = 'failed', error = 'efecto falló' where event_id = 'evt-1';
+
+  -- Y el jti del SSO igual: el segundo canje del mismo token choca.
+  insert into membego_sso_jti (jti, expires_at) values ('jti-1', now() + interval '90 seconds');
+  begin
+    insert into membego_sso_jti (jti, expires_at) values ('jti-1', now());
+    raise exception 'el mismo jti se canjeó dos veces';
+  exception when unique_violation then null;
+  end;
+
+  raise notice 'membego: TODAS LAS ASERCIONES PASARON';
+end $$;
+
 rollback;

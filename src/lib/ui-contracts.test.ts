@@ -1359,7 +1359,7 @@ describe("blindaje del flujo de aprobación", () => {
   it("la ruta de decisión comprueba el origen y limita la tasa", () => {
     const route = read("src/app/api/approvals/[id]/decide/route.ts");
     expect(route).toContain("assertSameOriginMutation(req)");
-    expect(route).toContain("assertRateLimit");
+    expect(route).toMatch(/assertRateLimit\(\{/);
   });
 
   it("las tareas tienen dueño y el ERP lo verifica", () => {
@@ -1385,6 +1385,9 @@ describe("blindaje CSRF de las rutas mutantes", () => {
   // (pricing/quote), que no mutan estado.
   const csrfExempt = [
     /^src\/app\/api\/stripe\/webhook\//,
+    // El webhook de MembeGo lo firma una máquina con HMAC sobre el cuerpo
+    // crudo: esa firma ES la prueba de identidad que el CSRF aproxima.
+    /^src\/app\/api\/membego\/webhook\//,
     /^src\/app\/api\/cron\//,
     /^src\/app\/api\/pricing\/quote\//,
   ];
@@ -1448,5 +1451,82 @@ describe("traductor de consultas", () => {
     // búsquedas con puntos como las marcas de tiempo.
     expect(source).not.toContain('replace(/([,.()])/g, "\\\\$1")');
     expect(source).toContain("BARE_VALUE");
+  });
+});
+
+describe("integración con MembeGo", () => {
+  it("el webhook verifica la firma sobre el cuerpo CRUDO y es idempotente por diseño", () => {
+    const route = read("src/app/api/membego/webhook/route.ts");
+    // El contrato firma el cuerpo TAL CUAL viaja: parsear y re-serializar el
+    // JSON produce, tarde o temprano, otra cadena y una firma que no cuadra.
+    expect(route).toContain("await req.text()");
+    expect(route).toContain("verifyMembegoWebhook(rawBody");
+    expect(route).not.toMatch(/readJson\(/);
+    // Lo firma una máquina desde otro origen: la firma HMAC es la prueba de
+    // identidad que el CSRF de sesión aproxima, y exigir mismo origen aquí
+    // rompería la integración entera.
+    expect(route).not.toMatch(/assertSameOriginMutation\(/);
+    // Empresa sin vínculo → 503: el reintento horario de MembeGo lo resuelve
+    // solo. Un 200 tiraría el evento; un 4xx lo mandaría a su DEAD_LETTER.
+    expect(route).toMatch(/status: 503/);
+
+    // La idempotencia vive en el servicio: la fila con el id del sobre (clave
+    // primaria) se inserta ANTES de aplicar efectos, y el duplicado responde
+    // 200 sin repetirlos.
+    const service = read("src/lib/membego-service.ts");
+    expect(service).toContain('from("membego_event").insert(');
+    expect(service).toContain('if (insertError.code === "23505") return { status: "duplicate" }');
+  });
+
+  it("el SSO de MembeGo es público, de un solo uso y con el rol a la baja", () => {
+    const route = read("src/app/sso/membego/route.ts");
+    expect(route).toMatch(/verifyMembegoToken\(/);
+    // Un solo canje por jti, y tarifa por IP: acepta credenciales al portador.
+    expect(route).toMatch(/await consumeJti\(/);
+    expect(route).toMatch(/assertRateLimit\(\{/);
+    // El SSO trae al EQUIPO; el cliente final tiene su portal en MembeGo.
+    expect(route).toContain('"CLIENTE"');
+    // La sesión se abre con el mecanismo probado del enlace de correo.
+    expect(route).toContain("generateLink");
+    expect(route).toContain("verifyOtp");
+    // Al navegador solo el motivo GRUESO; el detalle queda en el log.
+    expect(route).toContain("error=membego&motivo=");
+
+    // Y es ruta pública en el middleware: su trabajo es CREAR la sesión que
+    // el middleware exigiría. Si alguien la quita de la lista, el SSO entero
+    // muere con una redirección a /login que nadie entendería.
+    const middleware = read("src/middleware.ts");
+    expect(middleware).toContain('"/sso/membego"');
+
+    // El token del contrato NO es un JWT: dos partes, cortadas por el ÚLTIMO
+    // punto, comparadas en tiempo constante.
+    const lib = read("src/lib/membego.ts");
+    expect(lib).toContain('lastIndexOf(".")');
+    expect(lib).toContain("timingSafeEqual");
+    // La regla de seguridad del contrato, literal: un rol desconocido cae al
+    // permiso MÍNIMO, nunca al máximo.
+    expect(lib).toMatch(/default:\s*\n\s*return "seller"/);
+    expect(lib).not.toContain('return "superadmin"');
+    expect(lib).not.toContain('return "owner"');
+  });
+
+  it("sin sesión no hay ayudas de inquilino: el servicio filtra por organización explícita", () => {
+    // El SSO llega ANTES de que exista sesión y el webhook lo firma una
+    // máquina: las ayudas de inquilino resolverían el cliente desde cookies
+    // que no existen y leerían cero filas diciendo que no pasa nada.
+    const service = read("src/lib/membego-service.ts");
+    expect(service).toContain("supabaseService");
+    expect(service).not.toContain("tenantQuery");
+    expect(service).not.toContain("tenantCreate");
+    expect(service).not.toContain("tenantUpdate");
+    // Suspender cierra la puerta de verdad: el SSO nunca revive una membresía
+    // desactivada.
+    expect(service).toContain("La cuenta está desactivada en esta organización");
+
+    // Las dos idempotencias del contrato son claves primarias: el segundo
+    // insert choca, sin ventana entre comprobar y marcar.
+    const sql = read("supabase/migrations/0041_membego.sql");
+    expect(sql).toMatch(/event_id\s+text primary key/);
+    expect(sql).toMatch(/jti\s+text primary key/);
   });
 });

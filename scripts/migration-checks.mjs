@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0032-0040 tienen que haber creado.
+ * El inventario de lo que las migraciones 0032-0041 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -101,5 +101,17 @@ export const MIGRATION_CHECKS = [
       ["booking", ["accrued_cost"]],
     ],
     enums: [["settlement", "beneficiary_type", "supplier"]],
+  },
+  {
+    migration: "0041 — satélite de MembeGo",
+    tables: ["membego_link", "membego_user", "membego_customer", "membego_event", "membego_sso_jti"],
+    columns: [
+      ["membego_link", ["membego_company_id", "status", "linked_by", "last_event_at", "events_received"]],
+      ["membego_user", ["membego_sub", "user_id", "membego_role", "role_managed", "last_login_at"]],
+      ["membego_customer", ["membego_cliente_id", "customer_id", "plan_id", "plan_name",
+                            "membership_id", "membership_paid", "membership_valid_until",
+                            "visits", "purchases"]],
+      ["membego_event", ["event_id", "tipo", "payload", "status", "error", "received_at"]],
+    ],
   },
 ];
