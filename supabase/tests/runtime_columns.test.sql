@@ -704,4 +704,116 @@ begin
   raise notice 'cobros: TODAS LAS ASERCIONES PASARON';
 end $$;
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 0040 — La liquidación del proveedor que operó el servicio
+--
+-- Lo que se comprueba: que el devengo se pueda colgar de una reserva y de su
+-- proveedor pero no de los de otra empresa, que el estado del devengo y el de la
+-- liquidación existan de verdad, que 'supplier' sea un beneficiario válido, y
+-- que la cuenta por pagar pueda nombrar al proveedor —que podía desde 0030 y
+-- nadie lo hacía nunca.
+-- ─────────────────────────────────────────────────────────────────────────────
+do $$
+declare
+  org uuid := '11111111-1111-1111-1111-111111111111';
+  other uuid := '99999999-9999-9999-9999-999999999999';
+  bk  uuid := 'dddddddd-0000-0000-0000-000000000001';
+  dep uuid := 'eeeeeeee-0000-0000-0000-000000000001';
+  sup uuid;
+  tariff uuid;
+  liq uuid;
+  cost uuid;
+begin
+  insert into supplier (organization_id, name, supplier_type, tax_id, tax_regime,
+                        retention_isr_pct, retention_itbis_pct, tax_rate,
+                        payment_terms_days, bank_name, bank_account)
+  values (org, 'Transporte de prueba', 'transport', '130123456', 'individual',
+          10, 100, 18, 15, 'Banco Popular', '1234567890')
+  returning id into sup;
+
+  insert into product_cost (organization_id, product_id, supplier_id, concept, cost_type, amount, currency)
+  values (org, 'bbbbbbbb-0000-0000-0000-000000000001', sup, 'Transporte', 'per_person', 350, 'dop')
+  returning id into tariff;
+
+  -- El devengo: lo que esta reserva le debe a ese proveedor.
+  insert into booking_cost (organization_id, booking_id, departure_id, supplier_id, product_cost_id,
+                            concept, cost_type, quantity, unit_cost, amount, currency)
+  values (org, bk, dep, sup, tariff, 'Transporte', 'per_person', 2, 350, 700, 'dop')
+  returning id into cost;
+
+  update booking set accrued_cost = 700 where id = bk;
+
+  -- Todos los estados del devengo son alcanzables.
+  update booking_cost set status = 'confirmed', confirmed_amount = 700 where id = cost;
+  update booking_cost set status = 'disputed', confirmed_amount = 900 where id = cost;
+  update booking_cost set status = 'settled' where id = cost;
+  update booking_cost set status = 'paid' where id = cost;
+  update booking_cost set status = 'waived' where id = cost;
+  update booking_cost set status = 'accrued', confirmed_amount = null where id = cost;
+
+  begin
+    update booking_cost set status = 'inventado' where id = cost;
+    raise exception 'el devengo admitió un estado inventado';
+  exception when check_violation then null;
+  end;
+
+  begin
+    update booking_cost set cost_type = 'por_persona' where id = cost;
+    raise exception 'el devengo admitió un tipo de costo inventado';
+  exception when check_violation then null;
+  end;
+
+  -- Un devengo no se cuelga de la reserva de otra empresa.
+  begin
+    insert into booking_cost (organization_id, booking_id, concept, amount)
+    values (other, bk, 'Cruzado', 100);
+    raise exception 'se admitió un devengo entre inquilinos distintos';
+  exception when others then
+    if position('Cross-tenant' in sqlerrm) = 0 then
+      raise exception 'el rechazo entre inquilinos no se explica: %', sqlerrm;
+    end if;
+  end;
+
+  -- 'supplier' es un beneficiario válido de una liquidación (el enum se amplió).
+  insert into settlement (organization_id, code, beneficiary_type, supplier_id, beneficiary_name,
+                          services_total, confirmed_total, base_total,
+                          retention_isr, retention_itbis, retention_total, net_total,
+                          supplier_invoice_number, supplier_invoice_ncf, supplier_invoice_date,
+                          currency, status)
+  values (org, 'LIQ-RT-SUP', 'supplier', sup, 'Transporte de prueba',
+          700, 826, 700, 70, 126, 196, 630,
+          'B0100000123', 'B0100000123', current_date, 'dop', 'pending')
+  returning id into liq;
+
+  update booking_cost set settlement_id = liq, status = 'settled' where id = cost;
+
+  -- El abono parcial existe: 'partially_paid' estaba en el check desde 0006 y
+  -- ninguna ruta lo escribía.
+  update settlement set status = 'partially_paid', paid_total = 300, pending_total = 330,
+                        last_payment_at = now()
+   where id = liq;
+  update settlement set status = 'disputed', dispute_reason = 'no cuadra' where id = liq;
+  update settlement set status = 'paid', paid_total = 630, pending_total = 0 where id = liq;
+
+  -- La cuenta por pagar nombra al proveedor.
+  insert into payable (organization_id, supplier_id, settlement_id, concept, category,
+                       amount, balance, currency, status)
+  values (org, sup, liq, 'Liquidación de servicios', 'supplier_services', 630, 630, 'dop', 'pending');
+
+  -- El régimen fiscal está acotado.
+  begin
+    update supplier set tax_regime = 'loquesea' where id = sup;
+    raise exception 'el proveedor admitió un régimen fiscal inventado';
+  exception when check_violation then null;
+  end;
+
+  begin
+    update supplier set retention_isr_pct = 120 where id = sup;
+    raise exception 'se admitió una retención por encima del 100%%';
+  exception when check_violation then null;
+  end;
+
+  raise notice 'liquidacion_proveedor: TODAS LAS ASERCIONES PASARON';
+end $$;
+
 rollback;

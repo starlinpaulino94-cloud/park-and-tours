@@ -342,6 +342,13 @@ export const PRICE_TYPE = dict(
   ["standard", "Estándar", "info"], ["per_person", "Por persona", "success"], ["per_group", "Por grupo", "violet"],
   ["per_vehicle", "Por vehículo", "warning"], ["b2c", "B2C", "accent"], ["b2b", "B2B", "info"]
 );
+/**
+ * Cómo se cobra un costo de proveedor.
+ *
+ * Lo comparten la tarifa del catálogo (`product_cost`) y el devengo por reserva
+ * (`booking_cost`, 0040): la tarifa dice cómo cobra el proveedor y el devengo
+ * copia ese mismo tipo, así que un valor nuevo tiene que valer en las dos.
+ */
 export const COST_TYPE = dict(
   ["per_person", "Por persona", "info"], ["per_group", "Por grupo", "violet"],
   ["per_departure", "Por salida", "accent"], ["per_vehicle", "Por vehículo", "warning"],
@@ -471,6 +478,17 @@ export const COLLECTION_STATUS = dict(
   ["due_soon", "Vence pronto", "warning"],
   ["overdue", "Vencido", "danger"],
   ["settled", "Liquidado", "success"]
+);
+
+/** En qué punto está lo que se le debe a un proveedor por un servicio. */
+export const ACCRUED_COST_STATUS = dict(
+  ["accrued", "Devengado", "info"],
+  ["confirmed", "Facturado", "accent"],
+  ["disputed", "En disputa", "danger"],
+  ["settled", "Liquidado", "warning"],
+  ["paid", "Pagado", "success"],
+  ["cancelled", "Anulado"],
+  ["waived", "Perdonado", "violet"]
 );
 
 /** `[{value,label}]` list for a Select, from any of the dictionaries above. */

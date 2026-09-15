@@ -17,7 +17,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { BENEFICIARY_TYPE, CALC_TYPE, COMMISSION_STATUS, GENERIC_STATUS, CHANNEL } from "@/lib/labels";
+import { BENEFICIARY_TYPE, COMMISSION_BENEFICIARIES, CALC_TYPE, COMMISSION_STATUS, GENERIC_STATUS, CHANNEL } from "@/lib/labels";
 import { formatDate, formatMoney, formatNumber, formatPercent } from "@/lib/format";
 import { CURRENCY_OPTIONS, optionsFrom } from "@/components/tf/options";
 
@@ -124,7 +124,7 @@ function CommissionList() {
           <SelectTrigger className="w-[190px]"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="__all">Beneficiario: todos</SelectItem>
-            {optionsFrom(BENEFICIARY_TYPE).map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+            {optionsFrom(BENEFICIARY_TYPE, [...COMMISSION_BENEFICIARIES]).map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
           </SelectContent>
         </Select>
         <Button variant="outline" size="icon" onClick={load} aria-label="Actualizar">
@@ -291,7 +291,7 @@ function CommissionRules() {
         { name: "name", label: "Nombre de la regla", required: true, span: 2 },
         { name: "priority", label: "Prioridad", type: "number", defaultValue: 100,
           help: "Menor número = se evalúa antes. Gana la primera regla que encaje." },
-        { name: "beneficiary_type", label: "Beneficiario", type: "select", defaultValue: "partner", options: optionsFrom(BENEFICIARY_TYPE) },
+        { name: "beneficiary_type", label: "Beneficiario", type: "select", defaultValue: "partner", options: optionsFrom(BENEFICIARY_TYPE, [...COMMISSION_BENEFICIARIES]) },
         { name: "calc_type", label: "Tipo de cálculo", type: "select", defaultValue: "percentage", options: optionsFrom(CALC_TYPE) },
         { name: "value", label: "Valor", type: "number", required: true, help: "Porcentaje o importe fijo según el tipo de cálculo." },
         { name: "currency", label: "Moneda", type: "select", defaultValue: "usd", options: CURRENCY_OPTIONS },

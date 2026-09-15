@@ -433,6 +433,29 @@ export interface Settlement extends BaseRecord {
   status?: "pending" | "approved" | "partially_paid" | "paid" | "held" | "disputed" | "void";
   paid_at?: string;
   issued_at?: string; pdf_file?: StoredFile; notes?: string;
+  /** 0040 — la liquidación de un proveedor operativo. */
+  supplier?: Ref<Supplier>;
+  services_total?: number; confirmed_total?: number; adjustments_total?: number;
+  retention_isr?: number; retention_itbis?: number; retention_total?: number;
+  net_total?: number;
+  supplier_invoice_number?: string; supplier_invoice_ncf?: string; supplier_invoice_date?: string;
+  confirmed_at?: string; confirmed_by?: Ref<AppUser>; dispute_reason?: string;
+  beneficiary_name?: string;
+  last_payment_at?: string;
+  booking_cost?: BookingCost[];
+}
+
+/** 0040 — lo que una reserva le debe a un proveedor por el servicio operado. */
+export interface BookingCost extends BaseRecord {
+  company?: Ref<Company>; booking?: Ref<Booking>; departure?: Ref<Departure>;
+  supplier?: Ref<Supplier>; product_cost?: Ref<ProductCost>; settlement?: Ref<Settlement>;
+  concept?: string;
+  cost_type?: "per_person" | "per_group" | "per_departure" | "per_vehicle" | "percentage" | "fixed";
+  quantity?: number; unit_cost?: number; amount?: number;
+  confirmed_amount?: number | null;
+  currency?: Currency;
+  status?: "accrued" | "confirmed" | "disputed" | "settled" | "paid" | "cancelled" | "waived";
+  notes?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -532,6 +555,10 @@ export interface Supplier extends BaseRecord {
   tax_id?: string; contact_name?: string; email?: string; phone?: string; address?: string;
   currency?: Currency; payment_terms_days?: number; balance?: number;
   status?: "active" | "inactive"; notes?: string;
+  /** 0040 — régimen fiscal y retenciones de la DGII, y datos de pago. */
+  tax_regime?: "company" | "individual" | "informal";
+  retention_isr_pct?: number; retention_itbis_pct?: number; tax_rate?: number;
+  bank_account?: string; bank_name?: string;
 }
 
 export interface Payable extends BaseRecord {

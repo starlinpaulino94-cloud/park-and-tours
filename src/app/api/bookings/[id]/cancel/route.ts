@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { requireTenant, requireAtLeast, tenantCreate, tenantFindOne, tenantQuery, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { recalculateDeparture } from "@/lib/availability";
+import { cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { syncOrderTotals } from "@/lib/booking-service";
 import { postPayment } from "@/lib/ledger-events";
 import { writeAudit } from "@/lib/audit";
@@ -90,6 +91,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       });
     }
 
+    // ---- cancelar el devengo del proveedor (0040) --------------------------
+    // Una reserva cancelada no le debe nada al transportista ni al restaurante.
+    // Un servicio YA liquidado no se toca: ese dinero salió, y lo que procede
+    // entonces es un ajuste en la liquidación, no borrar el devengo.
+    const cancelledCosts = await cancelBookingCosts(
+      ctx.companyId, id, `Reserva ${booking.booking_number ?? id} cancelada`
+    );
+
     // ---- invalidate vouchers ----------------------------------------------
     const vouchers = await tenantQuery<{ _id: string }>(ctx.companyId, "voucher", {
       _filter: { booking: id, status: "valid" }, _limit: 10,
@@ -147,7 +156,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       action: "booking_cancelled", entityType: "booking", entityId: id,
       description: `Reserva ${booking.booking_number} cancelada. Reembolso ${refund} (${refundPct}% — ${policyName})`,
       severity: "warning",
-      metadata: { refund, refundPct, policyName, reason: body.reason },
+      metadata: { refund, refundPct, policyName, reason: body.reason, supplier_costs_cancelled: cancelledCosts },
     });
 
     // El cliente tiene que saberlo antes de presentarse en el lobby.

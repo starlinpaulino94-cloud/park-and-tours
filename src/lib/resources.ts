@@ -311,8 +311,12 @@ export const RESOURCES: Record<string, ResourceDef> = {
   settlement: {
     table: "settlement",
     search: ["code"],
-    expand: { partner: true, seller: true },
-    expandOne: { partner: true, seller: true, approved_by: true, payable: { _limit: 50 } },
+    expand: { partner: true, seller: true, supplier: true },
+    expandOne: {
+      partner: true, seller: true, supplier: true, approved_by: true, confirmed_by: true,
+      payable: { _limit: 50 },
+      booking_cost: { _limit: 500, booking: true, departure: true },
+    },
     sort: { createdAt: "desc" },
     // SECURITY (AUD-B02/F10/F12): `status`/`paid_total`/`pending_total` removed —
     // paying a settlement must go through `/api/settlements/[id]/pay`, which also
@@ -375,6 +379,19 @@ export const RESOURCES: Record<string, ResourceDef> = {
     dates: ["movement_at"],
     writeRole: "cashier",
   },
+  // El devengo por proveedor: lo que cada servicio operado le debe a quien lo
+  // operó. Lo escriben la venta (al crear la reserva) y las rutas de
+  // liquidación. Editable por CRUD, se podría cambiar a mano lo que se le debe a
+  // un proveedor después de haberlo liquidado.
+  booking_cost: {
+    table: "booking_cost",
+    search: ["concept", "notes"],
+    expand: { booking: true, departure: true, supplier: true, settlement: true },
+    sort: { createdAt: "desc" },
+    writable: [],
+    numeric: ["quantity", "unit_cost", "amount", "confirmed_amount"],
+    writeRole: "manager",
+  },
   // El calendario de cobro. Lo escriben `/api/orders/:id/schedule` y el servicio
   // que reparte los pagos, nunca el CRUD: una cuota editable a mano deja el plan
   // sumando algo distinto del total de la venta, y entonces no cobra ni sobra.
@@ -419,8 +436,15 @@ export const RESOURCES: Record<string, ResourceDef> = {
     table: "supplier",
     search: ["name", "tax_id", "contact_name", "email"],
     sort: { name: "asc" },
-    writable: ["name", "supplier_type", "tax_id", "contact_name", "email", "phone", "address", "currency", "payment_terms_days", "status", "notes"],
-    numeric: ["payment_terms_days"],
+    writable: [
+      "name", "supplier_type", "tax_id", "contact_name", "email", "phone", "address", "currency",
+      "payment_terms_days", "status", "notes",
+      // 0040 — el régimen fiscal decide sus retenciones, y los datos bancarios
+      // son lo que hace falta para transferirle.
+      "tax_regime", "retention_isr_pct", "retention_itbis_pct", "tax_rate",
+      "bank_name", "bank_account",
+    ],
+    numeric: ["payment_terms_days", "retention_isr_pct", "retention_itbis_pct", "tax_rate"],
     writeRole: "manager",
   },
   payable: {
@@ -1173,7 +1197,7 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
   payment: "cashier", cash_session: "cashier", cash_movement: "cashier", cash_count: "cashier",
   // Commercial/accounting figures, costs and margins — managers and up.
   commission: "manager", settlement: "manager", receivable: "manager", payable: "manager",
-  payment_schedule: "seller",
+  payment_schedule: "seller", booking_cost: "manager",
   commission_rule: "manager", product_cost: "manager", price_rule: "manager",
   ledger_account: "manager", ledger_entry: "manager", invoice: "manager",
   expense: "manager", tax_profile: "manager", purchase_order: "manager", purchase_order_line: "manager",

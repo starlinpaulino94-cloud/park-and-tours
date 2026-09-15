@@ -300,7 +300,28 @@ export const BENEFICIARY_TYPE: Record<string, LabelDef> = {
   supervisor: def("Supervisor", "violet"),
   partner: def("Partner", "accent"),
   company: def("Empresa", "neutral"),
+  // 0040 — el proveedor que OPERÓ el servicio. No cobra comisión: cobra lo que
+  // se le debe por el autobús, el almuerzo o la entrada, así que los selectores
+  // de reglas de comisión lo excluyen a propósito con `optionsFrom(..., [...])`.
+  supplier: def("Proveedor", "warning"),
 };
+
+/**
+ * 0040 — el régimen fiscal de un proveedor.
+ *
+ * Es lo que decide sus retenciones: una empresa formal factura con su NCF y no
+ * se le retiene nada por defecto; una persona física lleva ISR por honorarios e
+ * ITBIS; un informal no entrega comprobante, así que no hay ITBIS que retener
+ * pero el ISR sigue aplicando.
+ */
+export const TAX_REGIME: Record<string, LabelDef> = {
+  company: def("Empresa (con NCF)", "info"),
+  individual: def("Persona física", "warning"),
+  informal: def("Informal (sin comprobante)", "danger"),
+};
+
+/** Beneficiarios que pueden cobrar COMISIÓN. Un proveedor operativo no. */
+export const COMMISSION_BENEFICIARIES = ["partner", "seller", "supervisor", "company"] as const;
 
 /** Enum `calc_type`; net_rate y markup son modelos B2B que faltaban. */
 export const CALC_TYPE: Record<string, LabelDef> = {

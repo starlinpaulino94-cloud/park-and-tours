@@ -102,6 +102,7 @@ export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   revision_of: "revision_of_id",
   route: "route_id",
   rule: "rule_id",
+  product_cost: "product_cost_id",
   schedule: "schedule_id",
   second_approver: "second_approver_id",
   selected_option: "selected_option_id",

@@ -10,6 +10,7 @@ import { newBookingNumber, newOrderNumber, newVoucherCode, newDocumentNumber } f
 import { notifyBookingCreated } from "@/lib/messaging/events";
 import { ensureSchedule, refreshAllocation } from "@/lib/schedule-service";
 import { creditCheck, holdUntil } from "@/lib/collections";
+import { accrueBookingCosts, cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { priceExtras, unknownSelections, type ExtraOffer, type ExtraSelection } from "@/lib/extras";
 import type {
   Booking, Channel, Currency, Departure, Order, Partner, Product, Seller,
@@ -359,7 +360,12 @@ export async function createOrderWithBookings(
     // general del catálogo: si no, el margen de la venta no es el que se negoció.
     const cost = item.cost_override !== null && item.cost_override !== undefined
       ? round2(Math.max(Number(item.cost_override) || 0, 0))
-      : await resolveCost(companyId, item.product_id, billable, productRow?.base_cost ?? 0);
+      // La base de una tarifa por porcentaje es la venta DEL PRODUCTO, sin los
+      // extras: el almuerzo tiene su propio proveedor y su propio costo, y
+      // meterlo en la base le pagaría dos veces al del tour.
+      : await resolveCost(companyId, item.product_id, billable, productRow?.base_cost ?? 0, {
+          revenue: price.grossAmount,
+        });
     const voucherCode = await uniqueCode(companyId, "voucher", "code", newVoucherCode);
 
     // ---- extras -----------------------------------------------------------
@@ -459,6 +465,21 @@ export async function createOrderWithBookings(
         currency: line.currency,
       });
     }
+
+    // ---- devengo del costo por proveedor (0040) ---------------------------
+    // Se congela AHORA, con las tarifas de hoy: calcularlo el viernes al
+    // liquidar aplicaría a lo operado el lunes una tarifa que cambió el
+    // miércoles. Va dentro de la saga porque una reserva cuyo costo no se sabe
+    // de quién es no se puede pagar, y lo que no se puede pagar no debería
+    // haberse vendido.
+    await accrueBookingCosts(companyId, {
+      bookingId: booking._id,
+      productId: item.product_id,
+      departureId: item.departure_id || null,
+      pax: billable,
+      revenue: price.grossAmount,
+      currency: price.currency || currency,
+    });
 
     bookings.push(booking);
     subtotal += grossAmount;
@@ -646,6 +667,9 @@ async function compensateOrder(
       });
       const dep = refId(b.departure);
       if (dep) departures.add(dep);
+      // Una reserva que no se va a operar no le debe nada al transportista:
+      // dejar el devengo vivo se lo pagaría en la liquidación del viernes.
+      await cancelBookingCosts(companyId, b._id, reason);
     } catch (e) {
       console.error("[booking-service] compensación: no se pudo cancelar la reserva", b._id, e);
     }

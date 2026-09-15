@@ -3,17 +3,31 @@ import { requireTenant, requireAtLeast, tenantFindOne, tenantQuery, tenantUpdate
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { postSettlementPayment } from "@/lib/ledger-events";
+import { payBlocker, stateAfterPayment, PAY_BLOCK_MESSAGE } from "@/lib/supplier-settlement";
 import type { Settlement } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
 
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+
 /**
- * POST /api/settlements/:id/pay — records the pay-out of a settlement (AUD-F12).
+ * POST /api/settlements/:id/pay — registra el pago de una liquidación (AUD-F12).
  *
- * The old flow was a raw `PUT /api/erp/settlement/:id {status:"paid"}` which
- * flipped the status but left the matching payable OPEN, posted nothing to the
- * ledger and never closed the commissions — so the debt showed as unpaid after
- * "paying" it, and could be paid a second time. This endpoint does the whole
- * settlement atomically-as-possible: settlement → payable → commissions → ledger.
+ * El flujo antiguo era un `PUT /api/erp/settlement/:id {status:"paid"}` que
+ * cambiaba el estado y dejaba la cuenta por pagar ABIERTA, no asentaba nada y no
+ * cerraba las comisiones: la deuda seguía apareciendo como pendiente después de
+ * "pagarla", y se podía pagar dos veces. Esta ruta hace todo el recorrido:
+ * liquidación → cuenta por pagar → comisiones o servicios → contabilidad.
+ *
+ * Tres cosas que cambiaron con las liquidaciones de proveedor (0040):
+ *
+ *  · **Se paga el NETO.** A un proveedor se le transfiere lo facturado menos las
+ *    retenciones de la DGII; pagarle el bruto deja a la empresa debiéndole ese
+ *    dinero al fisco.
+ *  · **Sin comprobante no se paga.** El gasto se sostiene con la factura del
+ *    proveedor. Y una liquidación en disputa se resuelve antes, no después.
+ *  · **El abono parcial existe.** `partially_paid` estaba en el check desde 0006
+ *    y era inalcanzable: solo se escribía 'paid'. Un proveedor al que se le
+ *    abona la mitad de la semana no tenía cómo representarse.
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -22,55 +36,99 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const ctx = await requireTenant();
     requireAtLeast(ctx, "manager");
 
-    const body = await readJson<{ method?: string; notes?: string }>(req);
+    const body = await readJson<{
+      method?: string; notes?: string; amount?: number; skip_invoice_check?: boolean;
+    }>(req);
     const settlement = await tenantFindOne<Settlement>(ctx.companyId, "settlement", id);
 
-    if (settlement.status === "paid") {
-      throw Object.assign(new Error("La liquidación ya fue pagada"), { status: 409 });
-    }
-    if (settlement.status === "void") {
-      throw Object.assign(new Error("La liquidación está anulada"), { status: 409 });
+    // Saltarse la exigencia del comprobante es decisión de administración y
+    // queda auditada: hay casos reales —un proveedor informal— y no puede ser
+    // el camino por defecto.
+    if (body.skip_invoice_check) requireAtLeast(ctx, "admin");
+
+    const blocker = payBlocker(settlement, { requireInvoice: !body.skip_invoice_check });
+    if (blocker) {
+      throw Object.assign(new Error(PAY_BLOCK_MESSAGE[blocker]), { status: 409 });
     }
 
-    const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
-    const total = round2(settlement.commission_total ?? 0);
+    const isSupplier = settlement.beneficiary_type === "supplier";
+    // A un proveedor se le paga el neto tras retenciones; a un socio o vendedor,
+    // su comisión.
+    const total = round2(isSupplier ? settlement.net_total ?? 0 : settlement.commission_total ?? 0);
+    const alreadyPaid = round2(settlement.paid_total ?? 0);
+    const outstanding = round2(total - alreadyPaid);
+    const payment = body.amount != null
+      ? round2(Math.min(Math.max(Number(body.amount) || 0, 0), outstanding))
+      : outstanding;
+    if (payment <= 0.009) {
+      throw Object.assign(new Error("El importe a pagar tiene que ser mayor que cero"), { status: 400 });
+    }
+
     const method = body.method || "transfer";
+    const state = stateAfterPayment(total, alreadyPaid, payment);
+    const nowIso = new Date().toISOString();
 
-    // 1) Mark the settlement paid.
+    // 1) La liquidación.
     await tenantUpdate(ctx.companyId, "settlement", id, {
-      status: "paid",
-      paid_total: total,
-      pending_total: 0,
-      paid_at: new Date().toISOString(),
+      status: state.status,
+      paid_total: state.paid,
+      pending_total: state.outstanding,
+      paid_at: state.status === "paid" ? nowIso : null,
+      last_payment_at: nowIso,
       notes: body.notes || settlement.notes,
     });
 
-    // 2) Settle the associated payable(s).
-    const payables = await tenantQuery<{ _id: string; amount?: number }>(ctx.companyId, "payable", {
-      _filter: { settlement: id, status: { nin: ["paid", "written_off"] } }, _limit: 10,
-    });
-    for (const p of payables) {
-      await tenantUpdate(ctx.companyId, "payable", p._id, {
-        paid_amount: round2(p.amount ?? total),
-        balance: 0,
-        status: "paid",
-        paid_at: new Date().toISOString(),
+    // 2) Las cuentas por pagar asociadas, a prorrata del abono.
+    const payables = await tenantQuery<{ _id: string; amount?: number; paid_amount?: number }>(
+      ctx.companyId, "payable", {
+        _filter: { settlement: id, status: { nin: ["paid", "written_off"] } }, _limit: 10,
+      }
+    );
+    let remaining = payment;
+    for (const payable of payables) {
+      if (remaining <= 0.009) break;
+      const amount = round2(payable.amount ?? total);
+      const paid = round2(payable.paid_amount ?? 0);
+      const due = round2(amount - paid);
+      if (due <= 0.009) continue;
+      const applied = round2(Math.min(remaining, due));
+      const newPaid = round2(paid + applied);
+      const balance = round2(amount - newPaid);
+      await tenantUpdate(ctx.companyId, "payable", payable._id, {
+        paid_amount: newPaid,
+        balance,
+        status: balance <= 0.009 ? "paid" : "partially_paid",
+        paid_at: balance <= 0.009 ? nowIso : null,
       });
+      remaining = round2(remaining - applied);
     }
 
-    // 3) Close the commissions linked to this settlement (settled → paid).
-    // Best-effort: depends on the `settlement` link field existing.
-    const commissions = await tenantQuery<{ _id: string }>(ctx.companyId, "commission", {
-      _filter: { settlement: id, status: "settled" }, _limit: 1000,
-    });
-    for (const c of commissions) {
-      await tenantUpdate(ctx.companyId, "commission", c._id, { status: "paid" });
+    // 3) Lo que la liquidación cierra. Solo al quedar pagada del todo: un abono
+    // parcial no cierra un servicio ni una comisión, porque todavía se debe.
+    let closedCommissions = 0;
+    let closedServices = 0;
+    if (state.status === "paid") {
+      const commissions = await tenantQuery<{ _id: string }>(ctx.companyId, "commission", {
+        _filter: { settlement: id, status: "settled" }, _limit: 1000,
+      });
+      for (const commission of commissions) {
+        await tenantUpdate(ctx.companyId, "commission", commission._id, { status: "paid" });
+        closedCommissions++;
+      }
+
+      const services = await tenantQuery<{ _id: string }>(ctx.companyId, "booking_cost", {
+        _filter: { settlement: id, status: "settled" }, _limit: 1000,
+      });
+      for (const service of services) {
+        await tenantUpdate(ctx.companyId, "booking_cost", service._id, { status: "paid" });
+        closedServices++;
+      }
     }
 
-    // 4) Double-entry ledger (AUD-F15): Dr commission expense, Cr cash/bank.
+    // 4) Contabilidad por partida doble (AUD-F15).
     await postSettlementPayment(ctx.companyId, {
       settlementId: id,
-      amount: total,
+      amount: payment,
       method,
       currency: settlement.currency,
       userId: ctx.userId,
@@ -79,13 +137,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     await writeAudit({
       companyId: ctx.companyId, userId: ctx.userId,
       action: "settlement_paid", entityType: "settlement", entityId: id,
-      description: `Liquidación ${settlement.code} pagada por ${total} ${settlement.currency ?? ""} (${method})`,
-      severity: "info",
-      metadata: { total, method, payables: payables.length, commissions: commissions.length },
+      description: `Liquidación ${settlement.code}: abono de ${payment} ${settlement.currency ?? ""} (${method})` +
+        (state.outstanding > 0.009 ? ` · quedan ${state.outstanding}` : " · saldada") +
+        (body.skip_invoice_check ? " · pagada sin comprobante del proveedor" : ""),
+      severity: body.skip_invoice_check ? "warning" : "info",
+      metadata: {
+        payment, total, paid: state.paid, outstanding: state.outstanding, method,
+        payables: payables.length, commissions: closedCommissions, services: closedServices,
+        without_invoice: body.skip_invoice_check === true,
+      },
     });
 
-    console.log(`[settlements] ${settlement.code} pagada · ${total} ${settlement.currency} · ${method}`);
-    return ok({ paid: true, total, payables: payables.length, commissions: commissions.length });
+    console.log(
+      `[settlements] ${settlement.code} · abono ${payment} ${settlement.currency} · ${state.status}`
+    );
+    return ok({
+      paid: state.status === "paid",
+      status: state.status,
+      payment, total, paid_total: state.paid, outstanding: state.outstanding,
+      payables: payables.length, commissions: closedCommissions, services: closedServices,
+    });
   } catch (err) {
     return fail(err);
   }

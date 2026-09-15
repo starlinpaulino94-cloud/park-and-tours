@@ -133,6 +133,10 @@ const BINDINGS: [string, Dict, string, string][] = [
   ["MESSAGE_TEMPLATE_KEY", modules.MESSAGE_TEMPLATE_KEY, "message_template", "key"],
   // 0036: los extras que se venden con la excursión.
   ["EXTRA_PRICE_TYPE", modules.EXTRA_PRICE_TYPE, "product_extra", "price_type"],
+  // 0040: la liquidación del proveedor que operó el servicio.
+  ["TAX_REGIME", labels.TAX_REGIME, "supplier", "tax_regime"],
+  ["COST_TYPE", modules.COST_TYPE, "booking_cost", "cost_type"],
+  ["ACCRUED_COST_STATUS", modules.ACCRUED_COST_STATUS, "booking_cost", "status"],
   // 0039: el calendario de cobro.
   ["INSTALLMENT_KIND", modules.INSTALLMENT_KIND, "payment_schedule", "kind"],
   ["INSTALLMENT_STATUS", modules.INSTALLMENT_STATUS, "payment_schedule", "status"],

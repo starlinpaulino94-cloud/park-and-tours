@@ -846,6 +846,102 @@ describe("Panel ejecutivo", () => {
     expect(route).toMatch(/partner"\)\s*delete body\.allow_over_credit/);
   });
 
+  it("Proveedores — el costo sabe de quién es, y sale del mismo cálculo que el margen", () => {
+    /**
+     * `product_cost` guardaba el costo POR PROVEEDOR y `resolveCost` los sumaba
+     * todos tirando el proveedor: el costo servía para el margen y para nada
+     * más —con él no se podía pagar a nadie.
+     */
+    const pricing = read("src/lib/pricing.ts");
+    // El total del margen es la SUMA de las líneas por proveedor, no un cálculo
+    // aparte: con dos implementaciones, arreglar una desvía la otra.
+    expect(pricing).toContain("costLines");
+    expect(pricing).toContain("costTotal");
+    expect(pricing).toContain("loadCostTariffs");
+    // Y las dos cargas usan la misma consulta de tarifas.
+    const resolve = pricing.slice(pricing.indexOf("export async function resolveCost"));
+    expect(resolve).toContain("loadCostTariffs");
+
+    const service = read("src/lib/supplier-settlement-service.ts");
+    expect(service).toContain("loadCostTariffs");
+
+    // El devengo se congela al vender, dentro de la venta: calcularlo al
+    // liquidar aplicaría a lo operado el lunes una tarifa que cambió el
+    // miércoles.
+    const booking = read("src/lib/booking-service.ts");
+    expect(booking).toMatch(/await accrueBookingCosts\(/);
+    const at = booking.indexOf("await accrueBookingCosts(");
+    expect(at).toBeLessThan(booking.indexOf("bookings.push(booking)"));
+  });
+
+  it("Proveedores — una reserva cancelada no le debe nada a nadie", () => {
+    // Dejar el devengo vivo se lo pagaría al transportista en la liquidación
+    // del viernes por un viaje que no salió.
+    expect(read("src/app/api/bookings/[id]/cancel/route.ts")).toContain("cancelBookingCosts");
+    expect(read("src/lib/booking-service.ts")).toContain("cancelBookingCosts");
+    // Y un servicio ya pagado no se toca: ese dinero salió.
+    const service = read("src/lib/supplier-settlement-service.ts");
+    expect(service).toMatch(/\["settled", "paid"\]\.includes/);
+  });
+
+  it("Proveedores — no se paga sin comprobante, ni una liquidación en disputa", () => {
+    /**
+     * El gasto se sostiene ante la DGII con la factura del proveedor, y pagar
+     * una que no cuadra con lo operado es regalar dinero con un papel de por
+     * medio.
+     */
+    const domain = read("src/lib/supplier-settlement.ts");
+    expect(domain).toContain("not_confirmed");
+    expect(domain).toContain("disputed");
+
+    const pay = read("src/app/api/settlements/[id]/pay/route.ts");
+    expect(pay).toContain("payBlocker");
+    // El proveedor cobra el NETO tras retenciones, no el bruto.
+    expect(pay).toMatch(/net_total/);
+    // Saltarse el comprobante es decisión de administración y queda auditada.
+    expect(pay).toMatch(/skip_invoice_check[\s\S]{0,200}requireAtLeast\(ctx, "admin"\)/);
+    expect(pay).toMatch(/severity: body\.skip_invoice_check \? "warning"/);
+
+    // El abono parcial existe: 'partially_paid' estaba en el check desde 0006 y
+    // solo se escribía 'paid'.
+    expect(domain).toContain("stateAfterPayment");
+    expect(pay).toContain("stateAfterPayment");
+  });
+
+  it("Proveedores — las retenciones se calculan sobre la factura, no sobre el neto", () => {
+    const domain = read("src/lib/supplier-settlement.ts");
+    // El ITBIS se SEPARA del bruto; aplicar las dos retenciones sobre el bruto
+    // retendría de más.
+    expect(domain).toMatch(/gross \/ \(1 \+ taxRate \/ 100\)/);
+    expect(domain).toContain("DEFAULT_RETENTIONS");
+    // Los porcentajes del proveedor mandan sobre los del régimen.
+    expect(domain).toMatch(/retention_isr_pct == null \? defaults\.isr/);
+
+    // Y el estado de cuenta que ve el proveedor sale de la misma carga que el
+    // PDF y que la conciliación.
+    for (const route of [
+      "src/app/api/settlements/[id]/statement/route.ts",
+      "src/app/api/settlements/[id]/statement/pdf/route.ts",
+      "src/app/api/settlements/[id]/confirm/route.ts",
+    ]) {
+      expect(read(route)).toContain("loadSupplierStatement");
+    }
+    expect(read("src/lib/pdf/documents.ts")).toContain("buildSupplierStatementPdf");
+  });
+
+  it("Proveedores — una liquidación no mezcla monedas ni reclama dos veces", () => {
+    const service = read("src/lib/supplier-settlement-service.ts");
+    // Pagarle en un solo importe lo que se le debe en pesos y en dólares es
+    // inventarse una tasa.
+    expect(service).toMatch(/Liquida cada moneda por separado/);
+    // Cada devengo se enlaza AL RECLAMARLO: sin eso, dos generaciones
+    // simultáneas incluirían el mismo servicio dos veces.
+    expect(service).toMatch(/CLAIMABLE\.has\(fresh\.status/);
+    expect(service).toMatch(/status: "settled", settlement: settlement\._id/);
+    // Y una liquidación que no reclamó nada se anula en vez de quedar en cero.
+    expect(service).toMatch(/status: "void"/);
+  });
+
   it("los registros derivados no se borran desde el CRUD genérico", () => {
     /**
      * Un recurso con `writable` vacío es un libro: el registro de auditoría, los
@@ -868,7 +964,7 @@ describe("Panel ejecutivo", () => {
       .map((m) => m[1]);
     expect(ledgers).toEqual(expect.arrayContaining([
       "audit_log", "ledger_entry", "cash_movement", "cash_count", "gift_card_movement",
-      "quote_line", "quote_option", "payment_schedule",
+      "quote_line", "quote_option", "payment_schedule", "booking_cost",
     ]));
   });
 

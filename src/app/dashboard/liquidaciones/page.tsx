@@ -15,7 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
-import { BENEFICIARY_TYPE, SETTLEMENT_STATUS } from "@/lib/labels";
+import { BENEFICIARY_TYPE, COMMISSION_BENEFICIARIES, SETTLEMENT_STATUS } from "@/lib/labels";
 import { formatDate, formatMoney, formatNumber } from "@/lib/format";
 import { optionsFrom } from "@/components/tf/options";
 import { toDateInput } from "@/lib/format";
@@ -26,7 +26,16 @@ interface Settlement {
   sales_total?: number; cancellations_total?: number; base_total?: number;
   commission_total?: number; paid_total?: number; pending_total?: number;
   notes?: string; partner?: any; seller?: any;
+  // 0040 — las liquidaciones de proveedor comparten esta tabla: su importe es
+  // el neto tras retenciones, no una comisión.
+  supplier?: any; net_total?: number; services_total?: number; confirmed_total?: number;
+  retention_total?: number; supplier_invoice_number?: string;
+  beneficiary_name?: string;
 }
+
+/** Lo que se le paga: un proveedor cobra el neto, un socio su comisión. */
+const amountOf = (s: Settlement): number =>
+  s.beneficiary_type === "supplier" ? s.net_total ?? 0 : s.commission_total ?? 0;
 
 const firstOfMonth = () => {
   const d = new Date();
@@ -122,19 +131,38 @@ export default function SettlementsPage() {
     load();
   };
 
-  const currency = rows[0]?.currency || "usd";
-  const pending = rows.filter((s) => ["pending", "approved"].includes(s.status || ""));
+  const pending = rows.filter((s) => ["pending", "approved", "partially_paid"].includes(s.status || ""));
   const paid = rows.filter((s) => s.status === "paid");
-  const sum = (list: Settlement[], key: keyof Settlement) =>
-    list.reduce((acc, s) => acc + ((s[key] as number) ?? 0), 0);
+
+  /**
+   * Los importes se apilan por moneda, no se suman.
+   *
+   * Sumar liquidaciones en pesos y en dólares en un solo número y pintarlo con
+   * la moneda de la primera fila de la lista daba una cifra que no era ninguna
+   * de las dos.
+   */
+  const money = (list: Settlement[], pick: (s: Settlement) => number): string => {
+    const byCurrency = new Map<string, number>();
+    for (const row of list) {
+      const key = String(row.currency || "usd").toLowerCase();
+      byCurrency.set(key, (byCurrency.get(key) ?? 0) + (pick(row) || 0));
+    }
+    const parts = [...byCurrency.entries()]
+      .filter(([, amount]) => Math.abs(amount) > 0.009)
+      .sort((a, b) => a[0].localeCompare(b[0]));
+    if (parts.length === 0) return formatMoney(0);
+    return parts.map(([code, amount]) => formatMoney(amount, code)).join("  ·  ");
+  };
 
   const beneficiaries = form.beneficiary_type === "partner" ? partners : sellers;
   const nameOf = (s: Settlement) => {
     const p = s.partner;
     const v = s.seller;
+    const sup = s.supplier;
+    if (sup && typeof sup === "object") return sup.name || s.beneficiary_name || "Proveedor";
     if (p && typeof p === "object") return p.commercial_name || p.name;
     if (v && typeof v === "object") return [v.first_name, v.last_name].filter(Boolean).join(" ");
-    return "Sin beneficiario";
+    return s.beneficiary_name || "Sin beneficiario";
   };
 
   return (
@@ -158,12 +186,15 @@ export default function SettlementsPage() {
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard tone="primary" icon="FileSpreadsheet" label="Liquidaciones" value={formatNumber(rows.length)}
           hint={`${formatNumber(pending.length)} pendientes de pago`} />
-        <KpiCard tone="amber" icon="Clock" label="Importe pendiente" value={formatMoney(sum(pending, "pending_total"), currency)}
-          hint="Comisiones liquidadas y no pagadas" />
-        <KpiCard tone="ink" icon="CheckCheck" label="Pagado" value={formatMoney(sum(paid, "paid_total"), currency)}
+        <KpiCard tone="amber" icon="Clock" label="Importe pendiente"
+          value={money(pending, (s) => s.pending_total ?? 0)}
+          hint="Liquidado y no pagado" />
+        <KpiCard tone="ink" icon="CheckCheck" label="Pagado"
+          value={money(paid, (s) => s.paid_total ?? 0)}
           hint={`${formatNumber(paid.length)} liquidaciones cerradas`} />
-        <KpiCard icon="Banknote" label="Ventas liquidadas" value={formatMoney(sum(rows, "sales_total"), currency)}
-          hint="Base comercial de los documentos emitidos" />
+        <KpiCard icon="Banknote" label="Importe liquidado"
+          value={money(rows, amountOf)}
+          hint="Comisiones de la red y servicios de proveedores" />
       </section>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -213,7 +244,7 @@ export default function SettlementsPage() {
           { key: "sales", header: "Ventas", align: "right", hideOn: "lg", render: (s: Settlement) => formatMoney(s.sales_total ?? 0, s.currency) },
           { key: "base", header: "Base", align: "right", hideOn: "lg", render: (s: Settlement) => formatMoney(s.base_total ?? 0, s.currency) },
           { key: "commission", header: "Comisión", align: "right",
-            render: (s: Settlement) => <span className="font-semibold">{formatMoney(s.commission_total ?? 0, s.currency)}</span> },
+            render: (s: Settlement) => <span className="font-semibold">{formatMoney(amountOf(s), s.currency)}</span> },
           { key: "pending", header: "Pendiente", align: "right", hideOn: "sm",
             render: (s: Settlement) => (
               <span className={(s.pending_total ?? 0) > 0 ? "font-semibold text-amber-700 dark:text-amber-400" : "text-muted-foreground"}>
@@ -241,7 +272,10 @@ export default function SettlementsPage() {
                 onValueChange={(v) => setForm((f) => ({ ...f, beneficiary_type: v, beneficiary_id: "" }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {optionsFrom(BENEFICIARY_TYPE, ["partner", "seller", "supervisor", "guide"]).map((o) => (
+                  {/* "guide" no existe en el enum `beneficiary_type`, así que esa
+                      opción nunca se dibujaba; y un proveedor operativo no cobra
+                      comisión: se liquida en Proveedores › Liquidaciones. */}
+                  {optionsFrom(BENEFICIARY_TYPE, [...COMMISSION_BENEFICIARIES]).map((o) => (
                     <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
                   ))}
                 </SelectContent>
@@ -302,7 +336,19 @@ export default function SettlementsPage() {
                 <Row label="Ventas del período" value={formatMoney(detail.sales_total ?? 0, detail.currency)} />
                 <Row label="Cancelaciones" value={formatMoney(detail.cancellations_total ?? 0, detail.currency)} />
                 <Row label="Base comisionable" value={formatMoney(detail.base_total ?? 0, detail.currency)} />
-                <Row label="Comisión total" value={formatMoney(detail.commission_total ?? 0, detail.currency)} strong />
+                <Row
+                  label={detail.beneficiary_type === "supplier" ? "Neto a pagar" : "Comisión total"}
+                  value={formatMoney(amountOf(detail), detail.currency)}
+                  strong
+                />
+                {detail.beneficiary_type === "supplier" && (
+                  <>
+                    <Row label="Servicios devengados" value={formatMoney(detail.services_total ?? 0, detail.currency)} />
+                    <Row label="Facturado por el proveedor" value={formatMoney(detail.confirmed_total ?? 0, detail.currency)} />
+                    <Row label="Retenciones" value={formatMoney(detail.retention_total ?? 0, detail.currency)} />
+                    <Row label="Factura" value={detail.supplier_invoice_number || "sin comprobante"} />
+                  </>
+                )}
                 <Row label="Pagado" value={formatMoney(detail.paid_total ?? 0, detail.currency)} />
                 <Row label="Pendiente" value={formatMoney(detail.pending_total ?? 0, detail.currency)} strong />
               </dl>

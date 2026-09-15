@@ -726,3 +726,161 @@ export async function buildCashClosePdf(
 
   return pdf.finish();
 }
+
+/* ----------------------------------------------- estado de cuenta de proveedor */
+
+export interface SupplierStatementPdfData {
+  code?: string | null;
+  supplier_name?: string | null;
+  supplier_tax_id?: string | null;
+  period_from?: string | null;
+  period_to?: string | null;
+  status?: string | null;
+  invoice_number?: string | null;
+  invoice_ncf?: string | null;
+  invoice_date?: string | null;
+  currency: string;
+  services: number;
+  confirmed: number;
+  adjustments: number;
+  retention_isr: number;
+  retention_itbis: number;
+  retention_total: number;
+  net: number;
+  taxable_base: number;
+  dispute_reason?: string | null;
+  notes?: string | null;
+}
+
+export interface SupplierStatementPdfLine {
+  concept: string;
+  booking_number?: string | null;
+  departure_at?: string | null;
+  product_name?: string | null;
+  quantity?: number | null;
+  unit_cost?: number | null;
+  amount: number;
+  confirmed_amount?: number | null;
+  variance: number;
+}
+
+/**
+ * El estado de cuenta que se le manda al proveedor.
+ *
+ * Es el papel con el que se discute el viernes, así que lleva las dos columnas
+ * que importan una al lado de la otra: lo que dice el manifiesto y lo que dice
+ * su factura. Un estado de cuenta con un solo total no sirve para discutir
+ * nada —"me cobras 40 pax y yo llevé 37" necesita ver las dos cifras.
+ */
+export async function buildSupplierStatementPdf(
+  company: CompanyInfo | null,
+  data: SupplierStatementPdfData,
+  lines: SupplierStatementPdfLine[]
+): Promise<Uint8Array> {
+  const pdf = await PdfBuilder.create({
+    kind: "ESTADO DE CUENTA",
+    reference: data.code,
+    company,
+    footer: `Generado ${formatDateTime(new Date().toISOString())}`,
+  });
+
+  pdf.heading(data.supplier_name || "Proveedor");
+  pdf.paragraph(
+    [
+      data.supplier_tax_id ? `RNC/Cédula ${formatTaxId(data.supplier_tax_id)}` : "",
+      data.period_from && data.period_to
+        ? `Período ${formatDate(data.period_from)} — ${formatDate(data.period_to)}`
+        : "",
+    ].filter(Boolean).join("  ·  "),
+    9.5
+  );
+  pdf.gap(8);
+
+  const anyConfirmed = lines.some((line) => line.confirmed_amount != null);
+
+  pdf.eyebrow(`Servicios operados · ${lines.length}`);
+  pdf.table(
+    anyConfirmed
+      ? [
+          { header: "Fecha", width: 0.85 },
+          { header: "Reserva", width: 1 },
+          { header: "Concepto", width: 2.1 },
+          { header: "Cant.", width: 0.55, align: "right" },
+          { header: "Operado", width: 1, align: "right" },
+          { header: "Facturado", width: 1, align: "right" },
+          { header: "Dif.", width: 0.8, align: "right" },
+        ]
+      : [
+          { header: "Fecha", width: 0.9 },
+          { header: "Reserva", width: 1.1 },
+          { header: "Concepto", width: 2.6 },
+          { header: "Cant.", width: 0.6, align: "right" },
+          { header: "Unitario", width: 1, align: "right" },
+          { header: "Importe", width: 1.1, align: "right" },
+        ],
+    lines.map((line) => {
+      const when = line.departure_at ? formatDate(line.departure_at) : "—";
+      const concept = [line.concept, line.product_name].filter(Boolean).join(" · ");
+      return anyConfirmed
+        ? [
+            when,
+            line.booking_number || "—",
+            concept,
+            line.quantity != null ? formatNumber(line.quantity) : "",
+            formatMoney(line.amount, data.currency),
+            line.confirmed_amount != null ? formatMoney(line.confirmed_amount, data.currency) : "—",
+            Math.abs(line.variance) < 0.01 ? "" : formatMoney(line.variance, data.currency),
+          ]
+        : [
+            when,
+            line.booking_number || "—",
+            concept,
+            line.quantity != null ? formatNumber(line.quantity) : "",
+            line.unit_cost != null ? formatMoney(line.unit_cost, data.currency) : "",
+            formatMoney(line.amount, data.currency),
+          ];
+    })
+  );
+  pdf.gap(12);
+
+  pdf.row("Servicios operados", formatMoney(data.services, data.currency));
+  if (anyConfirmed) pdf.row("Facturado por el proveedor", formatMoney(data.confirmed, data.currency));
+  if (data.adjustments) pdf.row("Ajustes acordados", formatMoney(data.adjustments, data.currency));
+
+  if (data.retention_total > 0) {
+    pdf.gap(4);
+    pdf.row("Base imponible", formatMoney(data.taxable_base, data.currency));
+    if (data.retention_isr) pdf.row("Retención de ISR", `-${formatMoney(data.retention_isr, data.currency)}`);
+    if (data.retention_itbis) pdf.row("Retención de ITBIS", `-${formatMoney(data.retention_itbis, data.currency)}`);
+  }
+
+  pdf.gap(4);
+  pdf.row("Neto a pagar", formatMoney(data.net, data.currency), { strong: true });
+  pdf.gap(10);
+
+  if (data.invoice_number) {
+    pdf.block(
+      "Comprobante del proveedor",
+      [
+        `Factura ${data.invoice_number}`,
+        data.invoice_ncf ? `NCF ${data.invoice_ncf}` : "",
+        data.invoice_date ? `del ${formatDate(data.invoice_date)}` : "",
+      ].filter(Boolean).join("  ·  ")
+    );
+  } else {
+    pdf.notice(
+      "Falta la factura del proveedor. El gasto se sostiene ante la DGII con su comprobante, " +
+      "así que esta liquidación no se puede pagar hasta recibirlo."
+    );
+  }
+
+  if (data.dispute_reason) pdf.notice(data.dispute_reason);
+  if (data.notes) pdf.block("Observaciones", data.notes);
+
+  pdf.gap(24);
+  pdf.rule();
+  pdf.gap(6);
+  pdf.paragraph("Conforme el proveedor                                        Por la empresa", 9);
+
+  return pdf.finish();
+}
