@@ -1,54 +1,47 @@
 import "server-only";
 import { tenantQuery, tenantUpdate } from "@/lib/tenant";
+import { summarizeCash, byCurrencyMap, type CurrencySummary } from "@/lib/cash-close";
 import type { CashSession } from "@/lib/types";
 
-/** Recomputes the totals of an open cash session from its movements. */
-export async function recalcCashSession(companyId: string, sessionId: string) {
+/**
+ * Recalcula los totales de una sesión de caja a partir de sus movimientos.
+ *
+ * El cálculo vive en `cash-close.ts` (puro y probado); aquí solo se leen los
+ * datos y se persiste el resultado. Lo que cambió respecto de la versión
+ * anterior: los totales se guardan POR MONEDA. `expected_cash` y compañía se
+ * mantienen para la moneda principal de la caja, porque los RPC del panel los
+ * leen, pero ya no son la suma de importes de monedas distintas.
+ */
+export async function recalcCashSession(
+  companyId: string,
+  sessionId: string
+): Promise<CurrencySummary[]> {
   const [session] = await tenantQuery<CashSession>(companyId, "cash_session", {
     _filter: { _id: sessionId }, _limit: 1,
   });
-  if (!session) return;
+  if (!session) return [];
 
-  const movements = await tenantQuery<{ movement_type?: string; amount?: number }>(companyId, "cash_movement", {
-    _filter: { cash_session: sessionId }, _limit: 1000,
-  });
-  const payments = await tenantQuery<{ method?: string; amount?: number; payment_type?: string }>(
+  const movements = await tenantQuery<{ movement_type?: string; amount?: number; currency?: string }>(
+    companyId, "cash_movement", { _filter: { cash_session: sessionId }, _limit: 1000 }
+  );
+  const payments = await tenantQuery<{ method?: string; amount?: number; payment_type?: string; currency?: string }>(
     companyId, "payment", { _filter: { cash_session: sessionId, status: "completed" }, _limit: 1000 }
   );
 
-  let cashDelta = 0, expenses = 0, withdrawals = 0, sales = 0;
-  for (const m of movements) {
-    const amt = m.amount ?? 0;
-    if (m.movement_type === "expense") { expenses += Math.abs(amt); cashDelta -= Math.abs(amt); }
-    else if (m.movement_type === "withdrawal") { withdrawals += Math.abs(amt); cashDelta -= Math.abs(amt); }
-    else if (m.movement_type === "opening") { /* opening float handled separately */ }
-    else { cashDelta += amt; if (amt > 0) sales += amt; }
-  }
-
-  let card = 0, transfer = 0, offDrawer = 0;
-  for (const p of payments) {
-    const signed = p.payment_type === "refund" ? -(p.amount ?? 0) : p.amount ?? 0;
-    if (p.method === "card") card += signed;
-    // 'link' es el valor real del enum; antes se comparaba con 'payment_link',
-    // que no existe, y el cobro por link inflaba el efectivo esperado en caja.
-    else if (p.method === "transfer" || p.method === "link" || p.method === "deposit") transfer += signed;
-    // Cheque y crédito tampoco entran al cajón —el cheque se deposita y el
-    // crédito queda como cuenta por cobrar—, pero no son transferencias: se
-    // descuentan del efectivo esperado sin ensuciar `transfer_total`, que es lo
-    // que el arqueo compara contra el voucher del banco.
-    else if (p.method === "check" || p.method === "credit") offDrawer += signed;
-  }
-
-  // Solo el efectivo llega al cajón: lo demás se descuenta del esperado.
-  const cashOnly = cashDelta - card - transfer - offDrawer;
-  const expected = Math.round(((session.opening_amount ?? 0) + cashOnly + Number.EPSILON) * 100) / 100;
+  const primary = String(session.currency || "usd").toLowerCase();
+  const summaries = summarizeCash(movements, payments, [primary]);
+  const main = summaries.find((s) => s.currency === primary);
 
   await tenantUpdate(companyId, "cash_session", sessionId, {
-    expected_cash: expected,
-    card_total: Math.round((card + Number.EPSILON) * 100) / 100,
-    transfer_total: Math.round((transfer + Number.EPSILON) * 100) / 100,
-    sales_total: Math.round((sales + Number.EPSILON) * 100) / 100,
-    expenses_total: Math.round((expenses + Number.EPSILON) * 100) / 100,
-    withdrawals_total: Math.round((withdrawals + Number.EPSILON) * 100) / 100,
+    expected_by_currency: byCurrencyMap(summaries.map((s) => ({ currency: s.currency, amount: s.expected }))),
+    // Escalares de la moneda principal: lo que leen el panel y los informes.
+    expected_cash: main?.expected ?? 0,
+    card_total: main?.card ?? 0,
+    transfer_total: main?.transfer ?? 0,
+    sales_total: main?.sales ?? 0,
+    expenses_total: main?.expenses ?? 0,
+    withdrawals_total: main?.withdrawals ?? 0,
   });
+
+  return summaries;
 }

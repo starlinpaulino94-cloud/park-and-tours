@@ -126,8 +126,15 @@ export const RESOURCES: Record<string, ResourceDef> = {
       "cover_image_url", "video_url", "location", "meeting_point", "duration_hours", "languages",
       "min_age", "default_capacity", "restrictions", "recommendations", "inclusions", "exclusions",
       "terms", "instructions", "base_price", "base_cost", "currency", "featured", "sort_order", "status",
+      // 0039 — la política de cobro del producto: qué anticipo pide y con
+      // cuántos días de antelación se liquida el saldo. Es lo que hace que el
+      // plan salga solo en cada venta en vez de teclearse.
+      "deposit_type", "deposit_percent", "deposit_amount", "balance_due_days",
     ],
-    numeric: ["duration_hours", "min_age", "default_capacity", "base_price", "base_cost", "sort_order"],
+    numeric: [
+      "duration_hours", "min_age", "default_capacity", "base_price", "base_cost", "sort_order",
+      "deposit_percent", "deposit_amount", "balance_due_days",
+    ],
     writeRole: "manager",
   },
   product_modality: {
@@ -225,6 +232,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
       customer: true, seller: true, partner: true, branch: true, created_by: true, promotion: true,
       booking: { _limit: 100, product: true, departure: true, modality: true, pickup_hotel: true },
       payment: { _limit: 100, _sort: { createdAt: "desc" }, user: true },
+      payment_schedule: { _limit: 60, _sort: { sequence: "asc" } },
     },
     sort: { createdAt: "desc" },
     // AUD-B02: `status` removed — an order's status is derived from its bookings
@@ -303,8 +311,12 @@ export const RESOURCES: Record<string, ResourceDef> = {
   settlement: {
     table: "settlement",
     search: ["code"],
-    expand: { partner: true, seller: true },
-    expandOne: { partner: true, seller: true, approved_by: true, payable: { _limit: 50 } },
+    expand: { partner: true, seller: true, supplier: true },
+    expandOne: {
+      partner: true, seller: true, supplier: true, approved_by: true, confirmed_by: true,
+      payable: { _limit: 50 },
+      booking_cost: { _limit: 500, booking: true, departure: true },
+    },
     sort: { createdAt: "desc" },
     // SECURITY (AUD-B02/F10/F12): `status`/`paid_total`/`pending_total` removed —
     // paying a settlement must go through `/api/settlements/[id]/pay`, which also
@@ -319,16 +331,39 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["name", "code", "terminal"],
     expand: { branch: true },
     sort: { name: "asc" },
-    writable: ["branch", "name", "code", "terminal", "currency", "status"],
+    // `difference_tolerance` es política de la empresa —cuánto puede descuadrar
+    // un turno sin supervisor—, así que la fija un manager, no el cajero.
+    writable: ["branch", "name", "code", "terminal", "currency", "difference_tolerance", "status"],
+    numeric: ["difference_tolerance"],
     writeRole: "manager",
   },
   cash_session: {
     table: "cash_session",
     search: ["code"],
     expand: { cash_register: true, branch: true, user: true },
-    expandOne: { cash_register: true, branch: true, user: true, cash_movement: { _limit: 300, _sort: { createdAt: "desc" } } },
+    expandOne: {
+      cash_register: true, branch: true, user: true, closed_by: true, approved_by: true,
+      cash_movement: { _limit: 300, _sort: { createdAt: "desc" } },
+      cash_count: { _limit: 20 },
+    },
     sort: { createdAt: "desc" },
+    // SECURITY: el arqueo —contado, esperado, diferencia, estado y aprobación—
+    // solo lo escriben `/api/cash/sessions/:id/close` y `/approve`. Editable
+    // por CRUD, cualquiera cuadraría su propia caja a mano.
     writable: ["notes"],
+    writeRole: "cashier",
+  },
+  // El conteo físico por moneda. Lo crea el cierre, que valida las
+  // denominaciones y recalcula la sesión; aquí es de solo lectura, porque un
+  // conteo editable es un arqueo que no prueba nada.
+  cash_count: {
+    table: "cash_count",
+    search: ["notes"],
+    expand: { cash_session: true, counted_by: true },
+    sort: { counted_at: "desc" },
+    writable: [],
+    numeric: ["counted_total", "expected_total", "difference"],
+    dates: ["counted_at"],
     writeRole: "cashier",
   },
   // El detalle de una caja lista sus movimientos, y `READ_ROLE` ya los acotaba a
@@ -343,6 +378,32 @@ export const RESOURCES: Record<string, ResourceDef> = {
     numeric: ["amount"],
     dates: ["movement_at"],
     writeRole: "cashier",
+  },
+  // El devengo por proveedor: lo que cada servicio operado le debe a quien lo
+  // operó. Lo escriben la venta (al crear la reserva) y las rutas de
+  // liquidación. Editable por CRUD, se podría cambiar a mano lo que se le debe a
+  // un proveedor después de haberlo liquidado.
+  booking_cost: {
+    table: "booking_cost",
+    search: ["concept", "notes"],
+    expand: { booking: true, departure: true, supplier: true, settlement: true },
+    sort: { createdAt: "desc" },
+    writable: [],
+    numeric: ["quantity", "unit_cost", "amount", "confirmed_amount"],
+    writeRole: "manager",
+  },
+  // El calendario de cobro. Lo escriben `/api/orders/:id/schedule` y el servicio
+  // que reparte los pagos, nunca el CRUD: una cuota editable a mano deja el plan
+  // sumando algo distinto del total de la venta, y entonces no cobra ni sobra.
+  payment_schedule: {
+    table: "payment_schedule",
+    search: ["notes"],
+    expand: { order: true, booking: true },
+    sort: { due_date: "asc" },
+    writable: [],
+    numeric: ["amount", "paid_amount", "balance", "sequence"],
+    dates: ["due_date", "paid_at", "reminded_at"],
+    writeRole: "manager",
   },
   payment: {
     table: "payment",
@@ -364,7 +425,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
     // payments applied to the order and must not be edited by hand (that
     // divorced the cached balance from the actual payments). `status` stays for
     // manual write-off until a dedicated endpoint exists.
-    writable: ["status", "notes", "due_date", "aging_bucket"],
+    // SECURITY/0039: `status` y `aging_bucket` los deriva la cobranza diaria de
+    // `due_date`. Editables a mano, el informe de antigüedad decía lo último que
+    // alguien tecleó, y el tramo que la propia UI ofrecía lo rechazaba el enum.
+    writable: ["notes", "due_date"],
     dates: ["due_date"],
     writeRole: "manager",
   },
@@ -372,8 +436,15 @@ export const RESOURCES: Record<string, ResourceDef> = {
     table: "supplier",
     search: ["name", "tax_id", "contact_name", "email"],
     sort: { name: "asc" },
-    writable: ["name", "supplier_type", "tax_id", "contact_name", "email", "phone", "address", "currency", "payment_terms_days", "status", "notes"],
-    numeric: ["payment_terms_days"],
+    writable: [
+      "name", "supplier_type", "tax_id", "contact_name", "email", "phone", "address", "currency",
+      "payment_terms_days", "status", "notes",
+      // 0040 — el régimen fiscal decide sus retenciones, y los datos bancarios
+      // son lo que hace falta para transferirle.
+      "tax_regime", "retention_isr_pct", "retention_itbis_pct", "tax_rate",
+      "bank_name", "bank_account",
+    ],
+    numeric: ["payment_terms_days", "retention_isr_pct", "retention_itbis_pct", "tax_rate"],
     writeRole: "manager",
   },
   payable: {
@@ -1123,9 +1194,10 @@ function badRequest(message: string): Error {
  */
 const READ_ROLE: Partial<Record<string, AppRole>> = {
   // Cash desk data — cashiers legitimately handle it.
-  payment: "cashier", cash_session: "cashier", cash_movement: "cashier",
+  payment: "cashier", cash_session: "cashier", cash_movement: "cashier", cash_count: "cashier",
   // Commercial/accounting figures, costs and margins — managers and up.
   commission: "manager", settlement: "manager", receivable: "manager", payable: "manager",
+  payment_schedule: "seller", booking_cost: "manager",
   commission_rule: "manager", product_cost: "manager", price_rule: "manager",
   ledger_account: "manager", ledger_entry: "manager", invoice: "manager",
   expense: "manager", tax_profile: "manager", purchase_order: "manager", purchase_order_line: "manager",

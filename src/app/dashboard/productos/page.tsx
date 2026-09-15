@@ -6,6 +6,7 @@ import { StatusBadge } from "@/components/tf/status-badge";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/tf/icon";
 import { GENERIC_STATUS, PRODUCT_TYPE } from "@/lib/labels";
+import { DEPOSIT_TYPE } from "@/lib/labels-modules";
 import { formatMoney, formatNumber } from "@/lib/format";
 import { CURRENCY_OPTIONS, optionsFrom } from "@/components/tf/options";
 
@@ -100,6 +101,17 @@ export default function ProductsPage() {
         { name: "languages", label: "Idiomas", type: "multiselect", placeholder: "es, en, fr",
           help: "Códigos separados por comas." },
         { name: "sort_order", label: "Orden", type: "number" },
+        // Política de cobro (0039). Es lo que hace que cada venta de este tour
+        // nazca con su anticipo y su fecha de saldo sin teclear nada.
+        { name: "deposit_type", label: "Anticipo al reservar", type: "select", defaultValue: "none",
+          options: optionsFrom(DEPOSIT_TYPE),
+          help: "Qué se cobra para bloquear la plaza. El resto es el saldo." },
+        { name: "deposit_percent", label: "Anticipo (%)", type: "number",
+          help: "Solo si el anticipo es un porcentaje del total." },
+        { name: "deposit_amount", label: "Anticipo (importe)", type: "number",
+          help: "Solo si el anticipo es un importe fijo por reserva." },
+        { name: "balance_due_days", label: "Saldo, días antes de la salida", type: "number",
+          help: "Con 15, el saldo vence quince días antes de viajar. Una reserva de última hora vence hoy." },
         { name: "cover_image_url", label: "Imagen de portada (URL)", type: "url", span: 2 },
         { name: "short_description", label: "Descripción corta", span: 2 },
         { name: "description", label: "Descripción", type: "textarea", span: 2 },

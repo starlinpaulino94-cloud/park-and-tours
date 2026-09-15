@@ -342,6 +342,13 @@ export const PRICE_TYPE = dict(
   ["standard", "Estándar", "info"], ["per_person", "Por persona", "success"], ["per_group", "Por grupo", "violet"],
   ["per_vehicle", "Por vehículo", "warning"], ["b2c", "B2C", "accent"], ["b2b", "B2B", "info"]
 );
+/**
+ * Cómo se cobra un costo de proveedor.
+ *
+ * Lo comparten la tarifa del catálogo (`product_cost`) y el devengo por reserva
+ * (`booking_cost`, 0040): la tarifa dice cómo cobra el proveedor y el devengo
+ * copia ese mismo tipo, así que un valor nuevo tiene que valer en las dos.
+ */
 export const COST_TYPE = dict(
   ["per_person", "Por persona", "info"], ["per_group", "Por grupo", "violet"],
   ["per_departure", "Por salida", "accent"], ["per_vehicle", "Por vehículo", "warning"],
@@ -422,6 +429,66 @@ export const ROUTE_STATUS = dict(
   ["planned", "Planificada", "info"], ["confirmed", "Confirmada", "accent"],
   ["in_progress", "En curso", "warning"], ["completed", "Completada", "success"],
   ["cancelled", "Cancelada", "danger"]
+);
+
+/** 0038 — en qué punto está el arqueo de un turno de caja. */
+export const CASH_SESSION_STATUS = dict(
+  ["open", "Abierta", "info"],
+  ["pending_approval", "Esperando revisión", "warning"],
+  ["closed", "Cerrada"],
+  ["reconciled", "Conciliada", "success"]
+);
+
+/** Entradas y salidas de efectivo que no son una venta. */
+export const CASH_MOVEMENT_TYPE = dict(
+  ["opening", "Fondo de apertura"],
+  ["sale", "Cobro", "success"],
+  ["refund", "Reembolso", "danger"],
+  ["expense", "Gasto pagado en caja", "warning"],
+  ["withdrawal", "Retiro de efectivo", "warning"],
+  ["deposit", "Entrada de efectivo", "info"],
+  ["adjustment", "Ajuste", "violet"],
+  ["closing", "Cierre / arqueo"]
+);
+
+/** Qué conteo es: el del fondo, el del cierre, o un arqueo sorpresa. */
+export const CASH_COUNT_KIND = dict(
+  ["open", "Apertura"], ["close", "Cierre"], ["spot", "Arqueo sorpresa", "warning"]
+);
+
+/** 0039 — qué es cada cuota del plan de cobro. */
+export const INSTALLMENT_KIND = dict(
+  ["deposit", "Anticipo", "accent"], ["installment", "Cuota", "info"], ["balance", "Saldo", "warning"]
+);
+
+/** En qué punto está una cuota. */
+export const INSTALLMENT_STATUS = dict(
+  ["pending", "Pendiente", "warning"],
+  ["partially_paid", "Abonada en parte", "info"],
+  ["paid", "Cobrada", "success"],
+  ["overdue", "Vencida", "danger"],
+  ["waived", "Perdonada", "violet"],
+  ["cancelled", "Anulada"]
+);
+
+/** El estado de cobro de una venta, derivado de su calendario. */
+export const COLLECTION_STATUS = dict(
+  ["none", "Sin plan"],
+  ["on_track", "Al día", "success"],
+  ["due_soon", "Vence pronto", "warning"],
+  ["overdue", "Vencido", "danger"],
+  ["settled", "Liquidado", "success"]
+);
+
+/** En qué punto está lo que se le debe a un proveedor por un servicio. */
+export const ACCRUED_COST_STATUS = dict(
+  ["accrued", "Devengado", "info"],
+  ["confirmed", "Facturado", "accent"],
+  ["disputed", "En disputa", "danger"],
+  ["settled", "Liquidado", "warning"],
+  ["paid", "Pagado", "success"],
+  ["cancelled", "Anulado"],
+  ["waived", "Perdonado", "violet"]
 );
 
 /** `[{value,label}]` list for a Select, from any of the dictionaries above. */

@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { createOrderWithBookings, type CreateOrderInput } from "@/lib/booking-service";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { assertSameOriginMutation } from "@/lib/csrf";
+import { flushOutboxAfterResponse } from "@/lib/messaging/flush";
 
 /** POST /api/orders — creates a multi-product order with all its bookings. */
 export async function POST(req: NextRequest) {
@@ -28,10 +29,24 @@ export async function POST(req: NextRequest) {
 
     // Capacity override is a privileged action.
     if (body.capacity_override) requireAtLeast(ctx, "manager");
+    // Vender por encima del límite de crédito de un socio también: un vendedor
+    // no decide cuánto descubierto aguanta la empresa. Y el portal del socio
+    // nunca puede saltárselo, se pida como se pida.
+    if (body.allow_over_credit) {
+      if (ctx.role === "partner") delete body.allow_over_credit;
+      else requireAtLeast(ctx, "manager");
+    }
+    // Las condiciones de cobro salen de la cotización, no del navegador: aquí
+    // permitirían regalarse un anticipo de cero y un saldo a un año.
+    delete body.terms;
     // Portal users always sell on behalf of their own partner.
     if (ctx.role === "partner" && ctx.partnerId) body.partner_id = ctx.partnerId;
 
     const result = await createOrderWithBookings(ctx, body);
+    // La venta ya está hecha. La confirmación y el voucher salen en cuanto esta
+    // respuesta llegue al punto de venta, sin que el cajero espere a Resend con
+    // el cliente delante.
+    flushOutboxAfterResponse(ctx.company, ctx.companyId);
     return ok(result);
   } catch (err) {
     return fail(err);

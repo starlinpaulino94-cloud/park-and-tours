@@ -572,3 +572,315 @@ export async function buildManifestPdf(
   pdf.block("Notas de la salida", data.notes);
   return pdf.finish();
 }
+
+/* ----------------------------------------------------------- arqueo de caja */
+
+export interface CashClosePdfData {
+  code?: string | null;
+  register?: string | null;
+  branch?: string | null;
+  cashier?: string | null;
+  opened_at?: string | null;
+  closed_at?: string | null;
+  status?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  difference_reason?: string | null;
+  deposit_reference?: string | null;
+  notes?: string | null;
+  card: { expected: number; batch: number | null; difference: number | null; reference: string | null };
+}
+
+export interface CashClosePdfCurrency {
+  currency: string;
+  opening: number;
+  sales: number;
+  refunds: number;
+  cash_sales: number;
+  cash_refunds: number;
+  expenses: number;
+  withdrawals: number;
+  deposits: number;
+  adjustments: number;
+  card: number;
+  transfer: number;
+  other_methods: number;
+  expected: number;
+  counted: number | null;
+  difference: number | null;
+  breakdown: { denomination: number; quantity: number }[];
+}
+
+/**
+ * El acta del arqueo.
+ *
+ * Se imprime, se firma y se archiva con el efectivo que va a la bóveda: es el
+ * papel que sostiene un faltante tres meses después, cuando ya nadie recuerda
+ * el turno. Por eso lleva el desglose por denominación y no solo el total —un
+ * acta que dice "faltaban 2.000" no prueba nada; una que dice "se contaron
+ * tres billetes de 1.000 donde debía haber cinco", sí.
+ */
+export async function buildCashClosePdf(
+  company: CompanyInfo | null,
+  data: CashClosePdfData,
+  currencies: CashClosePdfCurrency[]
+): Promise<Uint8Array> {
+  const pdf = await PdfBuilder.create({
+    kind: "ARQUEO DE CAJA",
+    reference: data.code,
+    company,
+    footer: `Generado ${formatDateTime(new Date().toISOString())}`,
+  });
+
+  pdf.heading(data.register || "Caja");
+  pdf.paragraph(
+    [
+      data.branch,
+      data.cashier ? `Cajero: ${data.cashier}` : "",
+      data.opened_at ? `Apertura ${formatDateTime(data.opened_at)}` : "",
+      data.closed_at ? `Cierre ${formatDateTime(data.closed_at)}` : "",
+    ].filter(Boolean).join("  ·  "),
+    9.5
+  );
+  pdf.gap(8);
+
+  for (const row of currencies) {
+    const label = row.currency.toUpperCase();
+    pdf.eyebrow(`${label} · movimientos del turno`);
+    pdf.row("Fondo de apertura", formatMoney(row.opening, row.currency));
+    pdf.row("Cobros en efectivo", formatMoney(row.cash_sales, row.currency));
+    if (row.cash_refunds) pdf.row("Reembolsos en efectivo", `-${formatMoney(row.cash_refunds, row.currency)}`);
+    if (row.expenses) pdf.row("Gastos pagados en caja", `-${formatMoney(row.expenses, row.currency)}`);
+    if (row.withdrawals) pdf.row("Retiros", `-${formatMoney(row.withdrawals, row.currency)}`);
+    if (row.deposits) pdf.row("Entradas de efectivo", formatMoney(row.deposits, row.currency));
+    if (row.adjustments) pdf.row("Ajustes", formatMoney(row.adjustments, row.currency));
+    pdf.row("Efectivo esperado", formatMoney(row.expected, row.currency), { strong: true });
+
+    if (row.card || row.transfer || row.other_methods) {
+      pdf.gap(4);
+      pdf.paragraph("No entra al cajón — lo liquida el banco o queda por cobrar:", 8.5);
+      if (row.card) pdf.row("Tarjeta", formatMoney(row.card, row.currency));
+      if (row.transfer) pdf.row("Transferencia y link", formatMoney(row.transfer, row.currency));
+      if (row.other_methods) pdf.row("Cheque y crédito", formatMoney(row.other_methods, row.currency));
+    }
+
+    if (row.breakdown.length > 0) {
+      pdf.gap(8);
+      pdf.eyebrow(`${label} · conteo físico`);
+      pdf.table(
+        [
+          { header: "Denominación", width: 1.4, align: "right" },
+          { header: "Piezas", width: 1, align: "right" },
+          { header: "Importe", width: 1.4, align: "right" },
+        ],
+        row.breakdown
+          .filter((line) => Number(line.quantity) > 0)
+          .sort((a, b) => Number(b.denomination) - Number(a.denomination))
+          .map((line) => [
+            formatMoney(Number(line.denomination), row.currency),
+            formatNumber(Number(line.quantity)),
+            formatMoney(Number(line.denomination) * Number(line.quantity), row.currency),
+          ])
+      );
+    }
+
+    pdf.gap(6);
+    if (row.counted != null) {
+      pdf.row("Efectivo contado", formatMoney(row.counted, row.currency), { strong: true });
+      const difference = row.difference ?? 0;
+      const verdict = Math.abs(difference) < 0.01 ? "cuadrada" : difference > 0 ? "sobrante" : "faltante";
+      pdf.row("Diferencia", `${formatMoney(difference, row.currency)} (${verdict})`, { strong: true });
+    } else {
+      pdf.row("Efectivo contado", "pendiente de contar");
+    }
+    pdf.gap(14);
+  }
+
+  if (data.card.batch != null) {
+    pdf.eyebrow("Conciliación del datáfono");
+    pdf.row("Cobrado con tarjeta", formatMoney(data.card.expected, currencies[0]?.currency));
+    pdf.row("Cierre de lote del banco", formatMoney(data.card.batch, currencies[0]?.currency));
+    pdf.row("Diferencia", formatMoney(data.card.difference ?? 0, currencies[0]?.currency), { strong: true });
+    if (data.card.reference) pdf.row("Referencia del lote", data.card.reference);
+    pdf.gap(12);
+  }
+
+  if (data.difference_reason) pdf.block("Justificación de la diferencia", data.difference_reason);
+  if (data.deposit_reference) pdf.row("Depósito / bóveda", data.deposit_reference);
+  if (data.notes) pdf.block("Observaciones", data.notes);
+
+  if (data.approved_by) {
+    pdf.gap(6);
+    pdf.notice(
+      `Arqueo revisado por ${data.approved_by}${data.approved_at ? ` el ${formatDateTime(data.approved_at)}` : ""}.`
+    );
+  } else if (data.status === "pending_approval") {
+    pdf.gap(6);
+    pdf.notice("Este arqueo está a la espera de revisión por un supervisor.");
+  }
+
+  pdf.gap(24);
+  pdf.rule();
+  pdf.gap(6);
+  pdf.paragraph("Firma del cajero                                        Firma del supervisor", 9);
+
+  return pdf.finish();
+}
+
+/* ----------------------------------------------- estado de cuenta de proveedor */
+
+export interface SupplierStatementPdfData {
+  code?: string | null;
+  supplier_name?: string | null;
+  supplier_tax_id?: string | null;
+  period_from?: string | null;
+  period_to?: string | null;
+  status?: string | null;
+  invoice_number?: string | null;
+  invoice_ncf?: string | null;
+  invoice_date?: string | null;
+  currency: string;
+  services: number;
+  confirmed: number;
+  adjustments: number;
+  retention_isr: number;
+  retention_itbis: number;
+  retention_total: number;
+  net: number;
+  taxable_base: number;
+  dispute_reason?: string | null;
+  notes?: string | null;
+}
+
+export interface SupplierStatementPdfLine {
+  concept: string;
+  booking_number?: string | null;
+  departure_at?: string | null;
+  product_name?: string | null;
+  quantity?: number | null;
+  unit_cost?: number | null;
+  amount: number;
+  confirmed_amount?: number | null;
+  variance: number;
+}
+
+/**
+ * El estado de cuenta que se le manda al proveedor.
+ *
+ * Es el papel con el que se discute el viernes, así que lleva las dos columnas
+ * que importan una al lado de la otra: lo que dice el manifiesto y lo que dice
+ * su factura. Un estado de cuenta con un solo total no sirve para discutir
+ * nada —"me cobras 40 pax y yo llevé 37" necesita ver las dos cifras.
+ */
+export async function buildSupplierStatementPdf(
+  company: CompanyInfo | null,
+  data: SupplierStatementPdfData,
+  lines: SupplierStatementPdfLine[]
+): Promise<Uint8Array> {
+  const pdf = await PdfBuilder.create({
+    kind: "ESTADO DE CUENTA",
+    reference: data.code,
+    company,
+    footer: `Generado ${formatDateTime(new Date().toISOString())}`,
+  });
+
+  pdf.heading(data.supplier_name || "Proveedor");
+  pdf.paragraph(
+    [
+      data.supplier_tax_id ? `RNC/Cédula ${formatTaxId(data.supplier_tax_id)}` : "",
+      data.period_from && data.period_to
+        ? `Período ${formatDate(data.period_from)} — ${formatDate(data.period_to)}`
+        : "",
+    ].filter(Boolean).join("  ·  "),
+    9.5
+  );
+  pdf.gap(8);
+
+  const anyConfirmed = lines.some((line) => line.confirmed_amount != null);
+
+  pdf.eyebrow(`Servicios operados · ${lines.length}`);
+  pdf.table(
+    anyConfirmed
+      ? [
+          { header: "Fecha", width: 0.85 },
+          { header: "Reserva", width: 1 },
+          { header: "Concepto", width: 2.1 },
+          { header: "Cant.", width: 0.55, align: "right" },
+          { header: "Operado", width: 1, align: "right" },
+          { header: "Facturado", width: 1, align: "right" },
+          { header: "Dif.", width: 0.8, align: "right" },
+        ]
+      : [
+          { header: "Fecha", width: 0.9 },
+          { header: "Reserva", width: 1.1 },
+          { header: "Concepto", width: 2.6 },
+          { header: "Cant.", width: 0.6, align: "right" },
+          { header: "Unitario", width: 1, align: "right" },
+          { header: "Importe", width: 1.1, align: "right" },
+        ],
+    lines.map((line) => {
+      const when = line.departure_at ? formatDate(line.departure_at) : "—";
+      const concept = [line.concept, line.product_name].filter(Boolean).join(" · ");
+      return anyConfirmed
+        ? [
+            when,
+            line.booking_number || "—",
+            concept,
+            line.quantity != null ? formatNumber(line.quantity) : "",
+            formatMoney(line.amount, data.currency),
+            line.confirmed_amount != null ? formatMoney(line.confirmed_amount, data.currency) : "—",
+            Math.abs(line.variance) < 0.01 ? "" : formatMoney(line.variance, data.currency),
+          ]
+        : [
+            when,
+            line.booking_number || "—",
+            concept,
+            line.quantity != null ? formatNumber(line.quantity) : "",
+            line.unit_cost != null ? formatMoney(line.unit_cost, data.currency) : "",
+            formatMoney(line.amount, data.currency),
+          ];
+    })
+  );
+  pdf.gap(12);
+
+  pdf.row("Servicios operados", formatMoney(data.services, data.currency));
+  if (anyConfirmed) pdf.row("Facturado por el proveedor", formatMoney(data.confirmed, data.currency));
+  if (data.adjustments) pdf.row("Ajustes acordados", formatMoney(data.adjustments, data.currency));
+
+  if (data.retention_total > 0) {
+    pdf.gap(4);
+    pdf.row("Base imponible", formatMoney(data.taxable_base, data.currency));
+    if (data.retention_isr) pdf.row("Retención de ISR", `-${formatMoney(data.retention_isr, data.currency)}`);
+    if (data.retention_itbis) pdf.row("Retención de ITBIS", `-${formatMoney(data.retention_itbis, data.currency)}`);
+  }
+
+  pdf.gap(4);
+  pdf.row("Neto a pagar", formatMoney(data.net, data.currency), { strong: true });
+  pdf.gap(10);
+
+  if (data.invoice_number) {
+    pdf.block(
+      "Comprobante del proveedor",
+      [
+        `Factura ${data.invoice_number}`,
+        data.invoice_ncf ? `NCF ${data.invoice_ncf}` : "",
+        data.invoice_date ? `del ${formatDate(data.invoice_date)}` : "",
+      ].filter(Boolean).join("  ·  ")
+    );
+  } else {
+    pdf.notice(
+      "Falta la factura del proveedor. El gasto se sostiene ante la DGII con su comprobante, " +
+      "así que esta liquidación no se puede pagar hasta recibirlo."
+    );
+  }
+
+  if (data.dispute_reason) pdf.notice(data.dispute_reason);
+  if (data.notes) pdf.block("Observaciones", data.notes);
+
+  pdf.gap(24);
+  pdf.rule();
+  pdf.gap(6);
+  pdf.paragraph("Conforme el proveedor                                        Por la empresa", 9);
+
+  return pdf.finish();
+}

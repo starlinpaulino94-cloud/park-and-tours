@@ -9,6 +9,9 @@ import { assertSameOriginMutation } from "@/lib/csrf";
 const EDITABLE = [
   "name", "legal_name", "tax_id", "company_type", "group_name", "email", "phone", "whatsapp",
   "address", "city", "country", "timezone", "logo_url", "brand_color", "base_currency", "notes",
+  // 0039 — cuántas horas se guarda la plaza de una reserva sin cobrar. Nulo o
+  // cero: nada expira.
+  "hold_hours",
 ];
 
 /** GET /api/company — the signed-in tenant's own company profile. */

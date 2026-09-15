@@ -115,6 +115,13 @@ function readSchema(): Map<string, Set<string>> {
 
 const SCHEMA = readSchema();
 
+/** Todas las migraciones concatenadas, sin comentarios: para buscar literales. */
+const ALL_SQL = readdirSync(MIGRATIONS)
+  .filter((f) => f.endsWith(".sql"))
+  .sort()
+  .map((f) => readFileSync(path.join(MIGRATIONS, f), "utf8").replace(/--[^\n]*/g, ""))
+  .join("\n");
+
 /** Columnas declaradas `boolean` en las migraciones. */
 function readBooleanColumns(): Set<string> {
   const out = new Set<string>();
@@ -383,6 +390,58 @@ describe("el esquema cubre todo lo que la aplicación escribe", () => {
       }
     }
     expect(broken, "altas que la base va a rechazar por falta del código").toEqual([]);
+  });
+
+  it("el verificador de migraciones comprueba cosas que existen", async () => {
+    /**
+     * `scripts/verify-migrations.mjs` le pregunta a la base REAL si quedó todo
+     * tras aplicar las migraciones. Su lista está escrita a mano, así que un
+     * nombre mal puesto haría que reportara un fallo inexistente — y hacer
+     * dudar de una base que está bien es peor que no comprobarla.
+     *
+     * Aquí se verifica lo contrario: que cada tabla, columna y valor de enum que
+     * el script busca lo haya creado alguna migración.
+     */
+    const { MIGRATION_CHECKS } = await import("../../scripts/migration-checks.mjs");
+    const problems: string[] = [];
+
+    for (const group of MIGRATION_CHECKS as {
+      migration: string;
+      tables?: string[];
+      columns?: [string, string[]][];
+      enums?: [string, string, string][];
+      rpc?: string[];
+    }[]) {
+      for (const table of group.tables ?? []) {
+        if (!SCHEMA.has(table)) problems.push(`${group.migration}: tabla ${table} no existe`);
+      }
+      for (const [table, columns] of group.columns ?? []) {
+        const known = SCHEMA.get(table);
+        if (!known) { problems.push(`${group.migration}: tabla ${table} no existe`); continue; }
+        for (const column of columns) {
+          if (!known.has(column)) problems.push(`${group.migration}: ${table}.${column} no existe`);
+        }
+      }
+      for (const [table, column, value] of group.enums ?? []) {
+        const known = SCHEMA.get(table);
+        if (!known?.has(column)) {
+          problems.push(`${group.migration}: ${table}.${column} no existe`);
+          continue;
+        }
+        // El valor tiene que estar declarado en algún sitio del SQL: en el enum,
+        // en un check, o añadido con `alter type ... add value`.
+        if (!new RegExp(`'${value}'`).test(ALL_SQL)) {
+          problems.push(`${group.migration}: el valor '${value}' no aparece en ninguna migración`);
+        }
+      }
+      for (const name of group.rpc ?? []) {
+        if (!new RegExp(`create or replace function public\\.${name}\\b`, "i").test(ALL_SQL)) {
+          problems.push(`${group.migration}: la función public.${name} no se crea en ninguna migración`);
+        }
+      }
+    }
+
+    expect(problems, "el verificador busca cosas que ninguna migración crea").toEqual([]);
   });
 
   it("cada relación declarada en resources.ts se puede resolver", () => {

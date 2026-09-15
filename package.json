@@ -12,6 +12,7 @@
     "check:dashboard": "node scripts/check-dashboard-readiness.mjs",
     "seed:demo-presentation": "node scripts/seed-demo-presentation.mjs",
     "validate:supabase": "node scripts/validate-supabase-readiness.mjs",
+    "verify:migrations": "node scripts/verify-migrations.mjs",
     "verify:approvals": "node scripts/verify-approvals-integrity.mjs",
     "test": "vitest run",
     "test:e2e": "playwright test",

@@ -8,6 +8,9 @@ import { resolveCommissions, type BeneficiaryDescriptor } from "@/lib/commission
 import { writeAudit } from "@/lib/audit";
 import { newBookingNumber, newOrderNumber, newVoucherCode, newDocumentNumber } from "@/lib/codes";
 import { notifyBookingCreated } from "@/lib/messaging/events";
+import { ensureSchedule, refreshAllocation } from "@/lib/schedule-service";
+import { creditCheck, holdUntil } from "@/lib/collections";
+import { accrueBookingCosts, cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { priceExtras, unknownSelections, type ExtraOffer, type ExtraSelection } from "@/lib/extras";
 import type {
   Booking, Channel, Currency, Departure, Order, Partner, Product, Seller,
@@ -73,6 +76,26 @@ export interface CreateOrderInput {
   /** Authorised users may exceed the departure capacity; always audited. */
   capacity_override?: boolean;
   override_reason?: string | null;
+  /**
+   * Condiciones de cobro pactadas: anticipo, vencimientos y plazos.
+   *
+   * Vienen de la cotización aceptada. Antes se quedaban en la cotización y la
+   * venta nacía sin ellas, así que lo que el cliente firmó —"30% ahora, el
+   * resto quince días antes"— no llegaba a existir en el sistema.
+   */
+  /**
+   * Vender a un socio por encima de su límite de crédito. Decisión de gestión,
+   * siempre auditada: la ruta HTTP exige rango de manager.
+   */
+  allow_over_credit?: boolean;
+  terms?: {
+    deposit_type?: string | null;
+    deposit_percent?: number | null;
+    deposit_amount?: number | null;
+    deposit_due_date?: string | null;
+    balance_due_date?: string | null;
+    payment_terms?: string | null;
+  } | null;
 }
 
 export interface CreateOrderResult {
@@ -91,6 +114,63 @@ function toCount(value: unknown): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+/**
+ * Estimación del total de una venta antes de construirla.
+ *
+ * Solo la usa el control de crédito. Resuelve el precio de cada línea con el
+ * mismo motor que la venta real, pero sin escribir nada: hace falta un importe
+ * para comparar contra el límite, y armar la orden entera para descubrir al
+ * final que no cabía dejaría reservas que habría que compensar.
+ */
+async function estimateOrderTotal(
+  companyId: string,
+  input: CreateOrderInput,
+  currency: Currency,
+  exchangeRate: number
+): Promise<number> {
+  let total = 0;
+  for (const item of input.items) {
+    const adults = toCount(item.adults);
+    const children = toCount(item.children);
+    const billable = billablePax(adults, children);
+    const departure = item.departure_id
+      ? ((await tenantQuery<Departure>(companyId, "departure", {
+          _filter: { _id: item.departure_id }, _limit: 1,
+        }))[0] ?? null)
+      : null;
+    const price = await resolvePrice({
+      companyId,
+      productId: item.product_id,
+      modalityId: item.modality_id,
+      partnerId: input.partner_id,
+      sellerId: input.seller_id,
+      channel: (input.channel || "direct") as Channel,
+      quantity: billable,
+      travelDate: departure?.departure_at ?? null,
+      discountPct: item.discount_pct ?? 0,
+      taxPct: item.tax_pct ?? 0,
+      exchangeRate,
+      unitPriceOverride: item.unit_price_override ?? null,
+      overrideCurrency: currency,
+      quoteId: item.quote_id ?? null,
+    });
+    total += price.totalAmount ?? 0;
+  }
+  return round2(total);
+}
+
+/** La salida más próxima del pedido, que acota hasta cuándo se retiene la plaza. */
+async function firstDeparture(companyId: string, input: CreateOrderInput): Promise<string | null> {
+  const ids = input.items
+    .map((item) => item.departure_id)
+    .filter((id): id is string => typeof id === "string" && id !== "");
+  if (ids.length === 0) return null;
+  const departures = await tenantQuery<Departure>(companyId, "departure", {
+    _filter: { _id: { in: ids } }, _limit: 50, _sort: { departure_at: "asc" },
+  });
+  return departures[0]?.departure_at ?? null;
+}
+
 export async function createOrderWithBookings(
   ctx: TenantContext & { companyId: string },
   input: CreateOrderInput
@@ -104,6 +184,7 @@ export async function createOrderWithBookings(
   // `base_currency_total` meaningless for non-base-currency sales).
   const baseCurrency = ctx.company?.base_currency || currency;
   const exchangeRate = await resolveExchangeRate(companyId, currency, baseCurrency);
+  const holdHours = Number((ctx.company as { hold_hours?: number } | null)?.hold_hours ?? 0) || 0;
   const channel = (input.channel || "direct") as Channel;
 
   // ---- validate capacity before writing anything --------------------------
@@ -128,6 +209,46 @@ export async function createOrderWithBookings(
   // created so far (releasing their seats) and void the order — so a failure
   // can never leave a "phantom" order with live seats but zero total, or a B2B
   // sale with no receivable that nobody would ever collect.
+  // ---- límite de crédito del socio (0039) --------------------------------
+  // `credit_limit` llevaba desde la migración 0002 sin que nada lo mirara: se
+  // podía vender a crédito a un tour center sin techo, y el descubierto solo
+  // aparecía cuando ya no pagaba. Se comprueba ANTES de escribir la orden, con
+  // lo que ya debe según sus documentos abiertos.
+  if (input.partner_id) {
+    const creditTerms = (await tenantQuery<Partner>(companyId, "partner", {
+      _filter: { _id: input.partner_id }, _limit: 1,
+    }))[0];
+    if (Number(creditTerms?.credit_limit ?? 0) > 0) {
+      const open = await tenantQuery<{ balance?: number; amount?: number; paid_amount?: number }>(
+        companyId, "receivable", {
+          _filter: { partner: input.partner_id, status: { nin: ["paid", "written_off"] } },
+          _limit: 500,
+        }
+      );
+      const outstanding = open.reduce(
+        (sum, row) => sum + (row.balance ?? Math.max((row.amount ?? 0) - (row.paid_amount ?? 0), 0)),
+        0
+      );
+      // Se estima con el precio de catálogo antes de armar las reservas: es
+      // aproximado a propósito, porque la alternativa es construir la venta
+      // entera para descubrir al final que no cabía.
+      const estimate = await estimateOrderTotal(companyId, input, currency, exchangeRate);
+      const verdict = creditCheck(creditTerms, outstanding, estimate);
+      if (!verdict.allowed && input.allow_over_credit !== true) {
+        throw Object.assign(new Error(verdict.reason || "Supera el límite de crédito"), { status: 409 });
+      }
+      if (!verdict.allowed) {
+        await writeAudit({
+          companyId, userId: ctx.userId,
+          action: "credit_limit_override", entityType: "partner", entityId: input.partner_id,
+          description: `Venta autorizada por encima del límite de crédito: debe ${outstanding} de ${verdict.limit}, y la venta suma ${estimate}`,
+          severity: "warning",
+          metadata: { outstanding, limit: verdict.limit, estimate },
+        });
+      }
+    }
+  }
+
   const order = await tenantCreate<Order>(companyId, "order", {
     order_number: await uniqueCode(companyId, "order", "order_number", newOrderNumber),
     customer: input.customer_id,
@@ -145,6 +266,23 @@ export async function createOrderWithBookings(
     subtotal: 0, discount_total: 0, tax_total: 0,
     total: 0, paid_total: 0, balance: 0, base_currency_total: 0,
     notes: input.notes || undefined,
+    // Lo pactado en la cotización viaja a la venta. Sin esto, el calendario de
+    // cobro se construía con la política genérica del producto y el cliente
+    // recibía un vencimiento que nadie había acordado con él.
+    deposit_type: input.terms?.deposit_type || "none",
+    deposit_percent: input.terms?.deposit_percent ?? undefined,
+    deposit_amount: input.terms?.deposit_amount ?? undefined,
+    deposit_due_date: input.terms?.deposit_due_date || undefined,
+    balance_due_date: input.terms?.balance_due_date || undefined,
+    payment_terms: input.terms?.payment_terms || undefined,
+    collection_status: "none",
+    // Hasta cuándo se guarda la plaza sin haber cobrado nada. Solo si la empresa
+    // lo configuró: sin política, nada expira y el comportamiento es el de
+    // siempre. La primera salida acota el plazo —una plaza retenida para un
+    // viaje que ya salió no la reclama nadie.
+    hold_until: holdHours > 0
+      ? holdUntil(new Date(), holdHours, await firstDeparture(companyId, input))
+      : undefined,
   });
 
   const bookings: Booking[] = [];
@@ -222,7 +360,12 @@ export async function createOrderWithBookings(
     // general del catálogo: si no, el margen de la venta no es el que se negoció.
     const cost = item.cost_override !== null && item.cost_override !== undefined
       ? round2(Math.max(Number(item.cost_override) || 0, 0))
-      : await resolveCost(companyId, item.product_id, billable, productRow?.base_cost ?? 0);
+      // La base de una tarifa por porcentaje es la venta DEL PRODUCTO, sin los
+      // extras: el almuerzo tiene su propio proveedor y su propio costo, y
+      // meterlo en la base le pagaría dos veces al del tour.
+      : await resolveCost(companyId, item.product_id, billable, productRow?.base_cost ?? 0, {
+          revenue: price.grossAmount,
+        });
     const voucherCode = await uniqueCode(companyId, "voucher", "code", newVoucherCode);
 
     // ---- extras -----------------------------------------------------------
@@ -322,6 +465,21 @@ export async function createOrderWithBookings(
         currency: line.currency,
       });
     }
+
+    // ---- devengo del costo por proveedor (0040) ---------------------------
+    // Se congela AHORA, con las tarifas de hoy: calcularlo el viernes al
+    // liquidar aplicaría a lo operado el lunes una tarifa que cambió el
+    // miércoles. Va dentro de la saga porque una reserva cuyo costo no se sabe
+    // de quién es no se puede pagar, y lo que no se puede pagar no debería
+    // haberse vendido.
+    await accrueBookingCosts(companyId, {
+      bookingId: booking._id,
+      productId: item.product_id,
+      departureId: item.departure_id || null,
+      pax: billable,
+      revenue: price.grossAmount,
+      currency: price.currency || currency,
+    });
 
     bookings.push(booking);
     subtotal += grossAmount;
@@ -458,6 +616,16 @@ export async function createOrderWithBookings(
     description: `Orden ${order.order_number} creada con ${bookings.length} reserva(s) por ${totals.total} ${currency}`,
   });
 
+  // ---- calendario de cobro (0039) ---------------------------------------
+  // Fuera de la saga y tolerante a fallos, igual que los avisos: una venta ya
+  // cobrada no se deshace porque el plan de cuotas no se pudiera escribir, y el
+  // plan se puede reconstruir después —es derivado— mientras que la venta no.
+  try {
+    await ensureSchedule(companyId, order._id);
+  } catch (err) {
+    console.error(`[booking-service] no se pudo crear el plan de cobro de ${order.order_number}:`, err);
+  }
+
   // Confirmación al cliente y recordatorio de la víspera. Va DESPUÉS de que la
   // orden esté promovida y fuera del try/catch de la saga a propósito: que el
   // proveedor de correo esté caído no puede revertir una venta ya cobrada, ni
@@ -486,18 +654,22 @@ async function compensateOrder(
   companyId: string,
   orderId: string,
   orderNumber: string | undefined,
-  bookings: Booking[]
+  bookings: Booking[],
+  reason = "Orden incompleta: revertida automáticamente"
 ): Promise<void> {
   const departures = new Set<string>();
   for (const b of bookings) {
     try {
       await tenantUpdate(companyId, "booking", b._id, {
         status: "cancelled",
-        cancel_reason: "Orden incompleta: revertida automáticamente",
+        cancel_reason: reason,
         cancelled_at: new Date().toISOString(),
       });
       const dep = refId(b.departure);
       if (dep) departures.add(dep);
+      // Una reserva que no se va a operar no le debe nada al transportista:
+      // dejar el devengo vivo se lo pagaría en la liquidación del viernes.
+      await cancelBookingCosts(companyId, b._id, reason);
     } catch (e) {
       console.error("[booking-service] compensación: no se pudo cancelar la reserva", b._id, e);
     }
@@ -550,7 +722,7 @@ async function compensateOrder(
   try {
     await tenantUpdate(companyId, "order", orderId, {
       status: "cancelled",
-      notes: "Orden revertida automáticamente por un fallo durante su creación",
+      notes: reason,
     });
   } catch (e) {
     console.error("[booking-service] compensación: no se pudo anular la orden", orderId, e);
@@ -589,6 +761,46 @@ export async function reconcileStaleDrafts(
   }
   if (reverted > 0) console.warn(`[booking-service] reconciliación: ${reverted} orden(es) draft revertida(s)`);
   return { scanned: drafts.length, reverted };
+}
+
+/**
+ * Libera el cupo de las reservas cuya retención expiró.
+ *
+ * Una venta sin un peso cobrado pasado su plazo suelta las plazas para que
+ * vuelvan a estar a la venta. Es deliberadamente conservador: solo toca órdenes
+ * en `pending_payment` con CERO cobrado. Una venta con un anticipo pagado nunca
+ * se cancela sola —el cliente puso dinero—, y una confirmada tampoco.
+ */
+export async function releaseExpiredHolds(
+  companyId: string,
+  now: Date = new Date()
+): Promise<{ released: number; orders: string[] }> {
+  const expired = await tenantQuery<Order>(companyId, "order", {
+    _filter: { status: "pending_payment", hold_until: { lt: now.toISOString() } },
+    _limit: 100, _sort: { createdAt: "asc" },
+  });
+
+  const orders: string[] = [];
+  for (const order of expired) {
+    // La condición que de verdad importa: nadie pagó nada.
+    if ((order.paid_total ?? 0) > 0.009) continue;
+    const bookings = await tenantQuery<Booking>(companyId, "booking", {
+      _filter: { order: order._id }, _limit: 50,
+    });
+    const live = bookings.filter((b) => b.status !== "cancelled" && b.status !== "refunded");
+    if (live.length === 0) continue;
+
+    await compensateOrder(
+      companyId, order._id, order.order_number, live,
+      "Retención vencida: la reserva no se pagó dentro del plazo"
+    );
+    orders.push(order.order_number || order._id);
+  }
+
+  if (orders.length > 0) {
+    console.warn(`[booking-service] ${orders.length} retención(es) vencida(s) liberada(s): ${orders.join(", ")}`);
+  }
+  return { released: orders.length, orders };
 }
 
 /** Registers every commission obligation generated by a booking. */
@@ -731,6 +943,14 @@ export async function syncOrderTotals(companyId: string, orderId: string): Promi
     await tenantUpdate(companyId, "booking", b._id, {
       paid_amount: bookingPaid, balance_amount: bookingBalance, status: bStatus,
     });
+  }
+
+  // El calendario de cobro se recalcula desde `paid_total`, que acaba de
+  // cambiar. Es derivado: no puede desviarse de la orden porque parte de ella.
+  try {
+    await refreshAllocation(companyId, orderId);
+  } catch (err) {
+    console.error(`[booking-service] no se pudo recalcular el plan de cobro de ${orderId}:`, err);
   }
 
   console.log(`[booking-service] orden ${orderId} sincronizada · total=${total} pagado=${paid} saldo=${balance}`);

@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { requireTenant, requireAtLeast, tenantCreate, tenantFindOne } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { recalcCashSession } from "@/lib/cash";
+import { isKnownCurrency } from "@/lib/cash-close";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import type { CashSession } from "@/lib/types";
@@ -16,7 +17,7 @@ export async function POST(req: NextRequest) {
 
     const body = await readJson<{
       cash_session_id?: string; movement_type?: string; amount?: number;
-      concept?: string; reference?: string;
+      currency?: string; concept?: string; reference?: string;
     }>(req);
 
     if (!body.cash_session_id) throw Object.assign(new Error("Indica la sesión de caja"), { status: 400 });
@@ -32,17 +33,32 @@ export async function POST(req: NextRequest) {
       throw Object.assign(new Error("Tipo de movimiento no válido"), { status: 400 });
     }
 
+    // Una moneda desconocida la rechaza el enum de la base con un error opaco;
+    // se para aquí con un mensaje que se entiende.
+    if (body.currency && !isKnownCurrency(body.currency)) {
+      throw Object.assign(new Error("Moneda no válida"), { status: 400 });
+    }
+
     const session = await tenantFindOne<CashSession>(ctx.companyId, "cash_session", body.cash_session_id);
     if (session.status !== "open") {
       throw Object.assign(new Error("La sesión de caja está cerrada"), { status: 409 });
     }
 
+    // El ajuste conserva su signo: uno que solo puede sumar no es un ajuste,
+    // es una entrada, y deja al cajero sin forma de corregir un sobrante mal
+    // registrado. Los demás tipos ya llevan el signo en su significado
+    // (`withdrawal` resta, `deposit` suma), así que se guardan en positivo.
+    const signedAmount = movementType === "adjustment" ? amount : Math.abs(amount);
+
     const movement = await tenantCreate(ctx.companyId, "cash_movement", {
       cash_session: body.cash_session_id,
       user: ctx.userId,
       movement_type: movementType,
-      amount: Math.abs(amount),
-      currency: session.currency,
+      amount: signedAmount,
+      // La moneda la manda el cajero: la misma caja recibe pesos y dólares, y
+      // forzar la de la sesión convertía un retiro en dólares en un retiro en
+      // pesos por el mismo número.
+      currency: body.currency || session.currency,
       concept: body.concept || "Movimiento manual",
       reference: body.reference,
       movement_at: new Date().toISOString(),

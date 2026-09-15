@@ -12,7 +12,7 @@ import { tenantCreate, tenantQuery, tenantUpdate, TenantError } from "@/lib/tena
 export type LedgerSource =
   | "sale" | "payment" | "refund" | "commission" | "settlement" | "expense" | "payable"
   | "purchase" | "inventory" | "payroll" | "adjustment" | "opening" | "tax"
-  | "gift_card" | "membership";
+  | "gift_card" | "membership" | "cash_close";
 
 export interface LedgerLine {
   /** Account code (e.g. "1101") or account `_id`. */
@@ -32,7 +32,7 @@ export interface PostingInput {
   /** Links back to the business document that caused the posting. */
   refs?: Partial<Record<
     "order" | "payment" | "invoice" | "settlement" | "expense" | "payable" |
-    "receivable" | "purchase_order" | "stock_movement", string
+    "receivable" | "purchase_order" | "stock_movement" | "cash_session", string
   >>;
   userId?: string;
 }
@@ -65,6 +65,9 @@ export const DEFAULT_CHART: {
   { code: "4102", name: "Ingresos por entradas al parque", account_type: "revenue", normal_side: "credit" },
   { code: "4103", name: "Ingresos por tienda y F&B", account_type: "revenue", normal_side: "credit" },
   { code: "4104", name: "Ingresos por membresías", account_type: "revenue", normal_side: "credit" },
+  // El sobrante de un arqueo es un ingreso y el faltante una pérdida: sin estas
+  // dos cuentas, el descuadre se quedaba en una nota y no llegaba al resultado.
+  { code: "4105", name: "Sobrantes de caja", account_type: "revenue", normal_side: "credit" },
   { code: "4201", name: "Descuentos y devoluciones", account_type: "contra", normal_side: "debit" },
   { code: "5101", name: "Costo de servicios operados", account_type: "expense", normal_side: "debit" },
   { code: "5102", name: "Costo de mercancía vendida", account_type: "expense", normal_side: "debit" },
@@ -74,6 +77,7 @@ export const DEFAULT_CHART: {
   { code: "5203", name: "Mermas de inventario", account_type: "expense", normal_side: "debit" },
   { code: "5204", name: "Gastos operativos", account_type: "expense", normal_side: "debit" },
   { code: "5205", name: "Comisiones bancarias", account_type: "expense", normal_side: "debit" },
+  { code: "5206", name: "Faltantes de caja", account_type: "expense", normal_side: "debit" },
 ];
 
 /** Creates any missing account from the default chart. Safe to call repeatedly. */

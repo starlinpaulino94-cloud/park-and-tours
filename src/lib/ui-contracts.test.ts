@@ -477,7 +477,11 @@ describe("Panel ejecutivo", () => {
     // que la cola está al día, que es el peor fallo posible aquí.
     expect(cron).toContain("supabaseService()");
     expect(cron).toContain("serviceStore()");
-    expect(cron).toMatch(/eq\("organization_id", companyId\)/);
+    // El almacén vive aparte desde 0039, porque lo comparten dos trabajos: el
+    // despacho de la cola y la cobranza diaria.
+    const store = read("src/lib/messaging/service-store.ts");
+    expect(store).toContain("supabaseService()");
+    expect(store).toMatch(/eq\("organization_id", companyId\)/);
 
     // El recordatorio de la víspera también se barre: si solo se encolara al
     // vender, la cartera que ya compró antes de que hubiera comunicaciones se
@@ -488,7 +492,50 @@ describe("Panel ejecutivo", () => {
     // El insert en crudo tiene que aplicar el MISMO mapa de alias que las
     // ayudas de inquilino: los payloads del módulo dicen `customer`, la columna
     // se llama `customer_id`, y sin traducir no se encolaba ni un recordatorio.
-    expect(cron).toContain("aliasesFor(\"message\")");
+    expect(store).toContain("aliasesFor(\"message\")");
+  });
+
+  it("Comunicaciones — lo que se encola en una petición se entrega al terminarla", () => {
+    /**
+     * El cron pasó a ser diario: el plan Hobby de Vercel no admite crons
+     * sub-diarios y con uno cada cuarto de hora el despliegue ENTERO fallaba.
+     * Dejar la entrega
+     * solo en manos del barrido convertía la confirmación de una reserva hecha a
+     * las 9 de la mañana en un correo que sale a la mañana siguiente.
+     *
+     * Toda ruta que encola tiene que drenar al terminar. Si aparece una nueva que
+     * encola y no drena, su aviso espera al barrido y nadie se enteraría: el
+     * fallo es silencio, y por eso se comprueba aquí.
+     */
+    const NOTIFIERS = /notify(BookingCreated|PaymentReceived|QuoteSent|BookingCancelled)\s*\(/;
+    const enqueuing = walk(path.join(ROOT, "src/app/api"))
+      .filter((file) => NOTIFIERS.test(readFileSync(file, "utf8")) || /createOrderWithBookings\s*\(/.test(readFileSync(file, "utf8")))
+      // Los crons no tienen respuesta que esperar: ellos SON el barrido.
+      .filter((file) => !file.includes(`${path.sep}cron${path.sep}`));
+
+    expect(enqueuing.length, "no se encontró ninguna ruta que encole avisos").toBeGreaterThan(0);
+    // La LLAMADA, no el import: comprobar que el nombre aparece en el archivo
+    // daría por bueno un `import` sin usar, que es exactamente el descuido que
+    // esta guarda existe para cazar.
+    const CALL = /^\s*flushOutboxAfterResponse\s*\(/m;
+    const silent = enqueuing.filter((file) => !CALL.test(readFileSync(file, "utf8")));
+    expect(
+      silent.map((f) => path.relative(ROOT, f)),
+      "estas rutas encolan un aviso y no lo entregan hasta el barrido diario"
+    ).toEqual([]);
+
+    // Y se entrega DESPUÉS de la respuesta, nunca dentro: meter la latencia del
+    // proveedor de correo en medio de una venta es lo que la separación entre
+    // encolar y entregar existía para evitar.
+    const flush = read("src/lib/messaging/flush.ts");
+    expect(flush).toMatch(/import \{ after \} from "next\/server"/);
+    expect(flush).toMatch(/after\(\(\) => drainOutbox\(/);
+    // Con el cliente de servicio: después de la respuesta no hay garantía de que
+    // la sesión siga resolviéndose desde las cookies, y una cola que lee cero
+    // mensajes diciendo que está vacía es el peor fallo posible.
+    expect(flush).toContain("serviceStore()");
+    // Y nada de lo que pase aquí puede escalar: la operación ya terminó.
+    expect(flush).toMatch(/catch \(err\)[\s\S]{0,200}console\.error/);
   });
 
   it("Comunicaciones — un aviso se manda una vez", () => {
@@ -673,6 +720,271 @@ describe("Panel ejecutivo", () => {
     expect(read("src/app/api/invoices/[id]/void/route.ts")).toMatch(/requireAtLeast\(ctx, "manager"\)/);
   });
 
+  it("Caja — el arqueo se cuenta por denominación, no se teclea el total", () => {
+    /**
+     * La versión anterior abría el diálogo con el efectivo esperado YA ESCRITO
+     * en el campo del conteo. Así la caja siempre cuadraba: nadie contaba, se
+     * confirmaba un número. El conteo tiene que salir de las piezas.
+     */
+    const dialog = read("src/app/dashboard/caja/arqueo-dialog.tsx");
+    expect(dialog).toContain("denominationsFor");
+    expect(dialog).toContain("countTotal");
+    // Ni el campo del conteo ni su estado inicial pueden partir de lo esperado.
+    expect(dialog).not.toMatch(/setCounts\([^)]*expected/);
+    expect(dialog).not.toMatch(/value=\{[^}]*expected[^}]*\}\s*\n?\s*onChange=\{\(e\) => setQuantity/);
+    // Y se cuenta a ciegas: ver el objetivo mientras se cuenta es no contar.
+    expect(dialog).toContain("blind");
+
+    // El servidor no acepta un esperado ni una diferencia del cliente: los dos
+    // salen de los movimientos.
+    const close = read("src/app/api/cash/sessions/[id]/close/route.ts");
+    expect(close).not.toMatch(/body\.(expected|difference)\b/);
+    expect(close).toContain("recalcCashSession");
+    expect(close).toContain("invalidDenominations");
+    // Contar solo una de las monedas del turno deja la otra sin arquear.
+    expect(close).toMatch(/Falta contar el efectivo/);
+  });
+
+  it("Caja — un descuadre lo revisa otra persona, y cuesta dinero", () => {
+    const review = read("src/app/api/cash/sessions/[id]/review/route.ts");
+    // Rango de gestión, y nunca el mismo que cerró: sin las dos cosas,
+    // "supervisado" solo significa que el cajero hizo dos clics.
+    expect(review).toMatch(/requireAtLeast\(ctx, "manager"\)/);
+    expect(review).toMatch(/closedBy[\s\S]{0,200}ctx\.userId/);
+    expect(review).toContain("postCashDifference");
+    expect(review).toContain("writeAudit");
+
+    // El faltante es una pérdida y el sobrante un ingreso: tienen cuenta.
+    const ledger = read("src/lib/ledger.ts");
+    expect(ledger).toContain("Faltantes de caja");
+    expect(ledger).toContain("Sobrantes de caja");
+    expect(ledger).toContain("cash_close");
+  });
+
+  it("Caja — el arqueo de la pantalla y el del acta se arman igual", () => {
+    // Un papel que se archiva con el efectivo y no dice lo mismo que el sistema
+    // no prueba nada tres meses después.
+    for (const route of [
+      "src/app/api/cash/sessions/[id]/arqueo/route.ts",
+      "src/app/api/cash/sessions/[id]/arqueo/pdf/route.ts",
+      "src/app/api/cash/sessions/[id]/close/route.ts",
+    ]) {
+      expect(read(route)).toContain("loadCashClose");
+    }
+    expect(read("src/lib/pdf/documents.ts")).toContain("buildCashClosePdf");
+  });
+
+  it("Caja — el efectivo no se suma entre monedas", () => {
+    /**
+     * `expected_cash` era un escalar y el recálculo metía en él importes de
+     * monedas distintas: 100 USD y 100 DOP daban 200 de nada. La pantalla
+     * hacía lo mismo con los KPI, pintando la suma con la moneda de la
+     * primera caja de la lista.
+     */
+    const domain = read("src/lib/cash-close.ts");
+    expect(domain).toContain("CurrencySummary");
+    expect(domain).toMatch(/expected_by_currency|byCurrencyMap/);
+
+    const recalc = read("src/lib/cash.ts");
+    expect(recalc).toContain("summarizeCash");
+    expect(recalc).toContain("expected_by_currency");
+
+    const screen = read("src/app/dashboard/caja/page.tsx");
+    expect(screen).toContain("totalByCurrency");
+    // El KPI ya no recibe la moneda de `sessions[0]`.
+    expect(screen).not.toMatch(/sessions\[0\]\?\.currency/);
+  });
+
+  it("Cobros — lo pactado en la cotización llega a la venta", () => {
+    /**
+     * La cotización negociaba el anticipo desde 0032 y al convertirla esas
+     * condiciones se PERDÍAN: la venta nacía con la política genérica del
+     * producto y el cliente recibía un vencimiento que nadie había acordado.
+     */
+    const convert = read("src/app/api/quotes/[id]/convert/route.ts");
+    expect(convert).toMatch(/terms:\s*\{[\s\S]{0,400}deposit_type/);
+    expect(convert).toContain("balance_due_date");
+
+    const service = read("src/lib/booking-service.ts");
+    expect(service).toMatch(/deposit_type: input\.terms\?\.deposit_type/);
+    // Y el calendario se crea con la venta, fuera de la saga: un plan que no se
+    // pudo escribir se reconstruye —es derivado—, una venta cobrada no.
+    expect(service).toContain("ensureSchedule");
+    const at = service.indexOf("await ensureSchedule(");
+    expect(service.slice(Math.max(0, at - 300), at + 200)).toMatch(/try\s*\{[\s\S]*catch/);
+
+    // La ruta HTTP no acepta condiciones del navegador: permitirían regalarse
+    // un anticipo de cero y un saldo a un año.
+    expect(read("src/app/api/orders/route.ts")).toContain("delete body.terms");
+  });
+
+  it("Cobros — lo imputado se deriva del total cobrado, no se acumula", () => {
+    /**
+     * Ir sumando pago a pago obliga a acertar en todos los casos —un reembolso
+     * parcial, un plan que se rehace a mitad— y basta fallar en uno para que el
+     * plan y el saldo de la orden discrepen para siempre.
+     */
+    const service = read("src/lib/schedule-service.ts");
+    expect(service).toContain("refreshAllocation");
+    expect(service).toMatch(/paid_total/);
+    // Se parte de cero en cada recálculo: repartir sobre lo ya imputado sumaría
+    // dos veces el mismo dinero.
+    expect(service).toMatch(/paid_amount: 0/);
+    // Y rehacer un plan no borra un cobro: las cuotas viejas se anulan.
+    expect(service).toMatch(/status: "cancelled"/);
+
+    // Cada cambio de dinero de la orden lo arrastra.
+    const booking = read("src/lib/booking-service.ts");
+    const sync = booking.slice(booking.indexOf("export async function syncOrderTotals"));
+    expect(sync).toContain("refreshAllocation");
+
+    // Las cuotas suman exactamente el total, también al fijarlas a mano.
+    expect(service).toMatch(/Tienen que cuadrar/);
+  });
+
+  it("Cobros — el recordatorio del saldo por fin se dispara", () => {
+    /**
+     * La plantilla `balance_due` se creó con el módulo de comunicaciones, se
+     * documentó y se sembró en cada empresa… y NADA la disparaba. El sistema
+     * prometía recordarle al cliente su saldo y no recordaba ninguno.
+     */
+    const events = read("src/lib/messaging/events.ts");
+    expect(events).toContain("export async function notifyBalanceDue");
+    expect(events).toMatch(/"balance_due"/);
+
+    const cron = read("src/app/api/cron/collections/route.ts");
+    expect(cron).toContain("notifyBalanceDue");
+    expect(cron).toContain("CRON_SECRET");
+    expect(cron).toMatch(/Bearer \$\{secret\}/);
+    expect(read("vercel.json")).toContain("/api/cron/collections");
+    // Cliente de servicio con filtro explícito: bajo RLS leería cero cuotas y
+    // diría que no hay nada que cobrar.
+    expect(cron).toContain("supabaseService()");
+    expect(cron).toMatch(/eq\("organization_id", row\.organization_id\)/);
+    // Y no le escribe todos los días hasta que pague.
+    expect(cron).toContain("reminded_at");
+    expect(cron).toMatch(/REMIND_COOLDOWN_DAYS/);
+  });
+
+  it("Cobros — la antigüedad y el límite de crédito dejan de ser decorativos", () => {
+    // `aging_bucket` se escribía 'current' al crear y no se tocaba más, y era
+    // editable a mano: el tramo era lo último que alguien tecleó.
+    const resources = read("src/lib/resources.ts");
+    const receivable = /^ {2}receivable: \{\n([\s\S]*?)^ {2}\},/m.exec(resources)?.[1] ?? "";
+    expect(receivable).not.toMatch(/"aging_bucket"/);
+    expect(receivable).not.toMatch(/writable: \[[^\]]*"status"/);
+    expect(read("src/app/api/cron/collections/route.ts")).toContain("agingBucketFor");
+
+    // `credit_limit` llevaba desde 0002 sin que nada lo mirara: se vendía a
+    // crédito sin techo.
+    const service = read("src/lib/booking-service.ts");
+    expect(service).toContain("creditCheck");
+    const at = service.indexOf("creditCheck(creditTerms");
+    expect(at).toBeGreaterThan(0);
+    // La comprobación va ANTES de escribir la orden.
+    expect(at).toBeLessThan(service.indexOf('tenantCreate<Order>(companyId, "order"'));
+    // Y saltárselo es decisión de gestión, nunca del portal del socio.
+    const route = read("src/app/api/orders/route.ts");
+    expect(route).toMatch(/allow_over_credit[\s\S]{0,200}requireAtLeast\(ctx, "manager"\)/);
+    expect(route).toMatch(/partner"\)\s*delete body\.allow_over_credit/);
+  });
+
+  it("Proveedores — el costo sabe de quién es, y sale del mismo cálculo que el margen", () => {
+    /**
+     * `product_cost` guardaba el costo POR PROVEEDOR y `resolveCost` los sumaba
+     * todos tirando el proveedor: el costo servía para el margen y para nada
+     * más —con él no se podía pagar a nadie.
+     */
+    const pricing = read("src/lib/pricing.ts");
+    // El total del margen es la SUMA de las líneas por proveedor, no un cálculo
+    // aparte: con dos implementaciones, arreglar una desvía la otra.
+    expect(pricing).toContain("costLines");
+    expect(pricing).toContain("costTotal");
+    expect(pricing).toContain("loadCostTariffs");
+    // Y las dos cargas usan la misma consulta de tarifas.
+    const resolve = pricing.slice(pricing.indexOf("export async function resolveCost"));
+    expect(resolve).toContain("loadCostTariffs");
+
+    const service = read("src/lib/supplier-settlement-service.ts");
+    expect(service).toContain("loadCostTariffs");
+
+    // El devengo se congela al vender, dentro de la venta: calcularlo al
+    // liquidar aplicaría a lo operado el lunes una tarifa que cambió el
+    // miércoles.
+    const booking = read("src/lib/booking-service.ts");
+    expect(booking).toMatch(/await accrueBookingCosts\(/);
+    const at = booking.indexOf("await accrueBookingCosts(");
+    expect(at).toBeLessThan(booking.indexOf("bookings.push(booking)"));
+  });
+
+  it("Proveedores — una reserva cancelada no le debe nada a nadie", () => {
+    // Dejar el devengo vivo se lo pagaría al transportista en la liquidación
+    // del viernes por un viaje que no salió.
+    expect(read("src/app/api/bookings/[id]/cancel/route.ts")).toContain("cancelBookingCosts");
+    expect(read("src/lib/booking-service.ts")).toContain("cancelBookingCosts");
+    // Y un servicio ya pagado no se toca: ese dinero salió.
+    const service = read("src/lib/supplier-settlement-service.ts");
+    expect(service).toMatch(/\["settled", "paid"\]\.includes/);
+  });
+
+  it("Proveedores — no se paga sin comprobante, ni una liquidación en disputa", () => {
+    /**
+     * El gasto se sostiene ante la DGII con la factura del proveedor, y pagar
+     * una que no cuadra con lo operado es regalar dinero con un papel de por
+     * medio.
+     */
+    const domain = read("src/lib/supplier-settlement.ts");
+    expect(domain).toContain("not_confirmed");
+    expect(domain).toContain("disputed");
+
+    const pay = read("src/app/api/settlements/[id]/pay/route.ts");
+    expect(pay).toContain("payBlocker");
+    // El proveedor cobra el NETO tras retenciones, no el bruto.
+    expect(pay).toMatch(/net_total/);
+    // Saltarse el comprobante es decisión de administración y queda auditada.
+    expect(pay).toMatch(/skip_invoice_check[\s\S]{0,200}requireAtLeast\(ctx, "admin"\)/);
+    expect(pay).toMatch(/severity: body\.skip_invoice_check \? "warning"/);
+
+    // El abono parcial existe: 'partially_paid' estaba en el check desde 0006 y
+    // solo se escribía 'paid'.
+    expect(domain).toContain("stateAfterPayment");
+    expect(pay).toContain("stateAfterPayment");
+  });
+
+  it("Proveedores — las retenciones se calculan sobre la factura, no sobre el neto", () => {
+    const domain = read("src/lib/supplier-settlement.ts");
+    // El ITBIS se SEPARA del bruto; aplicar las dos retenciones sobre el bruto
+    // retendría de más.
+    expect(domain).toMatch(/gross \/ \(1 \+ taxRate \/ 100\)/);
+    expect(domain).toContain("DEFAULT_RETENTIONS");
+    // Los porcentajes del proveedor mandan sobre los del régimen.
+    expect(domain).toMatch(/retention_isr_pct == null \? defaults\.isr/);
+
+    // Y el estado de cuenta que ve el proveedor sale de la misma carga que el
+    // PDF y que la conciliación.
+    for (const route of [
+      "src/app/api/settlements/[id]/statement/route.ts",
+      "src/app/api/settlements/[id]/statement/pdf/route.ts",
+      "src/app/api/settlements/[id]/confirm/route.ts",
+    ]) {
+      expect(read(route)).toContain("loadSupplierStatement");
+    }
+    expect(read("src/lib/pdf/documents.ts")).toContain("buildSupplierStatementPdf");
+  });
+
+  it("Proveedores — una liquidación no mezcla monedas ni reclama dos veces", () => {
+    const service = read("src/lib/supplier-settlement-service.ts");
+    // Pagarle en un solo importe lo que se le debe en pesos y en dólares es
+    // inventarse una tasa.
+    expect(service).toMatch(/Liquida cada moneda por separado/);
+    // Cada devengo se enlaza AL RECLAMARLO: sin eso, dos generaciones
+    // simultáneas incluirían el mismo servicio dos veces.
+    expect(service).toMatch(/CLAIMABLE\.has\(fresh\.status/);
+    expect(service).toMatch(/status: "settled", settlement: settlement\._id/);
+    // Y una liquidación que no reclamó nada se anula en vez de quedar en cero.
+    expect(service).toMatch(/status: "void"/);
+  });
+
   it("los registros derivados no se borran desde el CRUD genérico", () => {
     /**
      * Un recurso con `writable` vacío es un libro: el registro de auditoría, los
@@ -694,7 +1006,8 @@ describe("Panel ejecutivo", () => {
       .filter((m) => /writable:\s*\[\s*\]/.test(m[2]))
       .map((m) => m[1]);
     expect(ledgers).toEqual(expect.arrayContaining([
-      "audit_log", "ledger_entry", "cash_movement", "gift_card_movement", "quote_line", "quote_option",
+      "audit_log", "ledger_entry", "cash_movement", "cash_count", "gift_card_movement",
+      "quote_line", "quote_option", "payment_schedule", "booking_cost",
     ]));
   });
 

@@ -20,7 +20,9 @@ export async function GET(req: NextRequest) {
       _filter: filter,
       _sort: { createdAt: "desc" },
       _limit: 100,
-      cash_register: true, branch: true, user: true,
+      // `closed_by` y `approved_by` los pide la revisión del descuadre: sin
+      // ellos la pantalla no puede decir quién contó ni quién aprobó.
+      cash_register: true, branch: true, user: true, closed_by: true, approved_by: true,
     });
     return ok(rows);
   } catch (err) {

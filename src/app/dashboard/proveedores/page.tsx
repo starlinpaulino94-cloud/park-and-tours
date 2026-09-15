@@ -2,7 +2,7 @@
 
 import { ResourcePage } from "@/components/tf/resource-page";
 import { StatusBadge } from "@/components/tf/status-badge";
-import { GENERIC_STATUS, SUPPLIER_TYPE } from "@/lib/labels";
+import { GENERIC_STATUS, SUPPLIER_TYPE, TAX_REGIME } from "@/lib/labels";
 import { formatMoney } from "@/lib/format";
 import { optionsFrom, CURRENCY_OPTIONS } from "@/components/tf/options";
 import type { Supplier } from "@/lib/types";
@@ -42,6 +42,20 @@ export default function SuppliersPage() {
         { name: "phone", label: "Teléfono" },
         { name: "payment_terms_days", label: "Días de pago", type: "number" },
         { name: "currency", label: "Moneda", type: "select", options: CURRENCY_OPTIONS },
+        // Régimen fiscal y retenciones (0040). Es lo que decide cuánto se le
+        // transfiere de verdad: a una persona física hay que retenerle ISR e
+        // ITBIS, y pagarle el bruto deja a la empresa debiéndoselo al fisco.
+        { name: "tax_regime", label: "Régimen fiscal", type: "select", defaultValue: "company",
+          options: optionsFrom(TAX_REGIME),
+          help: "Una persona física lleva retención de ISR e ITBIS; una empresa formal, normalmente ninguna." },
+        { name: "tax_rate", label: "ITBIS que factura (%)", type: "number",
+          help: "Para poder separar el impuesto del importe bruto. En blanco, se entiende que no factura ITBIS." },
+        { name: "retention_isr_pct", label: "Retención de ISR (%)", type: "number",
+          help: "En blanco, se aplica la del régimen. Un 0 explícito significa no retener." },
+        { name: "retention_itbis_pct", label: "Retención de ITBIS (%)", type: "number",
+          help: "Porcentaje del ITBIS facturado que se retiene." },
+        { name: "bank_name", label: "Banco" },
+        { name: "bank_account", label: "Cuenta bancaria" },
         { name: "address", label: "Dirección", span: 2 },
         { name: "notes", label: "Notas", type: "textarea", span: 2 },
         { name: "status", label: "Estado", type: "select", defaultValue: "active",

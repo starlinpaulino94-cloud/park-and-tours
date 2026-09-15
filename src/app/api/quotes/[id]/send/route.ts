@@ -8,6 +8,7 @@ import { sendBlocker, BLOCK_MESSAGE, versionedCode } from "@/lib/quotes";
 import { loadQuoteBundle, recalculateQuote } from "@/lib/quote-service";
 import { depositDue } from "@/lib/quotes";
 import { notifyQuoteSent } from "@/lib/messaging/events";
+import { flushOutboxAfterResponse } from "@/lib/messaging/flush";
 
 /**
  * POST /api/quotes/:id/send — registra que la propuesta salió hacia el cliente.
@@ -69,6 +70,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       metadata: { total: totals.total, sent_count: sentCount, valid_until: quote.valid_until },
     });
 
+    // La propuesta ya está marcada como enviada. El correo con el PDF sale en
+    // cuanto esta respuesta llegue al vendedor, no cuando pase el barrido.
+    flushOutboxAfterResponse(ctx.company, ctx.companyId);
     return ok({ status: "sent", sent_count: sentCount, totals });
   } catch (err) {
     return fail(err);

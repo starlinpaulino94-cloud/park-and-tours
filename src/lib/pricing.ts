@@ -1,4 +1,5 @@
 import "server-only";
+import { costLines, costTotal, type CostBasis, type CostTariff } from "@/lib/supplier-settlement";
 import { tenantQuery } from "@/lib/tenant";
 import type {
   Channel, Currency, PriceRule, PriceSnapshot, Product, ProductModality,
@@ -197,37 +198,41 @@ export async function resolvePrice(input: PriceInput): Promise<PriceResult> {
   return { unitPrice, grossAmount, discountAmount, taxAmount, totalAmount, currency, snapshot, appliedRule };
 }
 
-/** Total supplier cost for a booking, used for margin/profitability. */
+/**
+ * Las tarifas de proveedor activas de un producto.
+ *
+ * Se expone porque el devengo por proveedor y el costo total tienen que salir de
+ * las MISMAS tarifas: con dos consultas distintas basta que una filtre por
+ * estado y la otra no para que el margen y lo que se le paga al proveedor dejen
+ * de cuadrar.
+ */
+export async function loadCostTariffs(
+  companyId: string,
+  productId: string
+): Promise<CostTariff[]> {
+  return tenantQuery<CostTariff>(companyId, "product_cost", {
+    _filter: { product: productId, status: "active" },
+    _limit: 100,
+    supplier: true,
+  });
+}
+
+/**
+ * Costo total de proveedores de una reserva, para el margen.
+ *
+ * Es la SUMA de las líneas por proveedor (`costLines`), no un cálculo aparte:
+ * antes esta función recorría las tarifas por su cuenta y tiraba el proveedor,
+ * así que el costo servía para el margen y para nada más —con él no se podía
+ * pagar a nadie— y cualquier arreglo en un lado dejaba el otro desviado.
+ */
 export async function resolveCost(
   companyId: string,
   productId: string,
   quantity: number,
-  fallbackUnitCost = 0
+  fallbackUnitCost = 0,
+  basis: Partial<CostBasis> = {}
 ): Promise<number> {
-  const costs = await tenantQuery<{ cost_type?: string; amount?: number }>(companyId, "product_cost", {
-    _filter: { product: productId, status: "active" },
-    _limit: 100,
-  });
-  if (costs.length === 0) return round2(fallbackUnitCost * quantity);
-
-  let total = 0;
-  for (const c of costs) {
-    const amount = c.amount ?? 0;
-    switch (c.cost_type) {
-      case "per_person":
-        total += amount * quantity;
-        break;
-      case "per_group":
-      case "per_departure":
-      case "per_vehicle":
-      case "fixed":
-        total += amount;
-        break;
-      case "percentage":
-        break; // applied on revenue by the caller when needed
-      default:
-        total += amount * quantity;
-    }
-  }
-  return round2(total);
+  const tariffs = await loadCostTariffs(companyId, productId);
+  if (tariffs.length === 0) return round2(fallbackUnitCost * quantity);
+  return costTotal(costLines(tariffs, { pax: quantity, ...basis }));
 }

@@ -514,4 +514,306 @@ end $$;
 
 select set_config('request.jwt.claims', '', false);
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 0038 — El arqueo de caja
+--
+-- Lo que se comprueba aquí es lo que sostiene el control: que el conteo de una
+-- moneda no se pueda duplicar, que el estado de revisión exista de verdad, y
+-- que un conteo no se pueda colgar de la caja de otra empresa.
+-- ─────────────────────────────────────────────────────────────────────────────
+do $$
+declare
+  org uuid := '11111111-1111-1111-1111-111111111111';
+  other uuid := '99999999-9999-9999-9999-999999999999';
+  sess uuid := 'ffffffff-0000-0000-0000-000000000002';
+begin
+  -- La tolerancia es política de la empresa y vive en la caja.
+  update cash_register set difference_tolerance = 25
+   where id = 'ffffffff-0000-0000-0000-000000000001';
+
+  insert into cash_count (organization_id, cash_session_id, currency, kind, breakdown,
+                          counted_total, expected_total, difference)
+  values (org, sess, 'dop', 'close',
+          '[{"denomination":2000,"quantity":3},{"denomination":100,"quantity":5}]'::jsonb,
+          6500, 6700, -200);
+
+  -- Dos conteos de cierre de la misma moneda serían dos verdades sobre el
+  -- mismo dinero.
+  begin
+    insert into cash_count (organization_id, cash_session_id, currency, kind)
+    values (org, sess, 'dop', 'close');
+    raise exception 'se admitieron dos conteos de cierre de la misma moneda';
+  exception when unique_violation then null;
+  end;
+
+  -- La otra moneda del turno sí se cuenta aparte: ese es el punto.
+  insert into cash_count (organization_id, cash_session_id, currency, kind, counted_total)
+  values (org, sess, 'usd', 'close', 120);
+
+  -- Un arqueo sorpresa puede repetirse: el índice único es parcial.
+  insert into cash_count (organization_id, cash_session_id, currency, kind, counted_total)
+  values (org, sess, 'dop', 'spot', 3000), (org, sess, 'dop', 'spot', 2500);
+
+  -- Un conteo colgado de la caja de otra empresa no entra.
+  begin
+    insert into cash_count (organization_id, cash_session_id, currency, kind)
+    values (other, sess, 'dop', 'spot');
+    raise exception 'se admitió un conteo entre inquilinos distintos';
+  exception when others then
+    if position('Cross-tenant' in sqlerrm) = 0 then
+      raise exception 'el rechazo entre inquilinos no se explica: %', sqlerrm;
+    end if;
+  end;
+
+  -- El estado de revisión existe y es alcanzable; 'reconciled' ya estaba en el
+  -- check desde 0006 pero ninguna ruta lo escribía.
+  update cash_session
+     set status = 'pending_approval', requires_approval = true, closed_by = null,
+         expected_by_currency = '{"dop":6700,"usd":120}'::jsonb,
+         counted_by_currency  = '{"dop":6500,"usd":120}'::jsonb,
+         difference_by_currency = '{"dop":-200,"usd":0}'::jsonb,
+         card_batch_total = 4200, card_batch_reference = 'LOTE-77',
+         deposit_reference = 'BOV-12', difference_reason = 'vuelto mal dado'
+   where id = sess;
+
+  update cash_session set status = 'reconciled', approved_at = now(), approval_notes = 'revisado'
+   where id = sess;
+
+  begin
+    update cash_session set status = 'whatever' where id = sess;
+    raise exception 'la sesión admitió un estado inventado';
+  exception when check_violation then null;
+  end;
+
+  -- Y el descuadre llega a la contabilidad enlazado a su turno.
+  insert into ledger_entry (organization_id, entry_code, line_no, source_type, cash_session_id, debit, credit)
+  values (org, 'AS-TEST-1', 1, 'cash_close', sess, 200, 0),
+         (org, 'AS-TEST-1', 2, 'cash_close', sess, 0, 200);
+
+  raise notice 'arqueo: TODAS LAS ASERCIONES PASARON';
+end $$;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 0039 — El anticipo, el saldo y el plan de cuotas
+--
+-- Lo que se prueba: que el calendario no pueda tener dos cuotas con el mismo
+-- número, que el estado de cobro de la venta exista de verdad, que una cuota no
+-- se pueda colgar de la orden de otra empresa, y que la antigüedad hable el
+-- mismo idioma que la pantalla —que es justo lo que no pasaba.
+-- ─────────────────────────────────────────────────────────────────────────────
+do $$
+declare
+  org uuid := '11111111-1111-1111-1111-111111111111';
+  other uuid := '99999999-9999-9999-9999-999999999999';
+  ord uuid := '00000000-0000-0000-0000-0000000000a1';
+  bk  uuid := 'dddddddd-0000-0000-0000-000000000001';
+  sched uuid;
+begin
+  -- Condiciones pactadas en la venta y política del producto.
+  update sales_order
+     set deposit_type = 'percent', deposit_percent = 30, deposit_due_date = current_date,
+         balance_due_date = current_date + 30, payment_terms = '30% ahora, saldo 15 días antes',
+         hold_until = now() + interval '48 hours', collection_status = 'on_track'
+   where id = ord;
+
+  update product
+     set deposit_type = 'percent', deposit_percent = 30, balance_due_days = 15
+   where id = 'bbbbbbbb-0000-0000-0000-000000000001';
+
+  update booking set balance_due_date = current_date + 15 where id = bk;
+
+  insert into payment_schedule (organization_id, order_id, booking_id, sequence, kind, due_date, amount, balance)
+  values (org, ord, bk, 1, 'deposit', current_date, 300, 300)
+  returning id into sched;
+
+  insert into payment_schedule (organization_id, order_id, sequence, kind, due_date, amount, balance)
+  values (org, ord, 2, 'balance', current_date + 30, 700, 700);
+
+  -- Dos cuotas con el mismo número son dos calendarios a la vez.
+  begin
+    insert into payment_schedule (organization_id, order_id, sequence, kind, due_date, amount)
+    values (org, ord, 1, 'installment', current_date + 7, 100);
+    raise exception 'se admitieron dos cuotas con el mismo número';
+  exception when unique_violation then null;
+  end;
+
+  -- Una cuota de la orden de otra empresa no entra.
+  begin
+    insert into payment_schedule (organization_id, order_id, sequence, kind, due_date, amount)
+    values (other, ord, 9, 'installment', current_date, 50);
+    raise exception 'se admitió una cuota entre inquilinos distintos';
+  exception when others then
+    if position('Cross-tenant' in sqlerrm) = 0 then
+      raise exception 'el rechazo entre inquilinos no se explica: %', sqlerrm;
+    end if;
+  end;
+
+  -- Los estados del calendario y del cobro son los que escribe la aplicación.
+  update payment_schedule set status = 'overdue' where id = sched;
+  update payment_schedule set status = 'partially_paid', paid_amount = 100, balance = 200 where id = sched;
+  update payment_schedule set status = 'waived' where id = sched;
+
+  begin
+    update payment_schedule set status = 'inventado' where id = sched;
+    raise exception 'la cuota admitió un estado inventado';
+  exception when check_violation then null;
+  end;
+
+  update sales_order set collection_status = 'overdue' where id = ord;
+  update sales_order set collection_status = 'settled' where id = ord;
+
+  begin
+    update sales_order set collection_status = 'loquesea' where id = ord;
+    raise exception 'la venta admitió un estado de cobro inventado';
+  exception when check_violation then null;
+  end;
+
+  begin
+    update sales_order set deposit_type = 'porcentaje' where id = ord;
+    raise exception 'la venta admitió un tipo de anticipo inventado';
+  exception when check_violation then null;
+  end;
+
+  -- El pago se imputa a una cuota.
+  insert into payment (organization_id, order_id, schedule_id, reference, amount, currency)
+  values (org, ord, sched, 'PAY-RT-SCHED', 300, 'usd');
+
+  -- Y la antigüedad habla el mismo idioma que la pantalla: 'd1_30', no '1_30'.
+  -- El enum decía una cosa y la interfaz otra, así que guardar el tramo que la
+  -- propia UI ofrecía lo rechazaba la base.
+  insert into receivable (organization_id, order_id, amount, balance, aging_bucket, due_date)
+  values (org, ord, 500, 500, 'd1_30', current_date - 10);
+
+  begin
+    insert into receivable (organization_id, order_id, amount, aging_bucket)
+    values (org, ord, 100, '1_30');
+    raise exception 'el enum sigue admitiendo el vocabulario viejo';
+  exception when invalid_text_representation then null;
+  end;
+
+  -- La retención del cupo se configura por empresa; nulo significa sin límite.
+  update organizations set hold_hours = 48 where id = org;
+  update organizations set hold_hours = null where id = org;
+
+  begin
+    update organizations set hold_hours = -1 where id = org;
+    raise exception 'se admitió una retención negativa';
+  exception when check_violation then null;
+  end;
+
+  raise notice 'cobros: TODAS LAS ASERCIONES PASARON';
+end $$;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 0040 — La liquidación del proveedor que operó el servicio
+--
+-- Lo que se comprueba: que el devengo se pueda colgar de una reserva y de su
+-- proveedor pero no de los de otra empresa, que el estado del devengo y el de la
+-- liquidación existan de verdad, que 'supplier' sea un beneficiario válido, y
+-- que la cuenta por pagar pueda nombrar al proveedor —que podía desde 0030 y
+-- nadie lo hacía nunca.
+-- ─────────────────────────────────────────────────────────────────────────────
+do $$
+declare
+  org uuid := '11111111-1111-1111-1111-111111111111';
+  other uuid := '99999999-9999-9999-9999-999999999999';
+  bk  uuid := 'dddddddd-0000-0000-0000-000000000001';
+  dep uuid := 'eeeeeeee-0000-0000-0000-000000000001';
+  sup uuid;
+  tariff uuid;
+  liq uuid;
+  cost uuid;
+begin
+  insert into supplier (organization_id, name, supplier_type, tax_id, tax_regime,
+                        retention_isr_pct, retention_itbis_pct, tax_rate,
+                        payment_terms_days, bank_name, bank_account)
+  values (org, 'Transporte de prueba', 'transport', '130123456', 'individual',
+          10, 100, 18, 15, 'Banco Popular', '1234567890')
+  returning id into sup;
+
+  insert into product_cost (organization_id, product_id, supplier_id, concept, cost_type, amount, currency)
+  values (org, 'bbbbbbbb-0000-0000-0000-000000000001', sup, 'Transporte', 'per_person', 350, 'dop')
+  returning id into tariff;
+
+  -- El devengo: lo que esta reserva le debe a ese proveedor.
+  insert into booking_cost (organization_id, booking_id, departure_id, supplier_id, product_cost_id,
+                            concept, cost_type, quantity, unit_cost, amount, currency)
+  values (org, bk, dep, sup, tariff, 'Transporte', 'per_person', 2, 350, 700, 'dop')
+  returning id into cost;
+
+  update booking set accrued_cost = 700 where id = bk;
+
+  -- Todos los estados del devengo son alcanzables.
+  update booking_cost set status = 'confirmed', confirmed_amount = 700 where id = cost;
+  update booking_cost set status = 'disputed', confirmed_amount = 900 where id = cost;
+  update booking_cost set status = 'settled' where id = cost;
+  update booking_cost set status = 'paid' where id = cost;
+  update booking_cost set status = 'waived' where id = cost;
+  update booking_cost set status = 'accrued', confirmed_amount = null where id = cost;
+
+  begin
+    update booking_cost set status = 'inventado' where id = cost;
+    raise exception 'el devengo admitió un estado inventado';
+  exception when check_violation then null;
+  end;
+
+  begin
+    update booking_cost set cost_type = 'por_persona' where id = cost;
+    raise exception 'el devengo admitió un tipo de costo inventado';
+  exception when check_violation then null;
+  end;
+
+  -- Un devengo no se cuelga de la reserva de otra empresa.
+  begin
+    insert into booking_cost (organization_id, booking_id, concept, amount)
+    values (other, bk, 'Cruzado', 100);
+    raise exception 'se admitió un devengo entre inquilinos distintos';
+  exception when others then
+    if position('Cross-tenant' in sqlerrm) = 0 then
+      raise exception 'el rechazo entre inquilinos no se explica: %', sqlerrm;
+    end if;
+  end;
+
+  -- 'supplier' es un beneficiario válido de una liquidación (el enum se amplió).
+  insert into settlement (organization_id, code, beneficiary_type, supplier_id, beneficiary_name,
+                          services_total, confirmed_total, base_total,
+                          retention_isr, retention_itbis, retention_total, net_total,
+                          supplier_invoice_number, supplier_invoice_ncf, supplier_invoice_date,
+                          currency, status)
+  values (org, 'LIQ-RT-SUP', 'supplier', sup, 'Transporte de prueba',
+          700, 826, 700, 70, 126, 196, 630,
+          'B0100000123', 'B0100000123', current_date, 'dop', 'pending')
+  returning id into liq;
+
+  update booking_cost set settlement_id = liq, status = 'settled' where id = cost;
+
+  -- El abono parcial existe: 'partially_paid' estaba en el check desde 0006 y
+  -- ninguna ruta lo escribía.
+  update settlement set status = 'partially_paid', paid_total = 300, pending_total = 330,
+                        last_payment_at = now()
+   where id = liq;
+  update settlement set status = 'disputed', dispute_reason = 'no cuadra' where id = liq;
+  update settlement set status = 'paid', paid_total = 630, pending_total = 0 where id = liq;
+
+  -- La cuenta por pagar nombra al proveedor.
+  insert into payable (organization_id, supplier_id, settlement_id, concept, category,
+                       amount, balance, currency, status)
+  values (org, sup, liq, 'Liquidación de servicios', 'supplier_services', 630, 630, 'dop', 'pending');
+
+  -- El régimen fiscal está acotado.
+  begin
+    update supplier set tax_regime = 'loquesea' where id = sup;
+    raise exception 'el proveedor admitió un régimen fiscal inventado';
+  exception when check_violation then null;
+  end;
+
+  begin
+    update supplier set retention_isr_pct = 120 where id = sup;
+    raise exception 'se admitió una retención por encima del 100%%';
+  exception when check_violation then null;
+  end;
+
+  raise notice 'liquidacion_proveedor: TODAS LAS ASERCIONES PASARON';
+end $$;
+
 rollback;

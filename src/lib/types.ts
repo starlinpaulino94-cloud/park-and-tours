@@ -65,6 +65,8 @@ export interface Company extends BaseRecord {
   address?: string; city?: string; country?: string; timezone?: string;
   logo?: StoredFile; logo_url?: string; brand_color?: string;
   base_currency?: Currency; plan?: Ref<Plan>;
+  /** 0039 — horas que se retiene la plaza de una reserva sin cobrar. */
+  hold_hours?: number;
   subscription_status?: "trial" | "active" | "past_due" | "cancelled" | "suspended";
   trial_ends_at?: string; next_billing_at?: string;
   stripe_customer_id?: string; stripe_subscription_id?: string;
@@ -287,6 +289,12 @@ export interface Order extends BaseRecord {
   notes?: string;
   booking?: Booking[]; payment?: Payment[];
   _count?: Record<string, number>;
+  /** 0039 — las condiciones de cobro pactadas y el estado del calendario. */
+  deposit_type?: DepositType; deposit_percent?: number; deposit_amount?: number;
+  deposit_due_date?: string; balance_due_date?: string; payment_terms?: string;
+  hold_until?: string;
+  collection_status?: CollectionStatus;
+  payment_schedule?: PaymentScheduleRow[];
 }
 
 export type BookingStatus =
@@ -342,6 +350,8 @@ export interface Booking extends BaseRecord {
   notes?: string; internal_notes?: string;
   participant?: Participant[]; voucher?: Voucher[];
   commission?: Commission[]; payment?: Payment[]; pickup?: Pickup[];
+  /** 0039 — cuándo vence el saldo de ESTA reserva, derivada de su salida. */
+  balance_due_date?: string;
   _count?: Record<string, number>;
 }
 
@@ -423,6 +433,29 @@ export interface Settlement extends BaseRecord {
   status?: "pending" | "approved" | "partially_paid" | "paid" | "held" | "disputed" | "void";
   paid_at?: string;
   issued_at?: string; pdf_file?: StoredFile; notes?: string;
+  /** 0040 — la liquidación de un proveedor operativo. */
+  supplier?: Ref<Supplier>;
+  services_total?: number; confirmed_total?: number; adjustments_total?: number;
+  retention_isr?: number; retention_itbis?: number; retention_total?: number;
+  net_total?: number;
+  supplier_invoice_number?: string; supplier_invoice_ncf?: string; supplier_invoice_date?: string;
+  confirmed_at?: string; confirmed_by?: Ref<AppUser>; dispute_reason?: string;
+  beneficiary_name?: string;
+  last_payment_at?: string;
+  booking_cost?: BookingCost[];
+}
+
+/** 0040 — lo que una reserva le debe a un proveedor por el servicio operado. */
+export interface BookingCost extends BaseRecord {
+  company?: Ref<Company>; booking?: Ref<Booking>; departure?: Ref<Departure>;
+  supplier?: Ref<Supplier>; product_cost?: Ref<ProductCost>; settlement?: Ref<Settlement>;
+  concept?: string;
+  cost_type?: "per_person" | "per_group" | "per_departure" | "per_vehicle" | "percentage" | "fixed";
+  quantity?: number; unit_cost?: number; amount?: number;
+  confirmed_amount?: number | null;
+  currency?: Currency;
+  status?: "accrued" | "confirmed" | "disputed" | "settled" | "paid" | "cancelled" | "waived";
+  notes?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -432,6 +465,8 @@ export interface CashRegister extends BaseRecord {
   company?: Ref<Company>; branch?: Ref<Branch>;
   name?: string; code?: string; terminal?: string;
   currency?: Currency; status?: "active" | "inactive";
+  /** Descuadre que un turno puede cerrar sin supervisor (0038). */
+  difference_tolerance?: number;
 }
 
 export interface CashSession extends BaseRecord {
@@ -441,8 +476,42 @@ export interface CashSession extends BaseRecord {
   opening_amount?: number; expected_cash?: number; counted_cash?: number;
   difference?: number; card_total?: number; transfer_total?: number;
   sales_total?: number; expenses_total?: number; withdrawals_total?: number;
-  currency?: Currency; status?: "open" | "closed" | "reconciled"; notes?: string;
+  currency?: Currency; status?: "open" | "pending_approval" | "closed" | "reconciled"; notes?: string;
   cash_movement?: CashMovement[];
+  // 0038 — el arqueo: quién cerró, quién aprobó, y qué pasó en cada moneda.
+  closed_by?: Ref<AppUser>; approved_by?: Ref<AppUser>; approved_at?: string;
+  approval_notes?: string; difference_reason?: string; requires_approval?: boolean;
+  expected_by_currency?: Record<string, number>;
+  counted_by_currency?: Record<string, number>;
+  difference_by_currency?: Record<string, number>;
+  card_batch_total?: number; card_batch_reference?: string; deposit_reference?: string;
+  cash_count?: CashCount[];
+}
+
+/** Conteo físico de una moneda en una sesión de caja (0038). */
+export interface CashCount extends BaseRecord {
+  company?: Ref<Company>; cash_session?: Ref<CashSession>;
+  currency?: Currency;
+  kind?: "open" | "close" | "spot";
+  /** [{ denomination: 2000, quantity: 3 }, ...] */
+  breakdown?: { denomination: number; quantity: number }[];
+  counted_total?: number; expected_total?: number; difference?: number;
+  counted_by?: Ref<AppUser>; counted_at?: string; notes?: string;
+}
+
+/** 0039 — el calendario de cobro de una venta. */
+export type DepositType = "none" | "percent" | "amount";
+export type CollectionStatus = "none" | "on_track" | "due_soon" | "overdue" | "settled";
+
+export interface PaymentScheduleRow extends BaseRecord {
+  company?: Ref<Company>; order?: Ref<Order>; booking?: Ref<Booking>;
+  sequence?: number;
+  kind?: "deposit" | "installment" | "balance";
+  due_date?: string;
+  amount?: number; paid_amount?: number; balance?: number;
+  currency?: Currency;
+  status?: "pending" | "partially_paid" | "paid" | "overdue" | "waived" | "cancelled";
+  paid_at?: string; reminded_at?: string; notes?: string;
 }
 
 /** Enum `payment_method` de la base, literal. */
@@ -486,6 +555,10 @@ export interface Supplier extends BaseRecord {
   tax_id?: string; contact_name?: string; email?: string; phone?: string; address?: string;
   currency?: Currency; payment_terms_days?: number; balance?: number;
   status?: "active" | "inactive"; notes?: string;
+  /** 0040 — régimen fiscal y retenciones de la DGII, y datos de pago. */
+  tax_regime?: "company" | "individual" | "informal";
+  retention_isr_pct?: number; retention_itbis_pct?: number; tax_rate?: number;
+  bank_account?: string; bank_name?: string;
 }
 
 export interface Payable extends BaseRecord {

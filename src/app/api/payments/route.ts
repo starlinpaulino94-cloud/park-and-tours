@@ -3,6 +3,7 @@ import { requireTenant, requireAtLeast, tenantQuery, tenantCreate, tenantFindOne
 import { ok, fail, readJson } from "@/lib/api-response";
 import { syncOrderTotals } from "@/lib/booking-service";
 import { recalcCashSession } from "@/lib/cash";
+import { ensureSchedule, scheduleRefFor } from "@/lib/schedule-service";
 import { postPayment } from "@/lib/ledger-events";
 import { resolveExchangeRate } from "@/lib/currency";
 import { newPaymentReference } from "@/lib/codes";
@@ -11,6 +12,7 @@ import { notifyPaymentReceived } from "@/lib/messaging/events";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import type { CashSession, Currency, Order, PaymentMethod, Receivable } from "@/lib/types";
+import { flushOutboxAfterResponse } from "@/lib/messaging/flush";
 
 /**
  * POST /api/payments — registers a payment/refund, updates the order and
@@ -111,8 +113,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // A qué cuota apunta este cobro, calculado ANTES de registrarlo: después de
+    // imputarlo el plan ya ha cambiado y la respuesta sería otra. Es una
+    // etiqueta para el recibo ("abono de la cuota 2 de 3"); la verdad de lo
+    // imputado la lleva el recálculo del plan.
+    const scheduleRef = orderId
+      ? await scheduleRefFor(ctx.companyId, orderId, amount).catch(() => null)
+      : null;
+
     const payment = await tenantCreate(ctx.companyId, "payment", {
       order: orderId || undefined,
+      schedule: scheduleRef || undefined,
       booking: body.booking_id || undefined,
       customer: body.customer_id || (order && typeof order.customer === "object" ? order.customer._id : order?.customer) || undefined,
       partner: body.partner_id || (order && typeof order.partner === "object" ? order.partner?._id : order?.partner) || undefined,
@@ -151,7 +162,18 @@ export async function POST(req: NextRequest) {
     }
 
     // ---- keep order + bookings in sync -------------------------------------
-    if (orderId) await syncOrderTotals(ctx.companyId, orderId);
+    // `syncOrderTotals` recalcula además la imputación del plan de cobro, que se
+    // deriva de `paid_total`. `ensureSchedule` va después para que una venta
+    // anterior a 0039 —sin plan— gane el suyo en el primer cobro en vez de
+    // quedarse sin calendario para siempre.
+    if (orderId) {
+      await syncOrderTotals(ctx.companyId, orderId);
+      try {
+        await ensureSchedule(ctx.companyId, orderId);
+      } catch (err) {
+        console.error("[payments] no se pudo actualizar el plan de cobro:", err);
+      }
+    }
 
     // ---- settle the B2B receivable(s) --------------------------------------
     // AUD-F21: apply the payment with the correct SIGN and PRORATE it across
@@ -243,6 +265,9 @@ export async function POST(req: NextRequest) {
     }
 
     console.log(`[payments] ${payment.reference} · ${amount} ${currency} · ${body.method}`);
+    // El cobro ya está registrado. El recibo sale en cuanto el cajero reciba su
+    // respuesta, sin que la caja espere al proveedor de correo.
+    flushOutboxAfterResponse(ctx.company, ctx.companyId);
     return ok(payment);
   } catch (err) {
     return fail(err);

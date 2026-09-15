@@ -5,7 +5,11 @@ import { describe, it, expect, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import { PDFDocument } from "pdf-lib";
-import { buildVoucherPdf, buildQuotePdf, buildManifestPdf, buildInvoicePdf } from "@/lib/pdf/documents";
+import {
+  buildVoucherPdf, buildQuotePdf, buildManifestPdf, buildInvoicePdf, buildCashClosePdf,
+  buildSupplierStatementPdf,
+} from "@/lib/pdf/documents";
+import { DENOMINATIONS, summarizeCash } from "@/lib/cash-close";
 import { manifestRow, sortByRoute, pickupStops, paxSummary } from "@/lib/manifest";
 
 const company = { name: "Caribe Tours", email: "hola@caribe.do", phone: "+1 809 555 0100", address: "Bávaro" };
@@ -236,5 +240,137 @@ describe("documentos — manifiesto", () => {
 
   it("una salida sin nadie reservado sigue siendo un documento válido", async () => {
     assertIsPdf(await buildManifestPdf(null, { product_name: "Saona" }, [], [], paxSummary([])));
+  });
+});
+
+describe("el acta del arqueo", () => {
+  const turno = (currency: string, expected: number) => ({
+    ...summarizeCash(
+      [
+        { movement_type: "opening", amount: 5000, currency },
+        { movement_type: "sale", amount: expected, currency },
+      ],
+      [{ method: "cash", amount: expected, currency }],
+    )[0],
+    counted: null as number | null,
+    difference: null as number | null,
+    breakdown: [] as { denomination: number; quantity: number }[],
+  });
+
+  const meta = {
+    code: "CAJ-0042", register: "Caja recepción", branch: "Bávaro", cashier: "Ana Cajera",
+    opened_at: "2026-04-18T12:00:00Z", closed_at: "2026-04-18T23:30:00Z",
+    status: "closed", approved_by: null, approved_at: null,
+    difference_reason: null, deposit_reference: null, notes: null,
+    card: { expected: 0, batch: null, difference: null, reference: null },
+  };
+
+  it("lleva el desglose por denominación", async () => {
+    const row = {
+      ...turno("dop", 12000),
+      counted: 16800,
+      difference: -200,
+      breakdown: [
+        { denomination: 2000, quantity: 8 },
+        { denomination: 500, quantity: 1 },
+        { denomination: 100, quantity: 3 },
+      ],
+    };
+    const bytes = await buildCashClosePdf(company, meta, [row]);
+    assertIsPdf(bytes);
+  });
+
+  it("un turno con dos monedas las separa en el papel", async () => {
+    const bytes = await buildCashClosePdf(company, meta, [
+      { ...turno("dop", 12000), counted: 17000, difference: 0, breakdown: [{ denomination: 1000, quantity: 17 }] },
+      { ...turno("usd", 300), counted: 5300, difference: 0, breakdown: [{ denomination: 100, quantity: 53 }] },
+    ]);
+    assertIsPdf(bytes);
+  });
+
+  it("un arqueo con todas las denominaciones del peso cabe y pagina bien", async () => {
+    const breakdown = DENOMINATIONS.dop.map((denomination) => ({ denomination, quantity: 9 }));
+    const bytes = await buildCashClosePdf(
+      company,
+      { ...meta, status: "pending_approval", difference_reason: "Faltó un billete en el vuelto de la tarde" },
+      [{ ...turno("dop", 40000), counted: 32229, difference: -1200, breakdown }]
+    );
+    assertIsPdf(bytes);
+    expect(await pageCount(bytes)).toBeGreaterThanOrEqual(1);
+  });
+
+  it("una caja sin cerrar todavía es un documento válido", async () => {
+    assertIsPdf(await buildCashClosePdf(null, { ...meta, closed_at: null, status: "open" }, [turno("dop", 0)]));
+  });
+});
+
+describe("el estado de cuenta del proveedor", () => {
+  const meta = {
+    code: "LIQ-0091", supplier_name: "Transporte Bávaro SRL", supplier_tax_id: "130123456",
+    period_from: "2026-04-01", period_to: "2026-04-30", status: "pending",
+    invoice_number: null as string | null, invoice_ncf: null as string | null,
+    invoice_date: null as string | null,
+    currency: "dop",
+    services: 24000, confirmed: 24000, adjustments: 0,
+    retention_isr: 0, retention_itbis: 0, retention_total: 0,
+    net: 24000, taxable_base: 24000,
+    dispute_reason: null as string | null, notes: null as string | null,
+  };
+
+  const line = (n: number, confirmed?: number | null) => ({
+    concept: "Transporte", booking_number: `RSV-${n}`,
+    departure_at: `2026-04-${String((n % 28) + 1).padStart(2, "0")}T08:00:00Z`,
+    product_name: "Isla Saona", quantity: 2, unit_cost: 600,
+    amount: 1200,
+    confirmed_amount: confirmed ?? null,
+    variance: confirmed == null ? 0 : confirmed - 1200,
+  });
+
+  it("sin factura todavía, enseña lo operado y avisa de que falta el comprobante", async () => {
+    const bytes = await buildSupplierStatementPdf(company, meta, [line(1), line(2)]);
+    assertIsPdf(bytes);
+  });
+
+  it("con factura, enseña operado y facturado uno al lado del otro", async () => {
+    const bytes = await buildSupplierStatementPdf(
+      company,
+      {
+        ...meta, invoice_number: "B0100000123", invoice_ncf: "B0100000123",
+        invoice_date: "2026-05-02", confirmed: 25200,
+        retention_isr: 0, retention_itbis: 0, retention_total: 0, net: 25200,
+      },
+      [line(1, 1200), line(2, 1400)]
+    );
+    assertIsPdf(bytes);
+  });
+
+  it("con retenciones, desglosa la base y cada retención", async () => {
+    const bytes = await buildSupplierStatementPdf(
+      company,
+      {
+        ...meta, supplier_name: "Juan Guía", invoice_number: "B0200000045",
+        confirmed: 11800, taxable_base: 10000,
+        retention_isr: 1000, retention_itbis: 1800, retention_total: 2800, net: 9000,
+      },
+      [line(1, 11800)]
+    );
+    assertIsPdf(bytes);
+  });
+
+  it("un período largo pagina y repite la cabecera de la tabla", async () => {
+    const many = Array.from({ length: 90 }, (_, i) => line(i + 1, 1200));
+    const bytes = await buildSupplierStatementPdf(
+      company, { ...meta, invoice_number: "B0100000999", confirmed: 108000, net: 108000 }, many
+    );
+    assertIsPdf(bytes);
+    expect(await pageCount(bytes)).toBeGreaterThan(1);
+  });
+
+  it("una liquidación en disputa lo dice en el papel", async () => {
+    assertIsPdf(await buildSupplierStatementPdf(
+      null,
+      { ...meta, invoice_number: "B01", dispute_reason: "3 servicios no cuadran con lo operado" },
+      [line(1, 5000)]
+    ));
   });
 });
