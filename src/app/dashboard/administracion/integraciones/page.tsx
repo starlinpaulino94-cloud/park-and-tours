@@ -3,10 +3,13 @@
 import { SimpleResource } from "@/components/tf/simple-resource";
 import { INTEGRATION_CATEGORY, INTEGRATION_PROVIDER, INTEGRATION_STATUS, SYNC_FREQUENCY } from "@/lib/labels-modules";
 import { optionsFrom } from "@/components/tf/options";
+import { MembegoCard } from "./membego-card";
 
 export default function Page() {
   return (
-    <SimpleResource
+    <div className="space-y-6">
+      <MembegoCard />
+      <SimpleResource
       resource="integration"
       eyebrow="Administración"
       title="Integraciones"
@@ -39,6 +42,7 @@ export default function Page() {
         { key: "last_sync_at", header: "Última sincronización", kind: "datetime", hideOn:"md" },
         { key: "records_synced", header: "Registros", kind: "number", align:"right" },
       ]}
-    />
+      />
+    </div>
   );
 }

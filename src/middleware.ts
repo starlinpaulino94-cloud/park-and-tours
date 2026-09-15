@@ -33,6 +33,10 @@ const publicRoutes = [
   "/privacy-policy",
   "/terms-of-service",
 
+  // SSO desde MembeGo: su trabajo es CREAR la sesión que este middleware
+  // exigiría, así que tiene que poder llegar sin una.
+  "/sso/membego",
+
   //stripe routes here
   "/stripe/demo",
   "/stripe/success",
