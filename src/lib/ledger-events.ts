@@ -148,3 +148,58 @@ export async function postSettlementPayment(companyId: string, input: Settlement
     console.error("[ledger] postSettlementPayment falló (no crítico):", err);
   }
 }
+
+export interface CashDifferenceLedgerInput {
+  cashSessionId: string;
+  /** Contado menos esperado: positivo sobra, negativo falta. */
+  difference: number;
+  currency?: string | null;
+  exchangeRate?: number | null;
+  userId?: string;
+}
+
+/**
+ * Asienta el descuadre de un arqueo.
+ *
+ *  Faltante: Dr Faltantes de caja (gasto), Cr Caja general.
+ *  Sobrante: Dr Caja general,          Cr Sobrantes de caja (ingreso).
+ *
+ * Antes el descuadre solo quedaba en la auditoría, así que un turno que perdía
+ * dinero todos los días no aparecía en ningún estado de resultados: la caja
+ * cuadraba en el papel y el dinero se iba igual.
+ */
+export async function postCashDifference(
+  companyId: string,
+  input: CashDifferenceLedgerInput
+): Promise<void> {
+  try {
+    const difference = Math.round((Number(input.difference) + Number.EPSILON) * 100) / 100;
+    // Un arqueo cuadrado no genera asiento: no hay nada que contabilizar.
+    if (!Number.isFinite(difference) || Math.abs(difference) < 0.01) return;
+    if (await alreadyPosted(companyId, "cash_close", "cash_session", input.cashSessionId)) return;
+
+    await ensureChart(companyId);
+    const amount = Math.abs(difference);
+    const lines = difference < 0
+      ? [
+          { account: "5206", debit: amount, memo: "Faltante de caja" },
+          { account: "1101", credit: amount },
+        ]
+      : [
+          { account: "1101", debit: amount },
+          { account: "4105", credit: amount, memo: "Sobrante de caja" },
+        ];
+
+    await post(companyId, {
+      source: "cash_close",
+      currency: input.currency || undefined,
+      exchangeRate: input.exchangeRate ?? 1,
+      userId: input.userId,
+      refs: { cash_session: input.cashSessionId },
+      memo: difference < 0 ? "Faltante en el arqueo" : "Sobrante en el arqueo",
+      lines,
+    });
+  } catch (err) {
+    console.error("[ledger] postCashDifference falló (no crítico):", err);
+  }
+}

@@ -514,4 +514,83 @@ end $$;
 
 select set_config('request.jwt.claims', '', false);
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 0038 — El arqueo de caja
+--
+-- Lo que se comprueba aquí es lo que sostiene el control: que el conteo de una
+-- moneda no se pueda duplicar, que el estado de revisión exista de verdad, y
+-- que un conteo no se pueda colgar de la caja de otra empresa.
+-- ─────────────────────────────────────────────────────────────────────────────
+do $$
+declare
+  org uuid := '11111111-1111-1111-1111-111111111111';
+  other uuid := '99999999-9999-9999-9999-999999999999';
+  sess uuid := 'ffffffff-0000-0000-0000-000000000002';
+begin
+  -- La tolerancia es política de la empresa y vive en la caja.
+  update cash_register set difference_tolerance = 25
+   where id = 'ffffffff-0000-0000-0000-000000000001';
+
+  insert into cash_count (organization_id, cash_session_id, currency, kind, breakdown,
+                          counted_total, expected_total, difference)
+  values (org, sess, 'dop', 'close',
+          '[{"denomination":2000,"quantity":3},{"denomination":100,"quantity":5}]'::jsonb,
+          6500, 6700, -200);
+
+  -- Dos conteos de cierre de la misma moneda serían dos verdades sobre el
+  -- mismo dinero.
+  begin
+    insert into cash_count (organization_id, cash_session_id, currency, kind)
+    values (org, sess, 'dop', 'close');
+    raise exception 'se admitieron dos conteos de cierre de la misma moneda';
+  exception when unique_violation then null;
+  end;
+
+  -- La otra moneda del turno sí se cuenta aparte: ese es el punto.
+  insert into cash_count (organization_id, cash_session_id, currency, kind, counted_total)
+  values (org, sess, 'usd', 'close', 120);
+
+  -- Un arqueo sorpresa puede repetirse: el índice único es parcial.
+  insert into cash_count (organization_id, cash_session_id, currency, kind, counted_total)
+  values (org, sess, 'dop', 'spot', 3000), (org, sess, 'dop', 'spot', 2500);
+
+  -- Un conteo colgado de la caja de otra empresa no entra.
+  begin
+    insert into cash_count (organization_id, cash_session_id, currency, kind)
+    values (other, sess, 'dop', 'spot');
+    raise exception 'se admitió un conteo entre inquilinos distintos';
+  exception when others then
+    if position('Cross-tenant' in sqlerrm) = 0 then
+      raise exception 'el rechazo entre inquilinos no se explica: %', sqlerrm;
+    end if;
+  end;
+
+  -- El estado de revisión existe y es alcanzable; 'reconciled' ya estaba en el
+  -- check desde 0006 pero ninguna ruta lo escribía.
+  update cash_session
+     set status = 'pending_approval', requires_approval = true, closed_by = null,
+         expected_by_currency = '{"dop":6700,"usd":120}'::jsonb,
+         counted_by_currency  = '{"dop":6500,"usd":120}'::jsonb,
+         difference_by_currency = '{"dop":-200,"usd":0}'::jsonb,
+         card_batch_total = 4200, card_batch_reference = 'LOTE-77',
+         deposit_reference = 'BOV-12', difference_reason = 'vuelto mal dado'
+   where id = sess;
+
+  update cash_session set status = 'reconciled', approved_at = now(), approval_notes = 'revisado'
+   where id = sess;
+
+  begin
+    update cash_session set status = 'whatever' where id = sess;
+    raise exception 'la sesión admitió un estado inventado';
+  exception when check_violation then null;
+  end;
+
+  -- Y el descuadre llega a la contabilidad enlazado a su turno.
+  insert into ledger_entry (organization_id, entry_code, line_no, source_type, cash_session_id, debit, credit)
+  values (org, 'AS-TEST-1', 1, 'cash_close', sess, 200, 0),
+         (org, 'AS-TEST-1', 2, 'cash_close', sess, 0, 200);
+
+  raise notice 'arqueo: TODAS LAS ASERCIONES PASARON';
+end $$;
+
 rollback;

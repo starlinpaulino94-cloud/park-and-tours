@@ -45,6 +45,20 @@ export interface ShellUser {
   trialEndsAt?: string | null;
 }
 
+/**
+ * El rol del usuario, disponible para las pantallas cliente.
+ *
+ * El servidor ya lo resuelve en cada petición y es el que manda —una pantalla
+ * no autoriza nada—, pero sin conocerlo aquí no se puede distinguir un botón
+ * que el usuario no puede usar de uno que simplemente no existe, y ofrecer
+ * acciones que siempre devuelven 403 es peor que no ofrecerlas.
+ */
+const RoleContext = createContext<string>("");
+
+export function useAppRole(): string {
+  return useContext(RoleContext);
+}
+
 const NAV_MODE_KEY = "tf:nav-mode";
 type NavMode = "full" | "compact";
 
@@ -585,6 +599,7 @@ export function AppShell({
 
   return (
     <NavPendingContext.Provider value={{ pending, start: startNav }}>
+    <RoleContext.Provider value={user.role}>
     <OrgProvider companyName={user.companyName} companyType={user.companyType}>
       <div className="flex min-h-screen w-full overflow-x-clip bg-background">
         {/* Señal de que el clic se registró, mientras el servidor prepara la pantalla. */}
@@ -748,6 +763,7 @@ export function AppShell({
         </div>
       </div>
     </OrgProvider>
+    </RoleContext.Provider>
     </NavPendingContext.Provider>
   );
 }

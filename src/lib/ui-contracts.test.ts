@@ -673,6 +673,81 @@ describe("Panel ejecutivo", () => {
     expect(read("src/app/api/invoices/[id]/void/route.ts")).toMatch(/requireAtLeast\(ctx, "manager"\)/);
   });
 
+  it("Caja — el arqueo se cuenta por denominación, no se teclea el total", () => {
+    /**
+     * La versión anterior abría el diálogo con el efectivo esperado YA ESCRITO
+     * en el campo del conteo. Así la caja siempre cuadraba: nadie contaba, se
+     * confirmaba un número. El conteo tiene que salir de las piezas.
+     */
+    const dialog = read("src/app/dashboard/caja/arqueo-dialog.tsx");
+    expect(dialog).toContain("denominationsFor");
+    expect(dialog).toContain("countTotal");
+    // Ni el campo del conteo ni su estado inicial pueden partir de lo esperado.
+    expect(dialog).not.toMatch(/setCounts\([^)]*expected/);
+    expect(dialog).not.toMatch(/value=\{[^}]*expected[^}]*\}\s*\n?\s*onChange=\{\(e\) => setQuantity/);
+    // Y se cuenta a ciegas: ver el objetivo mientras se cuenta es no contar.
+    expect(dialog).toContain("blind");
+
+    // El servidor no acepta un esperado ni una diferencia del cliente: los dos
+    // salen de los movimientos.
+    const close = read("src/app/api/cash/sessions/[id]/close/route.ts");
+    expect(close).not.toMatch(/body\.(expected|difference)\b/);
+    expect(close).toContain("recalcCashSession");
+    expect(close).toContain("invalidDenominations");
+    // Contar solo una de las monedas del turno deja la otra sin arquear.
+    expect(close).toMatch(/Falta contar el efectivo/);
+  });
+
+  it("Caja — un descuadre lo revisa otra persona, y cuesta dinero", () => {
+    const review = read("src/app/api/cash/sessions/[id]/review/route.ts");
+    // Rango de gestión, y nunca el mismo que cerró: sin las dos cosas,
+    // "supervisado" solo significa que el cajero hizo dos clics.
+    expect(review).toMatch(/requireAtLeast\(ctx, "manager"\)/);
+    expect(review).toMatch(/closedBy[\s\S]{0,200}ctx\.userId/);
+    expect(review).toContain("postCashDifference");
+    expect(review).toContain("writeAudit");
+
+    // El faltante es una pérdida y el sobrante un ingreso: tienen cuenta.
+    const ledger = read("src/lib/ledger.ts");
+    expect(ledger).toContain("Faltantes de caja");
+    expect(ledger).toContain("Sobrantes de caja");
+    expect(ledger).toContain("cash_close");
+  });
+
+  it("Caja — el arqueo de la pantalla y el del acta se arman igual", () => {
+    // Un papel que se archiva con el efectivo y no dice lo mismo que el sistema
+    // no prueba nada tres meses después.
+    for (const route of [
+      "src/app/api/cash/sessions/[id]/arqueo/route.ts",
+      "src/app/api/cash/sessions/[id]/arqueo/pdf/route.ts",
+      "src/app/api/cash/sessions/[id]/close/route.ts",
+    ]) {
+      expect(read(route)).toContain("loadCashClose");
+    }
+    expect(read("src/lib/pdf/documents.ts")).toContain("buildCashClosePdf");
+  });
+
+  it("Caja — el efectivo no se suma entre monedas", () => {
+    /**
+     * `expected_cash` era un escalar y el recálculo metía en él importes de
+     * monedas distintas: 100 USD y 100 DOP daban 200 de nada. La pantalla
+     * hacía lo mismo con los KPI, pintando la suma con la moneda de la
+     * primera caja de la lista.
+     */
+    const domain = read("src/lib/cash-close.ts");
+    expect(domain).toContain("CurrencySummary");
+    expect(domain).toMatch(/expected_by_currency|byCurrencyMap/);
+
+    const recalc = read("src/lib/cash.ts");
+    expect(recalc).toContain("summarizeCash");
+    expect(recalc).toContain("expected_by_currency");
+
+    const screen = read("src/app/dashboard/caja/page.tsx");
+    expect(screen).toContain("totalByCurrency");
+    // El KPI ya no recibe la moneda de `sessions[0]`.
+    expect(screen).not.toMatch(/sessions\[0\]\?\.currency/);
+  });
+
   it("los registros derivados no se borran desde el CRUD genérico", () => {
     /**
      * Un recurso con `writable` vacío es un libro: el registro de auditoría, los
@@ -694,7 +769,8 @@ describe("Panel ejecutivo", () => {
       .filter((m) => /writable:\s*\[\s*\]/.test(m[2]))
       .map((m) => m[1]);
     expect(ledgers).toEqual(expect.arrayContaining([
-      "audit_log", "ledger_entry", "cash_movement", "gift_card_movement", "quote_line", "quote_option",
+      "audit_log", "ledger_entry", "cash_movement", "cash_count", "gift_card_movement",
+      "quote_line", "quote_option",
     ]));
   });
 

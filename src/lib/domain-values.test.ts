@@ -67,7 +67,10 @@ function allowedFor(table: string, column: string): string[] {
   }
   if (altered) return altered;
 
-  for (const m of SQL.matchAll(/create table (\w+)\s*\(([\s\S]*?)\n\);/gi)) {
+  // `create table if not exists` es la forma de las migraciones nuevas: sin
+  // contemplarla, el dominio de esas tablas salía vacío y la guarda no miraba
+  // nada. (Falla en vez de pasar en silencio, pero tampoco protege.)
+  for (const m of SQL.matchAll(/create table (?:if not exists\s+)?(\w+)\s*\(([\s\S]*?)\n\);/gi)) {
     if (m[1] !== table) continue;
     const body = m[2];
 
@@ -121,6 +124,10 @@ const BINDINGS: [string, Dict, string, string][] = [
   ["MESSAGE_TEMPLATE_KEY", modules.MESSAGE_TEMPLATE_KEY, "message_template", "key"],
   // 0036: los extras que se venden con la excursión.
   ["EXTRA_PRICE_TYPE", modules.EXTRA_PRICE_TYPE, "product_extra", "price_type"],
+  // 0038: el arqueo de caja.
+  ["CASH_SESSION_STATUS", modules.CASH_SESSION_STATUS, "cash_session", "status"],
+  ["CASH_MOVEMENT_TYPE", modules.CASH_MOVEMENT_TYPE, "cash_movement", "movement_type"],
+  ["CASH_COUNT_KIND", modules.CASH_COUNT_KIND, "cash_count", "kind"],
 ];
 
 describe("los diccionarios de la UI coinciden con el dominio de la base", () => {

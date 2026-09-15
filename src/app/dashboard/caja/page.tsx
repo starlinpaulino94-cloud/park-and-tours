@@ -16,8 +16,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { GENERIC_STATUS } from "@/lib/labels";
+import { CASH_SESSION_STATUS } from "@/lib/labels-modules";
 import { formatDateTime, formatMoney, formatNumber } from "@/lib/format";
+import { DENOMINATIONS, isKnownCurrency } from "@/lib/cash-close";
+import { rankOf } from "@/lib/nav";
+import { useAppRole } from "@/components/tf/app-shell";
+import { ArqueoDialog } from "./arqueo-dialog";
+import { RevisionDialog, type ReviewSession } from "./revision-dialog";
 
 interface Session {
   _id: string; code?: string; status?: string; currency?: string;
@@ -25,8 +30,78 @@ interface Session {
   opening_amount?: number; expected_cash?: number; counted_cash?: number; difference?: number;
   sales_total?: number; card_total?: number; transfer_total?: number;
   expenses_total?: number; withdrawals_total?: number;
+  // 0038 — los totales de verdad viven por moneda; los escalares de arriba son
+  // los de la moneda principal de la caja.
+  expected_by_currency?: Record<string, number>;
+  difference_by_currency?: Record<string, number>;
+  requires_approval?: boolean;
+  difference_reason?: string;
+  closed_by?: any;
   cash_register?: any; branch?: any; user?: any;
 }
+
+/**
+ * Suma importes agrupando por moneda.
+ *
+ * Es la corrección de fondo de esta pantalla: los KPI sumaban `expected_cash`
+ * de todas las cajas y lo pintaban con la moneda de la primera, así que una
+ * caja en pesos y otra en dólares producían un número que no era ninguna de
+ * las dos cosas.
+ */
+function totalByCurrency(
+  sessions: Session[],
+  pick: (s: Session) => number
+): { currency: string; amount: number }[] {
+  const out = new Map<string, number>();
+  for (const session of sessions) {
+    const currency = String(session.currency || "usd").toLowerCase();
+    out.set(currency, (out.get(currency) ?? 0) + (pick(session) || 0));
+  }
+  return [...out.entries()]
+    .map(([currency, amount]) => ({ currency, amount }))
+    .sort((a, b) => a.currency.localeCompare(b.currency));
+}
+
+/**
+ * Un KPI con varias monedas.
+ *
+ * Se apilan con su símbolo en vez de convertirse a una moneda base: la tasa de
+ * hoy no es la del momento del cobro, y un arqueo no se hace con conversiones.
+ */
+function money(rows: { currency: string; amount: number }[]): string {
+  if (rows.length === 0) return formatMoney(0);
+  return rows.map((row) => formatMoney(row.amount, row.currency)).join("  ·  ");
+}
+
+/** Las diferencias de un cierre, moneda a moneda. */
+function differenceRows(session: Session): { currency: string; amount: number }[] {
+  const map = session.difference_by_currency;
+  if (map && Object.keys(map).length > 0) {
+    return Object.entries(map)
+      .filter(([currency, amount]) => isKnownCurrency(currency) && Math.abs(Number(amount)) > 0.009)
+      .map(([currency, amount]) => ({ currency, amount: Number(amount) }))
+      .sort((a, b) => a.currency.localeCompare(b.currency));
+  }
+  const amount = session.difference ?? 0;
+  return Math.abs(amount) > 0.009
+    ? [{ currency: String(session.currency || "usd"), amount }]
+    : [];
+}
+
+/** Los importes de una caja, moneda a moneda. */
+function expectedRows(session: Session): { currency: string; amount: number }[] {
+  const map = session.expected_by_currency;
+  if (map && Object.keys(map).length > 0) {
+    return Object.entries(map)
+      .filter(([currency]) => isKnownCurrency(currency))
+      .map(([currency, amount]) => ({ currency, amount: Number(amount) || 0 }))
+      .sort((a, b) => a.currency.localeCompare(b.currency));
+  }
+  return [{ currency: String(session.currency || "usd"), amount: session.expected_cash ?? 0 }];
+}
+
+/** Las monedas que el sistema sabe contar; el dominio del arqueo es la fuente. */
+const CURRENCIES = Object.keys(DENOMINATIONS);
 
 const MOVEMENT_TYPES = [
   { value: "deposit", label: "Entrada de efectivo" },
@@ -45,14 +120,17 @@ export default function CashPage() {
   const [registerId, setRegisterId] = useState("");
   const [openingAmount, setOpeningAmount] = useState("0");
 
-  const [closing, setClosing] = useState<Session | null>(null);
-  const [countedCash, setCountedCash] = useState("");
-  const [closeNotes, setCloseNotes] = useState("");
+  const [arqueoFor, setArqueoFor] = useState<string | null>(null);
+  const [reviewing, setReviewing] = useState<Session | null>(null);
 
   const [movementFor, setMovementFor] = useState<Session | null>(null);
   const [movementType, setMovementType] = useState("withdrawal");
   const [movementAmount, setMovementAmount] = useState("");
   const [movementConcept, setMovementConcept] = useState("");
+  const [movementCurrency, setMovementCurrency] = useState("");
+
+  const role = useAppRole();
+  const canReview = rankOf(role) >= rankOf("manager");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -97,31 +175,6 @@ export default function CashPage() {
     load();
   };
 
-  const closeSession = async () => {
-    if (!closing) return;
-    setBusy(true);
-    const res = await api.post<{ expected_cash: number; counted_cash: number; difference: number }>(
-      `/api/cash/sessions/${closing._id}/close`,
-      { counted_cash: Number(countedCash) || 0, notes: closeNotes }
-    );
-    setBusy(false);
-    if (!res.ok) {
-      console.error("[caja] error cerrando la sesión:", res.error);
-      toast.error(res.error?.message || "No se pudo cerrar la caja");
-      return;
-    }
-    const diff = res.data?.difference ?? 0;
-    toast.success(
-      Math.abs(diff) < 0.01
-        ? "Caja cerrada y cuadrada"
-        : `Caja cerrada con una diferencia de ${formatMoney(diff, closing.currency)}`
-    );
-    setClosing(null);
-    setCountedCash("");
-    setCloseNotes("");
-    load();
-  };
-
   const addMovement = async () => {
     if (!movementFor) return;
     const amount = Number(movementAmount);
@@ -131,6 +184,7 @@ export default function CashPage() {
       cash_session_id: movementFor._id,
       movement_type: movementType,
       amount,
+      currency: movementCurrency || undefined,
       concept: movementConcept || undefined,
     });
     setBusy(false);
@@ -143,14 +197,16 @@ export default function CashPage() {
     setMovementFor(null);
     setMovementAmount("");
     setMovementConcept("");
+    setMovementCurrency("");
     load();
   };
 
   const open = sessions.filter((s) => s.status === "open");
   const closed = sessions.filter((s) => s.status !== "open");
-  const currency = sessions[0]?.currency || "usd";
-  const cashOnHand = open.reduce((s, x) => s + (x.expected_cash ?? 0), 0);
-  const salesToday = open.reduce((s, x) => s + (x.sales_total ?? 0), 0);
+  const pending = sessions.filter((s) => s.status === "pending_approval");
+  const cashOnHand = totalByCurrency(open, (s) => s.expected_cash ?? 0);
+  const salesToday = totalByCurrency(open, (s) => s.sales_total ?? 0);
+  const cardToday = totalByCurrency(open, (s) => s.card_total ?? 0);
   const diffs = closed.filter((s) => Math.abs(s.difference ?? 0) > 0.009);
 
   return (
@@ -178,16 +234,60 @@ export default function CashPage() {
       ) : (
         <>
           <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <KpiCard tone="amber" icon="Wallet" label="Efectivo esperado" value={formatMoney(cashOnHand, currency)}
+            <KpiCard tone="amber" icon="Wallet" label="Efectivo esperado" value={money(cashOnHand)}
               hint={`${formatNumber(open.length)} caja${open.length === 1 ? "" : "s"} abierta${open.length === 1 ? "" : "s"}`} />
-            <KpiCard tone="primary" icon="Banknote" label="Ventas en cajas abiertas" value={formatMoney(salesToday, currency)}
+            <KpiCard tone="primary" icon="Banknote" label="Ventas en cajas abiertas" value={money(salesToday)}
               hint="Suma de los cobros de las sesiones activas" />
-            <KpiCard icon="CreditCard" label="Cobros con tarjeta"
-              value={formatMoney(open.reduce((s, x) => s + (x.card_total ?? 0), 0), currency)}
+            <KpiCard icon="CreditCard" label="Cobros con tarjeta" value={money(cardToday)}
               hint="No afecta al arqueo de efectivo" />
-            <KpiCard tone={diffs.length > 0 ? "coral" : "default"} icon="Scale" label="Cierres con diferencia"
-              value={formatNumber(diffs.length)} hint={`${formatNumber(closed.length)} sesiones cerradas`} />
+            <KpiCard tone={pending.length > 0 ? "coral" : diffs.length > 0 ? "amber" : "default"}
+              icon="Scale" label="Arqueos por revisar" value={formatNumber(pending.length)}
+              hint={`${formatNumber(diffs.length)} cierres con diferencia de ${formatNumber(closed.length)}`} />
           </section>
+
+          {pending.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="font-display text-lg font-semibold">Esperando revisión</h2>
+              <div className="grid gap-3 lg:grid-cols-2">
+                {pending.map((s) => (
+                  <article key={s._id} className="tf-card flex flex-wrap items-center justify-between gap-3 p-4">
+                    <div className="min-w-0">
+                      <p className="font-semibold">
+                        {s.code}
+                        {typeof s.cash_register === "object" && s.cash_register ? ` · ${s.cash_register.name}` : ""}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Cerrada {formatDateTime(s.closed_at)}
+                        {typeof s.user === "object" && s.user ? ` por ${s.user.name || s.user.email}` : ""}
+                      </p>
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {differenceRows(s).map((row) => (
+                          <Pill key={row.currency} tone={row.amount > 0 ? "warning" : "danger"} className="tf-num">
+                            {row.currency.toUpperCase()} {formatMoney(row.amount, row.currency)}
+                          </Pill>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button variant="outline" size="sm" className="gap-1.5" asChild>
+                        <a href={`/api/cash/sessions/${s._id}/arqueo/pdf`} target="_blank" rel="noopener noreferrer">
+                          <Icon name="Printer" className="size-4" /> Acta
+                        </a>
+                      </Button>
+                      <Button size="sm" className="gap-1.5" disabled={!canReview} onClick={() => setReviewing(s)}>
+                        <Icon name="ShieldCheck" className="size-4" /> Revisar
+                      </Button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+              {!canReview && (
+                <p className="text-xs text-muted-foreground">
+                  La revisión de un descuadre la hace un supervisor, y nunca la misma persona que cerró la caja.
+                </p>
+              )}
+            </section>
+          )}
 
           <section className="space-y-3">
             <h2 className="font-display text-lg font-semibold">Cajas abiertas</h2>
@@ -213,7 +313,7 @@ export default function CashPage() {
                           {typeof s.user === "object" && s.user ? ` · ${s.user.name || s.user.email}` : ""}
                         </p>
                       </div>
-                      <StatusBadge value="open" dict={GENERIC_STATUS} />
+                      <StatusBadge value={s.status || "open"} dict={CASH_SESSION_STATUS} />
                     </header>
 
                     <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
@@ -225,18 +325,30 @@ export default function CashPage() {
                       <Metric label="Retiros" value={formatMoney(s.withdrawals_total ?? 0, s.currency)} />
                     </dl>
 
-                    <div className="rounded-lg bg-primary/10 px-4 py-3">
+                    <div className="space-y-1 rounded-lg bg-primary/10 px-4 py-3">
                       <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-primary">Efectivo esperado en caja</p>
-                      <p className="tf-num text-2xl">{formatMoney(s.expected_cash ?? 0, s.currency)}</p>
+                      {/* Una moneda por línea: el turno recibe pesos y dólares y
+                          sumarlos daría un número que no es ninguno de los dos. */}
+                      {expectedRows(s).map((row) => (
+                        <p key={row.currency} className="tf-num text-2xl">
+                          {formatMoney(row.amount, row.currency)}
+                          {expectedRows(s).length > 1 && (
+                            <span className="ml-1.5 text-xs font-semibold uppercase text-primary">{row.currency}</span>
+                          )}
+                        </p>
+                      ))}
                     </div>
 
                     <div className="flex flex-wrap gap-2">
                       <Button variant="outline" size="sm" className="gap-1.5"
-                        onClick={() => { setMovementFor(s); setMovementType("withdrawal"); }}>
+                        onClick={() => {
+                          setMovementFor(s);
+                          setMovementType("withdrawal");
+                          setMovementCurrency(String(s.currency || ""));
+                        }}>
                         <Icon name="ArrowLeftRight" className="size-4" /> Movimiento
                       </Button>
-                      <Button size="sm" className="gap-1.5"
-                        onClick={() => { setClosing(s); setCountedCash(String(s.expected_cash ?? 0)); }}>
+                      <Button size="sm" className="gap-1.5" onClick={() => setArqueoFor(s._id)}>
                         <Icon name="Calculator" className="size-4" /> Hacer arqueo y cerrar
                       </Button>
                     </div>
@@ -274,10 +386,32 @@ export default function CashPage() {
                 {
                   key: "difference", header: "Diferencia", align: "right",
                   render: (s: Session) => {
-                    const d = s.difference ?? 0;
-                    if (Math.abs(d) < 0.01) return <Pill tone="success">Cuadrada</Pill>;
-                    return <Pill tone={d > 0 ? "warning" : "danger"} className="tf-num">{formatMoney(d, s.currency)}</Pill>;
+                    const rows = differenceRows(s);
+                    if (rows.length === 0) return <Pill tone="success">Cuadrada</Pill>;
+                    return (
+                      <div className="flex flex-wrap justify-end gap-1">
+                        {rows.map((row) => (
+                          <Pill key={row.currency} tone={row.amount > 0 ? "warning" : "danger"} className="tf-num">
+                            {formatMoney(row.amount, row.currency)}
+                          </Pill>
+                        ))}
+                      </div>
+                    );
                   },
+                },
+                {
+                  key: "status", header: "Estado",
+                  render: (s: Session) => <StatusBadge value={s.status || "closed"} dict={CASH_SESSION_STATUS} />,
+                },
+                {
+                  key: "acta", header: "", align: "right",
+                  render: (s: Session) => (
+                    <Button variant="ghost" size="icon" asChild aria-label={`Acta del arqueo ${s.code ?? ""}`}>
+                      <a href={`/api/cash/sessions/${s._id}/arqueo/pdf`} target="_blank" rel="noopener noreferrer">
+                        <Icon name="Printer" className="size-4" />
+                      </a>
+                    </Button>
+                  ),
                 },
               ]}
             />
@@ -325,48 +459,19 @@ export default function CashPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ---- arqueo / close --------------------------------------------- */}
-      <Dialog open={!!closing} onOpenChange={(v) => !v && setClosing(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Arqueo de caja</DialogTitle>
-            <DialogDescription>
-              Cuenta el efectivo físico e introduce el total. La diferencia queda registrada en la auditoría.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="rounded-lg bg-muted/50 px-4 py-3">
-              <p className="text-xs text-muted-foreground">Efectivo esperado</p>
-              <p className="tf-num text-2xl">
-                {formatMoney(closing?.expected_cash ?? 0, closing?.currency)}
-              </p>
-            </div>
-            <div className="space-y-1.5">
-              <Label>Efectivo contado</Label>
-              <Input type="number" step="0.01" value={countedCash} onChange={(e) => setCountedCash(e.target.value)} autoFocus />
-              {countedCash !== "" && (
-                <p className="text-xs text-muted-foreground">
-                  Diferencia:{" "}
-                  <span className={Math.abs(Number(countedCash) - (closing?.expected_cash ?? 0)) < 0.01
-                    ? "font-semibold text-emerald-700 dark:text-emerald-400"
-                    : "font-semibold text-rose-700 dark:text-rose-400"}>
-                    {formatMoney(Number(countedCash) - (closing?.expected_cash ?? 0), closing?.currency)}
-                  </span>
-                </p>
-              )}
-            </div>
-            <div className="space-y-1.5">
-              <Label>Observaciones</Label>
-              <Textarea value={closeNotes} onChange={(e) => setCloseNotes(e.target.value)} rows={3}
-                placeholder="Justifica la diferencia si la hay…" />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setClosing(null)}>Cancelar</Button>
-            <Button onClick={closeSession} disabled={busy}>{busy ? "Cerrando…" : "Cerrar caja"}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ArqueoDialog
+        sessionId={arqueoFor}
+        open={!!arqueoFor}
+        onOpenChange={(v) => !v && setArqueoFor(null)}
+        onClosed={load}
+      />
+
+      <RevisionDialog
+        session={reviewing as ReviewSession | null}
+        open={!!reviewing}
+        onOpenChange={(v) => !v && setReviewing(null)}
+        onResolved={load}
+      />
 
       {/* ---- manual movement -------------------------------------------- */}
       <Dialog open={!!movementFor} onOpenChange={(v) => !v && setMovementFor(null)}>
@@ -387,9 +492,30 @@ export default function CashPage() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label>Importe</Label>
-              <Input type="number" step="0.01" value={movementAmount} onChange={(e) => setMovementAmount(e.target.value)} autoFocus />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="movement-amount">Importe</Label>
+                <Input id="movement-amount" type="number" step="0.01" value={movementAmount}
+                  onChange={(e) => setMovementAmount(e.target.value)} autoFocus />
+                {movementType === "adjustment" && (
+                  <p className="text-xs text-muted-foreground">
+                    Un ajuste admite importe negativo para corregir un sobrante mal registrado.
+                  </p>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                {/* La misma caja recibe pesos y dólares: el retiro tiene que
+                    decir de qué moneda sale, o descuadra la que no era. */}
+                <Label htmlFor="movement-currency">Moneda</Label>
+                <Select value={movementCurrency} onValueChange={setMovementCurrency}>
+                  <SelectTrigger id="movement-currency"><SelectValue placeholder="Moneda de la caja" /></SelectTrigger>
+                  <SelectContent>
+                    {CURRENCIES.map((c) => (
+                      <SelectItem key={c} value={c}>{c.toUpperCase()}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             <div className="space-y-1.5">
               <Label>Concepto</Label>

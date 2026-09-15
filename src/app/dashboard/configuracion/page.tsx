@@ -691,6 +691,11 @@ function CashRegisters() {
         { name: "terminal", label: "Terminal" },
         { name: "branch", label: "Sucursal", type: "reference", resource: "branch" },
         { name: "currency", label: "Moneda", type: "select", defaultValue: "usd", options: CURRENCY_OPTIONS },
+        {
+          name: "difference_tolerance", label: "Tolerancia de descuadre", type: "number",
+          defaultValue: 0,
+          help: "Hasta cuánto puede descuadrar un turno sin que lo revise un supervisor. Con 0, cualquier diferencia se revisa.",
+        },
         { name: "status", label: "Estado", type: "select", defaultValue: "active", options: optionsFrom(GENERIC_STATUS, ["active", "inactive"]) },
       ]}
     />

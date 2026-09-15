@@ -2,56 +2,192 @@ import { NextRequest } from "next/server";
 import { requireTenant, requireAtLeast, tenantCreate, tenantFindOne, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { recalcCashSession } from "@/lib/cash";
+import { loadCashClose } from "@/lib/cash-service";
+import {
+  countTotal, invalidDenominations, differenceOf, classifyDifference, needsApproval,
+  byCurrencyMap, type CountLine,
+} from "@/lib/cash-close";
+import { postCashDifference } from "@/lib/ledger-events";
 import { writeAudit } from "@/lib/audit";
 import type { CashSession } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
+import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 
-/** POST /api/cash/sessions/:id/close — arqueo: counts cash and closes the session. */
+interface CountPayload {
+  currency?: string;
+  breakdown?: CountLine[];
+  notes?: string;
+}
+
+/**
+ * POST /api/cash/sessions/:id/close — el arqueo.
+ *
+ * El cajero cuenta el dinero físico POR MONEDA y POR DENOMINACIÓN. El sistema
+ * calcula lo esperado, guarda el conteo con su desglose, y decide si el turno
+ * queda cerrado o a la espera de un supervisor. El cajero nunca escribe el
+ * esperado ni la diferencia: los dos salen de los movimientos.
+ */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     assertSameOriginMutation(req);
     const { id } = await params;
     const ctx = await requireTenant();
+    assertRateLimit({ key: rateLimitKey(req, "cash:close", ctx.userId), limit: 20, windowMs: 60_000 });
     requireAtLeast(ctx, "cashier");
 
-    const body = await readJson<{ counted_cash?: number; notes?: string }>(req);
+    const body = await readJson<{
+      counts?: CountPayload[];
+      counted_cash?: number;
+      card_batch_total?: number;
+      card_batch_reference?: string;
+      deposit_reference?: string;
+      difference_reason?: string;
+      notes?: string;
+    }>(req);
+
     const session = await tenantFindOne<CashSession>(ctx.companyId, "cash_session", id);
     if (session.status !== "open") {
       throw Object.assign(new Error("La sesión de caja ya está cerrada"), { status: 409 });
     }
 
+    // Se recalcula ANTES de contar: cerrar contra un esperado viejo convierte
+    // en descuadre cualquier cobro registrado mientras el cajero contaba.
     await recalcCashSession(ctx.companyId, id);
-    const refreshed = await tenantFindOne<CashSession>(ctx.companyId, "cash_session", id);
+    const arqueo = await loadCashClose(ctx.companyId, id);
+    const primary = String(session.currency || "usd").toLowerCase();
 
-    const counted = Number(body.counted_cash ?? 0);
-    const expected = refreshed.expected_cash ?? 0;
-    const difference = Math.round((counted - expected + Number.EPSILON) * 100) / 100;
+    // Compatibilidad: un cliente antiguo manda un único `counted_cash` sin
+    // desglose. Se acepta como conteo de la moneda principal.
+    const submitted: CountPayload[] = Array.isArray(body.counts) && body.counts.length > 0
+      ? body.counts
+      : body.counted_cash != null
+        ? [{ currency: primary, breakdown: [] }]
+        : [];
+
+    const byCurrency = new Map<string, CountPayload>();
+    for (const entry of submitted) {
+      byCurrency.set(String(entry.currency || primary).toLowerCase(), entry);
+    }
+
+    // Toda moneda que se movió en el turno hay que contarla. Cerrar contando
+    // solo los pesos deja los dólares del cajón sin arquear —y sin dueño.
+    const missing = arqueo.currencies
+      .filter((c) => !byCurrency.has(c.currency))
+      .map((c) => c.currency.toUpperCase());
+    if (missing.length > 0) {
+      throw Object.assign(
+        new Error(`Falta contar el efectivo en ${missing.join(", ")}`),
+        { status: 400 }
+      );
+    }
+
+    // Una denominación que no existe en esa moneda cuadra la caja con dinero
+    // inventado: se rechaza el cierre entero antes que aceptar el total.
+    for (const summary of arqueo.currencies) {
+      const currency = summary.currency;
+      const bad = invalidDenominations(byCurrency.get(currency)?.breakdown, currency);
+      if (bad.length > 0) {
+        throw Object.assign(
+          new Error(`En ${currency.toUpperCase()} no existen las denominaciones ${bad.join(", ")}`),
+          { status: 400 }
+        );
+      }
+    }
+
+    const closedAt = new Date().toISOString();
+    const results: { currency: string; expected: number; counted: number; difference: number }[] = [];
+
+    for (const summary of arqueo.currencies) {
+      const entry = byCurrency.get(summary.currency)!;
+      const hasBreakdown = Array.isArray(entry.breakdown) && entry.breakdown.length > 0;
+      // Sin desglose, el conteo es cero —cajón vacío es una respuesta válida—,
+      // salvo el `counted_cash` del cliente antiguo, que solo vale para la
+      // moneda principal: aplicarlo a todas contaría el mismo dinero dos veces.
+      const counted = hasBreakdown
+        ? countTotal(entry.breakdown)
+        : summary.currency === primary
+          ? Math.max(0, Number(body.counted_cash ?? 0))
+          : 0;
+      const difference = differenceOf(summary.expected, counted);
+
+      await tenantCreate(ctx.companyId, "cash_count", {
+        cash_session: id,
+        currency: summary.currency,
+        kind: "close",
+        breakdown: hasBreakdown ? entry.breakdown : [],
+        counted_total: counted,
+        expected_total: summary.expected,
+        difference,
+        counted_by: ctx.userId,
+        counted_at: closedAt,
+        notes: entry.notes,
+      });
+
+      await tenantCreate(ctx.companyId, "cash_movement", {
+        cash_session: id, user: ctx.userId,
+        movement_type: "closing", amount: counted,
+        currency: summary.currency, concept: "Cierre de caja / arqueo",
+        movement_at: closedAt,
+      });
+
+      results.push({ currency: summary.currency, expected: summary.expected, counted, difference });
+    }
+
+    const tolerance = arqueo.tolerance;
+    const requiresApproval = needsApproval(results.map((r) => r.difference), tolerance);
+    const main = results.find((r) => r.currency === primary);
 
     await tenantUpdate(ctx.companyId, "cash_session", id, {
-      closed_at: new Date().toISOString(),
-      counted_cash: counted,
-      difference,
-      status: "closed",
-      notes: body.notes || refreshed.notes,
+      closed_at: closedAt,
+      closed_by: ctx.userId,
+      status: requiresApproval ? "pending_approval" : "closed",
+      requires_approval: requiresApproval,
+      counted_cash: main?.counted ?? 0,
+      difference: main?.difference ?? 0,
+      counted_by_currency: byCurrencyMap(results.map((r) => ({ currency: r.currency, amount: r.counted }))),
+      difference_by_currency: byCurrencyMap(results.map((r) => ({ currency: r.currency, amount: r.difference }))),
+      card_batch_total: body.card_batch_total != null ? Number(body.card_batch_total) : undefined,
+      card_batch_reference: body.card_batch_reference,
+      deposit_reference: body.deposit_reference,
+      difference_reason: body.difference_reason,
+      notes: body.notes || session.notes,
     });
 
-    await tenantCreate(ctx.companyId, "cash_movement", {
-      cash_session: id, user: ctx.userId,
-      movement_type: "closing", amount: counted,
-      currency: refreshed.currency, concept: "Cierre de caja / arqueo",
-      movement_at: new Date().toISOString(),
-    });
+    // Un descuadre dentro de tolerancia cierra solo, y aun así cuesta dinero:
+    // se asienta ya. El que va a revisión espera al supervisor.
+    if (!requiresApproval && main && Math.abs(main.difference) >= 0.01) {
+      await postCashDifference(ctx.companyId, {
+        cashSessionId: id,
+        difference: main.difference,
+        currency: primary,
+        userId: ctx.userId,
+      });
+    }
 
+    const worst = results.reduce(
+      (acc, r) => (Math.abs(r.difference) > Math.abs(acc) ? r.difference : acc), 0
+    );
     await writeAudit({
       companyId: ctx.companyId, userId: ctx.userId,
       action: "cash_session_closed", entityType: "cash_session", entityId: id,
-      description: `Caja cerrada. Esperado ${expected}, contado ${counted}, diferencia ${difference}`,
-      severity: Math.abs(difference) > 0.009 ? "warning" : "info",
-      metadata: { expected, counted, difference },
+      description: results
+        .map((r) => `${r.currency.toUpperCase()}: esperado ${r.expected}, contado ${r.counted}, diferencia ${r.difference}`)
+        .join(" · "),
+      severity: classifyDifference(worst, tolerance) === "balanced" ? "info" : "warning",
+      metadata: { results, tolerance, requires_approval: requiresApproval },
     });
 
-    console.log(`[cash] sesión ${refreshed.code} cerrada · diferencia ${difference}`);
-    return ok({ expected_cash: expected, counted_cash: counted, difference });
+    console.log(`[cash] sesión ${session.code} cerrada · ${requiresApproval ? "a revisión" : "cuadrada"}`);
+    return ok({
+      status: requiresApproval ? "pending_approval" : "closed",
+      requires_approval: requiresApproval,
+      tolerance,
+      results,
+      // El cliente antiguo lee estos tres campos.
+      expected_cash: main?.expected ?? 0,
+      counted_cash: main?.counted ?? 0,
+      difference: main?.difference ?? 0,
+    });
   } catch (err) {
     return fail(err);
   }

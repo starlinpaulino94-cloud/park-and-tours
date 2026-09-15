@@ -5,7 +5,10 @@ import { describe, it, expect, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import { PDFDocument } from "pdf-lib";
-import { buildVoucherPdf, buildQuotePdf, buildManifestPdf, buildInvoicePdf } from "@/lib/pdf/documents";
+import {
+  buildVoucherPdf, buildQuotePdf, buildManifestPdf, buildInvoicePdf, buildCashClosePdf,
+} from "@/lib/pdf/documents";
+import { DENOMINATIONS, summarizeCash } from "@/lib/cash-close";
 import { manifestRow, sortByRoute, pickupStops, paxSummary } from "@/lib/manifest";
 
 const company = { name: "Caribe Tours", email: "hola@caribe.do", phone: "+1 809 555 0100", address: "Bávaro" };
@@ -236,5 +239,66 @@ describe("documentos — manifiesto", () => {
 
   it("una salida sin nadie reservado sigue siendo un documento válido", async () => {
     assertIsPdf(await buildManifestPdf(null, { product_name: "Saona" }, [], [], paxSummary([])));
+  });
+});
+
+describe("el acta del arqueo", () => {
+  const turno = (currency: string, expected: number) => ({
+    ...summarizeCash(
+      [
+        { movement_type: "opening", amount: 5000, currency },
+        { movement_type: "sale", amount: expected, currency },
+      ],
+      [{ method: "cash", amount: expected, currency }],
+    )[0],
+    counted: null as number | null,
+    difference: null as number | null,
+    breakdown: [] as { denomination: number; quantity: number }[],
+  });
+
+  const meta = {
+    code: "CAJ-0042", register: "Caja recepción", branch: "Bávaro", cashier: "Ana Cajera",
+    opened_at: "2026-04-18T12:00:00Z", closed_at: "2026-04-18T23:30:00Z",
+    status: "closed", approved_by: null, approved_at: null,
+    difference_reason: null, deposit_reference: null, notes: null,
+    card: { expected: 0, batch: null, difference: null, reference: null },
+  };
+
+  it("lleva el desglose por denominación", async () => {
+    const row = {
+      ...turno("dop", 12000),
+      counted: 16800,
+      difference: -200,
+      breakdown: [
+        { denomination: 2000, quantity: 8 },
+        { denomination: 500, quantity: 1 },
+        { denomination: 100, quantity: 3 },
+      ],
+    };
+    const bytes = await buildCashClosePdf(company, meta, [row]);
+    assertIsPdf(bytes);
+  });
+
+  it("un turno con dos monedas las separa en el papel", async () => {
+    const bytes = await buildCashClosePdf(company, meta, [
+      { ...turno("dop", 12000), counted: 17000, difference: 0, breakdown: [{ denomination: 1000, quantity: 17 }] },
+      { ...turno("usd", 300), counted: 5300, difference: 0, breakdown: [{ denomination: 100, quantity: 53 }] },
+    ]);
+    assertIsPdf(bytes);
+  });
+
+  it("un arqueo con todas las denominaciones del peso cabe y pagina bien", async () => {
+    const breakdown = DENOMINATIONS.dop.map((denomination) => ({ denomination, quantity: 9 }));
+    const bytes = await buildCashClosePdf(
+      company,
+      { ...meta, status: "pending_approval", difference_reason: "Faltó un billete en el vuelto de la tarde" },
+      [{ ...turno("dop", 40000), counted: 32229, difference: -1200, breakdown }]
+    );
+    assertIsPdf(bytes);
+    expect(await pageCount(bytes)).toBeGreaterThanOrEqual(1);
+  });
+
+  it("una caja sin cerrar todavía es un documento válido", async () => {
+    assertIsPdf(await buildCashClosePdf(null, { ...meta, closed_at: null, status: "open" }, [turno("dop", 0)]));
   });
 });

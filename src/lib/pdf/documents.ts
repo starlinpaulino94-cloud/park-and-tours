@@ -572,3 +572,157 @@ export async function buildManifestPdf(
   pdf.block("Notas de la salida", data.notes);
   return pdf.finish();
 }
+
+/* ----------------------------------------------------------- arqueo de caja */
+
+export interface CashClosePdfData {
+  code?: string | null;
+  register?: string | null;
+  branch?: string | null;
+  cashier?: string | null;
+  opened_at?: string | null;
+  closed_at?: string | null;
+  status?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  difference_reason?: string | null;
+  deposit_reference?: string | null;
+  notes?: string | null;
+  card: { expected: number; batch: number | null; difference: number | null; reference: string | null };
+}
+
+export interface CashClosePdfCurrency {
+  currency: string;
+  opening: number;
+  sales: number;
+  refunds: number;
+  cash_sales: number;
+  cash_refunds: number;
+  expenses: number;
+  withdrawals: number;
+  deposits: number;
+  adjustments: number;
+  card: number;
+  transfer: number;
+  other_methods: number;
+  expected: number;
+  counted: number | null;
+  difference: number | null;
+  breakdown: { denomination: number; quantity: number }[];
+}
+
+/**
+ * El acta del arqueo.
+ *
+ * Se imprime, se firma y se archiva con el efectivo que va a la bóveda: es el
+ * papel que sostiene un faltante tres meses después, cuando ya nadie recuerda
+ * el turno. Por eso lleva el desglose por denominación y no solo el total —un
+ * acta que dice "faltaban 2.000" no prueba nada; una que dice "se contaron
+ * tres billetes de 1.000 donde debía haber cinco", sí.
+ */
+export async function buildCashClosePdf(
+  company: CompanyInfo | null,
+  data: CashClosePdfData,
+  currencies: CashClosePdfCurrency[]
+): Promise<Uint8Array> {
+  const pdf = await PdfBuilder.create({
+    kind: "ARQUEO DE CAJA",
+    reference: data.code,
+    company,
+    footer: `Generado ${formatDateTime(new Date().toISOString())}`,
+  });
+
+  pdf.heading(data.register || "Caja");
+  pdf.paragraph(
+    [
+      data.branch,
+      data.cashier ? `Cajero: ${data.cashier}` : "",
+      data.opened_at ? `Apertura ${formatDateTime(data.opened_at)}` : "",
+      data.closed_at ? `Cierre ${formatDateTime(data.closed_at)}` : "",
+    ].filter(Boolean).join("  ·  "),
+    9.5
+  );
+  pdf.gap(8);
+
+  for (const row of currencies) {
+    const label = row.currency.toUpperCase();
+    pdf.eyebrow(`${label} · movimientos del turno`);
+    pdf.row("Fondo de apertura", formatMoney(row.opening, row.currency));
+    pdf.row("Cobros en efectivo", formatMoney(row.cash_sales, row.currency));
+    if (row.cash_refunds) pdf.row("Reembolsos en efectivo", `-${formatMoney(row.cash_refunds, row.currency)}`);
+    if (row.expenses) pdf.row("Gastos pagados en caja", `-${formatMoney(row.expenses, row.currency)}`);
+    if (row.withdrawals) pdf.row("Retiros", `-${formatMoney(row.withdrawals, row.currency)}`);
+    if (row.deposits) pdf.row("Entradas de efectivo", formatMoney(row.deposits, row.currency));
+    if (row.adjustments) pdf.row("Ajustes", formatMoney(row.adjustments, row.currency));
+    pdf.row("Efectivo esperado", formatMoney(row.expected, row.currency), { strong: true });
+
+    if (row.card || row.transfer || row.other_methods) {
+      pdf.gap(4);
+      pdf.paragraph("No entra al cajón — lo liquida el banco o queda por cobrar:", 8.5);
+      if (row.card) pdf.row("Tarjeta", formatMoney(row.card, row.currency));
+      if (row.transfer) pdf.row("Transferencia y link", formatMoney(row.transfer, row.currency));
+      if (row.other_methods) pdf.row("Cheque y crédito", formatMoney(row.other_methods, row.currency));
+    }
+
+    if (row.breakdown.length > 0) {
+      pdf.gap(8);
+      pdf.eyebrow(`${label} · conteo físico`);
+      pdf.table(
+        [
+          { header: "Denominación", width: 1.4, align: "right" },
+          { header: "Piezas", width: 1, align: "right" },
+          { header: "Importe", width: 1.4, align: "right" },
+        ],
+        row.breakdown
+          .filter((line) => Number(line.quantity) > 0)
+          .sort((a, b) => Number(b.denomination) - Number(a.denomination))
+          .map((line) => [
+            formatMoney(Number(line.denomination), row.currency),
+            formatNumber(Number(line.quantity)),
+            formatMoney(Number(line.denomination) * Number(line.quantity), row.currency),
+          ])
+      );
+    }
+
+    pdf.gap(6);
+    if (row.counted != null) {
+      pdf.row("Efectivo contado", formatMoney(row.counted, row.currency), { strong: true });
+      const difference = row.difference ?? 0;
+      const verdict = Math.abs(difference) < 0.01 ? "cuadrada" : difference > 0 ? "sobrante" : "faltante";
+      pdf.row("Diferencia", `${formatMoney(difference, row.currency)} (${verdict})`, { strong: true });
+    } else {
+      pdf.row("Efectivo contado", "pendiente de contar");
+    }
+    pdf.gap(14);
+  }
+
+  if (data.card.batch != null) {
+    pdf.eyebrow("Conciliación del datáfono");
+    pdf.row("Cobrado con tarjeta", formatMoney(data.card.expected, currencies[0]?.currency));
+    pdf.row("Cierre de lote del banco", formatMoney(data.card.batch, currencies[0]?.currency));
+    pdf.row("Diferencia", formatMoney(data.card.difference ?? 0, currencies[0]?.currency), { strong: true });
+    if (data.card.reference) pdf.row("Referencia del lote", data.card.reference);
+    pdf.gap(12);
+  }
+
+  if (data.difference_reason) pdf.block("Justificación de la diferencia", data.difference_reason);
+  if (data.deposit_reference) pdf.row("Depósito / bóveda", data.deposit_reference);
+  if (data.notes) pdf.block("Observaciones", data.notes);
+
+  if (data.approved_by) {
+    pdf.gap(6);
+    pdf.notice(
+      `Arqueo revisado por ${data.approved_by}${data.approved_at ? ` el ${formatDateTime(data.approved_at)}` : ""}.`
+    );
+  } else if (data.status === "pending_approval") {
+    pdf.gap(6);
+    pdf.notice("Este arqueo está a la espera de revisión por un supervisor.");
+  }
+
+  pdf.gap(24);
+  pdf.rule();
+  pdf.gap(6);
+  pdf.paragraph("Firma del cajero                                        Firma del supervisor", 9);
+
+  return pdf.finish();
+}

@@ -432,6 +432,8 @@ export interface CashRegister extends BaseRecord {
   company?: Ref<Company>; branch?: Ref<Branch>;
   name?: string; code?: string; terminal?: string;
   currency?: Currency; status?: "active" | "inactive";
+  /** Descuadre que un turno puede cerrar sin supervisor (0038). */
+  difference_tolerance?: number;
 }
 
 export interface CashSession extends BaseRecord {
@@ -441,8 +443,27 @@ export interface CashSession extends BaseRecord {
   opening_amount?: number; expected_cash?: number; counted_cash?: number;
   difference?: number; card_total?: number; transfer_total?: number;
   sales_total?: number; expenses_total?: number; withdrawals_total?: number;
-  currency?: Currency; status?: "open" | "closed" | "reconciled"; notes?: string;
+  currency?: Currency; status?: "open" | "pending_approval" | "closed" | "reconciled"; notes?: string;
   cash_movement?: CashMovement[];
+  // 0038 — el arqueo: quién cerró, quién aprobó, y qué pasó en cada moneda.
+  closed_by?: Ref<AppUser>; approved_by?: Ref<AppUser>; approved_at?: string;
+  approval_notes?: string; difference_reason?: string; requires_approval?: boolean;
+  expected_by_currency?: Record<string, number>;
+  counted_by_currency?: Record<string, number>;
+  difference_by_currency?: Record<string, number>;
+  card_batch_total?: number; card_batch_reference?: string; deposit_reference?: string;
+  cash_count?: CashCount[];
+}
+
+/** Conteo físico de una moneda en una sesión de caja (0038). */
+export interface CashCount extends BaseRecord {
+  company?: Ref<Company>; cash_session?: Ref<CashSession>;
+  currency?: Currency;
+  kind?: "open" | "close" | "spot";
+  /** [{ denomination: 2000, quantity: 3 }, ...] */
+  breakdown?: { denomination: number; quantity: number }[];
+  counted_total?: number; expected_total?: number; difference?: number;
+  counted_by?: Ref<AppUser>; counted_at?: string; notes?: string;
 }
 
 /** Enum `payment_method` de la base, literal. */

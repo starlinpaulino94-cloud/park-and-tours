@@ -424,6 +424,31 @@ export const ROUTE_STATUS = dict(
   ["cancelled", "Cancelada", "danger"]
 );
 
+/** 0038 — en qué punto está el arqueo de un turno de caja. */
+export const CASH_SESSION_STATUS = dict(
+  ["open", "Abierta", "info"],
+  ["pending_approval", "Esperando revisión", "warning"],
+  ["closed", "Cerrada"],
+  ["reconciled", "Conciliada", "success"]
+);
+
+/** Entradas y salidas de efectivo que no son una venta. */
+export const CASH_MOVEMENT_TYPE = dict(
+  ["opening", "Fondo de apertura"],
+  ["sale", "Cobro", "success"],
+  ["refund", "Reembolso", "danger"],
+  ["expense", "Gasto pagado en caja", "warning"],
+  ["withdrawal", "Retiro de efectivo", "warning"],
+  ["deposit", "Entrada de efectivo", "info"],
+  ["adjustment", "Ajuste", "violet"],
+  ["closing", "Cierre / arqueo"]
+);
+
+/** Qué conteo es: el del fondo, el del cierre, o un arqueo sorpresa. */
+export const CASH_COUNT_KIND = dict(
+  ["open", "Apertura"], ["close", "Cierre"], ["spot", "Arqueo sorpresa", "warning"]
+);
+
 /** `[{value,label}]` list for a Select, from any of the dictionaries above. */
 export function toOptions(source: Record<string, LabelDef>): { value: string; label: string }[] {
   return Object.entries(source).map(([value, def]) => ({ value, label: def.label }));
