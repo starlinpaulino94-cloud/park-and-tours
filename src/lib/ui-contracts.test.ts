@@ -338,11 +338,14 @@ describe("Panel ejecutivo", () => {
       gift_card: "/api/gift-cards", access_ticket: "/api/tickets",
       booking: "/api/bookings", payment: "/api/payments",
       cash_session: "/api/cash", departure: "/api/departures", task: "/api/tasks",
+      quote: "/api/quotes", invoice: "/api/invoices",
     };
     for (const file of walk(path.join(ROOT, "src/app"))) {
       const src = readFileSync(file, "utf8");
       const resource = /resource="(\w+)"/.exec(src)?.[1];
-      const hasForm = /fields=\{\[\s*\n?\s*\{/.test(src) && !/canWrite=\{false\}/.test(src);
+      // Tolerante a un comentario entre el corchete y el primer campo: el
+      // formulario se reconoce por tener campos, no por cómo esté formateado.
+      const hasForm = /fields=\{\[[\s\S]{0,600}?\{\s*name:/.test(src) && !/canWrite=\{false\}/.test(src);
       if (resource && hasForm) creatable.add(resource);
       for (const m of src.matchAll(/api\.post[^(]*\(\s*[`"']\/api\/erp\/(\w+)/g)) creatable.add(m[1]);
       for (const [name, route] of Object.entries(DEDICATED)) {
@@ -356,6 +359,343 @@ describe("Panel ejecutivo", () => {
     // Y al revés: si un recurso de la lista gana su formulario, sobra la excusa.
     const stale = Object.keys(FLOW_CREATED).filter((r) => creatable.has(r)).sort();
     expect(stale, "estos ya se crean desde una pantalla: quítalos de FLOW_CREATED").toEqual([]);
+  });
+
+  it("Operación — la salida tiene manifiesto, y sale del dominio", () => {
+    /**
+     * El despacho decía cuántos pax llevaba cada salida; quiénes eran, dónde se
+     * les recoge y qué necesitan no estaba en ninguna pantalla, aunque los datos
+     * llevaban ahí desde la primera migración repartidos en cinco tablas. Sin
+     * esa hoja la operación se lleva en una hoja de cálculo aparte, y lo que se
+     * cobra a bordo no vuelve nunca al sistema.
+     */
+    const page = read("src/app/dashboard/salidas/[id]/manifiesto/page.tsx");
+    const route = read("src/app/api/departures/[id]/manifest/route.ts");
+    // El armado vive en el servicio, que comparten la pantalla y el PDF.
+    const service = read("src/lib/manifest-service.ts");
+
+    // El orden es el de la ruta, no el de la venta, y lo decide el dominio.
+    expect(service).toContain("sortByRoute");
+    expect(service).toContain("pickupStops");
+    expect(service).toContain("manifestAlerts");
+    // Una reserva cancelada no viaja: contarla manda al guía a buscar a alguien
+    // que no existe y da la salida por llena.
+    expect(service).toContain("DEAD_BOOKING_STATUSES");
+    // Es una lista de clientes: un partner no ve las reservas de la competencia.
+    expect(route).toMatch(/role === "partner"/);
+
+    // Y está hecha para imprimirse.
+    expect(page).toContain("window.print()");
+    expect(page).toContain("no-print");
+    expect(page).toContain("print-block");
+    expect(read("src/app/globals.css")).toContain("@media print");
+
+    // Se llega desde donde se planifica el día y desde el calendario de salidas.
+    expect(read("src/app/dashboard/operaciones/despacho/page.tsx")).toContain("/manifiesto");
+    expect(read("src/app/dashboard/salidas/page.tsx")).toContain("/manifiesto");
+  });
+
+  it("Operación — cerrar una salida no es editar un campo", () => {
+    const resources = read("src/lib/resources.ts");
+    const departure = /^ {2}departure: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    const writable = /writable:\s*\[([\s\S]*?)\]/.exec(departure)![1];
+
+    // `actual_pax` es el número del que salen la ocupación real y la comisión
+    // del guía: se cuenta desde los check-in, no se teclea. Y `status` lleva
+    // fuera del CRUD desde AUD-B02 porque editarlo reabría una salida llena.
+    for (const field of ['"status"', '"actual_pax"', '"no_show_pax"', '"closed_at"', '"booked_pax"']) {
+      expect(writable, `departure.writable no debe incluir ${field}`).not.toContain(field);
+    }
+
+    const close = read("src/app/api/departures/[id]/close/route.ts");
+    expect(close).toContain("closeBlocker");
+    expect(close).toContain("closeTotals");
+    // Un no-show se vendió y no viajó: el cierre los separa.
+    expect(close).toContain("no_show_pax: totals.no_show_pax");
+    // Saltarse una comprobación es excepción de gestión, con motivo y auditada.
+    expect(close).toMatch(/requireAtLeast\(ctx, "manager"\)/);
+    expect(close).toContain("necesita un motivo");
+  });
+
+  it("Comunicaciones — nada se manda por fuera de la bandeja de salida", () => {
+    /**
+     * La plataforma no mandaba nada: las confirmaciones y los recordatorios
+     * salían del WhatsApp personal de quien atendiera, y "¿se le avisó?" no
+     * tenía respuesta. Ahora todo pasa por la bandeja, que es el registro.
+     */
+    const files = walk(path.join(ROOT, "src")).filter((f) => !f.includes("messaging/providers"));
+    const direct = files.filter((f) => {
+      const src = readFileSync(f, "utf8");
+      return /api\.resend\.com|graph\.facebook\.com/.test(src);
+    });
+    expect(direct.map((f) => path.relative(ROOT, f)),
+      "solo providers.ts habla con el proveedor").toEqual([]);
+
+    // La bandeja es un libro: se lee desde el CRUD, se escribe por su acción.
+    const resources = read("src/lib/resources.ts");
+    const message = /^ {2}message: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[([^\]]*)\]/.exec(message)![1].trim()).toBe("");
+
+    // Y las credenciales no se guardan por inquilino: la pantalla de
+    // integraciones manda esas filas al navegador.
+    const providers = read("src/lib/messaging/providers.ts");
+    expect(providers).toContain("process.env");
+    const outbox = read("src/lib/messaging/outbox.ts");
+    expect(outbox).not.toMatch(/api_key|apiKey|token/i);
+  });
+
+  it("Comunicaciones — un aviso no puede tumbar la operación que lo provoca", () => {
+    /**
+     * Que el proveedor de correo esté caído no puede revertir una venta ya
+     * cobrada ni hacer esperar al cajero con el cliente delante. Cada enganche
+     * se traga su error y lo deja en la bandeja.
+     */
+    for (const file of [
+      "src/lib/booking-service.ts",
+      "src/app/api/payments/route.ts",
+      "src/app/api/bookings/[id]/cancel/route.ts",
+      "src/app/api/quotes/[id]/send/route.ts",
+    ]) {
+      const src = read(file);
+      // La LLAMADA, no el import: `await notify…(`.
+      const call = /await\s+(notifyBookingCreated|notifyPaymentReceived|notifyBookingCancelled|notifyQuoteSent)\s*\(/.exec(src);
+      expect(call, `${file} debe encolar su aviso`).toBeTruthy();
+      const at = src.indexOf(call![0]);
+      const around = src.slice(Math.max(0, at - 400), at + 800);
+      expect(around, `${file} no protege el encolado`).toMatch(/try\s*\{[\s\S]*catch/);
+    }
+
+    // El despacho de la cola es un trabajo programado y con credencial.
+    const cron = read("src/app/api/cron/dispatch-messages/route.ts");
+    expect(cron).toContain("CRON_SECRET");
+    expect(cron).toMatch(/Bearer \$\{secret\}/);
+    expect(read("vercel.json")).toContain("/api/cron/dispatch-messages");
+
+    // Y lee con el cliente de servicio: con RLS activo, las ayudas de inquilino
+    // resuelven el cliente desde las cookies de la petición, y un cron no las
+    // tiene. Escrito contra ellas no se rompería — leería cero mensajes y diría
+    // que la cola está al día, que es el peor fallo posible aquí.
+    expect(cron).toContain("supabaseService()");
+    expect(cron).toContain("serviceStore()");
+    expect(cron).toMatch(/eq\("organization_id", companyId\)/);
+
+    // El recordatorio de la víspera también se barre: si solo se encolara al
+    // vender, la cartera que ya compró antes de que hubiera comunicaciones se
+    // quedaría sin avisar, que es justo el grupo que ya pagó.
+    expect(cron).toContain("sweepReminders");
+    expect(cron).toContain("enqueuePreTourReminder");
+
+    // El insert en crudo tiene que aplicar el MISMO mapa de alias que las
+    // ayudas de inquilino: los payloads del módulo dicen `customer`, la columna
+    // se llama `customer_id`, y sin traducir no se encolaba ni un recordatorio.
+    expect(cron).toContain("aliasesFor(\"message\")");
+  });
+
+  it("Comunicaciones — un aviso se manda una vez", () => {
+    // Cada pasada del cron volviendo a escribirle al cliente es la forma más
+    // rápida de que marque la dirección como spam.
+    const sql = readFileSync(path.join(ROOT, "supabase/migrations/0034_messaging_outbox.sql"), "utf8");
+    expect(sql).toContain("create unique index if not exists message_dedupe_idx");
+    const events = read("src/lib/messaging/events.ts");
+    expect(events).toContain("dedupeKey: `${key}:${channel}:${base.dedupeSeed}`");
+
+    // Y el envío manual NO lleva dedupe: reenviar a petición del cliente es
+    // legítimo y no puede quedar bloqueado por el aviso automático.
+    expect(read("src/app/api/messages/route.ts")).toContain("dedupeKey: null");
+
+    // Un canal que el cliente nunca dio no es un fallo de entrega: registrarlo
+    // como tal llenaría la bandeja de fallos permanentes, uno por cada cliente
+    // que solo dio correo, hasta tapar los fallos de verdad.
+    expect(events).toContain("const reachable = CHANNELS.filter");
+  });
+
+  it("Documentos — los tres papeles existen y se descargan", () => {
+    /**
+     * El sistema no producía ni un documento: el voucher viajaba como un código
+     * de texto dentro de un correo, la cotización había que copiarla a mano a
+     * otro documento, y el manifiesto solo existía como pantalla —que exige
+     * sesión, justo lo que el guía no tiene a las 6 de la mañana.
+     */
+    for (const route of [
+      "src/app/api/bookings/[id]/voucher/route.ts",
+      "src/app/api/quotes/[id]/pdf/route.ts",
+      "src/app/api/departures/[id]/manifest/pdf/route.ts",
+    ]) {
+      expect(read(route), `${route} debe devolver un PDF`).toContain("pdfResponse");
+    }
+
+    // Y se llega a ellos desde donde se usa cada uno.
+    expect(read("src/app/dashboard/reservas/page.tsx")).toContain("/voucher");
+    expect(read("src/app/dashboard/ventas/cotizaciones/quote-drawer.tsx")).toContain("/pdf");
+    expect(read("src/app/dashboard/salidas/[id]/manifiesto/page.tsx")).toContain("/manifest/pdf");
+
+    // El voucher lleva QR: sin él el check-in vuelve a teclearse a mano.
+    expect(read("src/lib/pdf/documents.ts")).toContain("QRCode.toBuffer");
+
+    // Un documento con importes no puede quedarse cacheado entre usuarios.
+    expect(read("src/lib/pdf/doc.ts")).toContain('"Cache-Control": "private, no-store"');
+
+    // Las notas internas de una cotización —coste del proveedor, margen
+    // negociable— no salen en el papel del cliente.
+    const documents = read("src/lib/pdf/documents.ts");
+    expect(documents).not.toContain("quote.internal_notes");
+  });
+
+  it("Documentos — el manifiesto de la pantalla y el del papel se arman igual", () => {
+    // Con la consulta duplicada bastaba con que una olvidara excluir las
+    // reservas canceladas para que papel y pantalla dieran cuentas distintas.
+    for (const route of [
+      "src/app/api/departures/[id]/manifest/route.ts",
+      "src/app/api/departures/[id]/manifest/pdf/route.ts",
+    ]) {
+      expect(read(route)).toContain("loadManifest");
+    }
+    expect(read("src/lib/manifest-service.ts")).toContain("DEAD_BOOKING_STATUSES");
+  });
+
+  it("Documentos — el adjunto se compone al entregar, no al encolar", () => {
+    /**
+     * Entre que se encola la confirmación y sale el correo puede haberse
+     * cobrado el saldo o cambiado la hora de recogida: un voucher con datos
+     * viejos es peor que ninguno, porque el cliente se presenta a la hora que
+     * dice el papel.
+     */
+    const outbox = read("src/lib/messaging/outbox.ts");
+    expect(outbox).toContain("resolveAttachment");
+    // La fila guarda QUÉ documento, no el documento: un PDF en base64 por fila
+    // haría inmanejable la bandeja.
+    expect(outbox).toContain("attachment_kind");
+    expect(outbox).not.toMatch(/content:\s*base64/);
+
+    // Y solo el correo lleva ficheros.
+    expect(outbox).toContain('input.channel === "email" ? input.attachmentKind');
+
+    // Un fallo del adjunto no puede perder el aviso: la hora de recogida sigue
+    // sirviendo aunque el PDF no se haya podido generar.
+    expect(read("src/lib/messaging/attachments.ts")).toMatch(/try\s*\{[\s\S]*catch[\s\S]*return null/);
+  });
+
+  it("Catálogo — los extras se venden con el tour, no como un producto suelto", () => {
+    /**
+     * Sin modelarlos, el vendedor tenía dos salidas y las dos malas: crear un
+     * producto "Almuerzo langosta" que ensucia el catálogo y descuadra la
+     * ocupación de las salidas —cada extra contaba como una reserva más—, o
+     * cobrarlo por fuera, donde no aparece ni en la rentabilidad del tour ni en
+     * el voucher que el cliente enseña al guía.
+     */
+    const service = read("src/lib/booking-service.ts");
+    expect(service).toContain("priceExtras");
+    // Un extra que el catálogo no reconoce se rechaza: cobrar de menos en
+    // silencio es peor que fallar.
+    expect(service).toContain("unknownSelections");
+
+    // El impuesto cae también sobre los extras. Sumarlos después los dejaba
+    // exentos, y en un grupo de 40 con almuerzo de 35 son 1.400 sin ITBIS.
+    expect(service).toContain("const taxAmount = round2((netAmount * taxPct) / 100)");
+
+    // El precio se congela con la reserva: si mañana sube el almuerzo, la de
+    // ayer sigue valiendo lo que el cliente pagó.
+    const resources = read("src/lib/resources.ts");
+    const contracted = /^ {2}booking_extra: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[([^\]]*)\]/.exec(contracted)![1].trim()).toBe("");
+
+    // Se ofrecen en el punto de venta y viajan en el voucher.
+    expect(read("src/app/api/pos/context/route.ts")).toContain("product_extra");
+    expect(read("src/app/dashboard/pos/page.tsx")).toContain("item.product.extras");
+    expect(read("src/app/api/bookings/[id]/voucher/route.ts")).toContain("booking_extra");
+  });
+
+  it("Catálogo — el voucher dice lo que el producto promete", () => {
+    // El contenido de la ficha existía desde 0030 y ningún documento lo usaba:
+    // el cliente recibía un papel sin qué incluye, qué no, ni qué llevar.
+    const route = read("src/app/api/bookings/[id]/voucher/route.ts");
+    for (const field of ["inclusions", "exclusions", "recommendations", "restrictions", "instructions"]) {
+      expect(route, `el voucher debe llevar ${field}`).toContain(field);
+    }
+    // Y el mismo contenido va en el adjunto del correo, no una versión pobre.
+    const attachments = read("src/lib/messaging/attachments.ts");
+    expect(attachments).toContain("inclusions");
+    expect(attachments).toContain("recommendations");
+  });
+
+  it("Fiscal — el NCF no se teclea, lo entrega la base de forma atómica", () => {
+    /**
+     * La pantalla era un formulario donde el NCF, el subtotal, el impuesto y el
+     * total se escribían a mano. Eso rompe de tres formas que la DGII ve: dos
+     * cajas facturando a la vez escriben el mismo NCF; un número saltado hay que
+     * justificarlo en el 606/607 meses después; y el impuesto tecleado no
+     * coincide con el de la venta.
+     */
+    const resources = read("src/lib/resources.ts");
+    const invoice = /^ {2}invoice: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    const writable = /writable:\s*\[([\s\S]*?)\]/.exec(invoice)![1];
+    for (const field of ['"ncf"', '"ncf_type"', '"number"', '"series"', '"status"',
+                         '"subtotal"', '"tax"', '"total"', '"voided_at"', '"order"']) {
+      expect(writable, `invoice.writable no debe incluir ${field}`).not.toContain(field);
+    }
+
+    // `next_number` tampoco: moverlo a mano es cómo se repiten o se saltan.
+    const sequence = /^ {2}ncf_sequence: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[([\s\S]*?)\]/.exec(sequence)![1]).not.toContain('"next_number"');
+
+    // El número lo entrega la función de la base, no la aplicación: comprobar
+    // el rango y reservar ocurren en la MISMA sentencia.
+    const service = read("src/lib/invoice-service.ts");
+    expect(service).toContain('sb.rpc("next_ncf"');
+    const sql = readFileSync(path.join(ROOT, "supabase/migrations/0037_fiscal_invoicing.sql"), "utf8");
+    expect(sql).toContain("update ncf_sequence");
+    expect(sql).toMatch(/set next_number = next_number \+ 1/);
+    // Y no entrega números de otro inquilino aunque le pasen su id.
+    expect(sql).toContain("app.current_org_id() <> p_org");
+
+    // Una sola secuencia viva por tipo: dos serían dos numeraciones paralelas.
+    expect(sql).toContain("unique (organization_id, ncf_type)");
+
+    // La factura tiene que cuadrar con la orden que la origina: la tasa sale de
+    // la PROPIA reserva, no del perfil fiscal, que es otro número en cuanto el
+    // perfil cambia de tasa o la reserva se vendió exenta.
+    expect(service).toContain("taxAmount / net");
+    expect(service).toMatch(/invoiceTotals\(draftLines as InvoiceLineInput\[\], false\)/);
+  });
+
+  it("Fiscal — una factura emitida se anula con nota de crédito, no se borra", () => {
+    // El cliente ya la tiene y probablemente ya está en su declaración; borrarla
+    // deja además un hueco en la secuencia que hay que justificar.
+    const service = read("src/lib/invoice-service.ts");
+    expect(service).toContain("creditNoteTypeFor");
+    expect(service).toContain("credit_note_of");
+    expect(service).toContain("necesita un motivo");
+    // La nota de crédito copia el desglose: sin líneas no se puede demostrar QUÉ
+    // se anuló, que es lo que se pregunta en una inspección.
+    expect(service).toMatch(/for \(const line of lines\)[\s\S]{0,200}invoice_line/);
+
+    // Anular es decisión de gestión, no del cajero que se equivocó.
+    expect(read("src/app/api/invoices/[id]/void/route.ts")).toMatch(/requireAtLeast\(ctx, "manager"\)/);
+  });
+
+  it("los registros derivados no se borran desde el CRUD genérico", () => {
+    /**
+     * Un recurso con `writable` vacío es un libro: el registro de auditoría, los
+     * asientos contables, los movimientos de caja y de gift card, las líneas de
+     * una cotización. La ruta genérica no los dejaba escribir pero SÍ borrar con
+     * rango de gestión, y borrar la fila que explica un saldo lo descuadra sin
+     * dejar rastro de por qué.
+     */
+    const route = read("src/app/api/erp/[resource]/[id]/route.ts");
+    expect(route).toMatch(/if \(!def\.writable \|\| def\.writable\.length === 0\)/);
+    // La guarda va ANTES de resolver el inquilino: es una decisión del recurso.
+    const del = route.slice(route.indexOf("export async function DELETE"));
+    expect(del.indexOf("def.writable.length === 0")).toBeLessThan(del.indexOf("tenantDelete"));
+
+    // Y sigue habiendo libros que proteger: si esta lista se vacía, la guarda
+    // dejó de cubrir nada y hay que revisar por qué.
+    const resources = read("src/lib/resources.ts");
+    const ledgers = [...resources.matchAll(/^ {2}(\w+): \{\n([\s\S]*?)^ {2}\},/gm)]
+      .filter((m) => /writable:\s*\[\s*\]/.test(m[2]))
+      .map((m) => m[1]);
+    expect(ledgers).toEqual(expect.arrayContaining([
+      "audit_log", "ledger_entry", "cash_movement", "gift_card_movement", "quote_line", "quote_option",
+    ]));
   });
 
   it("Gift cards — el saldo solo se mueve por sus acciones", () => {
@@ -453,22 +793,93 @@ describe("Panel ejecutivo", () => {
     expect(tenant).not.toContain("tenantAggregate");
   });
 
-  it("Cotizaciones — pipeline, vigencia derivada, margen y desglose de líneas", () => {
+  it("Cotizaciones — el documento completo, no una cabecera con líneas", () => {
     const page = read("src/app/dashboard/ventas/cotizaciones/page.tsx");
+    const drawer = read("src/app/dashboard/ventas/cotizaciones/quote-drawer.tsx");
+    const fields = read("src/app/dashboard/ventas/cotizaciones/quote-fields.ts");
+    const resources = read("src/lib/resources.ts");
+
     expect(page).not.toContain("SimpleResource");
     expect(page).toContain('title="Cotizaciones"');
-    // La vigencia real manda sobre el `status` almacenado.
+    // La vigencia real manda sobre el `status` almacenado, y se decide en el
+    // dominio: la pantalla ya no lleva su propia copia de la regla.
     expect(page).toContain("function ValidityPill");
-    expect(page).toContain("const expired");
-    expect(page).toContain("const live");
-    // El módulo promete margen: ahora se muestra.
-    expect(page).toContain("margin_percent");
-    // Embudo y exportación.
+    expect(page).toContain("isExpired");
+    expect(page).toContain("derivedStatus");
     expect(page).toContain("Tasa de conversión");
     expect(page).toContain("const exportCsv");
-    // El detalle trae las líneas expandidas desde el recurso.
-    expect(page).toContain("quote_line");
-    expect(read("src/lib/resources.ts")).toContain("quote_line: { _limit: 100, product: true }");
+
+    // El alta pasa por su acción: `quote.code` es not null y único, y ninguna
+    // pantalla lo pedía ni lo generaba — "Nueva cotización" fallaba en la base.
+    expect(page).toContain('createPath="/api/quotes"');
+
+    // El formulario cubre el documento entero, no seis campos sueltos.
+    for (const field of [
+      "contact_email", "deposit_type", "deposit_due_date", "balance_due_date",
+      "inclusions", "exclusions", "cancellation_policy", "payment_terms",
+      "internal_notes", "tax_percent", "follow_up_at",
+    ]) {
+      expect(fields, `falta ${field} en el formulario de cotización`).toContain(`"${field}"`);
+    }
+
+    // Las cuatro acciones del ciclo comercial existen y salen del dominio.
+    for (const action of ["send", "decide", "convert", "revise"]) {
+      expect(drawer).toContain(`/api/quotes/${"${quote._id}"}/${action}`);
+    }
+    for (const blocker of ["sendBlocker", "decideBlocker", "convertBlocker", "reviseBlocker"]) {
+      expect(drawer, `${blocker} debe decidirlo el dominio`).toContain(blocker);
+    }
+    // Y las alternativas, que es lo que convierte una propuesta en una oferta.
+    expect(drawer).toContain("optionBreakdown");
+    expect(drawer).toContain("/options");
+  });
+
+  it("Cotizaciones — el total lo escribe el servidor, nunca el formulario", () => {
+    const resources = read("src/lib/resources.ts");
+    const quote = /^ {2}quote: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    const writable = /writable:\s*\[([\s\S]*?)\]/.exec(quote)![1];
+
+    // Un total editable a mano es una promesa que el desglose no sostiene, y un
+    // `status` editable deja marcar "aceptada" una propuesta que nadie recibió.
+    for (const field of ['"subtotal"', '"discount"', '"total"', '"margin_percent"',
+                         '"status"', '"sent_at"', '"decided_at"', '"code"', '"version"', '"order"']) {
+      expect(writable, `quote.writable no debe incluir ${field}`).not.toContain(field);
+    }
+
+    // Las líneas y las alternativas se leen desde el CRUD pero se escriben por
+    // las rutas que recalculan la cabecera en el mismo movimiento.
+    const line = /^ {2}quote_line: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[([^\]]*)\]/.exec(line)![1].trim()).toBe("");
+    const option = /^ {2}quote_option: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[([^\]]*)\]/.exec(option)![1].trim()).toBe("");
+
+    // Los totales se recalculan en un solo módulo del dominio: las rutas de
+    // acción tocan el estado (enviada, aceptada, convertida), nunca el importe.
+    const libWriters = walk(path.join(ROOT, "src/lib")).filter((file) =>
+      /tenantUpdate\([^)]*"quote"/.test(readFileSync(file, "utf8"))
+    ).map((f) => path.relative(ROOT, f)).sort();
+    expect(libWriters).toEqual(["src/lib/quote-service.ts"]);
+    for (const route of ["send", "decide", "revise", "convert"]) {
+      const src = read(`src/app/api/quotes/[id]/${route}/route.ts`);
+      expect(src, `${route} no debe escribir importes a mano`).not.toMatch(/tenantUpdate\([^)]*"quote"[\s\S]{0,400}?subtotal/);
+    }
+  });
+
+  it("Cotizaciones — la reserva se cobra al precio pactado, no al del catálogo", () => {
+    const convert = read("src/app/api/quotes/[id]/convert/route.ts");
+    const orders = read("src/app/api/orders/route.ts");
+    const pricing = read("src/lib/pricing.ts");
+
+    // Volver a calcular el precio al convertir le cobraría al cliente algo
+    // distinto de lo que aceptó: esa es la razón de ser de una cotización.
+    expect(convert).toContain("unit_price_override");
+    expect(pricing).toContain("unitPriceOverride");
+    expect(pricing).toContain('price_source: negotiated ? "quote" : "catalog"');
+
+    // Y ese precio solo lo fija el servidor: por HTTP no entra, o el punto de
+    // venta se convertiría en un formulario de "pon tú el precio".
+    expect(orders).toContain("delete item.unit_price_override");
+    expect(orders).toContain("delete item.cost_override");
   });
 
   it("CRM — el origen del lead usa el dominio real, no el canal de venta", () => {
@@ -505,6 +916,13 @@ describe("Panel ejecutivo", () => {
     // Antes: formatMoney(pipelineValue, "usd") sobre leads de cualquier moneda.
     expect(page).not.toContain('formatMoney(pipelineValue, "usd")');
     expect(page).not.toContain('formatMoney(wonValue, "usd")');
+  });
+
+  it("las pruebas de base de datos se ejecutan en cada cambio", () => {
+    // Un `check` que solo corre si alguien se acuerda no protege nada: las
+    // pruebas de dominio, cascada y aislamiento entre inquilinos estaban
+    // escritas y ninguna tubería las lanzaba.
+    expect(read(".github/workflows/ci.yml")).toContain("bash scripts/db-test.sh");
   });
 
   it("existe una prueba de base de datos de la RPC del panel", () => {

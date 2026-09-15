@@ -96,6 +96,20 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     const def = getResource(resource);
     if (!def) throw new TenantError(`Recurso desconocido: ${resource}`, 404);
 
+    // Un recurso sin campos escribibles es un libro: movimientos de caja, el
+    // registro de auditoría, los asientos contables, las líneas de una
+    // cotización. Si el CRUD genérico no los deja escribir, tampoco puede
+    // dejarlos borrar — borrar un asiento o un movimiento de gift card desde
+    // aquí descuadraba el saldo del que son la única explicación, y el total de
+    // una cotización dejaba de cuadrar con su desglose. Cada uno de esos
+    // recursos tiene su propia acción cuando retirar la fila es legítimo.
+    if (!def.writable || def.writable.length === 0) {
+      throw new TenantError(
+        `${def.table} es un registro derivado: se retira desde su propia acción, no desde el CRUD genérico`,
+        403
+      );
+    }
+
     const ctx = await requireTenant();
     assertRateLimit({ key: rateLimitKey(req, `erp:delete:${def.table}`, ctx.userId), limit: 30, windowMs: 60_000 });
     if (ctx.role === "partner") throw new TenantError("No tienes permisos para eliminar este recurso", 403);

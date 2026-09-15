@@ -17,6 +17,15 @@ export async function POST(req: NextRequest) {
     if (!body.customer_id) throw Object.assign(new Error("Debes seleccionar un cliente"), { status: 400 });
     if (!body.items?.length) throw Object.assign(new Error("Añade al menos un producto a la orden"), { status: 400 });
 
+    // Un precio pactado solo nace de una cotización aceptada, y lo fija el
+    // servidor en /api/quotes/:id/convert. Aceptarlo aquí desde el navegador
+    // convertiría el punto de venta en un formulario de "pon tú el precio".
+    for (const item of body.items) {
+      delete item.unit_price_override;
+      delete item.cost_override;
+      delete item.quote_id;
+    }
+
     // Capacity override is a privileged action.
     if (body.capacity_override) requireAtLeast(ctx, "manager");
     // Portal users always sell on behalf of their own partner.

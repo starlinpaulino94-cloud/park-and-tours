@@ -535,6 +535,13 @@ export default function BookingsPage() {
                     <Icon name="CreditCard" className="size-4" /> Cobrar saldo
                   </Button>
                 )}
+                {/* El voucher con su QR: es lo que el cliente enseña en la
+                    puerta, y hasta ahora solo existía como código de texto. */}
+                <a href={`/api/bookings/${detail._id}/voucher`} target="_blank" rel="noopener noreferrer">
+                  <Button variant="outline" className="gap-1.5">
+                    <Icon name="Download" className="size-4" /> Voucher PDF
+                  </Button>
+                </a>
                 <Link href={`/dashboard/checkin?code=${detail.voucher_code || detail.booking_number || ""}`}>
                   <Button variant="outline" className="gap-1.5"><Icon name="ScanLine" className="size-4" /> Check-in</Button>
                 </Link>

@@ -279,3 +279,31 @@
     .tf-nav-progress { animation: none; transform: scaleX(0.6); }
   }
 }
+
+/* ---------------------------------------------------------------- impresión
+ * Hay documentos de esta plataforma que existen para salir en papel: el
+ * manifiesto que el guía se lleva al autobús es el primero. Sin estas reglas se
+ * imprimía el panel entero —barra lateral, cabecera fija, botones— y el
+ * manifiesto en sí quedaba partido en tres hojas.
+ *
+ * `.no-print` marca lo que es interfaz y no documento; `.print-only` lo que solo
+ * tiene sentido en papel (el pie con quién lo generó y cuándo). `.print-block`
+ * evita que una fila de pasajero se corte entre dos páginas, que en una lista de
+ * recogidas obliga a releer la anterior.
+ */
+@media print {
+  .no-print { display: none !important; }
+  .print-only { display: block !important; }
+  .print-block { break-inside: avoid; page-break-inside: avoid; }
+  .print-plain { border: 0 !important; box-shadow: none !important; background: transparent !important; }
+
+  /* El panel se dibuja sobre una superficie oscura o teñida; el papel es blanco. */
+  html, body { background: #fff !important; color: #000 !important; }
+  aside, header, nav { display: none !important; }
+  main { padding: 0 !important; }
+
+  a[href]::after { content: ""; }
+}
+.print-only { display: none; }
+
+@page { margin: 12mm; }

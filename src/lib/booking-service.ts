@@ -7,6 +7,8 @@ import { uniqueCode } from "@/lib/unique";
 import { resolveCommissions, type BeneficiaryDescriptor } from "@/lib/commission-engine";
 import { writeAudit } from "@/lib/audit";
 import { newBookingNumber, newOrderNumber, newVoucherCode, newDocumentNumber } from "@/lib/codes";
+import { notifyBookingCreated } from "@/lib/messaging/events";
+import { priceExtras, unknownSelections, type ExtraOffer, type ExtraSelection } from "@/lib/extras";
 import type {
   Booking, Channel, Currency, Departure, Order, Partner, Product, Seller,
 } from "@/lib/types";
@@ -37,6 +39,24 @@ export interface BookingItemInput {
   room_number?: string | null;
   notes?: string | null;
   participants?: { full_name: string; age?: number; category?: string; document_id?: string; special_requirements?: string }[];
+  /**
+   * Precio y coste pactados que sustituyen a los del catálogo.
+   *
+   * Solo los fija el servidor al convertir una cotización aceptada: es el precio
+   * que el cliente firmó. La ruta HTTP los borra del payload (`/api/orders`),
+   * porque de lo contrario cualquiera con permiso de venta podría venderse un
+   * tour al precio que quisiera.
+   */
+  unit_price_override?: number | null;
+  /** Coste TOTAL de la línea pactado con el proveedor (no unitario). */
+  cost_override?: number | null;
+  /**
+   * Extras contratados con este producto (almuerzo, foto, transfer premium).
+   * Los obligatorios del catálogo se añaden solos aunque no vengan aquí.
+   */
+  extras?: ExtraSelection[];
+  /** Cotización de la que sale ese precio, para el snapshot inmutable. */
+  quote_id?: string | null;
 }
 
 export interface CreateOrderInput {
@@ -177,6 +197,9 @@ export async function createOrderWithBookings(
       discountPct: item.discount_pct ?? 0,
       taxPct: item.tax_pct ?? 0,
       exchangeRate,
+      unitPriceOverride: item.unit_price_override ?? null,
+      overrideCurrency: currency,
+      quoteId: item.quote_id ?? null,
     });
 
     // AUD-F03: an order carries a single currency. If a line resolves to a
@@ -195,8 +218,44 @@ export async function createOrderWithBookings(
       _filter: { _id: item.product_id }, _limit: 1,
     }))[0];
 
-    const cost = await resolveCost(companyId, item.product_id, billable, productRow?.base_cost ?? 0);
+    // Un coste pactado con el proveedor para este grupo manda sobre la tarifa
+    // general del catálogo: si no, el margen de la venta no es el que se negoció.
+    const cost = item.cost_override !== null && item.cost_override !== undefined
+      ? round2(Math.max(Number(item.cost_override) || 0, 0))
+      : await resolveCost(companyId, item.product_id, billable, productRow?.base_cost ?? 0);
     const voucherCode = await uniqueCode(companyId, "voucher", "code", newVoucherCode);
+
+    // ---- extras -----------------------------------------------------------
+    // Se valoran ANTES de crear la reserva para que su importe entre en el
+    // total desde el principio: sumarlos después dejaría la reserva un instante
+    // con un total que no es el que se va a cobrar, y ese instante es el que ve
+    // cualquier cálculo concurrente.
+    const offers = await tenantQuery<ExtraOffer>(companyId, "product_extra", {
+      _filter: { product: item.product_id, status: "active" }, _limit: 50, _sort: { sort_order: "asc" },
+    });
+    const selections = item.extras ?? [];
+    const strangers = unknownSelections(offers, selections);
+    if (strangers.length > 0) {
+      // Cobrar de menos en silencio es peor que fallar: un extra que el catálogo
+      // no reconoce significa una pestaña vieja o un payload a mano.
+      throw Object.assign(
+        new Error("Hay extras seleccionados que ya no están disponibles para este producto"),
+        { status: 409 }
+      );
+    }
+    const extras = priceExtras(offers, selections, billable);
+
+    // El impuesto se aplica TAMBIÉN sobre los extras. Sumarlos después del
+    // impuesto los dejaba exentos, y en un grupo de 40 con almuerzo de 35 eso
+    // son 1.400 de base sin ITBIS: un error de declaración, no un redondeo.
+    // El descuento, en cambio, se queda en el tour: un 10% pactado sobre la
+    // excursión no rebaja la langosta que el cliente añadió aparte.
+    const taxPct = Math.max(item.tax_pct ?? 0, 0);
+    const grossAmount = round2(price.grossAmount + extras.total);
+    const netAmount = round2(grossAmount - price.discountAmount);
+    const taxAmount = round2((netAmount * taxPct) / 100);
+    const totalAmount = round2(netAmount + taxAmount);
+    const costAmount = round2(cost + extras.cost);
 
     const booking = await tenantCreate<Booking>(companyId, "booking", {
       booking_number: await uniqueCode(companyId, "booking", "booking_number", newBookingNumber),
@@ -216,21 +275,23 @@ export async function createOrderWithBookings(
       travel_date: travelDate || undefined,
       adults, children, infants, pax_total: paxTotal,
       unit_price: price.unitPrice,
-      gross_amount: price.grossAmount,
+      gross_amount: grossAmount,
       discount_amount: price.discountAmount,
-      tax_amount: price.taxAmount,
-      total_amount: price.totalAmount,
-      cost_amount: cost,
+      tax_amount: taxAmount,
+      total_amount: totalAmount,
+      cost_amount: costAmount,
+      extras_amount: extras.total,
+      extras_cost: extras.cost,
       // AUD-F05: margin excludes tax (tax is not revenue). Previously used
       // `totalAmount` (tax included) with dead `* 0` code, inflating margin.
-      margin_amount: round2(price.grossAmount - price.discountAmount - cost),
+      margin_amount: round2(netAmount - costAmount),
       paid_amount: 0,
-      balance_amount: price.totalAmount,
+      balance_amount: totalAmount,
       refund_amount: 0,
       currency: price.currency,
       exchange_rate: exchangeRate,
       base_currency: ctx.company?.base_currency || price.currency,
-      base_amount: round2(price.totalAmount * exchangeRate),
+      base_amount: round2(totalAmount * exchangeRate),
       price_snapshot: JSON.stringify(price.snapshot),
       pickup_time: item.pickup_time || undefined,
       pickup_location: item.pickup_location || undefined,
@@ -243,11 +304,30 @@ export async function createOrderWithBookings(
       notes: item.notes || undefined,
     });
 
+    // ---- líneas de extra ---------------------------------------------------
+    // El nombre y el precio se COPIAN: si el extra se renombra o sube de precio,
+    // el voucher de esta reserva tiene que seguir diciendo qué se compró y por
+    // cuánto.
+    for (const line of extras.lines) {
+      await tenantCreate(companyId, "booking_extra", {
+        booking: booking._id,
+        extra: line.extra_id,
+        name: line.name,
+        price_type: line.price_type,
+        quantity: line.quantity,
+        unit_price: line.unit_price,
+        unit_cost: line.unit_cost ?? undefined,
+        total_amount: line.total_amount,
+        cost_amount: line.cost_amount,
+        currency: line.currency,
+      });
+    }
+
     bookings.push(booking);
-    subtotal += price.grossAmount;
+    subtotal += grossAmount;
     discountTotal += price.discountAmount;
-    taxTotal += price.taxAmount;
-    grandTotal += price.totalAmount;
+    taxTotal += taxAmount;
+    grandTotal += totalAmount;
 
     // ---- participants ----------------------------------------------------
     for (const p of item.participants || []) {
@@ -377,6 +457,19 @@ export async function createOrderWithBookings(
     entityType: "order", entityId: order._id,
     description: `Orden ${order.order_number} creada con ${bookings.length} reserva(s) por ${totals.total} ${currency}`,
   });
+
+  // Confirmación al cliente y recordatorio de la víspera. Va DESPUÉS de que la
+  // orden esté promovida y fuera del try/catch de la saga a propósito: que el
+  // proveedor de correo esté caído no puede revertir una venta ya cobrada, ni
+  // hacer esperar al cajero con el cliente delante. Lo que no salga queda en la
+  // bandeja con su motivo.
+  for (const booking of bookings) {
+    try {
+      await notifyBookingCreated(ctx.company, companyId, booking, ctx.userId);
+    } catch (err) {
+      console.error("[booking-service] no se pudo encolar el aviso de la reserva", booking._id, err);
+    }
+  }
 
   console.log(`[booking-service] orden ${order.order_number} creada · ${bookings.length} reservas · total ${totals.total} ${currency}`);
 

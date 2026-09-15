@@ -111,6 +111,16 @@ const BINDINGS: [string, Dict, string, string][] = [
   ["GIFT_CARD_STATUS", modules.GIFT_CARD_STATUS, "gift_card", "status"],
   ["GIFT_MOVEMENT_TYPE", modules.GIFT_MOVEMENT_TYPE, "gift_card_movement", "movement_type"],
   ["DELIVERY_CHANNEL", modules.DELIVERY_CHANNEL, "gift_card", "delivery_channel"],
+  // 0032: el documento de una cotización y su anticipo.
+  ["QUOTE_STATUS", modules.QUOTE_STATUS, "quote", "status"],
+  ["QUOTE_LINE_TYPE", modules.QUOTE_LINE_TYPE, "quote_line", "line_type"],
+  ["DEPOSIT_TYPE", modules.DEPOSIT_TYPE, "quote", "deposit_type"],
+  // 0034: la bandeja de salida.
+  ["MESSAGE_CHANNEL", modules.MESSAGE_CHANNEL, "message", "channel"],
+  ["MESSAGE_STATUS", modules.MESSAGE_STATUS, "message", "status"],
+  ["MESSAGE_TEMPLATE_KEY", modules.MESSAGE_TEMPLATE_KEY, "message_template", "key"],
+  // 0036: los extras que se venden con la excursión.
+  ["EXTRA_PRICE_TYPE", modules.EXTRA_PRICE_TYPE, "product_extra", "price_type"],
 ];
 
 describe("los diccionarios de la UI coinciden con el dominio de la base", () => {

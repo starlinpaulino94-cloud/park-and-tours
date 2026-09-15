@@ -75,7 +75,7 @@ function useReferenceOptions(fields: FieldDef[], open: boolean) {
 }
 
 export function ResourceForm({
-  open, onOpenChange, resource, fields, record, title, description, onSaved, extraPayload,
+  open, onOpenChange, resource, fields, record, title, description, onSaved, extraPayload, createPath,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -84,6 +84,15 @@ export function ResourceForm({
   record?: Record<string, any> | null;
   /** Merged into every create so scoped screens stay inside their own scope. */
   extraPayload?: Record<string, string>;
+  /**
+   * Ruta de alta cuando el recurso no se crea por el CRUD genérico.
+   *
+   * Un documento con código propio (una cotización, una orden) no puede nacer de
+   * un formulario: su número lo genera el servidor y no puede repetirse. Esos
+   * recursos apuntan aquí a su acción dedicada y siguen usando este formulario
+   * para editarse después.
+   */
+  createPath?: string;
   title: string;
   description?: string;
   onSaved: () => void;
@@ -139,7 +148,7 @@ export function ResourceForm({
     setSaving(true);
     const res = record?._id
       ? await api.put(`/api/erp/${resource}/${record._id}`, payload)
-      : await api.post(`/api/erp/${resource}`, { ...(extraPayload || {}), ...payload });
+      : await api.post(createPath || `/api/erp/${resource}`, { ...(extraPayload || {}), ...payload });
     setSaving(false);
 
     if (!res.ok) {

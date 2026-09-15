@@ -241,6 +241,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
       customer: true, product: true, departure: true, seller: true, partner: true, branch: true,
       modality: true, pickup_hotel: true, order: true, created_by: true, checked_in_by: true,
       participant: { _limit: 100 },
+      booking_extra: { _limit: 30 },
       voucher: { _limit: 10 },
       commission: { _limit: 20, seller: true, partner: true },
       payment: { _limit: 50, _sort: { createdAt: "desc" } },
@@ -733,29 +734,132 @@ export const RESOURCES: Record<string, ResourceDef> = {
   },
   quote: {
     table: "quote",
-    search: ["code", "notes"],
+    search: ["code", "title", "notes", "company_name", "contact_name"],
     expand: { customer: true, partner: true, seller: true },
-    // El detalle trae las líneas: una cotización sin su desglose no se puede
+    // El detalle trae el documento entero: sus alternativas, sus líneas y la
+    // versión de la que viene. Una cotización sin su desglose no se puede
     // revisar ni comparar contra el total que se le prometió al cliente.
     expandOne: {
-      customer: true, partner: true, seller: true, order: true,
-      quote_line: { _limit: 100, product: true },
+      customer: true, partner: true, seller: true, order: true, lead: true,
+      revision_of: true, selected_option: true,
+      quote_option: { _limit: 20 },
+      quote_line: { _limit: 200, product: true, supplier: true, option: true },
     },
     sort: { createdAt: "desc" },
-    writable: ["code", "status", "quote_type", "issued_at", "valid_until", "event_date", "pax", "subtotal", "discount", "tax", "total", "currency", "margin_percent", "terms", "notes", "rejection_reason", "sent_at", "decided_at", "customer", "partner", "seller", "lead", "order", "user"],
-    numeric: ["pax", "subtotal", "discount", "tax", "total", "margin_percent"],
-    dates: ["issued_at", "valid_until", "event_date", "sent_at", "decided_at"],
+    // El ciclo de vida y el dinero NO son campos de formulario: `status`,
+    // `sent_at`, `decided_at` y los totales los escriben las acciones de
+    // /api/quotes, igual que con `voucher.status` o el saldo de una gift card.
+    // Editarlos a mano permitía dar por aceptada una propuesta que el cliente
+    // nunca recibió, o prometer un total que no cuadra con sus líneas.
+    writable: [
+      "title", "quote_type", "issued_at", "valid_until", "event_date", "pax", "currency",
+      "contact_name", "contact_email", "contact_phone", "company_name",
+      "tax_percent",
+      "deposit_type", "deposit_percent", "deposit_amount", "deposit_due_date", "balance_due_date",
+      "terms", "inclusions", "exclusions", "cancellation_policy", "payment_terms",
+      "notes", "internal_notes", "follow_up_at",
+      "customer", "partner", "seller", "lead", "user",
+    ],
+    numeric: ["pax", "tax_percent", "deposit_percent", "deposit_amount"],
+    dates: ["issued_at", "valid_until", "event_date", "deposit_due_date", "balance_due_date", "follow_up_at"],
     writeRole: "seller",
   },
+  // Las líneas y las alternativas son el desglose del que sale el total: se leen
+  // desde aquí, pero se escriben por /api/quotes/:id/lines y /options, que
+  // recalculan la cabecera en el mismo movimiento. Dejarlas en el CRUD genérico
+  // permitía añadir una línea de 5.000 sin que el total de la propuesta se
+  // enterara.
   quote_line: {
     table: "quote_line",
     search: ["description"],
-    expand: { quote: true, product: true },
-    sort: { createdAt: "desc" },
-    writable: ["description", "quantity", "unit_price", "unit_cost", "discount_percent", "line_total", "service_date", "quote", "product", "product_modality", "departure"],
-    numeric: ["quantity", "unit_price", "unit_cost", "discount_percent", "line_total"],
+    expand: { quote: true, product: true, supplier: true, option: true },
+    sort: { sort_order: "asc" },
+    writable: [],
+    numeric: ["quantity", "unit_price", "unit_cost", "discount_percent", "line_total", "adults", "children", "infants", "sort_order"],
     dates: ["service_date"],
     writeRole: "seller",
+  },
+  quote_option: {
+    table: "quote_option",
+    search: ["name"],
+    expand: { quote: true },
+    sort: { sort_order: "asc" },
+    writable: [],
+    numeric: ["sort_order", "subtotal", "discount", "tax", "total", "cost_total", "margin_amount"],
+    booleans: ["is_recommended", "is_selected"],
+    writeRole: "seller",
+  },
+  // La bandeja de salida es un libro: cada fila es constancia de lo que se le
+  // dijo a un cliente. Se lee desde aquí; encolar, reintentar y cancelar pasan
+  // por /api/messages, que es quien compone el texto y respeta el dedupe.
+  message: {
+    table: "message",
+    search: ["to_address", "subject", "to_name"],
+    expand: { customer: true, booking: true, quote: true },
+    expandOne: { customer: true, booking: true, order: true, quote: true, departure: true, payment: true },
+    sort: { createdAt: "desc" },
+    writable: [],
+    numeric: ["attempts"],
+    dates: ["scheduled_at", "sent_at"],
+    writeRole: "manager",
+  },
+  // Las plantillas sí son un formulario: cada empresa reescribe el texto con su
+  // voz y en los idiomas que atiende.
+  message_template: {
+    table: "message_template",
+    search: ["key", "subject", "body"],
+    sort: { key: "asc" },
+    writable: ["key", "channel", "language", "subject", "body", "status", "offset_hours", "notes"],
+    numeric: ["offset_hours"],
+    writeRole: "manager",
+  },
+  // Lo que se vende JUNTO al tour: el almuerzo, la foto, el transfer premium.
+  // Es donde está el margen, porque el tour compite por precio y el extra no.
+  product_extra: {
+    table: "product_extra",
+    search: ["name", "description"],
+    expand: { product: true },
+    sort: { sort_order: "asc" },
+    writable: ["product", "name", "description", "price_type", "price", "cost", "currency",
+               "is_required", "max_quantity", "sort_order", "status"],
+    numeric: ["price", "cost", "max_quantity", "sort_order"],
+    booleans: ["is_required"],
+    writeRole: "manager",
+  },
+  // Lo contratado, con su precio congelado: si mañana sube el almuerzo, la
+  // reserva de ayer sigue valiendo lo que el cliente pagó. Se lee, no se edita.
+  booking_extra: {
+    table: "booking_extra",
+    search: ["name"],
+    expand: { booking: true, extra: true },
+    sort: { createdAt: "asc" },
+    writable: [],
+    numeric: ["quantity", "unit_price", "unit_cost", "total_amount", "cost_amount"],
+    writeRole: "manager",
+  },
+  // El desglose del comprobante. Se lee; lo escribe la emisión, que es la única
+  // que puede hacer que cuadre con el total y con la venta que lo origina.
+  invoice_line: {
+    table: "invoice_line",
+    search: ["description"],
+    expand: { invoice: true, booking: true, product: true },
+    sort: { sort_order: "asc" },
+    writable: [],
+    numeric: ["quantity", "unit_price", "discount", "tax_rate", "tax_amount", "total", "sort_order"],
+    writeRole: "manager",
+  },
+  // El rango de comprobantes que autorizó la DGII. `next_number` NO es
+  // escribible desde aquí: lo consume `public.next_ncf` de forma atómica, y
+  // moverlo a mano es cómo se repiten o se saltan números.
+  ncf_sequence: {
+    table: "ncf_sequence",
+    search: ["ncf_type", "authorization_code"],
+    expand: { tax_profile: true },
+    sort: { ncf_type: "asc" },
+    writable: ["ncf_type", "max_number", "expires_at", "authorization_code", "status", "notes", "tax_profile"],
+    numeric: ["max_number"],
+    dates: ["expires_at"],
+    writeRole: "admin",
   },
   allotment: {
     table: "allotment",
@@ -794,7 +898,15 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["number", "ncf", "customer_name", "customer_tax_id"],
     expand: { customer: true, order: true, partner: true },
     sort: { createdAt: "desc" },
-    writable: ["number", "series", "ncf", "ncf_type", "invoice_type", "status", "issued_at", "due_date", "subtotal", "tax", "tax_rate", "discount", "total", "paid_amount", "currency", "exchange_rate", "customer_name", "customer_tax_id", "customer_address", "notes", "pdf_url", "efac_status", "efac_track_id", "voided_at", "void_reason", "customer", "order", "partner", "settlement", "tax_profile", "user"],
+    // NADA fiscal es editable. El NCF, el tipo de comprobante, los importes y la
+    // anulación los escribe la emisión (`/api/invoices`), que es la única que
+    // puede hacer que el número no se repita y que los totales cuadren con la
+    // venta. Un comprobante tecleado rompe de tres formas que la DGII ve: NCF
+    // repetidos entre dos cajas simultáneas, huecos en la secuencia que hay que
+    // justificar meses después, e impuesto que no coincide con la orden.
+    // Queda editable lo que de verdad se corrige a posteriori sin tocar el
+    // comprobante: el vencimiento pactado, la dirección y las notas internas.
+    writable: ["due_date", "customer_address", "notes", "pdf_url", "efac_track_id"],
     numeric: ["subtotal", "tax", "tax_rate", "discount", "total", "paid_amount", "exchange_rate"],
     dates: ["issued_at", "due_date", "voided_at"],
     writeRole: "manager",

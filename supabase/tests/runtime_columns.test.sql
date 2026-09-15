@@ -199,4 +199,319 @@ begin
   raise notice 'gift_cards: TODAS LAS ASERCIONES PASARON';
 end $$;
 
+-- ── cotizaciones: alternativas, versiones y aislamiento (0032) ─────────────
+-- Una propuesta se negocia por rondas y puede ofrecer varias alternativas; las
+-- líneas de una alternativa tienen que caer con ella, y nada puede apuntar a la
+-- cotización de otra organización.
+insert into quote (id, organization_id, code, status, quote_type, currency, valid_until, deposit_type, tax_percent)
+values ('44444444-0000-0000-0000-000000000001', :'org', 'COT-TEST-1', 'draft', 'group', 'usd',
+        now() + interval '15 days', 'percent', 18);
+
+insert into quote_option (id, organization_id, quote_id, name, sort_order, is_recommended)
+values ('44444444-0000-0000-0000-00000000000a', :'org', '44444444-0000-0000-0000-000000000001', 'Hotel 4*', 10, false),
+       ('44444444-0000-0000-0000-00000000000b', :'org', '44444444-0000-0000-0000-000000000001', 'Hotel 5*', 20, true);
+
+insert into quote_line (organization_id, quote_id, option_id, description, quantity, unit_price, line_total, line_type, is_optional)
+values (:'org', '44444444-0000-0000-0000-000000000001', null, 'Transporte', 1, 300, 300, 'transport', false),
+       (:'org', '44444444-0000-0000-0000-000000000001', '44444444-0000-0000-0000-00000000000a', 'Hotel 4*', 1, 700, 700, 'accommodation', false),
+       (:'org', '44444444-0000-0000-0000-000000000001', '44444444-0000-0000-0000-00000000000b', 'Hotel 5*', 1, 1200, 1200, 'accommodation', false);
+
+do $$
+declare
+  n integer;
+begin
+  -- 'superseded' es el estado que 0032 necesita para sacar del embudo la
+  -- versión que una revisión reemplaza.
+  begin
+    update quote set status = 'superseded' where id = '44444444-0000-0000-0000-000000000001';
+  exception when check_violation then
+    raise exception 'quote.status sigue rechazando superseded';
+  end;
+  update quote set status = 'draft' where id = '44444444-0000-0000-0000-000000000001';
+
+  begin
+    update quote set deposit_type = 'cuota' where id = '44444444-0000-0000-0000-000000000001';
+    raise exception 'deposit_type aceptó un valor fuera del diccionario';
+  exception when check_violation then null;
+  end;
+
+  begin
+    insert into quote_line (organization_id, quote_id, description, quantity, unit_price, line_total, line_type)
+    values ('11111111-1111-1111-1111-111111111111', '44444444-0000-0000-0000-000000000001', 'Algo', 1, 10, 10, 'excursion');
+    raise exception 'line_type aceptó un valor fuera del diccionario';
+  exception when check_violation then null;
+  end;
+
+  -- Retirar una alternativa se lleva sus líneas: si sobrevivieran, sumarían a
+  -- un precio que ya no se ofrece.
+  delete from quote_option where id = '44444444-0000-0000-0000-00000000000a';
+  select count(*) into n from quote_line
+   where quote_id = '44444444-0000-0000-0000-000000000001'
+     and option_id = '44444444-0000-0000-0000-00000000000a';
+  if n <> 0 then
+    raise exception 'las líneas de la alternativa retirada sobrevivieron (%)', n;
+  end if;
+  select count(*) into n from quote_line where quote_id = '44444444-0000-0000-0000-000000000001';
+  if n <> 2 then
+    raise exception 'la línea común no debía caer con la alternativa (quedan %)', n;
+  end if;
+
+  -- Y una línea no puede colgarse de la cotización de otro inquilino: es la
+  -- lista de referencias que 0018 protege con su disparador.
+  begin
+    insert into quote_line (organization_id, quote_id, description, quantity, unit_price, line_total)
+    values ('99999999-9999-9999-9999-999999999999', '44444444-0000-0000-0000-000000000001', 'Fuga', 1, 10, 10);
+    raise exception 'quote_line aceptó una cotización de otra organización';
+  exception when others then
+    if sqlstate not in ('23514', '23503') then raise; end if;
+  end;
+
+  -- Lo mismo con la alternativa escogida que guarda la cabecera.
+  begin
+    insert into quote_option (organization_id, quote_id, name)
+    values ('99999999-9999-9999-9999-999999999999', '44444444-0000-0000-0000-000000000001', 'Ajena');
+    raise exception 'quote_option aceptó una cotización de otra organización';
+  exception when others then
+    if sqlstate not in ('23514', '23503') then raise; end if;
+  end;
+
+  raise notice 'cotizaciones: TODAS LAS ASERCIONES PASARON';
+end $$;
+
+-- ── cierre de salida (0033) ────────────────────────────────────────────────
+-- Cerrar una salida es afirmar cuánta gente viajó DE VERDAD, que no es lo
+-- vendido: un no-show se cobró y no ocupó asiento.
+insert into departure (id, organization_id, product_id, departure_at, capacity, booked_pax)
+values ('55555555-0000-0000-0000-000000000001', :'org', 'bbbbbbbb-0000-0000-0000-000000000001',
+        now() - interval '2 hours', 20, 8);
+
+do $$
+declare
+  pax integer;
+begin
+  update departure
+     set status = 'completed', closed_at = now(), departed_at = now() - interval '2 hours',
+         actual_pax = 6, no_show_pax = 2,
+         incident_notes = 'Retraso de 40 minutos por avería',
+         guide_notes = 'Grupo puntual'
+   where id = '55555555-0000-0000-0000-000000000001';
+
+  select actual_pax into pax from departure where id = '55555555-0000-0000-0000-000000000001';
+  if pax is distinct from 6 then
+    raise exception 'el cierre no guardó los pax embarcados (%)', pax;
+  end if;
+
+  -- Un recuento negativo no existe: son plazas ocupadas.
+  begin
+    update departure set actual_pax = -1 where id = '55555555-0000-0000-0000-000000000001';
+    raise exception 'actual_pax aceptó un recuento negativo';
+  exception when check_violation then null;
+  end;
+
+  raise notice 'cierre_salida: TODAS LAS ASERCIONES PASARON';
+end $$;
+
+-- ── bandeja de salida (0034) ───────────────────────────────────────────────
+-- Un aviso se manda UNA vez: el índice único de `dedupe_key` es lo que sostiene
+-- esa promesa aunque dos pasadas del cron se solapen.
+insert into customer (id, organization_id, first_name, last_name, email)
+values ('66666666-0000-0000-0000-000000000001', :'org', 'Ana', 'Pérez', 'ana@example.com');
+
+insert into message (organization_id, channel, template_key, status, to_address, body, dedupe_key, customer_id)
+values (:'org', 'email', 'booking_confirmation', 'queued', 'ana@example.com',
+        'Hola Ana', 'booking_confirmation:email:b1', '66666666-0000-0000-0000-000000000001');
+
+do $$
+declare
+  n integer;
+begin
+  begin
+    insert into message (organization_id, channel, template_key, status, to_address, body, dedupe_key)
+    values ('11111111-1111-1111-1111-111111111111', 'email', 'booking_confirmation', 'queued',
+            'ana@example.com', 'Hola Ana otra vez', 'booking_confirmation:email:b1');
+    raise exception 'la bandeja aceptó dos veces el mismo aviso';
+  exception when unique_violation then null;
+  end;
+
+  -- Pero el mismo aviso por OTRO canal sí es otro mensaje: quien dio correo y
+  -- WhatsApp recibe por los dos.
+  insert into message (organization_id, channel, template_key, status, to_address, body, dedupe_key)
+  values ('11111111-1111-1111-1111-111111111111', 'whatsapp', 'booking_confirmation', 'queued',
+          '+18095550101', 'Hola Ana', 'booking_confirmation:whatsapp:b1');
+
+  -- Y los mensajes sin clave no se estorban entre sí: un reenvío a mano puede
+  -- repetirse tantas veces como el cliente lo pida.
+  insert into message (organization_id, channel, status, to_address, body)
+  values ('11111111-1111-1111-1111-111111111111', 'email', 'queued', 'ana@example.com', 'Reenvío 1'),
+         ('11111111-1111-1111-1111-111111111111', 'email', 'queued', 'ana@example.com', 'Reenvío 2');
+
+  select count(*) into n from message where organization_id = '11111111-1111-1111-1111-111111111111';
+  if n <> 4 then
+    raise exception 'la bandeja no tiene los mensajes esperados (%)', n;
+  end if;
+
+  begin
+    update message set status = 'entregado' where dedupe_key = 'booking_confirmation:email:b1';
+    raise exception 'message.status aceptó un valor fuera del diccionario';
+  exception when check_violation then null;
+  end;
+
+  -- Un mensaje no puede colgarse del cliente de otra organización.
+  begin
+    insert into message (organization_id, channel, status, to_address, body, customer_id)
+    values ('99999999-9999-9999-9999-999999999999', 'email', 'queued', 'x@example.com', 'Fuga',
+            '66666666-0000-0000-0000-000000000001');
+    raise exception 'message aceptó un cliente de otra organización';
+  exception when others then
+    if sqlstate not in ('23514', '23503') then raise; end if;
+  end;
+
+  raise notice 'comunicaciones: TODAS LAS ASERCIONES PASARON';
+end $$;
+
+-- ── documento adjunto (0035) ───────────────────────────────────────────────
+-- La fila guarda QUÉ documento acompaña al aviso, no el documento: el PDF se
+-- compone al entregar para que nunca viaje una versión vieja.
+do $$
+begin
+  update message set attachment_kind = 'voucher'
+   where dedupe_key = 'booking_confirmation:email:b1';
+
+  begin
+    update message set attachment_kind = 'factura'
+     where dedupe_key = 'booking_confirmation:email:b1';
+    raise exception 'attachment_kind aceptó un documento que no se sabe componer';
+  exception when check_violation then null;
+  end;
+
+  -- Un mensaje sin adjunto es lo normal y sigue siendo válido.
+  update message set attachment_kind = null
+   where dedupe_key = 'booking_confirmation:whatsapp:b1';
+
+  raise notice 'adjuntos: TODAS LAS ASERCIONES PASARON';
+end $$;
+
+-- ── extras vendibles (0036) ────────────────────────────────────────────────
+-- El precio de lo contratado se congela con la reserva, y retirar un extra del
+-- catálogo no puede borrar lo que un cliente ya compró.
+insert into product_extra (id, organization_id, product_id, name, price_type, price, cost, is_required)
+values ('77777777-0000-0000-0000-000000000001', :'org', 'bbbbbbbb-0000-0000-0000-000000000001',
+        'Almuerzo langosta', 'per_person', 35, 18, false);
+
+insert into booking_extra (organization_id, booking_id, extra_id, name, price_type, quantity, unit_price, total_amount, cost_amount)
+values (:'org', 'dddddddd-0000-0000-0000-000000000001', '77777777-0000-0000-0000-000000000001',
+        'Almuerzo langosta', 'per_person', 2, 35, 70, 36);
+
+do $$
+declare
+  guardado numeric;
+  quedan integer;
+begin
+  begin
+    update product_extra set price_type = 'por_grupo'
+     where id = '77777777-0000-0000-0000-000000000001';
+    raise exception 'price_type aceptó un valor fuera del diccionario';
+  exception when check_violation then null;
+  end;
+
+  -- Retirar el extra del catálogo deja la venta en pie: el voucher de una
+  -- reserva vieja tiene que seguir diciendo qué se compró y por cuánto.
+  delete from product_extra where id = '77777777-0000-0000-0000-000000000001';
+  select count(*), max(unit_price) into quedan, guardado
+    from booking_extra where booking_id = 'dddddddd-0000-0000-0000-000000000001';
+  if quedan <> 1 or guardado is distinct from 35 then
+    raise exception 'la venta del extra no sobrevivió a su retirada del catálogo (% filas, precio %)', quedan, guardado;
+  end if;
+
+  -- Y un extra no puede colgarse de la reserva de otra organización.
+  begin
+    insert into booking_extra (organization_id, booking_id, name, quantity, unit_price, total_amount)
+    values ('99999999-9999-9999-9999-999999999999', 'dddddddd-0000-0000-0000-000000000001', 'Fuga', 1, 10, 10);
+    raise exception 'booking_extra aceptó una reserva de otra organización';
+  exception when others then
+    if sqlstate not in ('23514', '23503') then raise; end if;
+  end;
+
+  raise notice 'extras: TODAS LAS ASERCIONES PASARON';
+end $$;
+
+-- ── secuencia de NCF (0037) ────────────────────────────────────────────────
+-- El número de un comprobante fiscal se consume UNA vez: dos facturas con el
+-- mismo NCF invalidan las dos, y un hueco en la secuencia hay que justificarlo
+-- ante la DGII tres meses después, cuando ya nadie recuerda por qué.
+insert into ncf_sequence (organization_id, ncf_type, next_number, max_number, expires_at)
+values (:'org', 'b02', 1, 3, current_date + 365),
+       (:'org', 'b01', 1, 100, current_date - 1);
+
+-- La función se declaró `security invoker` con comprobación de organización, así
+-- que hay que hablarle como le habla la aplicación: con el inquilino en el
+-- claim. Sin sesión no entrega números, y eso también se comprueba abajo.
+select set_config('request.jwt.claims',
+  '{"org_id":"11111111-1111-1111-1111-111111111111","app_role":"admin"}', false);
+
+do $$
+declare
+  a bigint; b bigint; c bigint;
+begin
+  a := public.next_ncf('11111111-1111-1111-1111-111111111111', 'b02');
+  b := public.next_ncf('11111111-1111-1111-1111-111111111111', 'b02');
+  if a <> 1 or b <> 2 then
+    raise exception 'la secuencia no avanza de uno en uno (% y %)', a, b;
+  end if;
+
+  -- El tercero agota el rango autorizado; el cuarto tiene que fallar DICIENDO
+  -- que se agotó, no con un error genérico.
+  c := public.next_ncf('11111111-1111-1111-1111-111111111111', 'b02');
+  if c <> 3 then raise exception 'el último número del rango no se entregó (%)', c; end if;
+
+  begin
+    perform public.next_ncf('11111111-1111-1111-1111-111111111111', 'b02');
+    raise exception 'la secuencia entregó un número fuera del rango autorizado';
+  exception when others then
+    if position('agotó' in sqlerrm) = 0 then
+      raise exception 'el agotamiento no se explica: %', sqlerrm;
+    end if;
+  end;
+
+  -- Una autorización vencida no entrega números aunque le queden.
+  begin
+    perform public.next_ncf('11111111-1111-1111-1111-111111111111', 'b01');
+    raise exception 'la secuencia vencida entregó un número';
+  exception when others then
+    if position('venció' in sqlerrm) = 0 then
+      raise exception 'el vencimiento no se explica: %', sqlerrm;
+    end if;
+  end;
+
+  -- Un tipo sin configurar se distingue de uno agotado.
+  begin
+    perform public.next_ncf('11111111-1111-1111-1111-111111111111', 'b15');
+    raise exception 'entregó un número de un tipo sin configurar';
+  exception when others then
+    if position('No hay secuencia' in sqlerrm) = 0 then
+      raise exception 'la falta de configuración no se explica: %', sqlerrm;
+    end if;
+  end;
+
+  -- Y dos filas del mismo tipo serían dos numeraciones paralelas.
+  begin
+    insert into ncf_sequence (organization_id, ncf_type)
+    values ('11111111-1111-1111-1111-111111111111', 'b02');
+    raise exception 'se admitieron dos secuencias del mismo tipo';
+  exception when unique_violation then null;
+  end;
+
+  -- La secuencia de OTRO inquilino no se toca ni pasando su id: sin esto,
+  -- cualquier usuario autenticado podría quemarle los NCF a la competencia.
+  begin
+    perform public.next_ncf('99999999-9999-9999-9999-999999999999', 'b02');
+    raise exception 'entregó un número de la secuencia de otra organización';
+  exception when insufficient_privilege then null;
+  end;
+
+  raise notice 'ncf: TODAS LAS ASERCIONES PASARON';
+end $$;
+
+select set_config('request.jwt.claims', '', false);
+
 rollback;

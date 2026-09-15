@@ -25,6 +25,9 @@ export async function GET(req: NextRequest) {
         _limit: 200,
         category: true,
         product_modality: { _limit: 20, _sort: { sort_order: "asc" } },
+        // Los extras viajan con el catálogo: ofrecerlos exige una consulta más
+        // por producto si no, y el POS se abre con el cliente delante.
+        product_extra: { _limit: 30, _sort: { sort_order: "asc" } },
       }),
       tenantQuery<Hotel>(ctx.companyId, "hotel", { _filter: { status: "active" }, _sort: { name: "asc" }, _limit: 300, zone: true }),
       tenantQuery<Seller>(ctx.companyId, "seller", { _filter: { status: "active" }, _sort: { first_name: "asc" }, _limit: 200 }),
@@ -73,6 +76,13 @@ export async function GET(req: NextRequest) {
         .map((m) => ({
           _id: m._id, name: m.name, modality_type: m.modality_type,
           price: m.price ?? 0, min_pax: m.min_pax, max_pax: m.max_pax,
+        })),
+      extras: ((p as any).product_extra || [])
+        .filter((e: any) => e.status !== "inactive")
+        .map((e: any) => ({
+          _id: e._id, name: e.name, description: e.description,
+          price_type: e.price_type, price: e.price ?? 0, currency: e.currency,
+          is_required: e.is_required === true, max_quantity: e.max_quantity ?? null,
         })),
       departures: (byProduct.get(p._id) || []).map((d) => ({
         _id: d._id,

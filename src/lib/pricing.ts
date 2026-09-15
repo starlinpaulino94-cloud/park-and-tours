@@ -30,6 +30,20 @@ export interface PriceInput {
   discountPct?: number;
   taxPct?: number;
   exchangeRate?: number;
+  /**
+   * Precio unitario pactado que sustituye al del catálogo.
+   *
+   * Un precio de grupo se negocia una vez y se firma en la cotización: volver a
+   * calcularlo al convertirla en reserva le cobraría al cliente algo distinto de
+   * lo que aceptó. Solo lo fija el servidor (la conversión de una cotización
+   * aceptada); nunca llega desde el navegador, o cualquiera podría venderse un
+   * tour a cero.
+   */
+  unitPriceOverride?: number | null;
+  /** Moneda en la que se pactó ese precio; manda sobre la del catálogo. */
+  overrideCurrency?: Currency | null;
+  /** Cotización que fijó ese precio, para el snapshot inmutable. */
+  quoteId?: string | null;
 }
 
 /**
@@ -121,6 +135,11 @@ export async function resolvePrice(input: PriceInput): Promise<PriceResult> {
   if (!product) throw new Error("Producto no encontrado");
   const modality = modalities[0] ?? null;
 
+  const override = input.unitPriceOverride;
+  const negotiated =
+    override !== null && override !== undefined &&
+    Number.isFinite(Number(override)) && Number(override) >= 0;
+
   const candidates = rules.filter((r) => ruleApplies(r, input));
   candidates.sort((a, b) => {
     const pa = a.priority ?? ruleSpecificity(a);
@@ -128,12 +147,18 @@ export async function resolvePrice(input: PriceInput): Promise<PriceResult> {
     if (pa !== pb) return pa - pb;
     return ruleSpecificity(a) - ruleSpecificity(b);
   });
-  const appliedRule = candidates[0] ?? null;
+  // Con un precio pactado no hay regla aplicada: decirlo sería atribuirle al
+  // catálogo un precio que salió de la negociación.
+  const appliedRule = negotiated ? null : (candidates[0] ?? null);
 
   const basePrice = modality?.price ?? product.base_price ?? 0;
-  const unitPrice = appliedRule?.amount ?? basePrice;
-  const currency = (appliedRule?.currency || modality?.currency || product.currency || "usd") as Currency;
+  const unitPrice = negotiated ? round2(Number(override)) : (appliedRule?.amount ?? basePrice);
+  const currency = (negotiated && input.overrideCurrency
+    ? input.overrideCurrency
+    : appliedRule?.currency || modality?.currency || product.currency || "usd") as Currency;
 
+  // Un precio negociado es el precio de la línea tal cual se cotizó: la regla
+  // del catálogo ya no decide si se multiplica por pax.
   const isGroupPrice =
     appliedRule?.price_type === "per_group" || appliedRule?.price_type === "per_vehicle";
   const grossAmount = round2(isGroupPrice ? unitPrice : unitPrice * input.quantity);
@@ -161,6 +186,8 @@ export async function resolvePrice(input: PriceInput): Promise<PriceResult> {
     currency,
     exchange_rate: input.exchangeRate ?? 1,
     captured_at: new Date().toISOString(),
+    price_source: negotiated ? "quote" : "catalog",
+    quote_id: negotiated ? input.quoteId ?? null : null,
   };
 
   console.log(

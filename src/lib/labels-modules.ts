@@ -192,7 +192,18 @@ export const COMPENSATION_TYPE = dict(
 export const QUOTE_STATUS = dict(
   ["draft", "Borrador"], ["sent", "Enviada", "info"], ["negotiating", "En negociación", "warning"],
   ["accepted", "Aceptada", "success"], ["rejected", "Rechazada", "danger"], ["expired", "Expirada"],
-  ["converted", "Convertida", "success"]
+  ["converted", "Convertida", "success"], ["superseded", "Reemplazada"]
+);
+/** Qué es cada línea del documento: ordena la propuesta y agrupa el coste. */
+export const QUOTE_LINE_TYPE = dict(
+  ["service", "Servicio", "info"], ["transport", "Transporte", "violet"],
+  ["accommodation", "Alojamiento", "accent"], ["meal", "Alimentación", "success"],
+  ["guide", "Guía", "warning"], ["ticket", "Entradas", "info"],
+  ["fee", "Tasas y cargos"], ["insurance", "Seguro", "warning"], ["other", "Otro"]
+);
+/** Cómo se pacta el anticipo que sostiene la reserva del grupo. */
+export const DEPOSIT_TYPE = dict(
+  ["none", "Sin anticipo"], ["percent", "Porcentaje del total", "info"], ["amount", "Importe fijo", "accent"]
 );
 export const QUOTE_TYPE = dict(
   ["group", "Grupo", "info"], ["corporate", "Corporativa", "violet"], ["wedding", "Boda", "warning"],
@@ -362,6 +373,32 @@ export const NCF_TYPE = dict(
   ["e34", "e-CF 34 · Nota de crédito", "warning"], ["e44", "e-CF 44 · Régimen especial", "violet"],
   ["e45", "e-CF 45 · Gubernamental"]
 );
+/** Cómo se cobra un extra del catálogo. */
+export const EXTRA_PRICE_TYPE = dict(
+  ["per_person", "Por persona", "info"], ["per_booking", "Por reserva", "accent"]
+);
+
+/* ------------------------------------------------------- comunicaciones */
+/** Por dónde sale un aviso al cliente. */
+export const MESSAGE_CHANNEL = dict(
+  ["email", "Correo", "info"], ["whatsapp", "WhatsApp", "success"], ["sms", "SMS", "violet"]
+);
+/** Estado de un mensaje en la bandeja de salida. */
+export const MESSAGE_STATUS = dict(
+  ["queued", "En cola", "warning"], ["sending", "Enviando", "info"], ["sent", "Enviado", "success"],
+  ["failed", "Fallido", "danger"], ["cancelled", "Cancelado"]
+);
+/** Qué hecho dispara cada plantilla. */
+export const MESSAGE_TEMPLATE_KEY = dict(
+  ["booking_confirmation", "Confirmación de reserva", "success"],
+  ["booking_cancelled", "Reserva cancelada", "danger"],
+  ["pre_tour_reminder", "Recordatorio de la víspera", "info"],
+  ["payment_receipt", "Recibo de pago", "accent"],
+  ["balance_due", "Saldo pendiente", "warning"],
+  ["quote_sent", "Cotización enviada", "violet"],
+  ["post_tour_thanks", "Agradecimiento post-tour"]
+);
+
 export const DELIVERY_CHANNEL = dict(
   ["email", "Email", "info"], ["print", "Impresa"], ["physical", "Física", "violet"],
   ["whatsapp", "WhatsApp", "success"]

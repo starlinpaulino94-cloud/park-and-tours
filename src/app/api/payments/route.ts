@@ -7,6 +7,7 @@ import { postPayment } from "@/lib/ledger-events";
 import { resolveExchangeRate } from "@/lib/currency";
 import { newPaymentReference } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
+import { notifyPaymentReceived } from "@/lib/messaging/events";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import type { CashSession, Currency, Order, PaymentMethod, Receivable } from "@/lib/types";
@@ -216,6 +217,30 @@ export async function POST(req: NextRequest) {
       entityType: "payment", entityId: payment._id,
       description: `${body.payment_type === "refund" ? "Reembolso" : "Cobro"} de ${amount} ${currency} (${body.method || "cash"})`,
     });
+
+    // Recibo al cliente. Un reembolso o una nota de crédito no llevan recibo de
+    // pago: decirle "hemos registrado tu pago" a quien acaba de recibir un
+    // abono es exactamente al revés.
+    if (body.payment_type !== "refund" && body.payment_type !== "credit_note") {
+      const customerId = body.customer_id
+        || (order && typeof order.customer === "object" ? order.customer._id : (order?.customer as string | undefined));
+      try {
+        await notifyPaymentReceived(ctx.company, ctx.companyId, {
+          paymentId: payment._id,
+          amount, currency,
+          method: body.method || "cash",
+          bookingId: body.booking_id || null,
+          orderId: orderId || null,
+          customerId: customerId || null,
+          reference: order?.order_number || payment.reference,
+          balance: order ? (order.balance ?? 0) - amount : null,
+          userId: ctx.userId,
+        });
+      } catch (err) {
+        // Un cobro registrado no se cae porque el recibo no se pueda encolar.
+        console.error("[payments] no se pudo encolar el recibo:", err);
+      }
+    }
 
     console.log(`[payments] ${payment.reference} · ${amount} ${currency} · ${body.method}`);
     return ok(payment);
