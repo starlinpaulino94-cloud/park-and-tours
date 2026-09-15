@@ -449,6 +449,30 @@ export const CASH_COUNT_KIND = dict(
   ["open", "Apertura"], ["close", "Cierre"], ["spot", "Arqueo sorpresa", "warning"]
 );
 
+/** 0039 — qué es cada cuota del plan de cobro. */
+export const INSTALLMENT_KIND = dict(
+  ["deposit", "Anticipo", "accent"], ["installment", "Cuota", "info"], ["balance", "Saldo", "warning"]
+);
+
+/** En qué punto está una cuota. */
+export const INSTALLMENT_STATUS = dict(
+  ["pending", "Pendiente", "warning"],
+  ["partially_paid", "Abonada en parte", "info"],
+  ["paid", "Cobrada", "success"],
+  ["overdue", "Vencida", "danger"],
+  ["waived", "Perdonada", "violet"],
+  ["cancelled", "Anulada"]
+);
+
+/** El estado de cobro de una venta, derivado de su calendario. */
+export const COLLECTION_STATUS = dict(
+  ["none", "Sin plan"],
+  ["on_track", "Al día", "success"],
+  ["due_soon", "Vence pronto", "warning"],
+  ["overdue", "Vencido", "danger"],
+  ["settled", "Liquidado", "success"]
+);
+
 /** `[{value,label}]` list for a Select, from any of the dictionaries above. */
 export function toOptions(source: Record<string, LabelDef>): { value: string; label: string }[] {
   return Object.entries(source).map(([value, def]) => ({ value, label: def.label }));

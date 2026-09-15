@@ -43,6 +43,15 @@ function enumValues(): Record<string, string[]> {
   for (const m of SQL.matchAll(/alter type\s+(\w+)\s+add value(?:\s+if not exists)?\s+'([^']+)'/gi)) {
     (out[m[1]] ||= []).push(m[2]);
   }
+  // Un valor renombrado sigue siendo el mismo tramo con otro nombre (0039
+  // unificó `aging_bucket` con el vocabulario de la pantalla). Sin esto, la
+  // guarda compararía el diccionario contra los nombres viejos.
+  for (const m of SQL.matchAll(/alter type\s+(\w+)\s+rename value\s+'([^']+)'\s+to\s+'([^']+)'/gi)) {
+    const values = out[m[1]];
+    if (!values) continue;
+    const at = values.indexOf(m[2]);
+    if (at >= 0) values[at] = m[3];
+  }
   return out;
 }
 
@@ -124,6 +133,13 @@ const BINDINGS: [string, Dict, string, string][] = [
   ["MESSAGE_TEMPLATE_KEY", modules.MESSAGE_TEMPLATE_KEY, "message_template", "key"],
   // 0036: los extras que se venden con la excursión.
   ["EXTRA_PRICE_TYPE", modules.EXTRA_PRICE_TYPE, "product_extra", "price_type"],
+  // 0039: el calendario de cobro.
+  ["INSTALLMENT_KIND", modules.INSTALLMENT_KIND, "payment_schedule", "kind"],
+  ["INSTALLMENT_STATUS", modules.INSTALLMENT_STATUS, "payment_schedule", "status"],
+  ["COLLECTION_STATUS", modules.COLLECTION_STATUS, "sales_order", "collection_status"],
+  ["DEPOSIT_TYPE_ORDEN", modules.DEPOSIT_TYPE, "sales_order", "deposit_type"],
+  ["DEPOSIT_TYPE_PRODUCTO", modules.DEPOSIT_TYPE, "product", "deposit_type"],
+  ["AGING_BUCKET", labels.AGING_BUCKET, "receivable", "aging_bucket"],
   // 0038: el arqueo de caja.
   ["CASH_SESSION_STATUS", modules.CASH_SESSION_STATUS, "cash_session", "status"],
   ["CASH_MOVEMENT_TYPE", modules.CASH_MOVEMENT_TYPE, "cash_movement", "movement_type"],

@@ -325,3 +325,67 @@ export async function notifyBookingCancelled(
     dedupeSeed: booking._id,
   });
 }
+
+/* ------------------------------------------------------- saldo pendiente */
+
+export interface BalanceDueInput {
+  /** La cuota que vence. */
+  installment: {
+    _id: string;
+    kind?: string | null;
+    due_date?: string | null;
+    amount?: number | null;
+    paid_amount?: number | null;
+    balance?: number | null;
+    currency?: string | null;
+  };
+  order: { _id: string; order_number?: string | null } | null;
+  booking: (Booking & { product?: unknown }) | null;
+  customer: (ContactRow & { _id?: string }) | null;
+  product: { name?: string | null } | null;
+  userId?: string | null;
+}
+
+/**
+ * El recordatorio del saldo pendiente.
+ *
+ * La plantilla `balance_due` se creó con el módulo de comunicaciones, se
+ * documentó y se sembró en cada empresa… y NADA la disparaba nunca. El sistema
+ * prometía recordarle al cliente su saldo y no recordaba ninguno: el cobro
+ * dependía de que alguien se acordara de mirar la lista, que con cuarenta
+ * salidas a la semana es lo mismo que no cobrarlo.
+ *
+ * Lo llama la cobranza diaria. Se puede llamar cien veces para la misma cuota:
+ * la clave de dedupe —la cuota y su vencimiento— deja pasar una sola, así que un
+ * reintento del cron no le escribe dos veces al cliente.
+ */
+export async function notifyBalanceDue(
+  company: Company | null,
+  companyId: string,
+  input: BalanceDueInput,
+  store?: OutboxStore
+): Promise<void> {
+  const { installment, order, booking, customer, product } = input;
+  const balance = installment.balance
+    ?? Math.max((installment.amount ?? 0) - (installment.paid_amount ?? 0), 0);
+  if (balance <= 0) return;
+
+  await fanOut(company, companyId, "balance_due", customer, {
+    vars: {
+      cliente: nameOf(customer) || "viajero",
+      reserva: booking?.booking_number || order?.order_number,
+      producto: product?.name,
+      fecha: booking?.travel_date ? formatDate(booking.travel_date) : "",
+      saldo: balance,
+      moneda: String(installment.currency || booking?.currency || "usd").toUpperCase(),
+      vence: installment.due_date ? formatDate(installment.due_date) : "",
+    },
+    refs: {
+      customer: customer?._id, booking: booking?._id, order: order?._id,
+    },
+    userId: input.userId,
+    // El vencimiento entra en la clave: si el plan se rehace y la cuota pasa a
+    // otra fecha, es un aviso nuevo y sí se manda.
+    dedupeSeed: `${installment._id}:${installment.due_date || ""}`,
+  }, store);
+}

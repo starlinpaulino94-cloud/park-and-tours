@@ -65,6 +65,7 @@ export const RELATION_RESOURCE: Record<string, string> = {
   product_modality: "product_modality",
   rule: "commission_rule",
   route: "pickup_route",
+  schedule: "payment_schedule",
   supervisor: "seller",
 };
 

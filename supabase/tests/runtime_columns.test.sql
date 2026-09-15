@@ -593,4 +593,115 @@ begin
   raise notice 'arqueo: TODAS LAS ASERCIONES PASARON';
 end $$;
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 0039 — El anticipo, el saldo y el plan de cuotas
+--
+-- Lo que se prueba: que el calendario no pueda tener dos cuotas con el mismo
+-- número, que el estado de cobro de la venta exista de verdad, que una cuota no
+-- se pueda colgar de la orden de otra empresa, y que la antigüedad hable el
+-- mismo idioma que la pantalla —que es justo lo que no pasaba.
+-- ─────────────────────────────────────────────────────────────────────────────
+do $$
+declare
+  org uuid := '11111111-1111-1111-1111-111111111111';
+  other uuid := '99999999-9999-9999-9999-999999999999';
+  ord uuid := '00000000-0000-0000-0000-0000000000a1';
+  bk  uuid := 'dddddddd-0000-0000-0000-000000000001';
+  sched uuid;
+begin
+  -- Condiciones pactadas en la venta y política del producto.
+  update sales_order
+     set deposit_type = 'percent', deposit_percent = 30, deposit_due_date = current_date,
+         balance_due_date = current_date + 30, payment_terms = '30% ahora, saldo 15 días antes',
+         hold_until = now() + interval '48 hours', collection_status = 'on_track'
+   where id = ord;
+
+  update product
+     set deposit_type = 'percent', deposit_percent = 30, balance_due_days = 15
+   where id = 'bbbbbbbb-0000-0000-0000-000000000001';
+
+  update booking set balance_due_date = current_date + 15 where id = bk;
+
+  insert into payment_schedule (organization_id, order_id, booking_id, sequence, kind, due_date, amount, balance)
+  values (org, ord, bk, 1, 'deposit', current_date, 300, 300)
+  returning id into sched;
+
+  insert into payment_schedule (organization_id, order_id, sequence, kind, due_date, amount, balance)
+  values (org, ord, 2, 'balance', current_date + 30, 700, 700);
+
+  -- Dos cuotas con el mismo número son dos calendarios a la vez.
+  begin
+    insert into payment_schedule (organization_id, order_id, sequence, kind, due_date, amount)
+    values (org, ord, 1, 'installment', current_date + 7, 100);
+    raise exception 'se admitieron dos cuotas con el mismo número';
+  exception when unique_violation then null;
+  end;
+
+  -- Una cuota de la orden de otra empresa no entra.
+  begin
+    insert into payment_schedule (organization_id, order_id, sequence, kind, due_date, amount)
+    values (other, ord, 9, 'installment', current_date, 50);
+    raise exception 'se admitió una cuota entre inquilinos distintos';
+  exception when others then
+    if position('Cross-tenant' in sqlerrm) = 0 then
+      raise exception 'el rechazo entre inquilinos no se explica: %', sqlerrm;
+    end if;
+  end;
+
+  -- Los estados del calendario y del cobro son los que escribe la aplicación.
+  update payment_schedule set status = 'overdue' where id = sched;
+  update payment_schedule set status = 'partially_paid', paid_amount = 100, balance = 200 where id = sched;
+  update payment_schedule set status = 'waived' where id = sched;
+
+  begin
+    update payment_schedule set status = 'inventado' where id = sched;
+    raise exception 'la cuota admitió un estado inventado';
+  exception when check_violation then null;
+  end;
+
+  update sales_order set collection_status = 'overdue' where id = ord;
+  update sales_order set collection_status = 'settled' where id = ord;
+
+  begin
+    update sales_order set collection_status = 'loquesea' where id = ord;
+    raise exception 'la venta admitió un estado de cobro inventado';
+  exception when check_violation then null;
+  end;
+
+  begin
+    update sales_order set deposit_type = 'porcentaje' where id = ord;
+    raise exception 'la venta admitió un tipo de anticipo inventado';
+  exception when check_violation then null;
+  end;
+
+  -- El pago se imputa a una cuota.
+  insert into payment (organization_id, order_id, schedule_id, reference, amount, currency)
+  values (org, ord, sched, 'PAY-RT-SCHED', 300, 'usd');
+
+  -- Y la antigüedad habla el mismo idioma que la pantalla: 'd1_30', no '1_30'.
+  -- El enum decía una cosa y la interfaz otra, así que guardar el tramo que la
+  -- propia UI ofrecía lo rechazaba la base.
+  insert into receivable (organization_id, order_id, amount, balance, aging_bucket, due_date)
+  values (org, ord, 500, 500, 'd1_30', current_date - 10);
+
+  begin
+    insert into receivable (organization_id, order_id, amount, aging_bucket)
+    values (org, ord, 100, '1_30');
+    raise exception 'el enum sigue admitiendo el vocabulario viejo';
+  exception when invalid_text_representation then null;
+  end;
+
+  -- La retención del cupo se configura por empresa; nulo significa sin límite.
+  update organizations set hold_hours = 48 where id = org;
+  update organizations set hold_hours = null where id = org;
+
+  begin
+    update organizations set hold_hours = -1 where id = org;
+    raise exception 'se admitió una retención negativa';
+  exception when check_violation then null;
+  end;
+
+  raise notice 'cobros: TODAS LAS ASERCIONES PASARON';
+end $$;
+
 rollback;

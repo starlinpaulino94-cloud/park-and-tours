@@ -126,8 +126,15 @@ export const RESOURCES: Record<string, ResourceDef> = {
       "cover_image_url", "video_url", "location", "meeting_point", "duration_hours", "languages",
       "min_age", "default_capacity", "restrictions", "recommendations", "inclusions", "exclusions",
       "terms", "instructions", "base_price", "base_cost", "currency", "featured", "sort_order", "status",
+      // 0039 — la política de cobro del producto: qué anticipo pide y con
+      // cuántos días de antelación se liquida el saldo. Es lo que hace que el
+      // plan salga solo en cada venta en vez de teclearse.
+      "deposit_type", "deposit_percent", "deposit_amount", "balance_due_days",
     ],
-    numeric: ["duration_hours", "min_age", "default_capacity", "base_price", "base_cost", "sort_order"],
+    numeric: [
+      "duration_hours", "min_age", "default_capacity", "base_price", "base_cost", "sort_order",
+      "deposit_percent", "deposit_amount", "balance_due_days",
+    ],
     writeRole: "manager",
   },
   product_modality: {
@@ -225,6 +232,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
       customer: true, seller: true, partner: true, branch: true, created_by: true, promotion: true,
       booking: { _limit: 100, product: true, departure: true, modality: true, pickup_hotel: true },
       payment: { _limit: 100, _sort: { createdAt: "desc" }, user: true },
+      payment_schedule: { _limit: 60, _sort: { sequence: "asc" } },
     },
     sort: { createdAt: "desc" },
     // AUD-B02: `status` removed — an order's status is derived from its bookings
@@ -367,6 +375,19 @@ export const RESOURCES: Record<string, ResourceDef> = {
     dates: ["movement_at"],
     writeRole: "cashier",
   },
+  // El calendario de cobro. Lo escriben `/api/orders/:id/schedule` y el servicio
+  // que reparte los pagos, nunca el CRUD: una cuota editable a mano deja el plan
+  // sumando algo distinto del total de la venta, y entonces no cobra ni sobra.
+  payment_schedule: {
+    table: "payment_schedule",
+    search: ["notes"],
+    expand: { order: true, booking: true },
+    sort: { due_date: "asc" },
+    writable: [],
+    numeric: ["amount", "paid_amount", "balance", "sequence"],
+    dates: ["due_date", "paid_at", "reminded_at"],
+    writeRole: "manager",
+  },
   payment: {
     table: "payment",
     search: ["reference"],
@@ -387,7 +408,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
     // payments applied to the order and must not be edited by hand (that
     // divorced the cached balance from the actual payments). `status` stays for
     // manual write-off until a dedicated endpoint exists.
-    writable: ["status", "notes", "due_date", "aging_bucket"],
+    // SECURITY/0039: `status` y `aging_bucket` los deriva la cobranza diaria de
+    // `due_date`. Editables a mano, el informe de antigüedad decía lo último que
+    // alguien tecleó, y el tramo que la propia UI ofrecía lo rechazaba el enum.
+    writable: ["notes", "due_date"],
     dates: ["due_date"],
     writeRole: "manager",
   },
@@ -1149,6 +1173,7 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
   payment: "cashier", cash_session: "cashier", cash_movement: "cashier", cash_count: "cashier",
   // Commercial/accounting figures, costs and margins — managers and up.
   commission: "manager", settlement: "manager", receivable: "manager", payable: "manager",
+  payment_schedule: "seller",
   commission_rule: "manager", product_cost: "manager", price_rule: "manager",
   ledger_account: "manager", ledger_entry: "manager", invoice: "manager",
   expense: "manager", tax_profile: "manager", purchase_order: "manager", purchase_order_line: "manager",

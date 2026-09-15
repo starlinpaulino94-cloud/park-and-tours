@@ -122,6 +122,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       items,
       capacity_override: body.capacity_override === true,
       override_reason: body.override_reason || null,
+      // Lo pactado en la propuesta viaja a la venta: el anticipo, sus fechas y
+      // el plazo. Antes se quedaba en la cotización y la orden nacía con la
+      // política genérica del producto, así que el cliente recibía condiciones
+      // que nadie había acordado con él.
+      terms: {
+        deposit_type: (quote.deposit_type as string) || null,
+        deposit_percent: (quote.deposit_percent as number) ?? null,
+        deposit_amount: (quote.deposit_amount as number) ?? null,
+        deposit_due_date: (quote.deposit_due_date as string) || null,
+        balance_due_date: (quote.balance_due_date as string) || null,
+        payment_terms: (quote.payment_terms as string) || null,
+      },
     });
 
     await tenantUpdate(ctx.companyId, "quote", id, {

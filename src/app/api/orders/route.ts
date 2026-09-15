@@ -28,6 +28,16 @@ export async function POST(req: NextRequest) {
 
     // Capacity override is a privileged action.
     if (body.capacity_override) requireAtLeast(ctx, "manager");
+    // Vender por encima del límite de crédito de un socio también: un vendedor
+    // no decide cuánto descubierto aguanta la empresa. Y el portal del socio
+    // nunca puede saltárselo, se pida como se pida.
+    if (body.allow_over_credit) {
+      if (ctx.role === "partner") delete body.allow_over_credit;
+      else requireAtLeast(ctx, "manager");
+    }
+    // Las condiciones de cobro salen de la cotización, no del navegador: aquí
+    // permitirían regalarse un anticipo de cero y un saldo a un año.
+    delete body.terms;
     // Portal users always sell on behalf of their own partner.
     if (ctx.role === "partner" && ctx.partnerId) body.partner_id = ctx.partnerId;
 

@@ -477,7 +477,11 @@ describe("Panel ejecutivo", () => {
     // que la cola está al día, que es el peor fallo posible aquí.
     expect(cron).toContain("supabaseService()");
     expect(cron).toContain("serviceStore()");
-    expect(cron).toMatch(/eq\("organization_id", companyId\)/);
+    // El almacén vive aparte desde 0039, porque lo comparten dos trabajos: el
+    // despacho de la cola y la cobranza diaria.
+    const store = read("src/lib/messaging/service-store.ts");
+    expect(store).toContain("supabaseService()");
+    expect(store).toMatch(/eq\("organization_id", companyId\)/);
 
     // El recordatorio de la víspera también se barre: si solo se encolara al
     // vender, la cartera que ya compró antes de que hubiera comunicaciones se
@@ -488,7 +492,7 @@ describe("Panel ejecutivo", () => {
     // El insert en crudo tiene que aplicar el MISMO mapa de alias que las
     // ayudas de inquilino: los payloads del módulo dicen `customer`, la columna
     // se llama `customer_id`, y sin traducir no se encolaba ni un recordatorio.
-    expect(cron).toContain("aliasesFor(\"message\")");
+    expect(store).toContain("aliasesFor(\"message\")");
   });
 
   it("Comunicaciones — un aviso se manda una vez", () => {
@@ -748,6 +752,100 @@ describe("Panel ejecutivo", () => {
     expect(screen).not.toMatch(/sessions\[0\]\?\.currency/);
   });
 
+  it("Cobros — lo pactado en la cotización llega a la venta", () => {
+    /**
+     * La cotización negociaba el anticipo desde 0032 y al convertirla esas
+     * condiciones se PERDÍAN: la venta nacía con la política genérica del
+     * producto y el cliente recibía un vencimiento que nadie había acordado.
+     */
+    const convert = read("src/app/api/quotes/[id]/convert/route.ts");
+    expect(convert).toMatch(/terms:\s*\{[\s\S]{0,400}deposit_type/);
+    expect(convert).toContain("balance_due_date");
+
+    const service = read("src/lib/booking-service.ts");
+    expect(service).toMatch(/deposit_type: input\.terms\?\.deposit_type/);
+    // Y el calendario se crea con la venta, fuera de la saga: un plan que no se
+    // pudo escribir se reconstruye —es derivado—, una venta cobrada no.
+    expect(service).toContain("ensureSchedule");
+    const at = service.indexOf("await ensureSchedule(");
+    expect(service.slice(Math.max(0, at - 300), at + 200)).toMatch(/try\s*\{[\s\S]*catch/);
+
+    // La ruta HTTP no acepta condiciones del navegador: permitirían regalarse
+    // un anticipo de cero y un saldo a un año.
+    expect(read("src/app/api/orders/route.ts")).toContain("delete body.terms");
+  });
+
+  it("Cobros — lo imputado se deriva del total cobrado, no se acumula", () => {
+    /**
+     * Ir sumando pago a pago obliga a acertar en todos los casos —un reembolso
+     * parcial, un plan que se rehace a mitad— y basta fallar en uno para que el
+     * plan y el saldo de la orden discrepen para siempre.
+     */
+    const service = read("src/lib/schedule-service.ts");
+    expect(service).toContain("refreshAllocation");
+    expect(service).toMatch(/paid_total/);
+    // Se parte de cero en cada recálculo: repartir sobre lo ya imputado sumaría
+    // dos veces el mismo dinero.
+    expect(service).toMatch(/paid_amount: 0/);
+    // Y rehacer un plan no borra un cobro: las cuotas viejas se anulan.
+    expect(service).toMatch(/status: "cancelled"/);
+
+    // Cada cambio de dinero de la orden lo arrastra.
+    const booking = read("src/lib/booking-service.ts");
+    const sync = booking.slice(booking.indexOf("export async function syncOrderTotals"));
+    expect(sync).toContain("refreshAllocation");
+
+    // Las cuotas suman exactamente el total, también al fijarlas a mano.
+    expect(service).toMatch(/Tienen que cuadrar/);
+  });
+
+  it("Cobros — el recordatorio del saldo por fin se dispara", () => {
+    /**
+     * La plantilla `balance_due` se creó con el módulo de comunicaciones, se
+     * documentó y se sembró en cada empresa… y NADA la disparaba. El sistema
+     * prometía recordarle al cliente su saldo y no recordaba ninguno.
+     */
+    const events = read("src/lib/messaging/events.ts");
+    expect(events).toContain("export async function notifyBalanceDue");
+    expect(events).toMatch(/"balance_due"/);
+
+    const cron = read("src/app/api/cron/collections/route.ts");
+    expect(cron).toContain("notifyBalanceDue");
+    expect(cron).toContain("CRON_SECRET");
+    expect(cron).toMatch(/Bearer \$\{secret\}/);
+    expect(read("vercel.json")).toContain("/api/cron/collections");
+    // Cliente de servicio con filtro explícito: bajo RLS leería cero cuotas y
+    // diría que no hay nada que cobrar.
+    expect(cron).toContain("supabaseService()");
+    expect(cron).toMatch(/eq\("organization_id", row\.organization_id\)/);
+    // Y no le escribe todos los días hasta que pague.
+    expect(cron).toContain("reminded_at");
+    expect(cron).toMatch(/REMIND_COOLDOWN_DAYS/);
+  });
+
+  it("Cobros — la antigüedad y el límite de crédito dejan de ser decorativos", () => {
+    // `aging_bucket` se escribía 'current' al crear y no se tocaba más, y era
+    // editable a mano: el tramo era lo último que alguien tecleó.
+    const resources = read("src/lib/resources.ts");
+    const receivable = /^ {2}receivable: \{\n([\s\S]*?)^ {2}\},/m.exec(resources)?.[1] ?? "";
+    expect(receivable).not.toMatch(/"aging_bucket"/);
+    expect(receivable).not.toMatch(/writable: \[[^\]]*"status"/);
+    expect(read("src/app/api/cron/collections/route.ts")).toContain("agingBucketFor");
+
+    // `credit_limit` llevaba desde 0002 sin que nada lo mirara: se vendía a
+    // crédito sin techo.
+    const service = read("src/lib/booking-service.ts");
+    expect(service).toContain("creditCheck");
+    const at = service.indexOf("creditCheck(creditTerms");
+    expect(at).toBeGreaterThan(0);
+    // La comprobación va ANTES de escribir la orden.
+    expect(at).toBeLessThan(service.indexOf('tenantCreate<Order>(companyId, "order"'));
+    // Y saltárselo es decisión de gestión, nunca del portal del socio.
+    const route = read("src/app/api/orders/route.ts");
+    expect(route).toMatch(/allow_over_credit[\s\S]{0,200}requireAtLeast\(ctx, "manager"\)/);
+    expect(route).toMatch(/partner"\)\s*delete body\.allow_over_credit/);
+  });
+
   it("los registros derivados no se borran desde el CRUD genérico", () => {
     /**
      * Un recurso con `writable` vacío es un libro: el registro de auditoría, los
@@ -770,7 +868,7 @@ describe("Panel ejecutivo", () => {
       .map((m) => m[1]);
     expect(ledgers).toEqual(expect.arrayContaining([
       "audit_log", "ledger_entry", "cash_movement", "cash_count", "gift_card_movement",
-      "quote_line", "quote_option",
+      "quote_line", "quote_option", "payment_schedule",
     ]));
   });
 

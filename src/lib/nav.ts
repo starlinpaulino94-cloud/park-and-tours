@@ -495,6 +495,9 @@ export const WORKSPACES: Workspace[] = [
         id: "fin-cuentas",
         title: "Cuentas",
         items: [
+          { id: "vencimientos", href: "/dashboard/finanzas/vencimientos", label: "Vencimientos", icon: "CalendarClock", minRole: "seller",
+            description: "Anticipos y saldos que vencen, con lo que ya venció primero.",
+            keywords: ["anticipo", "saldo", "cuotas", "vencimiento", "cobrar", "deposito"] },
           { id: "cobros", href: "/dashboard/cobros", label: "Por cobrar", icon: "ArrowDownToLine", module: "accounting", minRole: "manager",
             description: "Antigüedad de saldos por cliente y socio.",
             keywords: ["cxc", "cuentas por cobrar", "crédito"] },

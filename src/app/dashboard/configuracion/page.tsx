@@ -54,7 +54,10 @@ function CompanyForm() {
     load();
   };
 
-  const set = (k: string, v: string) => setCompany((c: any) => ({ ...c, [k]: v }));
+  // Acepta número y nulo además de texto: `hold_hours` es un entero, y mandarlo
+  // como cadena vacía lo guardaría como 0 —"expira al instante"— en vez de
+  // "sin límite".
+  const set = (k: string, v: string | number | null) => setCompany((c: any) => ({ ...c, [k]: v }));
 
   if (loading) {
     return <div className="space-y-3">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-20 w-full rounded-xl" />)}</div>;
@@ -97,6 +100,19 @@ function CompanyForm() {
           </p>
         </div>
         <Field label="Zona horaria" value={company.timezone} onChange={(v) => set("timezone", v)} placeholder="America/Santo_Domingo" />
+        <div className="space-y-1.5">
+          <Label htmlFor="hold-hours">Retener la plaza sin pagar (horas)</Label>
+          <Input
+            id="hold-hours" type="number" min="0"
+            value={company.hold_hours ?? ""}
+            onChange={(e) => set("hold_hours", e.target.value === "" ? null : Number(e.target.value))}
+            placeholder="Sin límite"
+          />
+          <p className="text-xs text-muted-foreground">
+            Pasado ese plazo sin cobrar nada, la reserva libera su cupo y vuelve a estar a la venta.
+            En blanco, nada expira. Una reserva con anticipo pagado nunca se cancela sola.
+          </p>
+        </div>
         <Field label="Logo (URL)" value={company.logo_url} onChange={(v) => set("logo_url", v)} className="sm:col-span-2" />
         <div className="space-y-1.5 sm:col-span-2">
           <Label>Dirección</Label>

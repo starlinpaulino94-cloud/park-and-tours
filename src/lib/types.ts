@@ -65,6 +65,8 @@ export interface Company extends BaseRecord {
   address?: string; city?: string; country?: string; timezone?: string;
   logo?: StoredFile; logo_url?: string; brand_color?: string;
   base_currency?: Currency; plan?: Ref<Plan>;
+  /** 0039 — horas que se retiene la plaza de una reserva sin cobrar. */
+  hold_hours?: number;
   subscription_status?: "trial" | "active" | "past_due" | "cancelled" | "suspended";
   trial_ends_at?: string; next_billing_at?: string;
   stripe_customer_id?: string; stripe_subscription_id?: string;
@@ -287,6 +289,12 @@ export interface Order extends BaseRecord {
   notes?: string;
   booking?: Booking[]; payment?: Payment[];
   _count?: Record<string, number>;
+  /** 0039 — las condiciones de cobro pactadas y el estado del calendario. */
+  deposit_type?: DepositType; deposit_percent?: number; deposit_amount?: number;
+  deposit_due_date?: string; balance_due_date?: string; payment_terms?: string;
+  hold_until?: string;
+  collection_status?: CollectionStatus;
+  payment_schedule?: PaymentScheduleRow[];
 }
 
 export type BookingStatus =
@@ -342,6 +350,8 @@ export interface Booking extends BaseRecord {
   notes?: string; internal_notes?: string;
   participant?: Participant[]; voucher?: Voucher[];
   commission?: Commission[]; payment?: Payment[]; pickup?: Pickup[];
+  /** 0039 — cuándo vence el saldo de ESTA reserva, derivada de su salida. */
+  balance_due_date?: string;
   _count?: Record<string, number>;
 }
 
@@ -464,6 +474,21 @@ export interface CashCount extends BaseRecord {
   breakdown?: { denomination: number; quantity: number }[];
   counted_total?: number; expected_total?: number; difference?: number;
   counted_by?: Ref<AppUser>; counted_at?: string; notes?: string;
+}
+
+/** 0039 — el calendario de cobro de una venta. */
+export type DepositType = "none" | "percent" | "amount";
+export type CollectionStatus = "none" | "on_track" | "due_soon" | "overdue" | "settled";
+
+export interface PaymentScheduleRow extends BaseRecord {
+  company?: Ref<Company>; order?: Ref<Order>; booking?: Ref<Booking>;
+  sequence?: number;
+  kind?: "deposit" | "installment" | "balance";
+  due_date?: string;
+  amount?: number; paid_amount?: number; balance?: number;
+  currency?: Currency;
+  status?: "pending" | "partially_paid" | "paid" | "overdue" | "waived" | "cancelled";
+  paid_at?: string; reminded_at?: string; notes?: string;
 }
 
 /** Enum `payment_method` de la base, literal. */
