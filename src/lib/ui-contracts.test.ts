@@ -495,6 +495,49 @@ describe("Panel ejecutivo", () => {
     expect(store).toContain("aliasesFor(\"message\")");
   });
 
+  it("Comunicaciones — lo que se encola en una petición se entrega al terminarla", () => {
+    /**
+     * El cron pasó a ser diario: el plan Hobby de Vercel no admite crons
+     * sub-diarios y con uno cada cuarto de hora el despliegue ENTERO fallaba.
+     * Dejar la entrega
+     * solo en manos del barrido convertía la confirmación de una reserva hecha a
+     * las 9 de la mañana en un correo que sale a la mañana siguiente.
+     *
+     * Toda ruta que encola tiene que drenar al terminar. Si aparece una nueva que
+     * encola y no drena, su aviso espera al barrido y nadie se enteraría: el
+     * fallo es silencio, y por eso se comprueba aquí.
+     */
+    const NOTIFIERS = /notify(BookingCreated|PaymentReceived|QuoteSent|BookingCancelled)\s*\(/;
+    const enqueuing = walk(path.join(ROOT, "src/app/api"))
+      .filter((file) => NOTIFIERS.test(readFileSync(file, "utf8")) || /createOrderWithBookings\s*\(/.test(readFileSync(file, "utf8")))
+      // Los crons no tienen respuesta que esperar: ellos SON el barrido.
+      .filter((file) => !file.includes(`${path.sep}cron${path.sep}`));
+
+    expect(enqueuing.length, "no se encontró ninguna ruta que encole avisos").toBeGreaterThan(0);
+    // La LLAMADA, no el import: comprobar que el nombre aparece en el archivo
+    // daría por bueno un `import` sin usar, que es exactamente el descuido que
+    // esta guarda existe para cazar.
+    const CALL = /^\s*flushOutboxAfterResponse\s*\(/m;
+    const silent = enqueuing.filter((file) => !CALL.test(readFileSync(file, "utf8")));
+    expect(
+      silent.map((f) => path.relative(ROOT, f)),
+      "estas rutas encolan un aviso y no lo entregan hasta el barrido diario"
+    ).toEqual([]);
+
+    // Y se entrega DESPUÉS de la respuesta, nunca dentro: meter la latencia del
+    // proveedor de correo en medio de una venta es lo que la separación entre
+    // encolar y entregar existía para evitar.
+    const flush = read("src/lib/messaging/flush.ts");
+    expect(flush).toMatch(/import \{ after \} from "next\/server"/);
+    expect(flush).toMatch(/after\(\(\) => drainOutbox\(/);
+    // Con el cliente de servicio: después de la respuesta no hay garantía de que
+    // la sesión siga resolviéndose desde las cookies, y una cola que lee cero
+    // mensajes diciendo que está vacía es el peor fallo posible.
+    expect(flush).toContain("serviceStore()");
+    // Y nada de lo que pase aquí puede escalar: la operación ya terminó.
+    expect(flush).toMatch(/catch \(err\)[\s\S]{0,200}console\.error/);
+  });
+
   it("Comunicaciones — un aviso se manda una vez", () => {
     // Cada pasada del cron volviendo a escribirle al cliente es la forma más
     // rápida de que marque la dirección como spam.

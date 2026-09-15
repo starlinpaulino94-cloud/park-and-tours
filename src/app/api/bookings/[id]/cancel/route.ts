@@ -12,6 +12,7 @@ import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import type { Booking, CancellationPolicy, CancellationTier, Product } from "@/lib/types";
 import { refId } from "@/lib/types";
+import { flushOutboxAfterResponse } from "@/lib/messaging/flush";
 
 /**
  * POST /api/bookings/:id/cancel
@@ -170,6 +171,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     console.log(`[cancel] reserva ${booking.booking_number} cancelada · reembolso ${refund}`);
+    // La cancelación ya está registrada y la plaza liberada. El aviso al cliente
+    // sale ahora: tiene que saberlo antes de presentarse en el lobby, y el
+    // barrido diario podría llegar después de la hora de recogida.
+    flushOutboxAfterResponse(ctx.company, ctx.companyId);
     return ok({ cancelled: true, refund, refund_pct: refundPct, policy: policyName, commissions_voided: commissions.length });
   } catch (err) {
     return fail(err);

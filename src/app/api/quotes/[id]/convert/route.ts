@@ -10,6 +10,7 @@ import { createOrderWithBookings, type BookingItemInput } from "@/lib/booking-se
 import { billablePax } from "@/lib/pricing";
 import { refId } from "@/lib/types";
 import type { Channel, Currency } from "@/lib/types";
+import { flushOutboxAfterResponse } from "@/lib/messaging/flush";
 
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -158,6 +159,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       },
     });
 
+    // La venta ya está hecha. La confirmación y el voucher salen en cuanto esta
+    // respuesta llegue, no a la mañana siguiente con el barrido.
+    flushOutboxAfterResponse(ctx.company, ctx.companyId);
     return ok({
       order: result.order,
       bookings: result.bookings.length,

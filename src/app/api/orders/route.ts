@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { createOrderWithBookings, type CreateOrderInput } from "@/lib/booking-service";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { assertSameOriginMutation } from "@/lib/csrf";
+import { flushOutboxAfterResponse } from "@/lib/messaging/flush";
 
 /** POST /api/orders — creates a multi-product order with all its bookings. */
 export async function POST(req: NextRequest) {
@@ -42,6 +43,10 @@ export async function POST(req: NextRequest) {
     if (ctx.role === "partner" && ctx.partnerId) body.partner_id = ctx.partnerId;
 
     const result = await createOrderWithBookings(ctx, body);
+    // La venta ya está hecha. La confirmación y el voucher salen en cuanto esta
+    // respuesta llegue al punto de venta, sin que el cajero espere a Resend con
+    // el cliente delante.
+    flushOutboxAfterResponse(ctx.company, ctx.companyId);
     return ok(result);
   } catch (err) {
     return fail(err);

@@ -12,6 +12,7 @@ import { notifyPaymentReceived } from "@/lib/messaging/events";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import type { CashSession, Currency, Order, PaymentMethod, Receivable } from "@/lib/types";
+import { flushOutboxAfterResponse } from "@/lib/messaging/flush";
 
 /**
  * POST /api/payments — registers a payment/refund, updates the order and
@@ -264,6 +265,9 @@ export async function POST(req: NextRequest) {
     }
 
     console.log(`[payments] ${payment.reference} · ${amount} ${currency} · ${body.method}`);
+    // El cobro ya está registrado. El recibo sale en cuanto el cajero reciba su
+    // respuesta, sin que la caja espere al proveedor de correo.
+    flushOutboxAfterResponse(ctx.company, ctx.companyId);
     return ok(payment);
   } catch (err) {
     return fail(err);
