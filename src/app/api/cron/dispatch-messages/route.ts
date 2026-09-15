@@ -18,8 +18,20 @@ import type { Company } from "@/lib/types";
  * encoló hace un minuto y el recordatorio de la víspera que llevaba días
  * esperando su hora.
  *
- * Corre cada 15 minutos. No es un trabajo de un inquilino —recorre todos—, así
- * que se autentica con el secreto del cron y no con una sesión.
+ * No es un trabajo de un inquilino —recorre todos—, así que se autentica con el
+ * secreto del cron y no con una sesión.
+ *
+ * CADENCIA: una vez al día (`0 6 * * *` en `vercel.json`). Estaba cada 15
+ * minutos, que es lo que esta cola pide de verdad, y el plan Hobby de Vercel no
+ * admite crons sub-diarios: el despliegue ENTERO fallaba con "Hobby accounts are
+ * limited to daily cron jobs", así que ninguna versión llegaba a producción. Con
+ * un plan Pro, devolverlo a cada cuarto de hora es cambiar esa línea y nada más.
+ *
+ * Mientras la cadencia sea diaria, un aviso encolado a las 9 de la mañana sale a
+ * la mañana siguiente. Para la confirmación de una reserva eso es demasiado
+ * tarde, y la vía que no cuesta dinero es despachar al terminar la petición que
+ * lo encola —no dentro de ella, para no meter la latencia del proveedor de
+ * correo en medio de una venta— dejando este trabajo como barrido y reintento.
  *
  * Sin proveedor configurado no hace nada destructivo: informa de qué canales
  * están sin credenciales y deja la cola intacta.
@@ -116,7 +128,7 @@ export async function GET(req: NextRequest) {
     const now = new Date().toISOString();
 
     // Solo las empresas con algo que mandar: recorrerlas todas sería una
-    // consulta por inquilino cada cuarto de hora para nada.
+    // consulta por inquilino en cada pasada para nada.
     const { data: pending, error } = await supabaseService()
       .from("message")
       .select("organization_id")
