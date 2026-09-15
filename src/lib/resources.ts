@@ -837,6 +837,30 @@ export const RESOURCES: Record<string, ResourceDef> = {
     numeric: ["quantity", "unit_price", "unit_cost", "total_amount", "cost_amount"],
     writeRole: "manager",
   },
+  // El desglose del comprobante. Se lee; lo escribe la emisión, que es la única
+  // que puede hacer que cuadre con el total y con la venta que lo origina.
+  invoice_line: {
+    table: "invoice_line",
+    search: ["description"],
+    expand: { invoice: true, booking: true, product: true },
+    sort: { sort_order: "asc" },
+    writable: [],
+    numeric: ["quantity", "unit_price", "discount", "tax_rate", "tax_amount", "total", "sort_order"],
+    writeRole: "manager",
+  },
+  // El rango de comprobantes que autorizó la DGII. `next_number` NO es
+  // escribible desde aquí: lo consume `public.next_ncf` de forma atómica, y
+  // moverlo a mano es cómo se repiten o se saltan números.
+  ncf_sequence: {
+    table: "ncf_sequence",
+    search: ["ncf_type", "authorization_code"],
+    expand: { tax_profile: true },
+    sort: { ncf_type: "asc" },
+    writable: ["ncf_type", "max_number", "expires_at", "authorization_code", "status", "notes", "tax_profile"],
+    numeric: ["max_number"],
+    dates: ["expires_at"],
+    writeRole: "admin",
+  },
   allotment: {
     table: "allotment",
     search: ["notes"],
@@ -874,7 +898,15 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["number", "ncf", "customer_name", "customer_tax_id"],
     expand: { customer: true, order: true, partner: true },
     sort: { createdAt: "desc" },
-    writable: ["number", "series", "ncf", "ncf_type", "invoice_type", "status", "issued_at", "due_date", "subtotal", "tax", "tax_rate", "discount", "total", "paid_amount", "currency", "exchange_rate", "customer_name", "customer_tax_id", "customer_address", "notes", "pdf_url", "efac_status", "efac_track_id", "voided_at", "void_reason", "customer", "order", "partner", "settlement", "tax_profile", "user"],
+    // NADA fiscal es editable. El NCF, el tipo de comprobante, los importes y la
+    // anulación los escribe la emisión (`/api/invoices`), que es la única que
+    // puede hacer que el número no se repita y que los totales cuadren con la
+    // venta. Un comprobante tecleado rompe de tres formas que la DGII ve: NCF
+    // repetidos entre dos cajas simultáneas, huecos en la secuencia que hay que
+    // justificar meses después, e impuesto que no coincide con la orden.
+    // Queda editable lo que de verdad se corrige a posteriori sin tocar el
+    // comprobante: el vencimiento pactado, la dirección y las notas internas.
+    writable: ["due_date", "customer_address", "notes", "pdf_url", "efac_track_id"],
     numeric: ["subtotal", "tax", "tax_rate", "discount", "total", "paid_amount", "exchange_rate"],
     dates: ["issued_at", "due_date", "voided_at"],
     writeRole: "manager",

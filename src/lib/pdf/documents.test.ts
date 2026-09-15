@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import { PDFDocument } from "pdf-lib";
-import { buildVoucherPdf, buildQuotePdf, buildManifestPdf } from "@/lib/pdf/documents";
+import { buildVoucherPdf, buildQuotePdf, buildManifestPdf, buildInvoicePdf } from "@/lib/pdf/documents";
 import { manifestRow, sortByRoute, pickupStops, paxSummary } from "@/lib/manifest";
 
 const company = { name: "Caribe Tours", email: "hola@caribe.do", phone: "+1 809 555 0100", address: "Bávaro" };
@@ -132,6 +132,58 @@ describe("documentos — cotización", () => {
     }));
     const bytes = await buildQuotePdf(company, quote, many, []);
     assertIsPdf(bytes);
+    expect(await pageCount(bytes)).toBeGreaterThan(1);
+  });
+});
+
+describe("documentos — factura fiscal", () => {
+  const invoice = {
+    ncf: "B0200000045", ncf_type: "b02", number: "FAC-2609-ABC1234",
+    invoice_type: "sale", status: "issued",
+    issued_at: "2026-03-01T10:00:00Z", ncf_expires_at: "2027-12-31",
+    customer_name: "Colegio San Juan", customer_tax_id: "131234567",
+    order_number: "ORD-2609-XYZ9876", currency: "dop",
+    subtotal: 10000, tax: 1800, tax_rate: 18, total: 11800, paid_amount: 5000, balance: 6800,
+  };
+  const lines = [
+    { description: "Isla Saona — día completo · RSV-1", quantity: 1, unit_price: 8000, tax_rate: 18, tax_amount: 1440, total: 9440 },
+    { description: "Tasa de muelle", quantity: 1, unit_price: 2000, tax_rate: 0, tax_amount: 0, total: 2000, is_exempt: true },
+  ];
+
+  it("sale un comprobante válido con su NCF", async () => {
+    const bytes = await buildInvoicePdf({ ...company, tax_id: "101234561" }, invoice, lines);
+    assertIsPdf(bytes);
+    expect(await pageCount(bytes)).toBe(1);
+  });
+
+  it("una nota de crédito dice qué comprobante anula", async () => {
+    // Es lo que la DGII pide declarar, y sin ello la anulación no se justifica.
+    const bytes = await buildInvoicePdf(company, {
+      ...invoice, ncf: "B0400000003", ncf_type: "b04",
+      invoice_type: "credit_note", credit_note_of: "B0200000045",
+    }, lines);
+    assertIsPdf(bytes);
+  });
+
+  it("una anulada se marca sin validez fiscal", async () => {
+    const bytes = await buildInvoicePdf(company, {
+      ...invoice, voided_at: "2026-03-05T10:00:00Z", void_reason: "Error en el RNC",
+    }, lines);
+    assertIsPdf(bytes);
+  });
+
+  it("un cliente sin RNC no finge tenerlo", async () => {
+    // Sin RNC en el receptor un crédito fiscal no es deducible: mejor que se vea
+    // vacío a que parezca completo.
+    assertIsPdf(await buildInvoicePdf(company, { ...invoice, customer_tax_id: null }, lines));
+  });
+
+  it("una factura de cien líneas pagina", async () => {
+    const many = Array.from({ length: 90 }, (_, i) => ({
+      description: `Servicio facturado número ${i + 1}`,
+      quantity: 1, unit_price: 100 + i, tax_rate: 18, tax_amount: 18, total: 118 + i,
+    }));
+    const bytes = await buildInvoicePdf(company, invoice, many);
     expect(await pageCount(bytes)).toBeGreaterThan(1);
   });
 });

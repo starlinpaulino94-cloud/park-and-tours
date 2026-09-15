@@ -516,8 +516,11 @@ export const WORKSPACES: Workspace[] = [
             description: "Comprobantes fiscales, NCF/e-CF y notas de crédito.",
             keywords: ["ncf", "e-cf", "notas de crédito", "comprobantes"] },
           { id: "fiscal", href: "/dashboard/finanzas/fiscal", label: "Fiscal", icon: "Landmark", minRole: "admin",
-            description: "Impuestos por país, secuencias NCF y e-CF.",
+            description: "Impuestos por país, tasas y comprobante electrónico.",
             keywords: ["impuestos", "itbis", "dgii"] },
+          { id: "secuencias", href: "/dashboard/finanzas/secuencias", label: "Secuencias NCF", icon: "ListChecks", minRole: "admin",
+            description: "Rangos autorizados por la DGII y lo que queda de cada uno.",
+            keywords: ["ncf", "e-cf", "numeración", "dgii", "comprobantes"] },
         ],
       },
       {

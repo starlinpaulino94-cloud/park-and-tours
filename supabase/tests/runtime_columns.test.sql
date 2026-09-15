@@ -435,4 +435,83 @@ begin
   raise notice 'extras: TODAS LAS ASERCIONES PASARON';
 end $$;
 
+-- ── secuencia de NCF (0037) ────────────────────────────────────────────────
+-- El número de un comprobante fiscal se consume UNA vez: dos facturas con el
+-- mismo NCF invalidan las dos, y un hueco en la secuencia hay que justificarlo
+-- ante la DGII tres meses después, cuando ya nadie recuerda por qué.
+insert into ncf_sequence (organization_id, ncf_type, next_number, max_number, expires_at)
+values (:'org', 'b02', 1, 3, current_date + 365),
+       (:'org', 'b01', 1, 100, current_date - 1);
+
+-- La función se declaró `security invoker` con comprobación de organización, así
+-- que hay que hablarle como le habla la aplicación: con el inquilino en el
+-- claim. Sin sesión no entrega números, y eso también se comprueba abajo.
+select set_config('request.jwt.claims',
+  '{"org_id":"11111111-1111-1111-1111-111111111111","app_role":"admin"}', false);
+
+do $$
+declare
+  a bigint; b bigint; c bigint;
+begin
+  a := public.next_ncf('11111111-1111-1111-1111-111111111111', 'b02');
+  b := public.next_ncf('11111111-1111-1111-1111-111111111111', 'b02');
+  if a <> 1 or b <> 2 then
+    raise exception 'la secuencia no avanza de uno en uno (% y %)', a, b;
+  end if;
+
+  -- El tercero agota el rango autorizado; el cuarto tiene que fallar DICIENDO
+  -- que se agotó, no con un error genérico.
+  c := public.next_ncf('11111111-1111-1111-1111-111111111111', 'b02');
+  if c <> 3 then raise exception 'el último número del rango no se entregó (%)', c; end if;
+
+  begin
+    perform public.next_ncf('11111111-1111-1111-1111-111111111111', 'b02');
+    raise exception 'la secuencia entregó un número fuera del rango autorizado';
+  exception when others then
+    if position('agotó' in sqlerrm) = 0 then
+      raise exception 'el agotamiento no se explica: %', sqlerrm;
+    end if;
+  end;
+
+  -- Una autorización vencida no entrega números aunque le queden.
+  begin
+    perform public.next_ncf('11111111-1111-1111-1111-111111111111', 'b01');
+    raise exception 'la secuencia vencida entregó un número';
+  exception when others then
+    if position('venció' in sqlerrm) = 0 then
+      raise exception 'el vencimiento no se explica: %', sqlerrm;
+    end if;
+  end;
+
+  -- Un tipo sin configurar se distingue de uno agotado.
+  begin
+    perform public.next_ncf('11111111-1111-1111-1111-111111111111', 'b15');
+    raise exception 'entregó un número de un tipo sin configurar';
+  exception when others then
+    if position('No hay secuencia' in sqlerrm) = 0 then
+      raise exception 'la falta de configuración no se explica: %', sqlerrm;
+    end if;
+  end;
+
+  -- Y dos filas del mismo tipo serían dos numeraciones paralelas.
+  begin
+    insert into ncf_sequence (organization_id, ncf_type)
+    values ('11111111-1111-1111-1111-111111111111', 'b02');
+    raise exception 'se admitieron dos secuencias del mismo tipo';
+  exception when unique_violation then null;
+  end;
+
+  -- La secuencia de OTRO inquilino no se toca ni pasando su id: sin esto,
+  -- cualquier usuario autenticado podría quemarle los NCF a la competencia.
+  begin
+    perform public.next_ncf('99999999-9999-9999-9999-999999999999', 'b02');
+    raise exception 'entregó un número de la secuencia de otra organización';
+  exception when insufficient_privilege then null;
+  end;
+
+  raise notice 'ncf: TODAS LAS ASERCIONES PASARON';
+end $$;
+
+select set_config('request.jwt.claims', '', false);
+
 rollback;

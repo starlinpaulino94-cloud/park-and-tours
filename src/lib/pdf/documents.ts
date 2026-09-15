@@ -2,6 +2,7 @@ import "server-only";
 import QRCode from "qrcode";
 import { PdfBuilder } from "@/lib/pdf/doc";
 import { formatDate, formatDateTime, formatMoney, formatNumber, formatTime, formatPercent } from "@/lib/format";
+import { formatTaxId } from "@/lib/invoicing";
 import { depositDue, optionBreakdown, lineGross } from "@/lib/quotes";
 import type { ManifestRow, PickupStop, PaxSummary } from "@/lib/manifest";
 
@@ -310,6 +311,145 @@ export async function buildQuotePdf(
   // Las notas internas NO se imprimen: son el coste del proveedor y el margen
   // negociable. Ponerlas en el documento del cliente es enseñarle la mano.
 
+  return pdf.finish();
+}
+
+/* ---------------------------------------------------------------- factura */
+
+export interface InvoicePdfData {
+  ncf?: string | null;
+  ncf_type?: string | null;
+  number?: string | null;
+  invoice_type?: string | null;
+  status?: string | null;
+  issued_at?: string | null;
+  due_date?: string | null;
+  ncf_expires_at?: string | null;
+  customer_name?: string | null;
+  customer_tax_id?: string | null;
+  customer_address?: string | null;
+  order_number?: string | null;
+  currency?: string | null;
+  subtotal?: number | null;
+  discount?: number | null;
+  tax?: number | null;
+  tax_rate?: number | null;
+  total?: number | null;
+  paid_amount?: number | null;
+  balance?: number | null;
+  notes?: string | null;
+  voided_at?: string | null;
+  void_reason?: string | null;
+  /** NCF de la factura que esta nota de crédito anula. */
+  credit_note_of?: string | null;
+  company_tax_id?: string | null;
+  tax_name?: string | null;
+}
+
+export interface InvoicePdfLine {
+  description?: string | null;
+  quantity?: number | null;
+  unit_price?: number | null;
+  discount?: number | null;
+  tax_rate?: number | null;
+  tax_amount?: number | null;
+  total?: number | null;
+  is_exempt?: boolean | null;
+}
+
+/**
+ * El comprobante fiscal impreso.
+ *
+ * Lo que lleva no es decorativo: el NCF y su vencimiento, el RNC de las dos
+ * partes y el desglose del ITBIS son lo que hace válido el documento ante la
+ * DGII. Un PDF bonito sin el NCF no sirve para nada, y uno con el NCF pero sin
+ * desglose no se puede declarar.
+ */
+export async function buildInvoicePdf(
+  company: (CompanyInfo & { tax_id?: string | null }) | null,
+  invoice: InvoicePdfData,
+  lines: InvoicePdfLine[]
+): Promise<Uint8Array> {
+  const currency = invoice.currency || "dop";
+  const money = (v: number | null | undefined) => formatMoney(v ?? 0, currency);
+  const isCreditNote = invoice.invoice_type === "credit_note";
+
+  const pdf = await PdfBuilder.create({
+    kind: isCreditNote ? "NOTA DE CRÉDITO" : "FACTURA",
+    reference: invoice.ncf,
+    company,
+    footer: company?.name || undefined,
+  });
+
+  // El NCF va arriba y grande: es el dato por el que se busca el documento.
+  pdf.heading(invoice.ncf || "Sin NCF", 18);
+  pdf.row("Tipo de comprobante", String(invoice.ncf_type || "").toUpperCase());
+  if (invoice.number) pdf.row("Documento interno", invoice.number);
+  pdf.row("Fecha de emisión", invoice.issued_at ? formatDate(invoice.issued_at) : "—");
+  if (invoice.ncf_expires_at) pdf.row("NCF válido hasta", formatDate(invoice.ncf_expires_at));
+  if (invoice.due_date) pdf.row("Vence", formatDate(invoice.due_date));
+  if (invoice.credit_note_of) pdf.row("Modifica el comprobante", invoice.credit_note_of);
+  pdf.gap(8);
+
+  pdf.eyebrow("Emisor");
+  pdf.row("Razón social", company?.name || "—");
+  if (company?.tax_id) pdf.row("RNC", formatTaxId(company.tax_id));
+  pdf.gap(6);
+
+  pdf.eyebrow("Receptor");
+  pdf.row("Razón social", invoice.customer_name || "Consumidor final");
+  // Sin RNC en el receptor, un crédito fiscal no es deducible: mejor que se vea
+  // vacío a que parezca completo.
+  pdf.row("RNC / Cédula", invoice.customer_tax_id ? formatTaxId(invoice.customer_tax_id) : "No aportado");
+  if (invoice.customer_address) pdf.row("Dirección", invoice.customer_address);
+  if (invoice.order_number) pdf.row("Orden", invoice.order_number);
+  pdf.gap(10);
+
+  pdf.eyebrow("Detalle");
+  pdf.table(
+    [
+      { header: "Concepto", width: 3.8 },
+      { header: "Cant.", width: 0.6, align: "right" },
+      { header: "Precio", width: 1.1, align: "right" },
+      { header: "Dto.", width: 0.9, align: "right" },
+      { header: "ITBIS", width: 0.9, align: "right" },
+      { header: "Importe", width: 1.2, align: "right" },
+    ],
+    lines.map((l) => [
+      [l.description || "Servicio", l.is_exempt ? "(exento)" : ""].filter(Boolean).join(" "),
+      formatNumber(l.quantity ?? 0),
+      money(l.unit_price),
+      (l.discount ?? 0) > 0 ? `- ${money(l.discount)}` : "",
+      money(l.tax_amount),
+      money(l.total),
+    ])
+  );
+  pdf.gap(10);
+
+  pdf.row("Subtotal", money(invoice.subtotal));
+  if ((invoice.discount ?? 0) > 0) pdf.row("Descuento", `- ${money(invoice.discount)}`);
+  pdf.row(
+    `${invoice.tax_name || "ITBIS"}${invoice.tax_rate ? ` (${formatPercent(invoice.tax_rate)})` : ""}`,
+    money(invoice.tax)
+  );
+  pdf.row("Total", money(invoice.total), { strong: true });
+  if ((invoice.paid_amount ?? 0) > 0) {
+    pdf.row("Pagado", money(invoice.paid_amount));
+    pdf.row("Saldo", money(invoice.balance));
+  }
+  pdf.gap(8);
+
+  if (invoice.voided_at) {
+    pdf.notice(
+      `COMPROBANTE ANULADO el ${formatDate(invoice.voided_at)}` +
+      (invoice.void_reason ? `. Motivo: ${invoice.void_reason}` : "") +
+      ". Este documento no tiene validez fiscal."
+    );
+  } else if (isCreditNote) {
+    pdf.notice(`Esta nota de crédito anula el comprobante ${invoice.credit_note_of || ""}.`.trim());
+  }
+
+  pdf.block("Notas", invoice.notes);
   return pdf.finish();
 }
 

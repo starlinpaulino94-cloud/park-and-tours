@@ -42,13 +42,15 @@ const MAX_RELATED = 2000;
 
 /** Campos que apuntan a `auth.users`, que no es una tabla consultable. */
 export const USER_REF_FIELDS = new Set([
-  "approved_by", "assigned_to", "checked_in_by", "closed_by", "created_by", "impersonated_by", "manager",
+  "approved_by", "assigned_to", "checked_in_by", "closed_by", "created_by", "impersonated_by",
+  "issued_by", "manager",
   "owner", "performed_by", "reported_by", "requested_by", "second_approver", "user",
 ]);
 
 /** Campos cuyo nombre no coincide con el recurso al que apuntan. */
 export const RELATION_RESOURCE: Record<string, string> = {
   assigned_seller: "seller",
+  credit_note_of: "invoice",
   driver: "staff",
   extra: "product_extra",
   guide: "staff",

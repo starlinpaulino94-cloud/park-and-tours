@@ -338,7 +338,7 @@ describe("Panel ejecutivo", () => {
       gift_card: "/api/gift-cards", access_ticket: "/api/tickets",
       booking: "/api/bookings", payment: "/api/payments",
       cash_session: "/api/cash", departure: "/api/departures", task: "/api/tasks",
-      quote: "/api/quotes",
+      quote: "/api/quotes", invoice: "/api/invoices",
     };
     for (const file of walk(path.join(ROOT, "src/app"))) {
       const src = readFileSync(file, "utf8");
@@ -616,6 +616,61 @@ describe("Panel ejecutivo", () => {
     const attachments = read("src/lib/messaging/attachments.ts");
     expect(attachments).toContain("inclusions");
     expect(attachments).toContain("recommendations");
+  });
+
+  it("Fiscal — el NCF no se teclea, lo entrega la base de forma atómica", () => {
+    /**
+     * La pantalla era un formulario donde el NCF, el subtotal, el impuesto y el
+     * total se escribían a mano. Eso rompe de tres formas que la DGII ve: dos
+     * cajas facturando a la vez escriben el mismo NCF; un número saltado hay que
+     * justificarlo en el 606/607 meses después; y el impuesto tecleado no
+     * coincide con el de la venta.
+     */
+    const resources = read("src/lib/resources.ts");
+    const invoice = /^ {2}invoice: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    const writable = /writable:\s*\[([\s\S]*?)\]/.exec(invoice)![1];
+    for (const field of ['"ncf"', '"ncf_type"', '"number"', '"series"', '"status"',
+                         '"subtotal"', '"tax"', '"total"', '"voided_at"', '"order"']) {
+      expect(writable, `invoice.writable no debe incluir ${field}`).not.toContain(field);
+    }
+
+    // `next_number` tampoco: moverlo a mano es cómo se repiten o se saltan.
+    const sequence = /^ {2}ncf_sequence: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[([\s\S]*?)\]/.exec(sequence)![1]).not.toContain('"next_number"');
+
+    // El número lo entrega la función de la base, no la aplicación: comprobar
+    // el rango y reservar ocurren en la MISMA sentencia.
+    const service = read("src/lib/invoice-service.ts");
+    expect(service).toContain('sb.rpc("next_ncf"');
+    const sql = readFileSync(path.join(ROOT, "supabase/migrations/0037_fiscal_invoicing.sql"), "utf8");
+    expect(sql).toContain("update ncf_sequence");
+    expect(sql).toMatch(/set next_number = next_number \+ 1/);
+    // Y no entrega números de otro inquilino aunque le pasen su id.
+    expect(sql).toContain("app.current_org_id() <> p_org");
+
+    // Una sola secuencia viva por tipo: dos serían dos numeraciones paralelas.
+    expect(sql).toContain("unique (organization_id, ncf_type)");
+
+    // La factura tiene que cuadrar con la orden que la origina: la tasa sale de
+    // la PROPIA reserva, no del perfil fiscal, que es otro número en cuanto el
+    // perfil cambia de tasa o la reserva se vendió exenta.
+    expect(service).toContain("taxAmount / net");
+    expect(service).toMatch(/invoiceTotals\(draftLines as InvoiceLineInput\[\], false\)/);
+  });
+
+  it("Fiscal — una factura emitida se anula con nota de crédito, no se borra", () => {
+    // El cliente ya la tiene y probablemente ya está en su declaración; borrarla
+    // deja además un hueco en la secuencia que hay que justificar.
+    const service = read("src/lib/invoice-service.ts");
+    expect(service).toContain("creditNoteTypeFor");
+    expect(service).toContain("credit_note_of");
+    expect(service).toContain("necesita un motivo");
+    // La nota de crédito copia el desglose: sin líneas no se puede demostrar QUÉ
+    // se anuló, que es lo que se pregunta en una inspección.
+    expect(service).toMatch(/for \(const line of lines\)[\s\S]{0,200}invoice_line/);
+
+    // Anular es decisión de gestión, no del cajero que se equivocó.
+    expect(read("src/app/api/invoices/[id]/void/route.ts")).toMatch(/requireAtLeast\(ctx, "manager"\)/);
   });
 
   it("los registros derivados no se borran desde el CRUD genérico", () => {
