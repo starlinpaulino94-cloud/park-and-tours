@@ -30,6 +30,14 @@ export interface TenantContext {
   company: Company | null;
   /** true while a superadmin is operating inside a tenant (always audited). */
   impersonating?: boolean;
+  /**
+   * La contraseña ya está, falta el código del segundo factor.
+   *
+   * No es un rechazo: es un paso a medio camino. La API responde 401 con
+   * `MFA_REQUIRED` y la pantalla manda a `/auth/verificar` conservando la
+   * sesión, porque cerrarla obligaría a escribir la contraseña otra vez.
+   */
+  mfaPending?: boolean;
 }
 
 /** Cookie used by the audited superadmin impersonation flow. */
@@ -68,6 +76,14 @@ export const getTenantContext = cache(async function getTenantContext(): Promise
 export async function requireTenant(): Promise<TenantContext & { companyId: string }> {
   const ctx = await getTenantContext();
   if (!ctx) throw new TenantError("No autenticado", 401);
+  // El segundo factor se exige AQUÍ y no solo en la pantalla: una contraseña
+  // robada sirve para llamar a la API directamente, que es donde están los
+  // datos. Un segundo factor que solo vigila la interfaz no protege nada.
+  if (ctx.mfaPending) {
+    throw Object.assign(new TenantError("Falta verificar el código de tu segundo factor", 401), {
+      code: "MFA_REQUIRED",
+    });
+  }
   if (!ctx.companyId) {
     throw new TenantError(
       "El usuario no está asociado a ninguna empresa. Contacta al administrador.",

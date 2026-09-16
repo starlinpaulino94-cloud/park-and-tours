@@ -1557,6 +1557,12 @@ describe("el plan se aplica en la API, no solo en el menú", () => {
     /^src\/app\/api\/superadmin\//,
     /^src\/app\/api\/membego\/webhook\//,
     /^src\/app\/api\/setup\//,
+    // La seguridad de la propia cuenta no es una operación de la empresa: una
+    // suscripción vencida no puede impedirle a nadie activar —ni QUITAR— su
+    // segundo factor. Bloquearlo dejaría a alguien que acaba de desenrolar su
+    // teléfono con la marca puesta y sin factores, es decir, fuera de su
+    // cuenta por no pagar.
+    /^src\/app\/api\/account\/mfa\//,
   ];
 
   it("toda ruta que escribe exige una suscripción que permita escribir", () => {
@@ -1839,6 +1845,74 @@ describe("las cuentas del equipo", () => {
     // saltaría delante de alguien que ya recibió el correo.
     expect(read("src/app/api/team/invite/route.ts")).toMatch(/assertWithinLimit\(ctx, "max_users"\)/);
     expect(read("src/lib/plan-service.ts")).toMatch(/\.in\("status", \["active", "pending"\]\)/);
+  });
+});
+
+describe("la verificación en dos pasos", () => {
+  it("se exige en la API, no solo en la pantalla", () => {
+    /**
+     * Una contraseña robada sirve para llamar a la API directamente, que es
+     * donde están los datos. Un segundo factor que solo vigila la interfaz no
+     * protege de nada.
+     */
+    const tenant = read("src/lib/tenant.ts");
+    expect(tenant).toMatch(/if \(ctx\.mfaPending\)/);
+    expect(tenant).toMatch(/MFA_REQUIRED/);
+  });
+
+  it("la marca vive donde el usuario no la puede tocar", () => {
+    // `user_metadata` la escribe el propio usuario con una llamada: quien
+    // tuviera la contraseña robada la borraría y entraría.
+    const account = read("src/app/api/account/mfa/route.ts");
+    expect(account).toMatch(/app_metadata: \{ mfa_enabled/);
+    expect(account).not.toMatch(/user_metadata: \{ mfa_enabled/);
+  });
+
+  it("la marca copia la realidad: no recibe «activar» ni «desactivar»", () => {
+    /**
+     * Si la ruta aceptara una orden, dos fallos serían posibles: marca puesta
+     * sin factor —la persona fuera de su cuenta para siempre— y factor sin
+     * marca, que es justo la puerta que el segundo factor venía a cerrar.
+     */
+    const account = read("src/app/api/account/mfa/route.ts");
+    expect(account).toMatch(/listFactors\(\{ userId: ctx\.userId \}\)/);
+    expect(account).toMatch(/hasVerifiedFactor\(/);
+    expect(account).not.toMatch(/body\.(enabled|action)/);
+  });
+
+  it("restablecer el de otro exige rango y deja rastro crítico", () => {
+    const reset = read("src/app/api/team/mfa-reset/route.ts");
+    expect(reset).toMatch(/requireAtLeast\(ctx, "admin"\)/);
+    expect(reset).toMatch(/atLeast\(ctx\.role, membership\.role/);
+    expect(reset).toMatch(/action: "mfa_reset"/);
+    expect(reset).toMatch(/severity: "critical"/);
+    // Y apaga la marca junto con los factores: si quedara puesta, la persona
+    // seguiría pidiéndole un código a una cuenta que ya no tiene ninguno.
+    expect(reset).toMatch(/app_metadata: \{ mfa_enabled: false \}/);
+  });
+
+  it("la pantalla del código no cierra la sesión ni deja sin salida", () => {
+    // Cerrarla obligaría a escribir la contraseña otra vez, que es lo que
+    // empuja a desactivar el segundo factor; y sin salida, quien no tenga el
+    // teléfono se queda mirando una pantalla que no avanza.
+    const page = read("src/app/auth/verificar/page.tsx");
+    expect(page).toMatch(/challengeAndVerify/);
+    expect(page).toMatch(/No tengo el teléfono a mano/);
+  });
+
+  it("el panel manda a verificar en vez de enseñar una pantalla que no carga", () => {
+    // Sin la bandera `s` (el objetivo de compilación del proyecto no la
+    // admite): se busca la línea que hace las dos cosas.
+    const layout = read("src/app/dashboard/layout.tsx");
+    expect(layout).toMatch(/if \(ctx\.mfaPending\) redirect\("\/auth\/verificar/);
+  });
+
+  it("el perfil ya no dice que cambiar la contraseña «no está habilitado»", () => {
+    // Lo estaba a medias: la función existía en el cliente y ninguna pantalla
+    // la llamaba.
+    const page = read("src/app/dashboard/perfil/page.tsx");
+    expect(page).not.toMatch(/todavía no está habilitado/);
+    expect(page).toMatch(/<Seguridad email=/);
   });
 });
 

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Seguridad } from "./_components/seguridad";
 import { Separator } from "@/components/ui/separator";
 import { Icon } from "@/components/tf/icon";
 import { getTenantContext } from "@/lib/tenant";
@@ -66,16 +67,15 @@ export default async function DashboardProfilePage() {
               <Icon name="Lock" className="size-4 text-primary" /> Seguridad de cuenta
             </CardTitle>
             <CardDescription>
-              Las acciones sensibles siguen administrándose desde los módulos correspondientes.
+              Tu contraseña y la verificación en dos pasos. El resto de las acciones sensibles se administra
+              desde su propio módulo.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4 text-sm">
-            <div className="rounded-xl border border-dashed border-border p-4">
-              <p className="font-medium">Cambio de contraseña</p>
-              <p className="mt-1 text-muted-foreground">
-                El flujo de recuperación/cambio de contraseña todavía no está habilitado en producción.
-              </p>
-            </div>
+            {/* Esta tarjeta decía que el cambio de contraseña «todavía no está
+                habilitado en producción». Lo estaba a medias: la función existía
+                en el cliente y ninguna pantalla la llamaba. */}
+            <Seguridad email={ctx.email} />
             <div className="rounded-xl bg-muted/60 p-4">
               <p className="font-medium">Cerrar sesión</p>
               <p className="mt-1 text-muted-foreground">

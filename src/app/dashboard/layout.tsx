@@ -63,6 +63,11 @@ export default async function DashboardLayout({ children }: { children: React.Re
   if (!ctx.companyId) redirect("/onboarding");
   // Los usuarios del portal nunca entran al ERP interno.
   if (ctx.role === "partner") redirect("/portal");
+  // La contraseña ya está, falta el código. No se cierra la sesión: obligar a
+  // escribir la contraseña otra vez es lo que empuja a desactivar el segundo
+  // factor. La API lo exige por su cuenta (`requireTenant`), así que esto no es
+  // la barrera: es no dejar a nadie mirando una pantalla que no va a cargar.
+  if (ctx.mfaPending) redirect("/auth/verificar?next=/dashboard");
 
   const user: ShellUser = {
     name: ctx.name,

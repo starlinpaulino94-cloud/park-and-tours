@@ -267,6 +267,20 @@ function Team() {
     load();
   };
 
+  const resetMfa = async (user: any) => {
+    if (!user?._id) return;
+    setBusy(true);
+    const res = await api.post<{ removed: number }>("/api/team/mfa-reset", { user_id: user._id });
+    setBusy(false);
+    if (!res.ok) {
+      toast.error(res.error?.message || "No se pudo restablecer la verificación");
+      return;
+    }
+    toast.success(res.data?.removed
+      ? "Verificación restablecida. Puede entrar solo con su contraseña."
+      : "Esa cuenta no tenía verificación en dos pasos activa.");
+  };
+
   const save = async () => {
     if (!editing) return;
     setBusy(true);
@@ -482,6 +496,24 @@ function Team() {
                     </Select>
                   </div>
                 )}
+              </div>
+              {/* La salida del teléfono perdido. Sin ella, un móvil roto deja
+                  una cuenta muerta —y la reacción real no es «más cuidado», es
+                  que nadie active la verificación en dos pasos—. No da acceso:
+                  la persona sigue necesitando su contraseña. */}
+              <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-3">
+                <p className="text-xs font-semibold">Verificación en dos pasos</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Si perdió el teléfono y no guardó la clave, quítale el segundo paso. Seguirá necesitando su
+                  contraseña, y queda registrado en la bitácora a tu nombre.
+                </p>
+                <Button
+                  size="sm" variant="outline" className="mt-2"
+                  disabled={busy}
+                  onClick={() => resetMfa(editing)}
+                >
+                  <Icon name="ShieldCheck" className="size-3.5" /> Restablecer verificación
+                </Button>
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setEditing(null)}>Cancelar</Button>

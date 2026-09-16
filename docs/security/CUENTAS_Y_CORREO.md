@@ -78,3 +78,41 @@ propio código (`safeNextPath`).
 El enlace de invitación y el de recuperación caducan (una hora por defecto,
 configurable en el panel) y sirven **una sola vez**. Quien llega tarde ve el
 motivo y puede pedir otro desde la pantalla de entrada, sin escribir a nadie.
+
+## Verificación en dos pasos
+
+Voluntaria, y en cuanto se activa, obligatoria: desde ese momento una sesión que
+solo pasó la contraseña **no entra a ninguna parte**. Un segundo factor que se
+puede saltar es peor que no tenerlo, porque quien lo activó cree que está a
+salvo.
+
+### Cómo funciona por dentro
+
+- Se activa desde **Mi perfil → Seguridad de cuenta**: un QR, la clave escrita
+  por si no se puede escanear, y un código para confirmar.
+- Al confirmar, el navegador llama a `POST /api/account/mfa`, que **no recibe
+  órdenes**: mira qué factores tiene la cuenta en Supabase y copia esa realidad a
+  la marca `app_metadata.mfa_enabled`. Así es imposible que la marca diga
+  «protegida» sin factor —lo que dejaría a alguien fuera de su cuenta— o al
+  revés.
+- La marca viaja en el token, así que la comprobación no cuesta ninguna consulta.
+  Está en `app_metadata` y no en `user_metadata` porque esta última la escribe el
+  propio usuario: quien tuviera la contraseña robada la borraría y entraría.
+- `requireTenant` la exige en **la API**, no solo en las pantallas. Una
+  contraseña robada sirve para llamar a la API directamente, que es donde están
+  los datos.
+
+### El teléfono perdido
+
+Es el caso que decide si la gente activa esto o no. Un administrador abre la
+ficha de la persona en **Configuración → Equipo** y pulsa **Restablecer
+verificación**. Eso quita sus factores y apaga la marca; la persona vuelve a
+entrar solo con su contraseña, que sigue necesitando.
+
+Quien restablece queda registrado en la bitácora con severidad crítica, y no
+puede hacerlo sobre alguien de más rango: un administrador no toca la cuenta del
+propietario.
+
+Para el propietario que se queda fuera sin nadie de más rango, la salida es el
+panel de Supabase (`Authentication → Users`), que es exactamente la puerta que
+debe requerir acceso a la infraestructura.
