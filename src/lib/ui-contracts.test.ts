@@ -323,7 +323,6 @@ describe("Panel ejecutivo", () => {
       participant: "se crea con su reserva",
       payable: "la genera el cierre de liquidaciones",
       pickup: "lo arma el despacho de operaciones",
-      purchase_order_line: "es hija de su orden de compra",
       receivable: "la genera la venta a crédito",
       settlement: "la genera el proceso de liquidación",
       stock_level: "es el saldo derivado de los movimientos de inventario",
@@ -2770,5 +2769,110 @@ describe("RR. HH.: que lo que se teclea sirva para algo", () => {
     const page = read("src/app/dashboard/equipo/asistencia/page.tsx");
     expect(page).not.toMatch(/name: "hours_worked"/);
     expect(page).toMatch(/\/api\/attendance\/clock/);
+  });
+});
+
+describe("inventario: que comprar y vender muevan el almacén", () => {
+  /**
+   * El motor de inventario (0013) siempre estuvo bien; lo que faltaba era quién
+   * lo llamaba. Recibir una compra no movía una unidad y vender tampoco, así
+   * que lo comprado, lo vendido y lo que hay en el estante eran tres cifras que
+   * solo se encontraban en el conteo físico de fin de mes.
+   */
+
+  it("recibir una orden de compra mueve stock de verdad", () => {
+    const src = read("src/lib/purchasing-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/await postMovement\(companyId, \{/);
+    expect(src).toMatch(/movement_type: "receipt"/);
+    // Y queda atado a SU línea: sin eso, lo recibido solo vive en una columna
+    // que se puede teclear.
+    expect(src).toMatch(/purchase_order_line: linea\.lineId/);
+  });
+
+  it("el movimiento se escribe ANTES de dar la línea por recibida", () => {
+    // Al revés, una caída a medias deja la orden diciendo «recibida» con el
+    // almacén vacío, y eso no se detecta hasta el conteo físico.
+    const src = read("src/lib/purchasing-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src.indexOf("await postMovement")).toBeLessThan(src.indexOf('"purchase_order_line", linea.lineId'));
+  });
+
+  it("lo recibido se cuenta por los movimientos, no por la columna", () => {
+    const src = read("src/lib/purchasing-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/export async function receivedByLine/);
+    expect(src).toMatch(/"stock_movement"/);
+    // Y una devolución al proveedor resta: contar solo entradas daría la orden
+    // por cerrada con mercancía que ya no está.
+    expect(src).toMatch(/movement_type === "return" \? -1 : 1/);
+  });
+
+  it("el saldo de existencias NO se puede escribir desde el CRUD genérico", () => {
+    // `inventory.ts` abre prometiendo que nada más lo escribe directamente, y el
+    // CRUD lo tenía entero como escribible: editarlo ahí lo separa del libro de
+    // movimientos que es su única explicación.
+    const resources = read("src/lib/resources.ts");
+    const bloque = /^ {2}stock_level:\s*\{\n([\s\S]*?)^ {2}\},/m.exec(resources)?.[1] ?? "";
+    expect(bloque).toMatch(/writable:\s*\[\]/);
+  });
+
+  it("lo recibido de una línea de compra tampoco se teclea", () => {
+    const resources = read("src/lib/resources.ts");
+    const bloque = /^ {2}purchase_order_line:\s*\{\n([\s\S]*?)^ {2}\},/m.exec(resources)?.[1] ?? "";
+    const writable = /writable:\s*\[([^\]]*)\]/.exec(bloque)?.[1] ?? "";
+    expect(writable).not.toMatch(/"quantity_received"/);
+  });
+
+  it("vender aparta existencias sin escribir un movimiento", () => {
+    // La mercancía no ha salido: escribir un movimiento al vender llenaría el
+    // libro de salidas que nunca ocurrieron.
+    const src = read("src/lib/stock-commitment-service.ts");
+    const reservar = src.slice(
+      src.indexOf("export async function reserveForSale"),
+      src.indexOf("export interface SettleResult")
+    );
+    expect(reservar).toMatch(/stock_state: "reserved"/);
+    expect(reservar).not.toMatch(/postMovement/);
+  });
+
+  it("los tres momentos del ciclo están enganchados donde ocurren", () => {
+    const venta = read("src/lib/booking-service.ts");
+    expect(venta).toMatch(/reserveForSale\(/);
+
+    const embarque = read("src/app/api/bookings/[id]/checkin/route.ts");
+    expect(embarque).toMatch(/settleBookingStock\(ctx\.companyId, id, "consume"/);
+
+    const cancelacion = read("src/app/api/bookings/[id]/cancel/route.ts");
+    expect(cancelacion).toMatch(/settleBookingStock\(ctx\.companyId, id, "release"/);
+  });
+
+  it("el almacén nunca tumba una venta ni un embarque", () => {
+    // Un ERP que no deja vender porque un extra está mal configurado es un ERP
+    // que se desinstala. Los tres enganches van dentro de un try.
+    for (const [file, llamada] of [
+      ["src/lib/booking-service.ts", "reserveForSale("],
+      ["src/app/api/bookings/[id]/checkin/route.ts", "settleBookingStock("],
+      ["src/app/api/bookings/[id]/cancel/route.ts", "settleBookingStock("],
+    ] as const) {
+      const src = read(file);
+      const at = src.indexOf(llamada);
+      expect(at, file).toBeGreaterThan(-1);
+      // El `try {` más cercano por delante tiene que estar dentro de un margen
+      // corto: el enganche está envuelto, no suelto en medio de la saga.
+      const antes = src.slice(Math.max(0, at - 700), at);
+      expect(antes, file).toMatch(/try \{/);
+    }
+  });
+
+  it("el extra solo consume almacén si alguien lo enciende a propósito", () => {
+    // Nace en false: una recogida en el hotel no sale de ningún estante, y
+    // deducirlo sería descontar cosas que no existen.
+    const sql = read("supabase/migrations/0052_receipts_and_stock.sql");
+    expect(sql).toMatch(/consumes_stock boolean not null default false/);
+  });
+
+  it("la pantalla de extras deja configurar de dónde salen", () => {
+    const page = read("src/app/dashboard/catalogo/extras/page.tsx");
+    for (const campo of ["consumes_stock", "inventory_item", "warehouse", "stock_per_unit"]) {
+      expect(page, campo).toMatch(new RegExp(`name: "${campo}"`));
+    }
   });
 });

@@ -3,6 +3,7 @@ import { requireTenantWrite, requireAtLeast, tenantCreate, tenantFindOne, tenant
 import { ok, fail, readJson } from "@/lib/api-response";
 import { recalculateDeparture } from "@/lib/availability";
 import { cancelBookingCosts } from "@/lib/supplier-settlement-service";
+import { settleBookingStock } from "@/lib/stock-commitment-service";
 import { syncOrderTotals } from "@/lib/booking-service";
 import { postPayment } from "@/lib/ledger-events";
 import { writeAudit } from "@/lib/audit";
@@ -113,6 +114,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const cancelledCosts = await cancelBookingCosts(
       ctx.companyId, id, `Reserva ${booking.booking_number ?? id} cancelada`
     );
+
+    // ---- soltar las existencias apartadas (0052) --------------------------
+    // Los almuerzos que esta reserva tenía apartados vuelven a estar
+    // disponibles. No sale movimiento: nunca salieron del almacén.
+    //
+    // Si ya se habían CONSUMIDO —la reserva se canceló después del embarque—
+    // no se liberan: esas unidades salieron de verdad, y volver a sumarlas sin
+    // rastro descuadraría el almacén. `settleBookingStock` lo distingue y lo
+    // devuelve como problema para que quede en el log.
+    try {
+      const almacen = await settleBookingStock(ctx.companyId, id, "release", ctx.userId);
+      for (const problema of almacen.problems) console.warn(`[cancel] almacén: ${problema}`);
+    } catch (err) {
+      console.error("[cancel] no se pudieron liberar las existencias apartadas:", err);
+    }
 
     // ---- invalidate vouchers ----------------------------------------------
     const vouchers = await tenantQuery<{ _id: string }>(ctx.companyId, "voucher", {

@@ -13,6 +13,7 @@ import { formatDate } from "@/lib/format";
 import { ensureSchedule, refreshAllocation } from "@/lib/schedule-service";
 import { creditCheck, holdUntil } from "@/lib/collections";
 import { accrueBookingCosts, cancelBookingCosts } from "@/lib/supplier-settlement-service";
+import { reserveForSale, stockableOffers } from "@/lib/stock-commitment-service";
 import { priceExtras, unknownSelections, type ExtraOffer, type ExtraSelection } from "@/lib/extras";
 import type {
   Booking, Channel, Currency, Departure, Order, Partner, Product, Seller,
@@ -458,8 +459,9 @@ export async function createOrderWithBookings(
     // El nombre y el precio se COPIAN: si el extra se renombra o sube de precio,
     // el voucher de esta reserva tiene que seguir diciendo qué se compró y por
     // cuánto.
+    const extraRows: { bookingExtraId: string; extraId: string; units: number }[] = [];
     for (const line of extras.lines) {
-      await tenantCreate(companyId, "booking_extra", {
+      const row = await tenantCreate<{ _id: string }>(companyId, "booking_extra", {
         booking: booking._id,
         extra: line.extra_id,
         name: line.name,
@@ -471,6 +473,31 @@ export async function createOrderWithBookings(
         cost_amount: line.cost_amount,
         currency: line.currency,
       });
+      extraRows.push({ bookingExtraId: row._id, extraId: line.extra_id, units: line.quantity });
+    }
+
+    // ---- apartar las existencias de lo vendido (0052) ---------------------
+    // Un almuerzo vendido para el jueves sigue en el almacén, pero ya no se le
+    // puede vender a otro. Se sube `reserved` —una columna que existía desde
+    // 0013 y que nunca escribió nadie— sin escribir movimiento: la mercancía no
+    // ha salido.
+    //
+    // Fuera de la saga a propósito: un extra mal configurado en el catálogo no
+    // puede tumbar la venta de un cliente que ya está delante del mostrador.
+    if (extraRows.length > 0) {
+      try {
+        const ofertas = await stockableOffers(companyId, extraRows.map((e) => e.extraId));
+        const avisos = await reserveForSale(
+          companyId,
+          extraRows
+            .map((e) => ({ bookingExtraId: e.bookingExtraId, offer: ofertas.get(e.extraId), soldUnits: e.units }))
+            .filter((e): e is { bookingExtraId: string; offer: NonNullable<typeof e.offer>; soldUnits: number } =>
+              Boolean(e.offer))
+        );
+        for (const aviso of avisos) console.warn(`[stock] ${booking.booking_number}: ${aviso}`);
+      } catch (err) {
+        console.error("[stock] no se pudieron apartar los extras de la reserva:", err);
+      }
     }
 
     // ---- devengo del costo por proveedor (0040) ---------------------------

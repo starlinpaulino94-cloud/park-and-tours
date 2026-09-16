@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
+import { settleBookingStock } from "@/lib/stock-commitment-service";
 import type { Booking } from "@/lib/types";
 
 /**
@@ -135,6 +136,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         continue;
       }
       await tenantUpdate(ctx.companyId, "participant", pid, { checkin_status: "done" });
+    }
+
+    // 0052 — lo vendido sale del almacén AQUÍ, no al vender.
+    //
+    // El almuerzo estaba apartado desde la venta; ahora el cliente se lo lleva,
+    // así que la reserva se suelta y sale un movimiento de consumo de verdad.
+    // Solo en el embarque completo: un check-in parcial deja gente por subir, y
+    // consumir su comida antes de que llegue sería descontarla dos veces si
+    // después suben.
+    //
+    // No puede tumbar el embarque: el guía está en la playa con cuarenta
+    // personas y un fallo del almacén no puede dejarle la lista sin cerrar.
+    if (complete) {
+      try {
+        const almacen = await settleBookingStock(ctx.companyId, id, "consume", ctx.userId);
+        for (const problema of almacen.problems) console.warn(`[checkin] almacén: ${problema}`);
+      } catch (err) {
+        console.error("[checkin] no se pudo consumir el stock de los extras:", err);
+      }
     }
 
     // Burn the voucher so it cannot be reused.

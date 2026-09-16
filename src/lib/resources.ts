@@ -748,7 +748,13 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: [],
     expand: { warehouse: true, inventory_item: true },
     sort: { available: "asc" },
-    writable: ["quantity", "reserved", "available", "avg_cost", "last_movement_at", "last_counted_at", "warehouse", "inventory_item"],
+    // 0052 — DE SOLO LECTURA. `inventory.ts` abre diciendo que nada más en la
+    // aplicación puede escribir `stock_level` directamente… y el CRUD genérico
+    // lo tenía entero como escribible. Editar el saldo aquí lo separa del libro
+    // de movimientos que es su única explicación, y la diferencia no aparece
+    // hasta el conteo físico. Corregir un saldo se hace con un movimiento de
+    // ajuste o un conteo, que dejan rastro de quién y por qué.
+    writable: [],
     numeric: ["quantity", "reserved", "available", "avg_cost"],
     dates: ["last_movement_at", "last_counted_at"],
     writeRole: "manager",
@@ -758,6 +764,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["reference", "reason", "lot_code"],
     expand: { warehouse: true, inventory_item: true, user: true },
     sort: { createdAt: "desc" },
+    // `purchase_order_line` y `booking_extra` NO son escribibles: son el rastro
+    // que dice cuánto se recibió de cada línea y qué venta consumió qué. Si se
+    // pudieran teclear, ese rastro dejaría de ser una cuenta y pasaría a ser
+    // una opinión.
     writable: ["movement_type", "quantity", "unit_cost", "total_cost", "currency", "moved_at", "balance_after", "reason", "reference", "lot_code", "expires_at", "warehouse", "to_warehouse", "inventory_item", "user", "purchase_order", "order", "work_order"],
     numeric: ["quantity", "unit_cost", "total_cost", "balance_after"],
     dates: ["moved_at", "expires_at"],
@@ -778,7 +788,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["description"],
     expand: { purchase_order: true, inventory_item: true },
     sort: { createdAt: "desc" },
-    writable: ["description", "quantity", "quantity_received", "unit_cost", "tax_rate", "line_total", "purchase_order", "inventory_item"],
+    // `quantity_received` fuera (0052): lo recibido lo escribe la recepción, que
+    // mueve el stock a la vez. Tecleable, se podía dar por recibida una línea
+    // sin que entrara una sola unidad al almacén.
+    writable: ["description", "quantity", "unit_cost", "tax_rate", "line_total", "purchase_order", "inventory_item"],
     numeric: ["quantity", "quantity_received", "unit_cost", "tax_rate", "line_total"],
     writeRole: "manager",
   },
@@ -928,12 +941,14 @@ export const RESOURCES: Record<string, ResourceDef> = {
   product_extra: {
     table: "product_extra",
     search: ["name", "description"],
-    expand: { product: true },
+    expand: { product: true, inventory_item: true, warehouse: true },
     sort: { sort_order: "asc" },
     writable: ["product", "name", "description", "price_type", "price", "cost", "currency",
-               "is_required", "max_quantity", "sort_order", "status"],
-    numeric: ["price", "cost", "max_quantity", "sort_order"],
-    booleans: ["is_required"],
+               "is_required", "max_quantity", "sort_order", "status",
+               // 0052 — el extra que además es un artículo del almacén.
+               "inventory_item", "warehouse", "consumes_stock", "stock_per_unit"],
+    numeric: ["price", "cost", "max_quantity", "sort_order", "stock_per_unit"],
+    booleans: ["is_required", "consumes_stock"],
     writeRole: "manager",
   },
   // Lo contratado, con su precio congelado: si mañana sube el almuerzo, la
