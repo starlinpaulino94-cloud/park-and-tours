@@ -584,7 +584,10 @@ export const WORKSPACES: Workspace[] = [
           { id: "asistencia", href: "/dashboard/equipo/asistencia", label: "Asistencia", icon: "UserRoundCheck",
             roles: ["superadmin", "owner", "admin", "manager", "operations"],
             description: "Marcajes, horas trabajadas y horas extra.",
-            keywords: ["marcaje", "horas", "nómina"] },
+            keywords: ["marcaje", "horas", "fichar", "reloj"] },
+          { id: "nomina", href: "/dashboard/equipo/nomina", label: "Nómina", icon: "Receipt", minRole: "admin",
+            description: "De las horas aprobadas al neto, con TSS e ISR.",
+            keywords: ["nómina", "payroll", "sueldos", "tss", "afp", "isr", "quincena"] },
         ],
       },
       {

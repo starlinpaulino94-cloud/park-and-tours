@@ -281,6 +281,20 @@ export const CERT_TYPE = dict(
   ["other", "Otra"]
 );
 
+/** 0051 — nómina. */
+export const PAYROLL_STATUS = dict(
+  ["draft", "Borrador"], ["approved", "Aprobada", "info"], ["paid", "Pagada", "success"],
+  ["cancelled", "Anulada", "danger"]
+);
+export const PAYROLL_PERIOD = dict(
+  ["weekly", "Semanal"], ["biweekly", "Quincenal", "info"], ["monthly", "Mensual", "info"],
+  ["custom", "Personalizado"]
+);
+export const SALARY_TYPE = dict(
+  ["monthly", "Sueldo mensual", "info"], ["daily", "Por día"], ["hourly", "Por hora"],
+  ["per_service", "Por servicio", "warning"]
+);
+
 /* ------------------------------------------------------- administración */
 export const TASK_STATUS = dict(
   ["todo", "Por hacer"], ["in_progress", "En curso", "info"], ["blocked", "Bloqueada", "danger"],

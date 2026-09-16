@@ -2384,6 +2384,7 @@ describe("las notificaciones internas", () => {
     ["stock_low", "src/lib/inventory.ts"],
     ["plan_limit_near", "src/lib/plan-service.ts"],
     ["incident_opened", "src/lib/notify.ts"],
+    ["certification_expiring", "src/app/api/cron/certifications/route.ts"],
   ];
 
   it("cada evento del catálogo se dispara desde algún sitio", () => {
@@ -2654,5 +2655,120 @@ describe("las exportaciones", () => {
     const exportLib = read("src/lib/export.ts");
     expect(exportLib).toContain('from "@/lib/import"');
     expect(exportLib).toMatch(/IMPORT_TARGETS/);
+  });
+});
+
+describe("RR. HH.: que lo que se teclea sirva para algo", () => {
+  /**
+   * Tres campos llevaban desde 0009 pidiéndose y sin que nadie los leyera:
+   * `blocks_assignment`, el `status` de la certificación y `hours_worked`.
+   * Lo que los devuelve a ese estado no es borrar código —es que un refactor
+   * se lleve por delante el enganche y nadie lo note, porque un bloqueo que no
+   * se comprueba no rompe ninguna prueba de la UI—.
+   */
+
+  it("la API genérica comprueba la certificación al CREAR y al EDITAR", () => {
+    // Solo al crear no basta: bastaría con crear el turno vacío y asignarle
+    // después la persona para saltarse el bloqueo entero.
+    for (const file of [
+      "src/app/api/erp/[resource]/route.ts",
+      "src/app/api/erp/[resource]/[id]/route.ts",
+    ]) {
+      const src = read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+      expect(src, file).toMatch(/await assertPayloadAssignable\(ctx\.companyId, def\.table, payload\)/);
+    }
+  });
+
+  it("la comprobación va ANTES de escribir, no después", () => {
+    for (const [file, escritura] of [
+      ["src/app/api/erp/[resource]/route.ts", "await tenantCreate(ctx.companyId, def.table, payload)"],
+      ["src/app/api/erp/[resource]/[id]/route.ts", "await tenantUpdate(ctx.companyId, def.table, id, payload)"],
+    ] as const) {
+      const src = read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+      expect(src.indexOf("assertPayloadAssignable"), file).toBeLessThan(src.indexOf(escritura));
+    }
+  });
+
+  it("publicar el cuadrante comprueba solape Y certificación", () => {
+    const src = read("src/app/api/shifts/publish/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/await assertStaffAssignable\(/);
+    expect(src).toMatch(/await findShiftConflict\(/);
+    expect(src).toMatch(/publishDecision\(/);
+  });
+
+  it("lo que impide pagar dos veces NO es escribible por formulario", () => {
+    // `payroll_run_id` es el enlace que reclama un marcaje, y `approved_at`
+    // quién dio el visto bueno. Escribibles, bastaría con ponerlos a null para
+    // volver a cobrar una quincena ya pagada.
+    const resources = read("src/lib/resources.ts");
+    const bloque = /^ {2}attendance:\s*\{\n([\s\S]*?)^ {2}\},/m.exec(resources)?.[1] ?? "";
+    expect(bloque).not.toMatch(/"payroll_run_id"/);
+    expect(bloque).not.toMatch(/"approved_at"/);
+  });
+
+  it("la nómina no se teclea: las líneas son de solo lectura y los importes de la corrida tampoco entran", () => {
+    const resources = read("src/lib/resources.ts");
+    const linea = /^ {2}payroll_line:\s*\{\n([\s\S]*?)^ {2}\},/m.exec(resources)?.[1] ?? "";
+    expect(linea).toMatch(/writable:\s*\[\]/);
+
+    const corrida = /^ {2}payroll_run:\s*\{\n([\s\S]*?)^ {2}\},/m.exec(resources)?.[1] ?? "";
+    for (const campo of ["gross_amount", "net_amount", "deductions_amount", "employer_cost", "status"]) {
+      expect(corrida, campo).not.toMatch(new RegExp(`"${campo}"`));
+    }
+  });
+
+  it("los sueldos no los lee cualquiera del inquilino", () => {
+    // Es el dato más sensible que guarda una empresa pequeña: lo que cobra cada
+    // compañero. Sin esto, `/api/erp/payroll_line` estaba abierto a todos.
+    const resources = read("src/lib/resources.ts");
+    const mapa = /const READ_ROLE[\s\S]*?\n\};/.exec(resources)?.[0] ?? "";
+    expect(mapa).toMatch(/payroll_run:\s*"admin"/);
+    expect(mapa).toMatch(/payroll_line:\s*"admin"/);
+  });
+
+  it("el barrido de certificaciones está programado, no solo escrito", () => {
+    const vercel = JSON.parse(read("vercel.json")) as { crons: { path: string }[] };
+    expect(vercel.crons.map((c) => c.path)).toContain("/api/cron/certifications");
+  });
+
+  it("el barrido no vuelve a avisar todos los días de lo mismo", () => {
+    const src = read("src/app/api/cron/certifications/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/reminder_sent_at/);
+    expect(src).toMatch(/REMINDER_COOLDOWN_DAYS/);
+  });
+
+  it("el barrido no pisa lo que decidió una persona", () => {
+    // Revocada y pendiente son decisiones administrativas: el calendario no
+    // puede devolverlas a «vigente» ni a «por vencer».
+    const src = read("src/app/api/cron/certifications/route.ts");
+    expect(src).toMatch(/\(revoked,pending\)/);
+  });
+
+  it("exportar la nómina sale de lo guardado, no de un recálculo", () => {
+    // Lo que se exporta tiene que ser lo que se aprobó: recalcular al exportar
+    // haría que el archivo cambiara si alguien tocó un marcaje después.
+    const src = read("src/app/api/payroll/[id]/export/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/await linesOf\(ctx\.companyId, id\)/);
+    expect(src).not.toMatch(/generatePayrollRun/);
+  });
+
+  it("la pantalla de certificaciones pinta el estado DEDUCIDO, no la columna", () => {
+    const page = read("src/app/dashboard/equipo/certificaciones/page.tsx");
+    // Se mira LA COLUMNA DE ESTADO, no el archivo entero: `certificationState`
+    // aparece también al pintar la fecha, así que buscarlo en cualquier sitio
+    // daría por buena una insignia que volviera a leer `c.status`.
+    const inicio = page.indexOf('key: "status"');
+    expect(inicio, "no se encontró la columna de estado").toBeGreaterThan(-1);
+    const columna = page.slice(inicio, page.indexOf("},", inicio));
+    expect(columna).toMatch(/certificationState\(c, hoy\(\)\)/);
+    expect(columna).not.toMatch(/value=\{c\.status\}/);
+    expect(columna).not.toMatch(/kind: "badge"/);
+  });
+
+  it("la asistencia dejó de pedir las horas a mano en el formulario de alta", () => {
+    // Era un campo «Horas trabajadas» teniendo la entrada y la salida al lado.
+    const page = read("src/app/dashboard/equipo/asistencia/page.tsx");
+    expect(page).not.toMatch(/name: "hours_worked"/);
+    expect(page).toMatch(/\/api\/attendance\/clock/);
   });
 });

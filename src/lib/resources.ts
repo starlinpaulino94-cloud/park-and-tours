@@ -519,9 +519,13 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["full_name", "phone", "email", "document_id"],
     expand: { supplier: true },
     sort: { full_name: "asc" },
-    writable: ["supplier", "user", "full_name", "staff_type", "languages", "phone", "email", "document_id", "photo_url", "daily_rate", "currency", "hire_date", "license_expiry", "status", "notes"],
-    numeric: ["daily_rate"],
-    dates: ["hire_date", "license_expiry"],
+    writable: ["supplier", "user", "full_name", "staff_type", "languages", "phone", "email", "document_id", "photo_url", "daily_rate", "currency", "hire_date", "license_expiry", "status", "notes",
+      // 0051 — lo que hace falta para pagarle: cómo cobra, cuánto, y su NSS.
+      "payroll_code", "salary_type", "base_salary", "hourly_rate", "social_security_id",
+      "bank_account", "bank_name", "applies_social_security", "termination_date"],
+    numeric: ["daily_rate", "base_salary", "hourly_rate"],
+    booleans: ["applies_social_security"],
+    dates: ["hire_date", "license_expiry", "termination_date"],
     writeRole: "operations",
   },
   vehicle: {
@@ -1038,6 +1042,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["role_label", "notes"],
     expand: { staff: true, zone: true, attraction: true },
     sort: { starts_at: "asc" },
+    // `published_at` y `published_by` NO son escribibles: publicar un cuadrante
+    // es una acción con reglas (`/api/shifts/publish`), no un campo de
+    // formulario. Dejarlo aquí permitiría marcar como publicado un turno sin
+    // nadie asignado.
     writable: ["shift_date", "starts_at", "ends_at", "role_label", "status", "break_min", "hours_planned", "hourly_rate", "currency", "notes", "staff", "zone", "attraction", "branch", "departure", "user"],
     numeric: ["break_min", "hours_planned", "hourly_rate"],
     dates: ["shift_date", "starts_at", "ends_at"],
@@ -1048,8 +1056,12 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["notes"],
     expand: { staff: true, shift: true },
     sort: { createdAt: "desc" },
-    writable: ["attendance_date", "clock_in", "clock_out", "hours_worked", "overtime_hours", "status", "method", "notes", "staff", "shift", "approved_by"],
-    numeric: ["hours_worked", "overtime_hours"],
+    // `payroll_run_id` y `approved_at` quedan FUERA a propósito: son lo que
+    // impide pagar el mismo día dos veces y lo que dice quién dio el visto
+    // bueno. Escribibles por formulario, bastaría con ponerlos a null para
+    // volver a cobrar una quincena ya pagada.
+    writable: ["attendance_date", "clock_in", "clock_out", "hours_worked", "regular_hours", "overtime_hours", "break_min", "status", "method", "notes", "staff", "shift", "approved_by"],
+    numeric: ["hours_worked", "regular_hours", "overtime_hours", "break_min"],
     dates: ["attendance_date", "clock_in", "clock_out"],
     writeRole: "operations",
   },
@@ -1062,6 +1074,45 @@ export const RESOURCES: Record<string, ResourceDef> = {
     booleans: ["blocks_assignment"],
     dates: ["issued_at", "expires_at"],
     writeRole: "manager",
+  },
+  /**
+   * La corrida de nómina.
+   *
+   * Los importes NO son escribibles: salen de los marcajes aprobados y de los
+   * porcentajes que la corrida congeló. Un bruto editable a mano convertiría
+   * la nómina en una hoja de cálculo con base de datos, que es exactamente lo
+   * que este módulo viene a sustituir. El estado tampoco: se mueve por
+   * `/api/payroll/:id/status`, que sabe que una corrida pagada no se anula.
+   */
+  payroll_run: {
+    table: "payroll_run",
+    search: ["code", "notes"],
+    expand: { branch: true, approved_by: true },
+    expandOne: { branch: true, approved_by: true, payroll_line: { _limit: 500, staff: true } },
+    sort: { period_start: "desc" },
+    writable: ["code", "period_start", "period_end", "period_type", "currency", "branch", "notes",
+      "sfs_employee_pct", "afp_employee_pct", "sfs_employer_pct", "afp_employer_pct", "risk_employer_pct"],
+    numeric: ["sfs_employee_pct", "afp_employee_pct", "sfs_employer_pct", "afp_employer_pct", "risk_employer_pct"],
+    dates: ["period_start", "period_end"],
+    writeRole: "admin",
+    // La nómina va con «contabilidad», que es el módulo que el plan ya vende y
+    // donde viven las facturas y los asientos. Inventar un módulo «hr» habría
+    // dejado la nómina apagada en TODOS los planes existentes hasta rehacer
+    // cada contrato, que es peor que la clasificación imperfecta.
+    module: "accounting",
+  },
+  /**
+   * La línea de una persona en una corrida. Solo lectura por el CRUD genérico:
+   * es un cálculo, y lo que se calcula no se teclea. Corregir una línea se hace
+   * corrigiendo el marcaje y volviendo a generar.
+   */
+  payroll_line: {
+    table: "payroll_line",
+    search: ["staff_name", "payroll_code", "notes"],
+    expand: { staff: true, payroll_run: true },
+    sort: { staff_name: "asc" },
+    writable: [],
+    writeRole: "admin",
   },
   task: {
     table: "task",
@@ -1251,6 +1302,10 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
   // `/api/erp/integration` y ver la configuración de cada conector. El menú no
   // es la barrera; esta tabla sí.
   audit_log: "admin", integration: "admin", ncf_sequence: "admin",
+  // La nómina es el dato más sensible que guarda una empresa pequeña: lo que
+  // cobra cada compañero. Sin esto, cualquier usuario del inquilino podía
+  // pedir `/api/erp/payroll_line` y leer el sueldo de todo el mundo.
+  payroll_run: "admin", payroll_line: "admin",
 };
 
 /** Minimum role required to READ a resource (for non-partner roles). */

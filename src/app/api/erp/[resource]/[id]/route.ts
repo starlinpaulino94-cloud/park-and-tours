@@ -10,6 +10,7 @@ import { refId } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { assertModule } from "@/lib/plan-service";
+import { assertPayloadAssignable } from "@/lib/hr-service";
 
 type Params = { params: Promise<{ resource: string; id: string }> };
 
@@ -82,6 +83,10 @@ export async function PUT(req: NextRequest, { params }: Params) {
     const body = await readJson(req);
     const payload = sanitizePayload(def, body);
     if (Object.keys(payload).length === 0) throw new TenantError("No se enviaron datos válidos", 400);
+
+    // 0051 — la misma guarda que al crear. Sin ella, bastaba con crear el turno
+    // vacío y asignarle después la persona para saltarse el bloqueo entero.
+    await assertPayloadAssignable(ctx.companyId, def.table, payload);
 
     const updated = await tenantUpdate(ctx.companyId, def.table, id, payload);
     console.log(`[api] ${ctx.email} actualizó ${def.table}/${id}`);

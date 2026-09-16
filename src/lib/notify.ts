@@ -169,6 +169,30 @@ export const NOTIFY_EVENTS = {
     link: () => "/dashboard/ventas/cotizaciones",
   },
 
+  /**
+   * Una certificación del equipo vence o ya venció.
+   *
+   * Avisa el barrido diario, una vez por certificación: la licencia del
+   * conductor caducada no se descubre el día que la pide un inspector.
+   */
+  certification_expiring: {
+    type: "alert",
+    audience: "manager",
+    title: (v) =>
+      v.estado === "expired"
+        ? `Certificación vencida: ${v.certificacion ?? "sin nombre"}`
+        : `Certificación por vencer: ${v.certificacion ?? "sin nombre"}`,
+    message: (v) =>
+      [
+        v.persona ? String(v.persona) : "Alguien del equipo",
+        v.estado === "expired"
+          ? `la tiene vencida desde el ${v.vence ?? "?"}`
+          : `la tiene hasta el ${v.vence ?? "?"}`,
+        v.bloquea ? "· bloquea la asignación a turnos y salidas" : null,
+      ].filter(Boolean).join(" "),
+    link: () => "/dashboard/equipo/certificaciones",
+  },
+
   /** El plan se está acabando. Avisa ANTES de que un límite rechace una venta. */
   plan_limit_near: {
     type: "alert",

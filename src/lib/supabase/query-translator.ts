@@ -88,6 +88,7 @@ export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   partner: "partner_id",
   payable: "payable_id",
   payment: "payment_id",
+  payroll_run: "payroll_run_id",
   performed_by: "performed_by",
   pickup_hotel: "hotel_id",
   plan: "plan_id",
