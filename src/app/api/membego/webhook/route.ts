@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
   try {
     // Ancho de banda razonable para una cola con reintentos, corto para un
     // atacante probando firmas a ciegas.
-    assertRateLimit({ key: rateLimitKey(req, "membego-webhook"), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "membego-webhook"), limit: 120, windowMs: 60_000 });
 
     const secret = membegoSecret();
     if (!secret) {

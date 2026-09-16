@@ -22,7 +22,7 @@ const MAX_ROWS = 500;
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "reports:collections", ctx.userId), limit: 60, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "reports:collections", ctx.userId), limit: 60, windowMs: 60_000 });
     // Un vendedor cobra: tiene que poder ver a quién le toca pagar.
     requireAtLeast(ctx, "seller");
 

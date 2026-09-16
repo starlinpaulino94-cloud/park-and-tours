@@ -1,8 +1,9 @@
 import { NextRequest } from "next/server";
-import { requireTenant, tenantQuery, tenantCount, tenantUpdate } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, tenantQuery, tenantCount, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
+import { inboxFilter } from "@/lib/notify";
 
 const NOTIFICATION_TYPES = new Set(["info", "booking", "payment", "operation", "alert", "settlement"]);
 const LIST_LIMIT = 100;
@@ -11,20 +12,23 @@ const MARK_ALL_LIMIT = 500;
 /**
  * Las notificaciones son personales: la RLS aísla por empresa, pero dentro de la
  * empresa cada persona solo debe ver las suyas (`user_id = yo`) más los avisos
- * a toda la organización (`user_id` nulo). Sin este alcance, cualquier usuario
- * veía las notificaciones dirigidas a sus compañeros.
+ * a toda la organización que le tocan por su rol. Sin este alcance, cualquier
+ * usuario veía las notificaciones dirigidas a sus compañeros.
+ *
+ * El rol entró en 0044: hasta entonces un aviso de empresa lo veía TODO el
+ * mundo, y desde que el sistema empezó a escribirlos de verdad eso significaría
+ * el descuadre de caja de anoche apareciéndole al vendedor igual que al dueño.
+ * `inboxFilter` vive en `notify.ts` para que la bandeja y el contador de la
+ * campana no puedan discrepar.
  */
-function scopeFilter(userId: string): Record<string, unknown> {
-  return { _or: [{ user_id: userId }, { user_id: null }] };
-}
 
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "notifications:list", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "notifications:list", ctx.userId), limit: 120, windowMs: 60_000 });
 
     const sp = req.nextUrl.searchParams;
-    const base = scopeFilter(ctx.userId);
+    const base = inboxFilter(ctx.userId, ctx.role);
     const filter: Record<string, unknown> = { ...base };
     if (sp.get("scope") === "unread") filter.read_status = false;
     const type = sp.get("type");
@@ -45,8 +49,8 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "notifications:markall", ctx.userId), limit: 30, windowMs: 60_000 });
+    const ctx = await requireTenantWrite();
+    await assertRateLimit({ key: rateLimitKey(req, "notifications:markall", ctx.userId), limit: 30, windowMs: 60_000 });
 
     const body = await readJson<{ action?: string }>(req);
     if (body.action && body.action !== "mark_all_read") {
@@ -54,7 +58,7 @@ export async function POST(req: NextRequest) {
     }
 
     const unread = await tenantQuery<{ _id?: string; id?: string }>(ctx.companyId, "notification", {
-      _filter: { ...scopeFilter(ctx.userId), read_status: false },
+      _filter: { ...inboxFilter(ctx.userId, ctx.role), read_status: false },
       _sort: { created_at: "desc" },
       _limit: MARK_ALL_LIMIT,
     });

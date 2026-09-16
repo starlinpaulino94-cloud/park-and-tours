@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -26,8 +26,8 @@ const CHANNELS = new Set(["email", "whatsapp", "sms"]);
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "messages:send", ctx.userId), limit: 60, windowMs: 60_000 });
+    const ctx = await requireTenantWrite();
+    await assertRateLimit({ key: rateLimitKey(req, "messages:send", ctx.userId), limit: 60, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<{
@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "messages:list", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "messages:list", ctx.userId), limit: 120, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
     const sp = req.nextUrl.searchParams;

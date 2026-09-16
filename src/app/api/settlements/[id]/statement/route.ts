@@ -14,7 +14,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   try {
     const { id } = await params;
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "settlements:statement", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "settlements:statement", ctx.userId), limit: 120, windowMs: 60_000 });
     requireAtLeast(ctx, "manager");
     return ok(await loadSupplierStatement(ctx.companyId, id));
   } catch (err) {

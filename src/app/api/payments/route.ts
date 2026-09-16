@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantQuery, tenantCreate, tenantFindOne, tenantUpdate } from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast, tenantQuery, tenantCreate, tenantFindOne, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { syncOrderTotals } from "@/lib/booking-service";
 import { recalcCashSession } from "@/lib/cash";
@@ -8,6 +8,7 @@ import { postPayment } from "@/lib/ledger-events";
 import { resolveExchangeRate } from "@/lib/currency";
 import { newPaymentReference } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
+import { notify } from "@/lib/notify-service";
 import { notifyPaymentReceived } from "@/lib/messaging/events";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -21,8 +22,8 @@ import { flushOutboxAfterResponse } from "@/lib/messaging/flush";
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "payments:create", ctx.userId), limit: 30, windowMs: 60_000 });
+    const ctx = await requireTenantWrite();
+    await assertRateLimit({ key: rateLimitKey(req, "payments:create", ctx.userId), limit: 30, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<{
@@ -262,6 +263,23 @@ export async function POST(req: NextRequest) {
         // Un cobro registrado no se cae porque el recibo no se pueda encolar.
         console.error("[payments] no se pudo encolar el recibo:", err);
       }
+    }
+
+    // Sale dinero: el gerente se entera. Un cobro rutinario NO avisa —uno por
+    // cada pago del día convertiría la bandeja en ruido y, a la semana, nadie
+    // la abriría—; un reembolso siempre se revisa.
+    if (body.payment_type === "refund" || body.payment_type === "credit_note") {
+      await notify({
+        companyId: ctx.companyId,
+        event: "payment_refunded",
+        entityType: "payment",
+        entityId: payment._id,
+        vars: {
+          monto: amount,
+          moneda: currency,
+          referencia: order?.order_number || payment.reference,
+        },
+      });
     }
 
     console.log(`[payments] ${payment.reference} · ${amount} ${currency} · ${body.method}`);

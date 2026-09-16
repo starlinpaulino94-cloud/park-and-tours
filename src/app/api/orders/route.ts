@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { assertWithinLimit } from "@/lib/plan-service";
 import { createOrderWithBookings, type CreateOrderInput } from "@/lib/booking-service";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -10,8 +11,8 @@ import { flushOutboxAfterResponse } from "@/lib/messaging/flush";
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "orders:create", ctx.userId), limit: 20, windowMs: 60_000 });
+    const ctx = await requireTenantWrite();
+    await assertRateLimit({ key: rateLimitKey(req, "orders:create", ctx.userId), limit: 20, windowMs: 60_000 });
     requireAtLeast(ctx, "partner");
 
     const body = await readJson<CreateOrderInput>(req);
@@ -42,6 +43,11 @@ export async function POST(req: NextRequest) {
     // Portal users always sell on behalf of their own partner.
     if (ctx.role === "partner" && ctx.partnerId) body.partner_id = ctx.partnerId;
 
+    // El techo de reservas del mes se mide con TODAS las que trae la orden, no
+    // de una en una: una orden de cinco reservas con cuatro de hueco tiene que
+    // fallar antes de escribir las cuatro primeras y dejar la venta a medias.
+    await assertWithinLimit(ctx, "max_bookings_month", Math.max(1, (body.items || []).length));
+
     const result = await createOrderWithBookings(ctx, body);
     // La venta ya está hecha. La confirmación y el voucher salen en cuanto esta
     // respuesta llegue al punto de venta, sin que el cajero espere a Resend con
@@ -57,7 +63,7 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "orders:list", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "orders:list", ctx.userId), limit: 120, windowMs: 60_000 });
     const sp = req.nextUrl.searchParams;
     const filter: Record<string, unknown> = {};
     if (sp.get("status")) filter.status = sp.get("status");

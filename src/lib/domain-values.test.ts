@@ -144,6 +144,8 @@ const BINDINGS: [string, Dict, string, string][] = [
   ["DEPOSIT_TYPE_ORDEN", modules.DEPOSIT_TYPE, "sales_order", "deposit_type"],
   ["DEPOSIT_TYPE_PRODUCTO", modules.DEPOSIT_TYPE, "product", "deposit_type"],
   ["AGING_BUCKET", labels.AGING_BUCKET, "receivable", "aging_bucket"],
+  // 0042: el estado de la suscripción, que decide si la empresa puede escribir.
+  ["SUBSCRIPTION_STATUS", modules.SUBSCRIPTION_STATUS, "organizations", "subscription_status"],
   // 0038: el arqueo de caja.
   ["CASH_SESSION_STATUS", modules.CASH_SESSION_STATUS, "cash_session", "status"],
   ["CASH_MOVEMENT_TYPE", modules.CASH_MOVEMENT_TYPE, "cash_movement", "movement_type"],

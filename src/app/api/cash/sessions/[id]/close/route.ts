@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantCreate, tenantFindOne, tenantUpdate } from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast, tenantCreate, tenantFindOne, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { recalcCashSession } from "@/lib/cash";
 import { loadCashClose } from "@/lib/cash-service";
@@ -9,6 +9,7 @@ import {
 } from "@/lib/cash-close";
 import { postCashDifference } from "@/lib/ledger-events";
 import { writeAudit } from "@/lib/audit";
+import { notify } from "@/lib/notify-service";
 import type { CashSession } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -31,8 +32,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   try {
     assertSameOriginMutation(req);
     const { id } = await params;
-    const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "cash:close", ctx.userId), limit: 20, windowMs: 60_000 });
+    const ctx = await requireTenantWrite();
+    await assertRateLimit({ key: rateLimitKey(req, "cash:close", ctx.userId), limit: 20, windowMs: 60_000 });
     requireAtLeast(ctx, "cashier");
 
     const body = await readJson<{
@@ -176,6 +177,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       severity: classifyDifference(worst, tolerance) === "balanced" ? "info" : "warning",
       metadata: { results, tolerance, requires_approval: requiresApproval },
     });
+
+    // El descuadre se avisa al gerente. Es la alerta más cara de descubrir
+    // tarde: cuando se nota en el arqueo del mes, ya no hay a quién preguntar.
+    if (classifyDifference(worst, tolerance) !== "balanced") {
+      await notify({
+        companyId: ctx.companyId,
+        event: "cash_close_mismatch",
+        entityType: "cash_session",
+        entityId: id,
+        vars: {
+          diferencia: worst,
+          moneda: primary,
+          caja: session.code,
+        },
+      });
+    }
 
     console.log(`[cash] sesión ${session.code} cerrada · ${requiresApproval ? "a revisión" : "cuadrada"}`);
     return ok({

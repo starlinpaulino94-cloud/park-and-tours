@@ -225,16 +225,22 @@ describe("Panel ejecutivo", () => {
     expect(page).toContain('title="Notificaciones"');
     expect(page).toContain("Marcar todas como leídas");
     expect(page).toContain("/api/notifications");
-    // La API acota a las notificaciones propias más los avisos a toda la empresa.
+    // La API acota a las notificaciones propias más los avisos de empresa que
+    // le tocan por rol, con la MISMA función que el contador de la campana.
     const route = read("src/app/api/notifications/route.ts");
-    expect(route).toContain("_or: [{ user_id: userId }, { user_id: null }]");
+    expect(route).toMatch(/inboxFilter\(ctx\.userId, ctx\.role\)/);
     expect(route).toContain("mark_all_read");
+    // Y no rearma el alcance por su cuenta: dos definiciones del buzón acaban
+    // en un contador que promete avisos que la bandeja no enseña.
+    expect(route).not.toMatch(/_or: \[\{ user_id/);
     // La ruta de marcado verifica pertenencia antes de escribir.
     const readRoute = read("src/app/api/notifications/[id]/read/route.ts");
     expect(readRoute).toContain("Esta notificación no es tuya");
-    // El sidebar cuenta las no leídas con el mismo alcance personal.
+    // El sidebar cuenta las no leídas con ese mismo alcance.
     expect(read("src/lib/nav.ts")).toContain('badgeKey: "notifications"');
-    expect(read("src/app/dashboard/layout.tsx")).toContain("_or: [{ user_id: userId }, { user_id: null }], read_status: false");
+    const layout = read("src/app/dashboard/layout.tsx");
+    expect(layout).toMatch(/inboxFilter\(userId, ctx\.role\)/);
+    expect(layout).not.toMatch(/_or: \[\{ user_id/);
   });
 
   it("POS — cobro con cambio en efectivo, total exacto y guardas de caja", () => {
@@ -1340,8 +1346,13 @@ describe("consistencia de contadores", () => {
   });
 
   it("la pantalla de aprobaciones delega el ámbito en el servidor", () => {
-    const route = read("src/app/api/erp/[resource]/route.ts");
-    expect(route).toContain("decidableFilter(ctx)");
+    // El ámbito vive en el armador de filtros compartido, así que lo aplican
+    // por igual el listado y la exportación: un manager exportando aprobaciones
+    // no puede llevarse las que no le toca decidir.
+    const query = read("src/lib/erp-query.ts");
+    expect(query).toContain("decidableFilter(ctx)");
+    // Y sin ámbito decidible NO se devuelve todo: se devuelve nada.
+    expect(query).toMatch(/if \(!decidable\) return \{ _none: true \}/);
     expect(read("src/app/dashboard/administracion/aprobaciones/page.tsx")).toContain("decidable");
   });
 });
@@ -1528,5 +1539,671 @@ describe("integración con MembeGo", () => {
     const sql = read("supabase/migrations/0041_membego.sql");
     expect(sql).toMatch(/event_id\s+text primary key/);
     expect(sql).toMatch(/jti\s+text primary key/);
+  });
+});
+
+describe("el plan se aplica en la API, no solo en el menú", () => {
+  /**
+   * Las mismas exenciones que el blindaje CSRF, por el mismo motivo: son rutas
+   * que no actúan en nombre de una empresa con suscripción. El cron barre todos
+   * los inquilinos, el webhook de Stripe es precisamente quien CAMBIA el estado
+   * de la suscripción —bloquearlo dejaría a una empresa impagada sin poder
+   * volver a pagar—, el superadmin gobierna la plataforma y `setup` crea la
+   * empresa que todavía no existe.
+   */
+  const writeExempt = [
+    /^src\/app\/api\/stripe\//,
+    /^src\/app\/api\/cron\//,
+    /^src\/app\/api\/superadmin\//,
+    /^src\/app\/api\/membego\/webhook\//,
+    /^src\/app\/api\/setup\//,
+    // La seguridad de la propia cuenta no es una operación de la empresa: una
+    // suscripción vencida no puede impedirle a nadie activar —ni QUITAR— su
+    // segundo factor. Bloquearlo dejaría a alguien que acaba de desenrolar su
+    // teléfono con la marca puesta y sin factores, es decir, fuera de su
+    // cuenta por no pagar.
+    /^src\/app\/api\/account\/mfa\//,
+  ];
+
+  it("toda ruta que escribe exige una suscripción que permita escribir", () => {
+    /**
+     * `requireTenant` autentica; `requireTenantWrite` autentica Y comprueba que
+     * la suscripción esté al día. Una ruta mutante que se quede con la primera
+     * deja un agujero por el que una empresa con la prueba vencida sigue
+     * registrando operaciones — y el agujero no se nota, porque todo funciona.
+     *
+     * Se mira la LLAMADA dentro de la función mutante, no el import: un archivo
+     * con GET y POST importa las dos guardas legítimamente, así que comprobar
+     * el import daría por bueno el POST que se quedó con la de lectura.
+     */
+    const offenders: string[] = [];
+    for (const file of walk(path.join(ROOT, "src/app/api"))) {
+      const rel = path.relative(ROOT, file).replace(/\\/g, "/");
+      if (writeExempt.some((re) => re.test(rel))) continue;
+      const source = readFileSync(file, "utf8");
+
+      // Trocear por función exportada: cada tramo es el cuerpo de un handler.
+      const marks = [...source.matchAll(/^export async function (\w+)\s*\(/gm)]
+        .map((m) => ({ at: m.index ?? 0, name: m[1] }));
+      for (let i = 0; i < marks.length; i++) {
+        const { at, name } = marks[i];
+        if (!["POST", "PUT", "PATCH", "DELETE"].includes(name)) continue;
+        const body = source.slice(at, marks[i + 1]?.at ?? source.length);
+        if (!/await requireTenantWrite\(\)/.test(body)) offenders.push(`${rel} → ${name}`);
+      }
+    }
+    expect(
+      offenders,
+      "estas rutas escriben sin comprobar que la suscripción lo permita"
+    ).toEqual([]);
+  });
+
+  it("la lectura NUNCA se bloquea por el plan", () => {
+    // El principio que sostiene todo lo demás: una empresa que no paga pierde
+    // la capacidad de registrar, no el acceso a lo suyo. Un GET que exigiera la
+    // guarda de escritura le secuestraría sus datos —con obligación fiscal de
+    // conservarlos, además— y convertiría cada impago en una urgencia.
+    const offenders: string[] = [];
+    for (const file of walk(path.join(ROOT, "src/app/api"))) {
+      const source = readFileSync(file, "utf8");
+      const marks = [...source.matchAll(/^export async function (\w+)\s*\(/gm)]
+        .map((m) => ({ at: m.index ?? 0, name: m[1] }));
+      for (let i = 0; i < marks.length; i++) {
+        const { at, name } = marks[i];
+        if (name !== "GET") continue;
+        const body = source.slice(at, marks[i + 1]?.at ?? source.length);
+        if (/requireTenantWrite\(\)/.test(body)) {
+          offenders.push(path.relative(ROOT, file).replace(/\\/g, "/"));
+        }
+      }
+    }
+    expect(offenders, "estas rutas bloquean una LECTURA por el estado del plan").toEqual([]);
+  });
+
+  it("el estado de la suscripción decide sobre datos que el contexto ya trae", () => {
+    // Si la fecha de fin de prueba no llega al contexto, la prueba no puede
+    // vencer: era exactamente el fallo que 0042 cierra, y la columna sin mapear
+    // lo dejaría abierto otra vez sin que nada falle.
+    const authContext = read("src/lib/supabase/auth-context.ts");
+    for (const field of ["trial_ends_at", "next_billing_at", "storage_used_mb"]) {
+      expect(authContext, `el contexto no trae ${field}`).toContain(`${field}: data.${field}`);
+    }
+    // Y la guarda no cuesta una consulta: decide con `ctx.company`.
+    const tenant = read("src/lib/tenant.ts");
+    expect(tenant).toMatch(/subscriptionState\(ctx\.company/);
+  });
+
+  it("el alta fija la fecha de fin de la prueba", () => {
+    // Un `subscription_status = 'trial'` sin fecha no vence nunca. El alta es el
+    // único momento en que se puede poner, y si alguien la quita, el producto
+    // vuelve a ser gratis para siempre sin que nada falle.
+    const setup = read("src/app/api/setup/route.ts");
+    // La CLAVE del objeto que se inserta, no la subcadena: `toContain` daba por
+    // bueno un `trial_ends_at_DESACTIVADO`, que es exactamente la forma que
+    // toma este descuido cuando alguien quiere «probar algo un momento».
+    expect(setup).toMatch(/^\s*trial_ends_at:/m);
+    expect(setup).toMatch(/plan\?\.trial_days/);
+  });
+
+  it("los límites se cuentan desde los datos, no desde un contador", () => {
+    // Un contador se desincroniza y entonces cobra de más o deja pasar de más.
+    // Es la misma razón por la que `availability.ts` recalcula los pasajeros.
+    const service = read("src/lib/plan-service.ts");
+    expect(service).toMatch(/from\("booking"\)[\s\S]{0,200}count: "exact"/);
+    expect(service).toContain("monthStart()");
+    expect(service).not.toContain("usage_counter");
+  });
+
+  it("los puntos donde se crea algo con techo comprueban el techo", () => {
+    const points: [string, string][] = [
+      ["src/app/api/team/route.ts", "max_users"],
+      ["src/app/api/orders/route.ts", "max_bookings_month"],
+      ["src/app/api/erp/[resource]/route.ts", "max_products"],
+      ["src/app/api/storage/upload/route.ts", "max_storage_mb"],
+    ];
+    for (const [file, metric] of points) {
+      const source = read(file);
+      expect(source, `${file} no comprueba ${metric}`).toMatch(
+        new RegExp(`assertWithinLimit\\(\\s*ctx,\\s*"${metric}"`)
+      );
+    }
+  });
+});
+
+describe("el plan se ve venir, no se choca", () => {
+  it("la pantalla del plan no depende del plan", () => {
+    // Una pantalla que explica por qué estás bloqueado no puede estar detrás de
+    // un módulo: justo cuando hace falta sería lo primero que desaparece.
+    const nav = read("src/lib/nav.ts");
+    const entry = nav.slice(nav.indexOf('id: "plan"'), nav.indexOf('id: "plan"') + 400);
+    expect(entry).toContain("/dashboard/administracion/plan");
+    expect(entry).not.toContain("module:");
+  });
+
+  it("la lectura del plan no exige suscripción al día", () => {
+    // Es el único sitio donde se explica el bloqueo: exigir escritura aquí
+    // esconderia la explicación precisamente a quien está bloqueado.
+    const route = read("src/app/api/plan/route.ts");
+    expect(route).toMatch(/await requireTenant\(\)/);
+    expect(route).not.toContain("requireTenantWrite");
+  });
+
+  it("la pantalla y la API calculan los límites con la misma función", () => {
+    // Si la pantalla hiciera su propia aritmética, prometería un usuario que la
+    // API rechaza. El medidor sale de `planStatus`, que usa `limitCheck`.
+    const service = read("src/lib/plan-service.ts");
+    expect(service).toMatch(/planStatus\(plan, /);
+    expect(service).toMatch(/limitCheck\(metric, plan, used, wanted\)/);
+    const screen = read("src/app/dashboard/administracion/plan/page.tsx");
+    expect(screen).toContain('api.get<PlanStatus>("/api/plan")');
+    // Nada de recalcular porcentajes a mano en la pantalla.
+    expect(screen).not.toMatch(/used\s*\/\s*limit/);
+  });
+
+  it("el aviso del panel usa el dominio puro y lleva a la pantalla", () => {
+    const shell = read("src/components/tf/app-shell.tsx");
+    expect(shell).toMatch(/subscriptionState\(\{/);
+    expect(shell).toContain("blockMessage(state.reason!)");
+    expect(shell).toContain("/dashboard/administracion/plan");
+  });
+});
+
+describe("el importador", () => {
+  it("nada se escribe sin vista previa: el ensayo es el valor por defecto", () => {
+    // Un importador que escribe primero y explica después es un importador que
+    // nadie usa dos veces. `dryRun` distinto de `false` no escribe.
+    const route = read("src/app/api/import/route.ts");
+    expect(route).toMatch(/if \(body\.dryRun !== false\)/);
+    // Y el camino que escribe está DESPUÉS de ese retorno, no antes.
+    expect(route.indexOf("if (body.dryRun !== false)")).toBeLessThan(route.indexOf("runImport("));
+  });
+
+  it("importar exige el mismo rango que crear a mano ese recurso", () => {
+    // Importar mil clientes no puede ser más fácil que crear uno.
+    const route = read("src/app/api/import/route.ts");
+    expect(route).toMatch(/requireAtLeast\(ctx, target\.minRole\)/);
+    expect(route).toMatch(/await requireTenantWrite\(\)/);
+  });
+
+  it("el techo del plan se comprueba por TODAS las filas, antes de la primera", () => {
+    // Con sitio para diez y un archivo de sesenta, fallar en la once deja al
+    // cliente con diez productos importados y ninguna forma de saber cuáles.
+    const service = read("src/lib/import-service.ts");
+    expect(service).toMatch(/assertWithinLimit\(ctx, target\.limitMetric, toCreate\.length\)/);
+    // Y antes de escribir: la comprobación precede al primer `tenantCreate`.
+    expect(service.indexOf("assertWithinLimit")).toBeLessThan(service.indexOf("tenantCreate("));
+  });
+
+  it("actualizar solo toca los campos que trae el archivo", () => {
+    // Pasar un objeto completo con los ausentes en null es cómo una importación
+    // de teléfonos deja a toda la cartera sin correo.
+    const service = read("src/lib/import-service.ts");
+    expect(service).toMatch(/tenantUpdate\(ctx\.companyId, resource\.table, id, row\.values\)/);
+  });
+
+  it("toda importación queda en la bitácora con sus números", () => {
+    const service = read("src/lib/import-service.ts");
+    expect(service).toMatch(/action: "data_imported"/);
+    expect(service).toMatch(/severity: "warning"/);
+  });
+
+  it("el parser no se apoya en split: las comas dentro de comillas son datos", () => {
+    const lib = read("src/lib/import.ts");
+    expect(lib).not.toMatch(/\.split\(delimiter\)/);
+    expect(lib).toContain("\\uFEFF");   // el BOM de Excel se quita
+    expect(lib).toMatch(/detectDelimiter/);
+  });
+
+  it("la pantalla del importador no está detrás de un plan ni de un rol alto", () => {
+    // Importar es lo PRIMERO que hace una empresa nueva.
+    const nav = read("src/lib/nav.ts");
+    const at = nav.indexOf('id: "importar"');
+    expect(at).toBeGreaterThan(0);
+    const entry = nav.slice(at, at + 400);
+    expect(entry).toContain("/dashboard/administracion/importar");
+    expect(entry).not.toContain("module:");
+  });
+});
+
+describe("las cuentas del equipo", () => {
+  it("nadie otorga un rol por encima del suyo, por ninguna de las tres puertas", () => {
+    /**
+     * El alta, el cambio de rol y la invitación tienen que preguntar lo mismo.
+     * Cerrar solo una deja el agujero abierto: bastaría con crear un usuario
+     * normal y ascenderlo después, o invitarlo ya con el rol.
+     */
+    const team = read("src/app/api/team/route.ts");
+    expect(team).toMatch(/roleDecision\(ctx\.role, role\)/);
+    // Las dos llamadas —alta y cambio de rol— pasan el contexto.
+    expect(team).toMatch(/assertRole\(ctx, body\.role \|\| "seller"\)/);
+    expect(team).toMatch(/assertRole\(ctx, body\.role\)/);
+    const invite = read("src/app/api/team/invite/route.ts");
+    expect(invite).toMatch(/roleDecision\(ctx\.role, body\.role \|\| "seller"\)/);
+  });
+
+  it("la invitación nace PENDIENTE: un correo no es un acceso", () => {
+    // Solo las membresías activas resuelven inquilino. Si el correo acaba en la
+    // bandeja equivocada, quien lo reciba no entra a nada.
+    const invite = read("src/app/api/team/invite/route.ts");
+    expect(invite).toMatch(/status: "pending"/);
+    expect(invite).not.toMatch(/status: "active"/);
+  });
+
+  it("solo se activa la invitación de quien acaba de demostrar que es su correo", () => {
+    const callback = read("src/app/auth/callback/route.ts");
+    expect(callback).toMatch(/\.eq\("user_id", data\.user\.id\)/);
+    expect(callback).toMatch(/\.eq\("status", "pending"\)/);
+  });
+
+  it("el regreso desde el correo no sale de este dominio", () => {
+    // Un `next` externo convertiría el dominio propio en trampolín, con la
+    // sesión recién creada.
+    const callback = read("src/app/auth/callback/route.ts");
+    expect(callback).toMatch(/safeNextPath\(/);
+    expect(callback).toMatch(/url\.origin === origin/);
+  });
+
+  it("crear cuentas y mandar correos tiene freno", () => {
+    // Cada invitación manda un correo a una dirección que elige quien la pide:
+    // es un emisor de correo en manos de un usuario.
+    expect(read("src/app/api/team/invite/route.ts")).toMatch(/await assertRateLimit\(/);
+    expect(read("src/app/api/team/route.ts")).toMatch(/await assertRateLimit\(/);
+  });
+
+  it("la pantalla de entrada ofrece recuperar la contraseña", () => {
+    /**
+     * `resetPassword` existía en el cliente desde el principio y NADA la
+     * llamaba: olvidar la contraseña obligaba a que el administrador pusiera
+     * una nueva y la dijera por chat — es decir, olvidarla obligaba a
+     * compartirla.
+     */
+    expect(read("src/app/login/page.tsx")).toContain("/login/recuperar");
+    expect(read("src/app/login/recuperar/page.tsx")).toMatch(/supabaseAuth\.resetPassword/);
+  });
+
+  it("recuperar no dice si el correo existe", () => {
+    // Sería un detector de clientes: probar direcciones y saber quién usa el
+    // sistema. Se mira el código SIN comentarios: el propio comentario que
+    // explica por qué no se dice contiene la frase que se busca, y una guarda
+    // que obliga a borrar su explicación para pasar vale menos que la
+    // explicación.
+    const page = read("src/app/login/recuperar/page.tsx")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(page).toMatch(/Si ese correo tiene cuenta/);
+    expect(page).not.toMatch(/no (está|existe) registrad/i);
+  });
+
+  it("las dos pantallas del correo son públicas: quien llega aún no tiene sesión", () => {
+    const middleware = read("src/middleware.ts");
+    expect(middleware).toContain('"/auth/callback"');
+    expect(middleware).toContain('"/auth/establecer-clave"');
+  });
+
+  it("la invitación reserva plaza del plan", () => {
+    // Si no contara, un plan de cinco aceptaría veinte invitaciones y el tope
+    // saltaría delante de alguien que ya recibió el correo.
+    expect(read("src/app/api/team/invite/route.ts")).toMatch(/assertWithinLimit\(ctx, "max_users"\)/);
+    expect(read("src/lib/plan-service.ts")).toMatch(/\.in\("status", \["active", "pending"\]\)/);
+  });
+});
+
+describe("la verificación en dos pasos", () => {
+  it("se exige en la API, no solo en la pantalla", () => {
+    /**
+     * Una contraseña robada sirve para llamar a la API directamente, que es
+     * donde están los datos. Un segundo factor que solo vigila la interfaz no
+     * protege de nada.
+     */
+    const tenant = read("src/lib/tenant.ts");
+    expect(tenant).toMatch(/if \(ctx\.mfaPending\)/);
+    expect(tenant).toMatch(/MFA_REQUIRED/);
+  });
+
+  it("la marca vive donde el usuario no la puede tocar", () => {
+    // `user_metadata` la escribe el propio usuario con una llamada: quien
+    // tuviera la contraseña robada la borraría y entraría.
+    const account = read("src/app/api/account/mfa/route.ts");
+    expect(account).toMatch(/app_metadata: \{ mfa_enabled/);
+    expect(account).not.toMatch(/user_metadata: \{ mfa_enabled/);
+  });
+
+  it("la marca copia la realidad: no recibe «activar» ni «desactivar»", () => {
+    /**
+     * Si la ruta aceptara una orden, dos fallos serían posibles: marca puesta
+     * sin factor —la persona fuera de su cuenta para siempre— y factor sin
+     * marca, que es justo la puerta que el segundo factor venía a cerrar.
+     */
+    const account = read("src/app/api/account/mfa/route.ts");
+    expect(account).toMatch(/listFactors\(\{ userId: ctx\.userId \}\)/);
+    expect(account).toMatch(/hasVerifiedFactor\(/);
+    expect(account).not.toMatch(/body\.(enabled|action)/);
+  });
+
+  it("restablecer el de otro exige rango y deja rastro crítico", () => {
+    const reset = read("src/app/api/team/mfa-reset/route.ts");
+    expect(reset).toMatch(/requireAtLeast\(ctx, "admin"\)/);
+    expect(reset).toMatch(/atLeast\(ctx\.role, membership\.role/);
+    expect(reset).toMatch(/action: "mfa_reset"/);
+    expect(reset).toMatch(/severity: "critical"/);
+    // Y apaga la marca junto con los factores: si quedara puesta, la persona
+    // seguiría pidiéndole un código a una cuenta que ya no tiene ninguno.
+    expect(reset).toMatch(/app_metadata: \{ mfa_enabled: false \}/);
+  });
+
+  it("la pantalla del código no cierra la sesión ni deja sin salida", () => {
+    // Cerrarla obligaría a escribir la contraseña otra vez, que es lo que
+    // empuja a desactivar el segundo factor; y sin salida, quien no tenga el
+    // teléfono se queda mirando una pantalla que no avanza.
+    const page = read("src/app/auth/verificar/page.tsx");
+    expect(page).toMatch(/challengeAndVerify/);
+    expect(page).toMatch(/No tengo el teléfono a mano/);
+  });
+
+  it("el panel manda a verificar en vez de enseñar una pantalla que no carga", () => {
+    // Sin la bandera `s` (el objetivo de compilación del proyecto no la
+    // admite): se busca la línea que hace las dos cosas.
+    const layout = read("src/app/dashboard/layout.tsx");
+    expect(layout).toMatch(/if \(ctx\.mfaPending\) redirect\("\/auth\/verificar/);
+  });
+
+  it("el perfil ya no dice que cambiar la contraseña «no está habilitado»", () => {
+    // Lo estaba a medias: la función existía en el cliente y ninguna pantalla
+    // la llamaba.
+    const page = read("src/app/dashboard/perfil/page.tsx");
+    expect(page).not.toMatch(/todavía no está habilitado/);
+    expect(page).toMatch(/<Seguridad email=/);
+  });
+});
+
+describe("las notificaciones internas", () => {
+  /**
+   * La campana estuvo cuatro migraciones enseñando un cero. Lo que la vuelve a
+   * dejar así no es borrar código: es que un refactor se lleve por delante el
+   * enganche y nadie lo note, porque un aviso que no se escribe no rompe nada.
+   * Estas guardas atan cada evento del catálogo al sitio donde ocurre el hecho.
+   */
+  const HOOKS: [string, string][] = [
+    ["booking_created", "src/lib/booking-service.ts"],
+    ["booking_cancelled", "src/app/api/bookings/[id]/cancel/route.ts"],
+    ["payment_refunded", "src/app/api/payments/route.ts"],
+    ["cash_close_mismatch", "src/app/api/cash/sessions/[id]/close/route.ts"],
+    ["settlement_confirmed", "src/app/api/settlements/[id]/confirm/route.ts"],
+    ["invoice_voided", "src/lib/invoice-service.ts"],
+    ["receivable_overdue", "src/app/api/cron/collections/route.ts"],
+    ["quote_accepted", "src/app/api/quotes/[id]/decide/route.ts"],
+    ["stock_low", "src/lib/inventory.ts"],
+    ["plan_limit_near", "src/lib/plan-service.ts"],
+    ["incident_opened", "src/lib/notify.ts"],
+  ];
+
+  it("cada evento del catálogo se dispara desde algún sitio", () => {
+    // Un evento en el catálogo que nadie emite es una promesa que el sistema no
+    // cumple, y es exactamente el estado del que venimos.
+    const catalogo = read("src/lib/notify.ts");
+    const declarados = [...catalogo.matchAll(/^  ([a-z_]+): \{$/gm)].map((m) => m[1]);
+    expect(declarados.sort()).toEqual(HOOKS.map(([event]) => event).sort());
+  });
+
+  it("el enganche vive donde ocurre el hecho", () => {
+    for (const [event, file] of HOOKS) {
+      expect(read(file), `${event} debería emitirse desde ${file}`).toContain(`"${event}"`);
+    }
+  });
+
+  it("escribir un aviso no puede tumbar la operación que lo provocó", () => {
+    /**
+     * Se llama sin try/catch desde una venta ya cobrada y desde un cierre de
+     * caja: la función se traga sus propios errores. Si dejara de hacerlo, un
+     * fallo de la base al escribir un aviso revertiría un cobro.
+     */
+    const service = read("src/lib/notify-service.ts");
+    const body = service.slice(service.indexOf("export async function notify"));
+    expect(body).toMatch(/try \{/);
+    expect(body).toMatch(/catch \(err\)/);
+    // Y no relanza: ni `throw` propio ni un `Promise.reject`.
+    expect(body).not.toMatch(/\bthrow\b/);
+  });
+
+  it("los avisos se escriben con el rol de servicio, que es el que sirve en un cron", () => {
+    // La cobranza y el barrido de existencias corren sin sesión: bajo RLS, las
+    // ayudas de inquilino resolverían cero filas y el aviso no se escribiría.
+    const service = read("src/lib/notify-service.ts");
+    expect(service).toMatch(/supabaseService\(\)/);
+    expect(service).toMatch(/organization_id: input\.companyId/);
+  });
+
+  it("la clave de dedupe la guarda la base, no solo la aplicación", () => {
+    // Dos instancias escribiendo a la vez dejarían dos copias si el único
+    // control fuera un `select` previo desde la aplicación.
+    const sql = read("supabase/migrations/0044_notifications.sql");
+    expect(sql).toMatch(/create unique index if not exists notification_dedupe_idx/);
+    expect(sql).toMatch(/on notification \(organization_id, dedupe_key\)/);
+  });
+});
+
+describe("el límite de peticiones", () => {
+  it("TODA llamada lleva await: sin él, el límite deja de existir en silencio", () => {
+    /**
+     * `assertRateLimit` es asíncrona desde 0043. Una llamada sin `await`
+     * devuelve una promesa que nadie mira: la petición sigue de largo, el 429
+     * nunca se lanza y no falla nada a la vista —el límite simplemente deja de
+     * aplicarse—. Es el fallo más caro posible de esta refactorización, así que
+     * se vigila en las setenta y cinco llamadas a la vez.
+     */
+    const offenders: string[] = [];
+    for (const dir of ["src/lib", "src/app", "src/components"]) {
+      for (const file of walk(path.join(ROOT, dir))) {
+        if (!/\.tsx?$/.test(file)) continue;
+        const rel = path.relative(ROOT, file).replace(/\\/g, "/");
+        if (rel === "src/lib/rate-limit.ts" || rel.endsWith(".test.ts") || rel.endsWith(".test.tsx")) continue;
+        readFileSync(file, "utf8").split("\n").forEach((line, index) => {
+          if (/(?<!await )assertRateLimit\(/.test(line)) offenders.push(`${rel}:${index + 1}`);
+        });
+      }
+    }
+    expect(offenders, "estas llamadas al limitador no se esperan, así que no limitan").toEqual([]);
+  });
+
+  it("el contador compartido va por el rol de servicio, no por la sesión", () => {
+    /**
+     * Esto corre también ANTES de que haya sesión —el intento de contraseña es
+     * justo donde más falta hace—, y la función de la base está vedada a `anon`
+     * y a `authenticated` a propósito: si la pudiera llamar el cliente,
+     * inflaría el contador de la clave de OTRA persona hasta dejarla fuera.
+     */
+    const lib = read("src/lib/rate-limit.ts");
+    expect(lib).toMatch(/supabaseService\(\)/);
+    expect(lib).not.toMatch(/supabaseServer\(/);
+    expect(lib).toMatch(/rpc\("rate_limit_hit"/);
+  });
+
+  it("si la base falla, degrada a la memoria en vez de abrirse", () => {
+    // Un limitador caído no puede tumbar el sistema, pero tampoco desaparecer.
+    const lib = read("src/lib/rate-limit.ts");
+    const shared = lib.slice(lib.indexOf("async function hitShared"), lib.indexOf("export interface RateLimitOptions"));
+    expect(shared).toMatch(/catch/);
+    expect(shared).toMatch(/return null/);
+    // Y el veredicto local se aplica ANTES de consultar la base.
+    const assert = lib.slice(lib.indexOf("export async function assertRateLimit"));
+    expect(assert.indexOf("hitLocal(")).toBeLessThan(assert.indexOf("hitShared("));
+  });
+
+  it("la función de la base existe con la firma que la aplicación llama", () => {
+    // Una migración que renombre el parámetro dejaría el límite degradado a
+    // memoria en producción, en silencio y para siempre.
+    const sql = read("supabase/migrations/0043_rate_limit.sql");
+    expect(sql).toMatch(/function public\.rate_limit_hit\(p_key text, p_limit integer, p_window_ms integer\)/);
+    expect(sql).toMatch(/grant execute on function public\.rate_limit_hit\(text, integer, integer\) to service_role/);
+    expect(sql).toMatch(/revoke execute on function public\.rate_limit_hit\(text, integer, integer\) from anon/);
+  });
+});
+
+describe("higiene del código fuente", () => {
+  it("ningún carácter invisible se cuela en el fuente", () => {
+    /**
+     * Escribir `\uFEFF` o `̀-ͯ` y que en el archivo acabe el CARÁCTER
+     * en vez de la secuencia funciona igual en ejecución y es ilegible al leer:
+     * un rango de diacríticos combinantes se ve como dos marcas sueltas sobre
+     * un corchete, y un BOM no se ve en absoluto. Pasó escribiendo el
+     * importador, y las cuatro pantallas de exportación lo arrastraban desde
+     * antes sin que nadie lo notara.
+     *
+     * Peor que ilegible: un carácter invisible es la forma clásica de esconder
+     * algo en una revisión de código, así que un fuente sin invisibles es
+     * también una propiedad de seguridad que sale gratis.
+     */
+    const INVISIBLE = /[̀-ͯ\uFEFF​-‍⁠­]/;
+    const offenders: string[] = [];
+    for (const dir of ["src/lib", "src/app", "src/components"]) {
+      for (const file of walk(path.join(ROOT, dir))) {
+        if (!/\.tsx?$/.test(file)) continue;
+        const lines = readFileSync(file, "utf8").split("\n");
+        const at = lines.findIndex((line) => INVISIBLE.test(line));
+        if (at >= 0) offenders.push(`${path.relative(ROOT, file).replace(/\\/g, "/")}:${at + 1}`);
+      }
+    }
+    expect(offenders, "estos archivos traen caracteres invisibles en el fuente").toEqual([]);
+  });
+});
+
+describe("las exportaciones", () => {
+  it("exportar es una LECTURA: el bloqueo por plan no se la quita al cliente", () => {
+    /**
+     * Desde 0042 una empresa bloqueada conserva «consultar y exportar», y el
+     * mensaje del bloqueo se lo promete por escrito. Si esta ruta exigiera
+     * suscripción al día, esa promesa sería falsa justo cuando más importa:
+     * dejar de pagar le impediría llevarse sus propios datos.
+     */
+    const route = read("src/app/api/export/[resource]/route.ts");
+    expect(route).toMatch(/await requireTenant\(\)/);
+    // La LLAMADA, no la palabra: el comentario de la ruta explica por qué NO se
+    // usa la guarda de escritura, y ese comentario vale más que una guarda que
+    // obligue a borrarlo para pasar.
+    expect(route).not.toMatch(/await requireTenantWrite\(\)/);
+  });
+
+  it("la exportación aplica la MISMA autorización de lectura que el listado", () => {
+    // Sin esto, un rol que no puede ver un recurso en pantalla se lo llevaría
+    // entero en un archivo.
+    const route = read("src/app/api/export/[resource]/route.ts");
+    expect(route).toMatch(/readRoleFor\(def\.table\)/);
+    expect(route).toMatch(/requireAtLeast\(ctx, rr\)/);
+  });
+
+  it("el listado y su exportación comparten el armado del filtro", () => {
+    /**
+     * Copiado en dos sitios, la divergencia es cuestión de tiempo y se
+     * manifiesta de la peor forma: un archivo que dice traer los datos
+     * filtrados y trae otros, que nadie revisa porque «lo exportó el sistema».
+     */
+    const list = read("src/app/api/erp/[resource]/route.ts");
+    const exportRoute = read("src/app/api/export/[resource]/route.ts");
+    for (const source of [list, exportRoute]) {
+      expect(source).toMatch(/buildListFilter\(def, ctx, sp\)/);
+      expect(source).toMatch(/buildListSort\(def, sp\)/);
+    }
+    // Y ninguna de las dos rearma el filtro por su cuenta.
+    for (const source of [list, exportRoute]) {
+      expect(source).not.toContain("allowedFilterFields(");
+      expect(source).not.toContain("partnerScopeFor(");
+    }
+  });
+
+  it("un filtro imposible devuelve nada, nunca todo", () => {
+    // `_none` sale del ámbito de aprobaciones cuando el rol no puede decidir
+    // ninguna. Ignorarlo convertiría «ninguna» en «todas», que es la fuga.
+    for (const file of ["src/app/api/erp/[resource]/route.ts", "src/app/api/export/[resource]/route.ts"]) {
+      expect(read(file), file).toMatch(/filter\._none/);
+    }
+  });
+
+  it("el archivo no se guarda en ninguna caché intermedia", () => {
+    // La siguiente persona pediría el mismo recurso y podría recibir el archivo
+    // de otra empresa.
+    const route = read("src/app/api/export/[resource]/route.ts");
+    expect(route).toMatch(/"Cache-Control": "no-store, private"/);
+  });
+
+  it("toda exportación queda en la bitácora", () => {
+    // Sacar la cartera de clientes en un archivo es justo el movimiento que
+    // alguien querría poder revisar después.
+    const route = read("src/app/api/export/[resource]/route.ts");
+    expect(route).toMatch(/action: "data_exported"/);
+  });
+
+  it("el botón vive en el componente compartido, no pantalla por pantalla", () => {
+    // Puesto en cada pantalla, la número 36 se queda sin él y nadie se entera.
+    const shared = read("src/components/tf/resource-page.tsx");
+    expect(shared).toMatch(/\/api\/export\/\$\{resource\}/);
+    expect(shared).toMatch(/aria-label="Exportar a CSV"/);
+  });
+
+  it("exporta lo que se ve, con los mismos parámetros que el listado", () => {
+    const shared = read("src/components/tf/resource-page.tsx");
+    const block = shared.slice(shared.indexOf("const exportar ="), shared.indexOf("const actionColumn"));
+    // Búsqueda, filtros fijos, filtros del usuario y orden: los cuatro.
+    expect(block).toContain('qs.set("q", search)');
+    expect(block).toContain("fixedFilters");
+    expect(block).toContain("filterValues");
+    expect(block).toContain('qs.set("sort", initialSort)');
+    // Y NO manda paginación: exportar veinticinco de trescientas no es exportar.
+    expect(block).not.toContain('qs.set("limit"');
+    expect(block).not.toContain('qs.set("offset"');
+  });
+
+  it("llevarse la empresa entera tampoco lo bloquea el plan", () => {
+    // Misma promesa que el listado, y aquí pesa más: es el archivo que le
+    // permite a un cliente irse. Condicionarlo al pago sería un rehén.
+    const route = read("src/app/api/export/company/route.ts");
+    expect(route).toMatch(/await requireTenant\(\)/);
+    expect(route).not.toMatch(/await requireTenantWrite\(\)/);
+  });
+
+  it("el volcado completo exige administrador y deja rastro crítico", () => {
+    /**
+     * Es la copia entera del negocio: clientes, precios, comisiones y
+     * contabilidad. Un vendedor no la descarga, y quien la descarga queda en la
+     * bitácora — es exactamente el movimiento que alguien querría revisar
+     * después de una salida conflictiva.
+     */
+    const route = read("src/app/api/export/company/route.ts");
+    expect(route).toMatch(/requireAtLeast\(ctx, "admin"\)/);
+    expect(route).toMatch(/action: "company_data_exported"/);
+    expect(route).toMatch(/severity: "critical"/);
+    expect(route).toMatch(/"Cache-Control": "no-store, private"/);
+  });
+
+  it("la pantalla pide el mismo rol que la ruta, y lo explica", () => {
+    // Enseñar el botón a quien la API va a rechazar produce un 403 que se lee
+    // como «algo se rompió».
+    const page = read("src/app/dashboard/administracion/exportar/page.tsx");
+    expect(page).toMatch(/atLeast\(ctx\.role, "admin"\)/);
+  });
+
+  it("el volcado no expande relaciones: fiel y del tamaño que cabe", () => {
+    // Expandir ochenta y ocho tablas multiplica las consultas y agota el tiempo
+    // de la función. Los identificadores se cruzan dentro del propio archivo.
+    const service = read("src/lib/company-export-service.ts");
+    expect(service).not.toMatch(/def\.expand/);
+    expect(service).toMatch(/keepTimestamps: true/);
+  });
+
+  it("«llévate tus datos» no depende del plan ni se esconde en el menú", () => {
+    const nav = read("src/lib/nav.ts");
+    const item = nav.slice(nav.indexOf('id: "exportar"'), nav.indexOf('id: "plan"'));
+    expect(item).toContain("/dashboard/administracion/exportar");
+    // Sin `module`: condicionarlo a una capacidad del plan es justo lo que no
+    // puede pasar con los datos propios del cliente.
+    expect(item).not.toContain("module:");
+  });
+
+  it("lo exportado se puede volver a importar: mismos formatos", () => {
+    // La propiedad que hace posible el ciclo exportar → corregir en Excel →
+    // reimportar. La prueba del círculo completo vive en export.test.ts; aquí se
+    // vigila que nadie rompa el acoplamiento deliberado entre los dos módulos.
+    const exportLib = read("src/lib/export.ts");
+    expect(exportLib).toContain('from "@/lib/import"');
+    expect(exportLib).toMatch(/IMPORT_TARGETS/);
   });
 });

@@ -1,5 +1,6 @@
 import "server-only";
 import { tenantCreate, tenantFindOne, tenantQuery, tenantUpdate, TenantError } from "@/lib/tenant";
+import { notify } from "@/lib/notify-service";
 
 /**
  * Perpetual inventory engine.
@@ -130,6 +131,35 @@ async function applyLeg(
     ...(type === "count" ? { last_counted_at: new Date().toISOString() } : {}),
   });
 
+  // Solo al BAJAR: una entrada de mercancía no puede disparar un aviso de
+  // existencias bajas, y comprobarlo en cada movimiento costaría una consulta
+  // por recepción sin decir nada nuevo.
+  if (direction === -1) {
+    const item = await tenantFindOne<Reorderable>(companyId, "inventory_item", input.inventory_item);
+    if (isLowStock(after - reserved, item)) {
+      // El nombre del almacén solo se busca cuando ya hay algo que avisar: en
+      // un aviso que dice «quedan 2» sin decir dónde, la primera pregunta de
+      // quien lo lee es justamente dónde.
+      const store = await tenantFindOne<{ name?: string }>(companyId, "warehouse", warehouse).catch(() => null);
+      await notify({
+        companyId,
+        event: "stock_low",
+        entityType: "stock_level",
+        entityId: level._id,
+        // Una vez al mes por artículo y almacén: sin la semilla, un artículo
+        // que baja, se repone y vuelve a bajar avisaría una sola vez en su
+        // vida; con un aviso por movimiento, avisaría en cada salida del día.
+        dedupeSeed: new Date().toISOString().slice(0, 7),
+        vars: {
+          articulo: item?.name || null,
+          cantidad: after - reserved,
+          minimo: reorderThreshold(item),
+          almacen: store?.name || null,
+        },
+      });
+    }
+  }
+
   console.log(
     `[inventory] ${type} item=${input.inventory_item} almacén=${warehouse} ` +
     `cantidad=${quantity} saldo=${before}→${after}`
@@ -193,6 +223,31 @@ export async function postMovement(companyId: string, input: MovementInput) {
   return { legs: [out, inLeg] };
 }
 
+export interface Reorderable {
+  name?: string | null;
+  min_stock?: number | null;
+  reorder_point?: number | null;
+}
+
+/**
+ * El umbral por debajo del cual un artículo se considera bajo.
+ *
+ * Es el punto de pedido si está puesto y, si no, el mínimo. Un artículo sin
+ * ninguno de los dos NO tiene umbral: devolver 0 lo convertiría en "bajo" en
+ * cuanto se agotara, y avisaría de cosas que a nadie le importan —el sistema
+ * no sabe cuántas necesita esa empresa.
+ */
+export function reorderThreshold(item: Reorderable | null | undefined): number | null {
+  const point = Number(item?.reorder_point ?? item?.min_stock ?? 0);
+  return point > 0 ? point : null;
+}
+
+/** ¿Este saldo está en el umbral o por debajo? */
+export function isLowStock(available: number, item: Reorderable | null | undefined): boolean {
+  const threshold = reorderThreshold(item);
+  return threshold !== null && Number(available) <= threshold;
+}
+
 /** Items at or below their reorder point — drives the purchasing suggestions. */
 export async function lowStock(companyId: string, limit = 50) {
   const levels = await tenantQuery<any>(companyId, "stock_level", {
@@ -202,9 +257,8 @@ export async function lowStock(companyId: string, limit = 50) {
     _limit: limit * 4,
   });
   return levels
-    .filter((l) => {
-      const point = Number(l.inventory_item?.reorder_point ?? l.inventory_item?.min_stock ?? 0);
-      return point > 0 && Number(l.available ?? 0) <= point;
-    })
+    // El mismo criterio que el aviso automático: dos definiciones de «bajo»
+    // acaban en una pantalla que señala lo que la campana calla.
+    .filter((l) => isLowStock(Number(l.available ?? 0), l.inventory_item))
     .slice(0, limit);
 }

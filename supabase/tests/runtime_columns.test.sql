@@ -919,4 +919,84 @@ begin
   raise notice 'membego: TODAS LAS ASERCIONES PASARON';
 end $$;
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 0042 — El plan como contrato aplicable
+--
+-- Lo que se comprueba: que los cuatro planes existan con la convención de
+-- NULL = ilimitado, que `plan_id` sea una referencia de verdad (borrar un plan
+-- deja la organización sin plan, no con un puntero roto), que el estado de la
+-- suscripción esté acotado y admita NULL a propósito, y que las tres columnas
+-- que el tipo prometía existan y rechacen un almacenamiento negativo.
+-- ─────────────────────────────────────────────────────────────────────────────
+do $$
+declare
+  org uuid := '11111111-1111-1111-1111-111111111111';
+  operador uuid;
+  enterprise uuid;
+  desechable uuid;
+begin
+  -- Los cuatro planes sembrados, y el orden con el que `setup` elige el primero.
+  select id into operador from plan where code = 'operador';
+  if operador is null then raise exception 'el plan operador no se sembró'; end if;
+  select id into enterprise from plan where code = 'enterprise';
+  if enterprise is null then raise exception 'el plan enterprise no se sembró'; end if;
+
+  if (select code from plan where status = 'active' order by sort_order limit 1) <> 'operador' then
+    raise exception 'el alta de una empresa nueva no caería en el plan operador';
+  end if;
+
+  -- NULL = ILIMITADO, no cero. Si alguien "arregla" esto poniendo 0, toda
+  -- empresa enterprise quedaría bloqueada al crear su primera reserva.
+  if (select max_bookings_month from plan where code = 'enterprise') is not null then
+    raise exception 'enterprise debe tener el límite en NULL (ilimitado)';
+  end if;
+  if (select max_bookings_month from plan where code = 'operador') is null then
+    raise exception 'un plan con techo no puede tener el límite en NULL';
+  end if;
+
+  -- El estado de la suscripción está acotado…
+  update organizations set subscription_status = 'trial' where id = org;
+  update organizations set subscription_status = 'past_due' where id = org;
+  update organizations set subscription_status = 'suspended' where id = org;
+  begin
+    update organizations set subscription_status = 'activo' where id = org;
+    raise exception 'se admitió un estado de suscripción inventado';
+  exception when check_violation then null;
+  end;
+
+  -- …y NULL sigue siendo válido: las filas partner/branch no tienen suscripción
+  -- propia, y el dominio puro trata NULL como «sin información» → no bloquea.
+  update organizations set subscription_status = null where id = org;
+  update organizations set subscription_status = 'active' where id = org;
+
+  -- Las columnas que el tipo prometía existen y se escriben.
+  update organizations
+     set trial_ends_at = now() + interval '14 days',
+         next_billing_at = now() + interval '30 days',
+         storage_used_mb = 128.50
+   where id = org;
+
+  begin
+    update organizations set storage_used_mb = -1 where id = org;
+    raise exception 'se admitió un almacenamiento negativo';
+  exception when check_violation then null;
+  end;
+
+  -- `plan_id` es una referencia de verdad: borrar el plan deja la organización
+  -- SIN plan, no apuntando a un plan que ya no existe.
+  insert into plan (code, name, monthly_price, yearly_price, currency, status, sort_order)
+  values ('desechable', 'Plan de prueba', 1, 10, 'usd', 'inactive', 99)
+  returning id into desechable;
+
+  update organizations set plan_id = desechable where id = org;
+  delete from plan where id = desechable;
+  if (select plan_id from organizations where id = org) is not null then
+    raise exception 'al borrar el plan quedó un puntero colgado en la organización';
+  end if;
+
+  update organizations set plan_id = operador where id = org;
+
+  raise notice 'plan: TODAS LAS ASERCIONES PASARON';
+end $$;
+
 rollback;

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Icon } from "@/components/tf/icon";
+import { subscriptionState, blockMessage } from "@/lib/plan";
 import {
   breadcrumbs, canSeeItem, visibleGroups, visibleWorkspaces, workspaceOf, workspaceLanding,
   QUICK_ACTIONS, type NavContext, type Workspace, type BadgeKey,
@@ -758,6 +759,42 @@ export function AppShell({
               </Button>
             </div>
           )}
+
+          {/* EL AVISO DE LA SUSCRIPCIÓN.
+              `subscriptionStatus` y `trialEndsAt` llegaban al shell desde el
+              principio y nadie los miraba: el estado viajaba y no se enseñaba.
+              Desde 0042 ese estado BLOQUEA, así que enterarse al chocar con el
+              primer rechazo —en medio de una venta— es exactamente lo que este
+              aviso evita. La decisión es la misma función pura que usa la API,
+              no una regla repetida aquí. */}
+          {(() => {
+            const state = subscriptionState({
+              subscription_status: user.subscriptionStatus,
+              trial_ends_at: user.trialEndsAt,
+            });
+            if (!state.warn) return null;
+            const bloqueado = !state.canWrite && state.reason;
+            return (
+              <div className={cn(
+                "flex items-center gap-3 border-b px-4 py-2 text-[13px] sm:px-6",
+                bloqueado
+                  ? "border-rose-300 bg-rose-100 text-rose-950 dark:border-rose-900 dark:bg-rose-950/60 dark:text-rose-100"
+                  : "border-amber-300 bg-amber-100 text-amber-950 dark:border-amber-900 dark:bg-amber-950/60 dark:text-amber-100"
+              )}>
+                <Icon name={bloqueado ? "OctagonX" : "Clock"} className="size-4 shrink-0" />
+                <p className="min-w-0 flex-1">
+                  {bloqueado
+                    ? blockMessage(state.reason!)
+                    : state.status === "trial" && state.trialDaysLeft !== null
+                      ? `Tu periodo de prueba termina en ${state.trialDaysLeft} día(s).`
+                      : "No pudimos cobrar tu suscripción. Actualiza tu método de pago."}
+                </p>
+                <Button size="sm" variant="outline" className="h-7 bg-transparent" asChild>
+                  <Link href="/dashboard/administracion/plan">Ver mi plan</Link>
+                </Button>
+              </div>
+            );
+          })()}
 
           <div className="mx-auto w-full max-w-[1500px] flex-1 px-4 py-6 sm:px-6 lg:px-8">{children}</div>
         </div>

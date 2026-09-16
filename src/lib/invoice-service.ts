@@ -4,6 +4,7 @@ import { supabaseServer } from "@/lib/supabase/server";
 import { newDocumentNumber } from "@/lib/codes";
 import { uniqueCode } from "@/lib/unique";
 import { writeAudit } from "@/lib/audit";
+import { notify } from "@/lib/notify-service";
 import { refId } from "@/lib/types";
 import {
   formatNcf, ncfTypeFor, normalizeTaxId, creditNoteTypeFor, invoiceTotals, lineAmounts,
@@ -318,6 +319,20 @@ export async function voidInvoice(
     description: `Factura ${invoice.ncf} anulada con la nota de crédito ${creditNcf} — ${reason.trim()}`,
     severity: "warning",
     metadata: { credit_note: creditNote._id, credit_ncf: creditNcf, total: invoice.total },
+  });
+
+  // Anular un comprobante fiscal se justifica ante la DGII, así que no se hace
+  // en silencio: la administración se entera el mismo día, no en la revisión.
+  await notify({
+    companyId,
+    event: "invoice_voided",
+    entityType: "invoice",
+    entityId: invoiceId,
+    vars: {
+      referencia: String(invoice.ncf || invoice.number || ""),
+      monto: Number(invoice.total || 0),
+      moneda: String(invoice.currency || "usd"),
+    },
   });
 
   return { creditNote, ncf: creditNcf };

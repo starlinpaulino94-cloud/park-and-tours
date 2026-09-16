@@ -8,6 +8,8 @@ import { resolveCommissions, type BeneficiaryDescriptor } from "@/lib/commission
 import { writeAudit } from "@/lib/audit";
 import { newBookingNumber, newOrderNumber, newVoucherCode, newDocumentNumber } from "@/lib/codes";
 import { notifyBookingCreated } from "@/lib/messaging/events";
+import { notify } from "@/lib/notify-service";
+import { formatDate } from "@/lib/format";
 import { ensureSchedule, refreshAllocation } from "@/lib/schedule-service";
 import { creditCheck, holdUntil } from "@/lib/collections";
 import { accrueBookingCosts, cancelBookingCosts } from "@/lib/supplier-settlement-service";
@@ -637,6 +639,19 @@ export async function createOrderWithBookings(
     } catch (err) {
       console.error("[booking-service] no se pudo encolar el aviso de la reserva", booking._id, err);
     }
+    // Y el aviso INTERNO: la operación necesita ver lo que entra para prever el
+    // día. `notify` no lanza, así que no necesita su propio try/catch.
+    await notify({
+      companyId,
+      event: "booking_created",
+      entityType: "booking",
+      entityId: booking._id,
+      vars: {
+        referencia: booking.booking_number,
+        fecha: booking.travel_date ? formatDate(booking.travel_date) : null,
+        pax: booking.pax_total,
+      },
+    });
   }
 
   console.log(`[booking-service] orden ${order.order_number} creada · ${bookings.length} reservas · total ${totals.total} ${currency}`);

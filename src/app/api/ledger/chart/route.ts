@@ -1,4 +1,4 @@
-import { requireTenant, requireAtLeast } from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import { ensureChart } from "@/lib/ledger";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -7,7 +7,7 @@ import { assertSameOriginMutation } from "@/lib/csrf";
 export async function POST(req: Request) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     requireAtLeast(ctx, "admin");
     const created = await ensureChart(ctx.companyId);
     return ok({ created });

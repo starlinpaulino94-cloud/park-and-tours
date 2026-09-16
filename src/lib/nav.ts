@@ -651,6 +651,24 @@ export const WORKSPACES: Workspace[] = [
           { id: "hoteles", href: "/dashboard/administracion/hoteles", label: "Hoteles", icon: "Hotel",
             roles: ["superadmin", "owner", "admin", "manager", "operations"],
             description: "Alojamientos, zonas y puntos de recogida." },
+          // Sin `module`: la pantalla que explica el plan no puede depender del
+          // plan. Cuando un límite bloquea una venta, esto es donde se entiende
+          // por qué —y esconderlo justo entonces sería el peor momento posible.
+          // Sin `module` y con rango bajo: importar es lo PRIMERO que hace una
+          // empresa nueva, y esconderlo detrás de un plan o de un rol alto
+          // convierte la migración de sus datos en un trámite con el dueño.
+          { id: "importar", href: "/dashboard/administracion/importar", label: "Importar datos", icon: "Upload", minRole: "seller",
+            description: "Trae clientes, productos y proveedores desde una hoja de cálculo.",
+            keywords: ["importar", "csv", "excel", "migrar", "cargar", "subir datos"] },
+          // Sin `module` y sin depender de la suscripción: llevarse los datos
+          // propios es lo único que NUNCA se condiciona al plan. Va junto a
+          // Importar porque son la entrada y la salida de la misma puerta.
+          { id: "exportar", href: "/dashboard/administracion/exportar", label: "Llévate tus datos", icon: "Download", minRole: "admin",
+            description: "Descarga toda la empresa: un CSV por tabla, en un solo archivo.",
+            keywords: ["exportar", "descargar", "respaldo", "backup", "portabilidad", "csv", "zip", "mis datos"] },
+          { id: "plan", href: "/dashboard/administracion/plan", label: "Tu plan y uso", icon: "Gauge", minRole: "admin",
+            description: "Estado de la suscripción, límites consumidos y módulos incluidos.",
+            keywords: ["plan", "suscripción", "límites", "uso", "facturación", "prueba"] },
         ],
       },
       {

@@ -7,6 +7,7 @@ import {
   spQuery, spCount, spFindOne, spCreate, spUpdate, spDelete,
 } from "@/lib/supabase/data-provider";
 import { getSupabaseTenantContext } from "@/lib/supabase/auth-context";
+import { subscriptionState, blockMessage } from "@/lib/plan";
 import { splitExpand, expandRows } from "@/lib/supabase/expand";
 
 /**
@@ -29,6 +30,14 @@ export interface TenantContext {
   company: Company | null;
   /** true while a superadmin is operating inside a tenant (always audited). */
   impersonating?: boolean;
+  /**
+   * La contraseña ya está, falta el código del segundo factor.
+   *
+   * No es un rechazo: es un paso a medio camino. La API responde 401 con
+   * `MFA_REQUIRED` y la pantalla manda a `/auth/verificar` conservando la
+   * sesión, porque cerrarla obligaría a escribir la contraseña otra vez.
+   */
+  mfaPending?: boolean;
 }
 
 /** Cookie used by the audited superadmin impersonation flow. */
@@ -67,6 +76,14 @@ export const getTenantContext = cache(async function getTenantContext(): Promise
 export async function requireTenant(): Promise<TenantContext & { companyId: string }> {
   const ctx = await getTenantContext();
   if (!ctx) throw new TenantError("No autenticado", 401);
+  // El segundo factor se exige AQUÍ y no solo en la pantalla: una contraseña
+  // robada sirve para llamar a la API directamente, que es donde están los
+  // datos. Un segundo factor que solo vigila la interfaz no protege nada.
+  if (ctx.mfaPending) {
+    throw Object.assign(new TenantError("Falta verificar el código de tu segundo factor", 401), {
+      code: "MFA_REQUIRED",
+    });
+  }
   if (!ctx.companyId) {
     throw new TenantError(
       "El usuario no está asociado a ninguna empresa. Contacta al administrador.",
@@ -74,6 +91,35 @@ export async function requireTenant(): Promise<TenantContext & { companyId: stri
     );
   }
   return ctx as TenantContext & { companyId: string };
+}
+
+/**
+ * Igual que `requireTenant`, y además exige que la suscripción permita ESCRIBIR.
+ *
+ * Toda ruta que crea, modifica o borra pasa por aquí; las que solo leen siguen
+ * usando `requireTenant`. Esa separación ES la política: una empresa que no paga
+ * pierde la capacidad de registrar operaciones, nunca el acceso a lo suyo —sus
+ * reservas, su caja y su contabilidad son datos de su negocio, con obligación
+ * fiscal de conservarlos en parte, y secuestrarlos como palanca de cobro no es
+ * defendible—.
+ *
+ * La decisión es pura (`subscriptionState` en `plan.ts`) y se toma sobre datos
+ * que el contexto ya trae: no cuesta ni una consulta más. Los límites por
+ * cantidad viven aparte, en `plan-service.ts`, porque esos sí exigen contar.
+ *
+ * Responde 402 (Pago requerido) y no 403: al usuario no le faltan permisos, a la
+ * empresa le falta plan al día. Son dos conversaciones con personas distintas.
+ */
+export async function requireTenantWrite(): Promise<TenantContext & { companyId: string }> {
+  const ctx = await requireTenant();
+  const state = subscriptionState(ctx.company ?? null);
+  if (!state.canWrite && state.reason) {
+    throw Object.assign(new TenantError(blockMessage(state.reason), 402), {
+      code: "PLAN_BLOCKED",
+      reason: state.reason,
+    });
+  }
+  return ctx;
 }
 
 /** Throws unless the caller is the platform owner. */

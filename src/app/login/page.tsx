@@ -25,9 +25,16 @@ function LoginForm() {
       }[searchParams.get("motivo") || "sesion"] || "No se pudo completar el acceso desde MembeGo."
     : "";
 
+  // Un enlace de correo ya usado o caducado vuelve aquí: decirlo evita que la
+  // persona repita el mismo enlace tres veces creyendo que falla la red.
+  const linkError = {
+    enlace_invalido: "Ese enlace ya se usó. Pide uno nuevo desde «¿La olvidaste?».",
+    enlace_vencido: "El enlace caducó. Pide uno nuevo desde «¿La olvidaste?».",
+  }[searchParams.get("error") || ""] || "";
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(linkError);
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -100,7 +107,14 @@ function LoginForm() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password" className="text-sm font-semibold">Contraseña</Label>
+              <div className="flex items-baseline justify-between">
+                <Label htmlFor="password" className="text-sm font-semibold">Contraseña</Label>
+                {/* Va aquí, junto al campo, y no al pie: es donde se mira
+                    cuando la contraseña no entra. */}
+                <Link href="/login/recuperar" className="text-xs font-medium text-primary hover:underline">
+                  ¿La olvidaste?
+                </Link>
+              </div>
               <Input
                 id="password"
                 type="password"

@@ -53,7 +53,7 @@ function asRows(value: unknown) {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "dashboard", ctx.userId), limit: 90, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "dashboard", ctx.userId), limit: 90, windowMs: 60_000 });
 
     const sellerId = ctx.role === "seller" ? await currentSellerId(ctx.companyId, ctx.userId) : null;
     const permissions = resolveDashboardPermissions(ctx.role, { userId: ctx.userId, sellerId, partnerId: ctx.partnerId });

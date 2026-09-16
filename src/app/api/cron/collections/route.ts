@@ -5,7 +5,8 @@ import { TenantError } from "@/lib/tenant";
 import { serviceStore } from "@/lib/messaging/service-store";
 import { notifyBalanceDue } from "@/lib/messaging/events";
 import { releaseExpiredHolds } from "@/lib/booking-service";
-import { statusFor, collectionStatus, agingBucketFor, dayOf } from "@/lib/collections";
+import { statusFor, collectionStatus, agingBucketFor, dayOf, daysBetween } from "@/lib/collections";
+import { notify } from "@/lib/notify-service";
 import type { Booking, Company } from "@/lib/types";
 
 /**
@@ -215,7 +216,7 @@ async function remindBalances(now: Date): Promise<{ reminded: number; companies:
 async function syncAging(now: Date): Promise<{ updated: number; overdue: number }> {
   const { data, error } = await supabaseService()
     .from("receivable")
-    .select("id, organization_id, due_date, amount, paid_amount, balance, status, aging_bucket")
+    .select("id, organization_id, due_date, amount, paid_amount, balance, status, aging_bucket, currency, document_number")
     .not("status", "in", "(paid,written_off)")
     .limit(2000);
   if (error) throw new Error(error.message);
@@ -243,7 +244,25 @@ async function syncAging(now: Date): Promise<{ updated: number; overdue: number 
       continue;
     }
     updated++;
-    if (status === "overdue" && row.status !== "overdue") overdue++;
+    if (status === "overdue" && row.status !== "overdue") {
+      overdue++;
+      // El aviso sale UNA vez, cuando la deuda cruza su fecha. El cron vuelve a
+      // mirar estas mismas filas todos los días: sin la clave de dedupe de
+      // 0044, a la semana habría siete copias de cada deuda en la bandeja y
+      // nadie volvería a abrirla.
+      await notify({
+        companyId: row.organization_id as string,
+        event: "receivable_overdue",
+        entityType: "receivable",
+        entityId: row.id as string,
+        vars: {
+          monto: balance,
+          moneda: String(row.currency || "usd"),
+          dias: due ? Math.max(1, daysBetween(due, today)) : null,
+          referencia: (row.document_number as string) || null,
+        },
+      });
+    }
   }
 
   return { updated, overdue };

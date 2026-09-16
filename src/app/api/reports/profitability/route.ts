@@ -26,7 +26,7 @@ const emptyBucket = (key: string, label: string): Bucket => ({
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "reports:profitability", ctx.userId), limit: 30, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "reports:profitability", ctx.userId), limit: 30, windowMs: 60_000 });
     requireAtLeast(ctx, "manager");
 
     const sp = req.nextUrl.searchParams;

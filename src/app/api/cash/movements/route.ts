@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantCreate, tenantFindOne } from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast, tenantCreate, tenantFindOne } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { recalcCashSession } from "@/lib/cash";
 import { isKnownCurrency } from "@/lib/cash-close";
@@ -11,8 +11,8 @@ import type { CashSession } from "@/lib/types";
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "cash:movement", ctx.userId), limit: 60, windowMs: 60_000 });
+    const ctx = await requireTenantWrite();
+    await assertRateLimit({ key: rateLimitKey(req, "cash:movement", ctx.userId), limit: 60, windowMs: 60_000 });
     requireAtLeast(ctx, "cashier");
 
     const body = await readJson<{

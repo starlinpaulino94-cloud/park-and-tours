@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, TenantError, tenantUpdate } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, requireAtLeast, TenantError, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import type { Company } from "@/lib/types";
@@ -28,7 +28,7 @@ export async function GET() {
 export async function PUT(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     requireAtLeast(ctx, "admin");
 
     const body = await readJson<Record<string, unknown>>(req);

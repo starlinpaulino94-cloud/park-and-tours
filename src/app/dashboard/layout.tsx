@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getTenantContext, tenantCount, type TenantContext } from "@/lib/tenant";
 import { countDecidableFor } from "@/lib/approvals";
 import { OPEN_TASK_STATUSES } from "@/lib/my-day";
+import { inboxFilter } from "@/lib/notify";
 import { AppShell, type NavBadges, type ShellUser } from "@/components/tf/app-shell";
 
 /**
@@ -42,10 +43,13 @@ async function loadBadges(ctx: TenantContext & { companyId: string }): Promise<N
     safe("incidentes", () => tenantCount(companyId, "incident", {
       status: { in: ["open", "investigating", "action_required", "escalated"] },
     })),
-    // Notificaciones sin leer, con el mismo alcance personal que su buzón:
-    // las del usuario más los avisos a toda la empresa (user_id nulo).
+    // Notificaciones sin leer, con EL MISMO alcance que su buzón: las suyas más
+    // los avisos de empresa que le tocan por rol. Comparte `inboxFilter` con la
+    // API a propósito — un contador que cuenta más de lo que la bandeja enseña
+    // manda al usuario a una pantalla donde no hay nada, y a la tercera vez
+    // deja de hacerle caso a la campana.
     safe("notificaciones", () => tenantCount(companyId, "notification", {
-      _or: [{ user_id: userId }, { user_id: null }], read_status: false,
+      ...inboxFilter(userId, ctx.role), read_status: false,
     })),
   ]);
 
@@ -59,6 +63,11 @@ export default async function DashboardLayout({ children }: { children: React.Re
   if (!ctx.companyId) redirect("/onboarding");
   // Los usuarios del portal nunca entran al ERP interno.
   if (ctx.role === "partner") redirect("/portal");
+  // La contraseña ya está, falta el código. No se cierra la sesión: obligar a
+  // escribir la contraseña otra vez es lo que empuja a desactivar el segundo
+  // factor. La API lo exige por su cuenta (`requireTenant`), así que esto no es
+  // la barrera: es no dejar a nadie mirando una pantalla que no va a cargar.
+  if (ctx.mfaPending) redirect("/auth/verificar?next=/dashboard");
 
   const user: ShellUser = {
     name: ctx.name,

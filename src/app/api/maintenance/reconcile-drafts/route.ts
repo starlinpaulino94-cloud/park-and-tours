@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast } from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { reconcileStaleDrafts } from "@/lib/booking-service";
 import { expireApprovals } from "@/lib/approvals";
@@ -18,7 +18,7 @@ import { assertSameOriginMutation } from "@/lib/csrf";
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     requireAtLeast(ctx, "admin");
 
     const body = await readJson<{ older_than_minutes?: number }>(req);

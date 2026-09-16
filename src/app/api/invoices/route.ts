@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { assertModule } from "@/lib/plan-service";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { issueInvoice } from "@/lib/invoice-service";
@@ -22,8 +23,9 @@ const NCF_TYPES = new Set(["b01", "b02", "b04", "b14", "b15", "e31", "e32", "e34
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "invoices:issue", ctx.userId), limit: 60, windowMs: 60_000 });
+    const ctx = await requireTenantWrite();
+    assertModule(ctx, "accounting");
+    await assertRateLimit({ key: rateLimitKey(req, "invoices:issue", ctx.userId), limit: 60, windowMs: 60_000 });
     // Emitir un comprobante fiscal compromete a la empresa ante la DGII: no es
     // una acción de mostrador.
     requireAtLeast(ctx, "cashier");
@@ -68,7 +70,7 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "invoices:list", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "invoices:list", ctx.userId), limit: 120, windowMs: 60_000 });
     requireAtLeast(ctx, "cashier");
 
     const sp = req.nextUrl.searchParams;

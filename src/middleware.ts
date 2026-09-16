@@ -37,6 +37,13 @@ const publicRoutes = [
   // exigiría, así que tiene que poder llegar sin una.
   "/sso/membego",
 
+  // Los dos caminos que empiezan FUERA del sistema: la invitación de un
+  // compañero y el «olvidé mi contraseña». Quien llega por ahí todavía no tiene
+  // sesión —el canje del código es justo lo que va a creársela—, así que
+  // exigirle una lo mandaría al login en bucle.
+  "/auth/callback",
+  "/auth/establecer-clave",
+
   //stripe routes here
   "/stripe/demo",
   "/stripe/success",

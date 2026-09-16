@@ -19,7 +19,7 @@ const MAX_ROWS = 1000;
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "partners:balances", ctx.userId), limit: 60, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "partners:balances", ctx.userId), limit: 60, windowMs: 60_000 });
     requireAtLeast(ctx, "manager");
 
     const rows = await tenantQuery<Receivable>(ctx.companyId, "receivable", {

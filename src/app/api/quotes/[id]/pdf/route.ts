@@ -20,7 +20,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   try {
     const { id } = await params;
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "quotes:pdf", ctx.userId), limit: 60, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "quotes:pdf", ctx.userId), limit: 60, windowMs: 60_000 });
 
     const { quote, options, lines } = await loadQuoteBundle(ctx.companyId, id);
     // Los totales se recalculan antes de imprimir: el papel que sale por la

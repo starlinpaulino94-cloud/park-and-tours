@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast } from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { assertModule } from "@/lib/plan-service";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { voidInvoice } from "@/lib/invoice-service";
@@ -17,8 +18,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   try {
     assertSameOriginMutation(req);
     const { id } = await params;
-    const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "invoices:void", ctx.userId), limit: 30, windowMs: 60_000 });
+    const ctx = await requireTenantWrite();
+    assertModule(ctx, "accounting");
+    await assertRateLimit({ key: rateLimitKey(req, "invoices:void", ctx.userId), limit: 30, windowMs: 60_000 });
     // Anular consume otro número de la secuencia y deja rastro fiscal: es una
     // decisión de gestión, no del cajero que se equivocó.
     requireAtLeast(ctx, "manager");

@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantUpdate } from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
+import { notify } from "@/lib/notify-service";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import {
@@ -27,8 +28,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   try {
     assertSameOriginMutation(req);
     const { id } = await params;
-    const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "quotes:decide", ctx.userId), limit: 120, windowMs: 60_000 });
+    const ctx = await requireTenantWrite();
+    await assertRateLimit({ key: rateLimitKey(req, "quotes:decide", ctx.userId), limit: 120, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<{
@@ -91,6 +92,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       severity: blocker ? "warning" : "info",
       metadata: { decision, total: totals.total, forced_block: blocker || undefined },
     });
+
+    // Una cotización aceptada es una venta esperando que alguien la convierta,
+    // y lo que la pierde es que nadie se entere el mismo día. El aviso es de
+    // empresa y no personal a propósito: el vendedor que la hizo puede estar de
+    // ruta, y cualquiera del equipo comercial puede cerrarla.
+    if (decision === "accepted") {
+      await notify({
+        companyId: ctx.companyId,
+        event: "quote_accepted",
+        entityType: "quote",
+        entityId: id,
+        vars: {
+          referencia: label,
+          monto: totals.total,
+          moneda: String(quote.currency || "usd"),
+          cliente: String(quote.company_name || quote.contact_name || "") || null,
+        },
+      });
+    }
 
     return ok({ status: decision, totals, forced: Boolean(blocker) });
   } catch (err) {

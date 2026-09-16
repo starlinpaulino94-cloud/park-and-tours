@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantQuery, tenantCreate, tenantUpdate } from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast, tenantQuery, tenantCreate, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { assertModule } from "@/lib/plan-service";
 import { newSettlementCode, newDocumentNumber } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
 import type { BeneficiaryType, Commission, Currency, Settlement } from "@/lib/types";
@@ -15,7 +16,8 @@ import { assertSameOriginMutation } from "@/lib/csrf";
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
+    assertModule(ctx, "settlements");
     requireAtLeast(ctx, "manager");
 
     const body = await readJson<{

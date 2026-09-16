@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { supabaseServer } from "@/lib/supabase/server";
 import { supabaseService } from "@/lib/supabase/service";
 import type { AppRole } from "@/lib/auth";
+import { mfaGate, hasVerifiedFactor } from "@/lib/mfa";
 import type { Company } from "@/lib/types";
 import type { TenantContext } from "@/lib/tenant";
 
@@ -22,6 +23,10 @@ export interface AppClaims {
   app_role?: string;
   partner_id?: string | null;
   status?: string;
+  /** Nivel de garantía de la sesión: `aal2` = pasó el segundo factor. */
+  aal?: string;
+  /** Solo lo escribe el rol de servicio; aquí viaja `mfa_enabled`. */
+  app_metadata?: { mfa_enabled?: boolean } | null;
 }
 
 const VALID_ROLES = new Set<AppRole>([
@@ -107,6 +112,12 @@ async function loadOrganization(orgId: string): Promise<Company | null> {
       base_currency: data.currency,
       modules_enabled: data.modules_enabled,
       subscription_status: data.subscription_status,
+      // 0042 — sin estas tres, la decisión de suscripción no tiene con qué
+      // decidir: el periodo de prueba no podía vencer porque su fecha nunca
+      // llegaba al contexto, y el medidor de almacenamiento no tenía qué medir.
+      trial_ends_at: data.trial_ends_at,
+      next_billing_at: data.next_billing_at,
+      storage_used_mb: data.storage_used_mb,
       status: data.status,
       // Necesarios para que la lógica temporal use la zona de la empresa y no
       // la del servidor (UTC en Vercel). La columna existía en 0002 pero no se
@@ -157,6 +168,20 @@ export async function getSupabaseTenantContext(): Promise<TenantContext | null> 
   const jwtClaims = (token ? decodeJwtClaims(token) : {}) as AppClaims;
   const claims = jwtClaims.org_id ? jwtClaims : await loadClaimsFromPrimaryMembership(user.id);
 
+  /**
+   * El segundo factor se decide con lo que YA hay en la mano: el nivel del token
+   * y la marca de `app_metadata` (que el usuario no puede tocar). Los factores
+   * del propio usuario entran como segunda señal para las cuentas que se
+   * enrolaron antes de que existiera la marca. Ninguna consulta extra.
+   */
+  const mfaPending = mfaGate(
+    {
+      aal: jwtClaims.aal,
+      app_metadata: (user.app_metadata ?? null) as { mfa_enabled?: boolean } | null,
+    },
+    hasVerifiedFactor(user.factors as { status?: string }[] | undefined)
+  ) === "verify";
+
   if (!claims?.org_id) return null;                       // no active membership
   const company = await loadOrganization(claims.org_id);
   const ctx = mapClaimsToContext(
@@ -165,6 +190,7 @@ export async function getSupabaseTenantContext(): Promise<TenantContext | null> 
     company
   );
   if (!ctx) return null;
+  if (mfaPending) ctx.mfaPending = true;
 
   if (ctx.role === "superadmin") {
     const target = (await cookies()).get(IMPERSONATION_COOKIE)?.value;

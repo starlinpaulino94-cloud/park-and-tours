@@ -17,7 +17,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   try {
     const { id } = await params;
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "invoices:pdf", ctx.userId), limit: 60, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "invoices:pdf", ctx.userId), limit: 60, windowMs: 60_000 });
     requireAtLeast(ctx, "cashier");
 
     const invoice = await tenantFindOne<Record<string, unknown>>(ctx.companyId, "invoice", id, {

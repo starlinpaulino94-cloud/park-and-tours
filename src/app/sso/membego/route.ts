@@ -50,7 +50,7 @@ export async function GET(req: NextRequest) {
   try {
     // Por IP y ventana corta: tolera el uso real (una persona entra una vez)
     // y frena a quien venga a probar firmas.
-    assertRateLimit({ key: rateLimitKey(req, "sso-membego"), limit: 10, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "sso-membego"), limit: 10, windowMs: 60_000 });
 
     const secret = membegoSecret();
     if (!secret) {

@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantUpdate } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, requireAtLeast, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -26,8 +26,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   try {
     assertSameOriginMutation(req);
     const { id } = await params;
-    const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "quotes:send", ctx.userId), limit: 120, windowMs: 60_000 });
+    const ctx = await requireTenantWrite();
+    await assertRateLimit({ key: rateLimitKey(req, "quotes:send", ctx.userId), limit: 120, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<{ follow_up_at?: string; notes?: string }>(req);
@@ -84,7 +84,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   try {
     const { id } = await params;
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "quotes:send:check", ctx.userId), limit: 240, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "quotes:send:check", ctx.userId), limit: 240, windowMs: 60_000 });
     const { quote, lines } = await loadQuoteBundle(ctx.companyId, id);
     const blocker = sendBlocker(quote, lines);
     return ok({ blocker, message: blocker ? BLOCK_MESSAGE[blocker] : null });

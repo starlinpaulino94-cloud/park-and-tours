@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, tenantFindOne, tenantUpdate, tenantDelete, requireAtLeast, atLeast, TenantError } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, tenantFindOne, tenantUpdate, tenantDelete, requireAtLeast, atLeast, TenantError } from "@/lib/tenant";
 import {
   getResource, sanitizePayload, partnerScopeFor, readRoleFor,
   ownershipFieldFor, OWNERSHIP_OVERRIDE_ROLE,
@@ -9,6 +9,7 @@ import { writeAudit } from "@/lib/audit";
 import { refId } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
+import { assertModule } from "@/lib/plan-service";
 
 type Params = { params: Promise<{ resource: string; id: string }> };
 
@@ -33,7 +34,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
     if (!def) throw new TenantError(`Recurso desconocido: ${resource}`, 404);
 
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(_req, `erp:read:${def.table}`, ctx.userId), limit: 240, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(_req, `erp:read:${def.table}`, ctx.userId), limit: 240, windowMs: 60_000 });
     // AUD-004 follow-up: same read authorization as the list endpoint.
     if (ctx.role !== "partner") {
       const rr = readRoleFor(def.table);
@@ -55,12 +56,13 @@ export async function PUT(req: NextRequest, { params }: Params) {
     if (!def) throw new TenantError(`Recurso desconocido: ${resource}`, 404);
     if (def.writable.length === 0) throw new TenantError("Este recurso es de solo lectura", 405);
 
-    const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, `erp:update:${def.table}`, ctx.userId), limit: 90, windowMs: 60_000 });
+    const ctx = await requireTenantWrite();
+    await assertRateLimit({ key: rateLimitKey(req, `erp:update:${def.table}`, ctx.userId), limit: 90, windowMs: 60_000 });
     // AUD-004: a partner is read-only in the generic ERP (some resources have
     // no writeRole, which would otherwise let any authenticated user write).
     if (ctx.role === "partner") throw new TenantError("No tienes permisos para modificar este recurso", 403);
     if (def.writeRole) requireAtLeast(ctx, def.writeRole);
+    if (def.module) assertModule(ctx, def.module);
 
     // Propiedad por fila: la RLS aísla por empresa, no por persona. Sin esto un
     // vendedor podía cerrar o reasignar la tarea de cualquier compañero.
@@ -110,9 +112,10 @@ export async function DELETE(req: NextRequest, { params }: Params) {
       );
     }
 
-    const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, `erp:delete:${def.table}`, ctx.userId), limit: 30, windowMs: 60_000 });
+    const ctx = await requireTenantWrite();
+    await assertRateLimit({ key: rateLimitKey(req, `erp:delete:${def.table}`, ctx.userId), limit: 30, windowMs: 60_000 });
     if (ctx.role === "partner") throw new TenantError("No tienes permisos para eliminar este recurso", 403);
+    if (def.module) assertModule(ctx, def.module);
     requireAtLeast(ctx, def.writeRole === "seller" ? "manager" : def.writeRole || "manager");
 
     await tenantDelete(ctx.companyId, def.table, id);

@@ -42,7 +42,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   try {
     const { id } = await params;
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "bookings:voucher", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "bookings:voucher", ctx.userId), limit: 120, windowMs: 60_000 });
 
     const booking = await tenantFindOne<Booking & Record<string, unknown>>(ctx.companyId, "booking", id, {
       customer: true, product: { cancellation_policy: true }, modality: true,
