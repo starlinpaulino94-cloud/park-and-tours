@@ -488,9 +488,21 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["concept"],
     expand: { category: true, branch: true, supplier: true, user: true },
     sort: { expense_date: "desc" },
-    writable: ["category", "branch", "supplier", "cash_session", "concept", "amount", "currency", "exchange_rate", "expense_date", "payment_method", "status", "notes"],
-    numeric: ["amount", "exchange_rate"],
-    dates: ["expense_date"],
+    writable: [
+      "category", "branch", "supplier", "cash_session", "concept", "amount", "currency",
+      "exchange_rate", "expense_date", "payment_method", "status", "notes",
+      // 0049 — lo que el 606 exige y no se guardaba en ninguna parte. Todo
+      // opcional: una propina o un peaje siguen siendo gastos legítimos aunque
+      // no tengan comprobante fiscal, solo que no van a la declaración.
+      "ncf", "ncf_type", "ncf_modified", "supplier_rnc", "goods_service_type",
+      "itbis_amount", "itbis_withheld", "isr_withheld", "selective_tax", "other_taxes",
+      "legal_tip", "paid_date",
+    ],
+    numeric: [
+      "amount", "exchange_rate", "itbis_amount", "itbis_withheld", "isr_withheld",
+      "selective_tax", "other_taxes", "legal_tip",
+    ],
+    dates: ["expense_date", "paid_date"],
     writeRole: "cashier",
   },
   currency_rate: {

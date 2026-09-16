@@ -512,3 +512,25 @@ export const SUBSCRIPTION_STATUS = dict(
 export function toOptions(source: Record<string, LabelDef>): { value: string; label: string }[] {
   return Object.entries(source).map(([value, def]) => ({ value, label: def.label }));
 }
+
+/**
+ * Tipos de bienes y servicios comprados, tal como los numera la DGII en el 606.
+ *
+ * Cada compra declarada lleva uno de estos códigos, y la línea sin él se
+ * rechaza. Los nombres están escritos como los entiende quien registra el
+ * gasto, no como los escribe el instructivo: quien mete la factura del
+ * combustible del bus busca «combustible», no «gastos de vehículos».
+ */
+export const GOODS_SERVICE_TYPE = dict(
+  ["01", "Gastos de personal"],
+  ["02", "Trabajos, suministros y servicios"],
+  ["03", "Arrendamientos"],
+  ["04", "Gastos de activos fijos"],
+  ["05", "Gastos de representación"],
+  ["06", "Otras deducciones admitidas"],
+  ["07", "Gastos financieros"],
+  ["08", "Gastos extraordinarios"],
+  ["09", "Compras y gastos del costo (combustible, proveedores del tour)"],
+  ["10", "Adquisición de activos"],
+  ["11", "Seguros"],
+);

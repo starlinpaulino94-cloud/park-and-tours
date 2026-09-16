@@ -1859,6 +1859,76 @@ describe("las cuentas del equipo", () => {
   });
 });
 
+describe("las declaraciones 606 y 607", () => {
+  it("el orden de las columnas vive en UN sitio", () => {
+    /**
+     * La DGII ajusta el formato de vez en cuando. Con el orden repartido por el
+     * código, ese cambio se hace en cinco sitios y se olvida uno; con una lista
+     * documentada, se hace en la lista.
+     */
+    const lib = read("src/lib/dgii.ts");
+    expect(lib).toMatch(/export const COLUMNS_606 =/);
+    expect(lib).toMatch(/export const COLUMNS_607 =/);
+    // Y las líneas se arman con esa longitud: hay pruebas que lo comparan.
+    expect(read("src/lib/dgii.test.ts")).toMatch(/COLUMNS_606\.length/);
+    expect(read("src/lib/dgii.test.ts")).toMatch(/COLUMNS_607\.length/);
+  });
+
+  it("declarar es una LECTURA: el plan no la bloquea", () => {
+    /**
+     * Una empresa con la suscripción vencida sigue teniendo que declarar sus
+     * impuestos. No poder sacar su 606 por no haber pagado el software
+     * convertiría un problema de cobro en un incumplimiento fiscal.
+     */
+    const route = read("src/app/api/reports/dgii/route.ts");
+    expect(route).toMatch(/await requireTenant\(\)/);
+    expect(route).not.toMatch(/await requireTenantWrite\(\)/);
+  });
+
+  it("sin RNC de la empresa no se genera un archivo anónimo", () => {
+    // El archivo identifica a quien declara: sin RNC no vale para nada y el
+    // mensaje dice dónde ponerlo.
+    const route = read("src/app/api/reports/dgii/route.ts");
+    expect(route).toMatch(/no tiene RNC registrado/);
+  });
+
+  it("lo que no se puede declarar se avisa ANTES de generar el archivo", () => {
+    // La DGII rechaza el archivo entero por una línea incompleta, días después
+    // y sin decir cuál.
+    const service = read("src/lib/dgii-service.ts");
+    expect(service).toMatch(/purchaseProblems\(/);
+    expect(service).toMatch(/saleProblems\(/);
+    const page = read("src/app/dashboard/finanzas/declaraciones/page.tsx");
+    expect(page).toMatch(/se queda fuera|se quedan fuera/);
+    expect(page).toMatch(/ROW_PROBLEM_MESSAGE/);
+  });
+
+  it("el gasto puede capturar lo que el 606 exige", () => {
+    // Sin estos campos el gasto existe en el sistema y no se puede declarar: el
+    // contador acaba tecleándolo otra vez en un Excel.
+    const gastos = read("src/app/dashboard/gastos/page.tsx");
+    for (const field of ["ncf", "supplier_rnc", "itbis_amount", "goods_service_type"]) {
+      expect(gastos, field).toContain(`name: "${field}"`);
+    }
+    const resources = read("src/lib/resources.ts");
+    expect(resources).toMatch(/"ncf", "ncf_type", "ncf_modified", "supplier_rnc", "goods_service_type"/);
+  });
+
+  it("una factura sin cobros se declara a crédito, no como efectivo", () => {
+    // Repartirla en efectivo «porque suele ser así» sería inventar un dato en
+    // una declaración fiscal.
+    const service = read("src/lib/dgii-service.ts");
+    expect(service).toMatch(/credit: Math\.max\(0, total - cobrado\)/);
+  });
+
+  it("la pantalla pide validar el primer archivo con la DGII", () => {
+    // El formato está construido según el envío vigente; una validación de dos
+    // minutos evita un rechazo que se descubre días después.
+    const page = read("src/app/dashboard/finanzas/declaraciones/page.tsx");
+    expect(page).toMatch(/herramienta de la DGII/);
+  });
+});
+
 describe("el check-in del guía: QR y sin señal", () => {
   it("el QR del voucher por fin se puede leer", () => {
     /**

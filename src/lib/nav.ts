@@ -525,6 +525,13 @@ export const WORKSPACES: Workspace[] = [
           { id: "fiscal", href: "/dashboard/finanzas/fiscal", label: "Fiscal", icon: "Landmark", minRole: "admin",
             description: "Impuestos por país, tasas y comprobante electrónico.",
             keywords: ["impuestos", "itbis", "dgii"] },
+          // Lo que el contador necesita cada mes. Con `module: accounting`
+          // porque es la profundidad fiscal del plan, y con rango de gerencia:
+          // son los números fiscales de la empresa.
+          { id: "declaraciones", href: "/dashboard/finanzas/declaraciones", label: "Declaraciones 606/607",
+            icon: "Landmark", module: "accounting", minRole: "manager",
+            description: "Compras y ventas del mes en el formato de la DGII, listo para subir.",
+            keywords: ["606", "607", "dgii", "itbis", "impuestos", "declaración", "fiscal"] },
           { id: "secuencias", href: "/dashboard/finanzas/secuencias", label: "Secuencias NCF", icon: "ListChecks", minRole: "admin",
             description: "Rangos autorizados por la DGII y lo que queda de cada uno.",
             keywords: ["ncf", "e-cf", "numeración", "dgii", "comprobantes"] },

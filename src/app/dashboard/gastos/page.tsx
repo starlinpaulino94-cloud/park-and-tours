@@ -4,6 +4,7 @@ import { ResourcePage } from "@/components/tf/resource-page";
 import { StatusBadge } from "@/components/tf/status-badge";
 import { KpiCard } from "@/components/tf/kpi-card";
 import { EXPENSE_METHOD, GENERIC_STATUS } from "@/lib/labels";
+import { GOODS_SERVICE_TYPE } from "@/lib/labels-modules";
 import { formatDate, formatMoney, formatNumber } from "@/lib/format";
 import { CURRENCY_OPTIONS, optionsFrom } from "@/components/tf/options";
 
@@ -79,6 +80,23 @@ export default function ExpensesPage() {
         { name: "payment_method", label: "Método de pago", type: "select", defaultValue: "cash", options: optionsFrom(EXPENSE_METHOD) },
         { name: "status", label: "Estado", type: "select", defaultValue: "pending", options: optionsFrom(GENERIC_STATUS, EXPENSE_STATUS) },
         { name: "notes", label: "Notas", type: "textarea", span: 2 },
+        // ── lo que pide el 606 (0049) ────────────────────────────────────
+        // Sin estos campos el gasto existe en el sistema y NO se puede
+        // declarar: el contador acaba tecleándolo otra vez en un Excel, y
+        // desde ahí las dos cifras dejan de cuadrar.
+        { name: "ncf", label: "NCF del proveedor", placeholder: "B0100000123",
+          help: "El comprobante que te dieron. Sin él, este gasto no entra en el 606." },
+        { name: "supplier_rnc", label: "RNC del proveedor",
+          help: "Se declara el que aparece en la factura. Si lo dejas vacío se usa el de su ficha." },
+        { name: "itbis_amount", label: "ITBIS del comprobante", type: "number",
+          help: "Va incluido en el importe; el formato lo pide separado." },
+        { name: "goods_service_type", label: "Tipo de bien o servicio", type: "select",
+          options: optionsFrom(GOODS_SERVICE_TYPE),
+          help: "La clasificación que exige la DGII para cada compra." },
+        { name: "paid_date", label: "Fecha de pago", type: "date",
+          help: "Si se pagó otro día distinto al del comprobante." },
+        { name: "itbis_withheld", label: "ITBIS retenido", type: "number" },
+        { name: "isr_withheld", label: "Retención de ISR", type: "number" },
       ]}
     />
   );
