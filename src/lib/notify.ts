@@ -193,6 +193,21 @@ export const NOTIFY_EVENTS = {
     link: () => "/dashboard/equipo/certificaciones",
   },
 
+  /**
+   * Un cupo garantizado se liberó: esas plazas vuelven a la venta libre.
+   *
+   * Es una oportunidad con fecha de caducidad —la salida es en días— y quien la
+   * puede aprovechar es el equipo comercial, hoy.
+   */
+  allotment_released: {
+    type: "operation",
+    audience: "manager",
+    title: (v) => `${v.plazas ?? 0} plazas liberadas de un cupo`,
+    message: (v) =>
+      `Un socio no las vendió y vuelven a estar disponibles${v.fecha ? ` para la salida del ${v.fecha}` : ""}.`,
+    link: () => "/dashboard/distribucion/allotments",
+  },
+
   /** El plan se está acabando. Avisa ANTES de que un límite rechace una venta. */
   plan_limit_near: {
     type: "alert",

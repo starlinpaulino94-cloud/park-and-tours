@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { recalculateDeparture } from "@/lib/availability";
 import { cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { settleBookingStock } from "@/lib/stock-commitment-service";
+import { releaseBookingAllotment } from "@/lib/allotment-service";
 import { syncOrderTotals } from "@/lib/booking-service";
 import { postPayment } from "@/lib/ledger-events";
 import { writeAudit } from "@/lib/audit";
@@ -128,6 +129,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       for (const problema of almacen.problems) console.warn(`[cancel] almacén: ${problema}`);
     } catch (err) {
       console.error("[cancel] no se pudieron liberar las existencias apartadas:", err);
+    }
+
+    // ---- devolver las plazas al cupo del socio (0054) ---------------------
+    // A SU cupo y por SUS plazas, las que la reserva guardó: si el contrato
+    // cambió de temporada entre la venta y la cancelación, devolverlas al cupo
+    // vigente le regalaría plazas a la temporada nueva.
+    const plazasDevueltas = await releaseBookingAllotment(
+      ctx.companyId, booking as { allotment?: unknown; allotment_seats?: number | null }
+    );
+    if (plazasDevueltas > 0) {
+      console.log(`[cancel] ${plazasDevueltas} plazas devueltas al cupo del socio`);
     }
 
     // ---- invalidate vouchers ----------------------------------------------

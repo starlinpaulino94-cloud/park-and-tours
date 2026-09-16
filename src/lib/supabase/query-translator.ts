@@ -43,6 +43,7 @@ export interface PostgrestLike {
  */
 export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   _id: "id",
+  allotment: "allotment_id",
   createdAt: "created_at",
   updatedAt: "updated_at",
   company: "organization_id",

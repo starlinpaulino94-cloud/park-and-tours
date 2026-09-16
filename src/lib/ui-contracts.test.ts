@@ -2384,6 +2384,7 @@ describe("las notificaciones internas", () => {
     ["plan_limit_near", "src/lib/plan-service.ts"],
     ["incident_opened", "src/lib/notify.ts"],
     ["certification_expiring", "src/app/api/cron/certifications/route.ts"],
+    ["allotment_released", "src/app/api/cron/allotments/route.ts"],
   ];
 
   it("cada evento del catálogo se dispara desde algún sitio", () => {
@@ -2965,5 +2966,85 @@ describe("contabilidad: el mes cerrado se cierra de verdad", () => {
     // Lo que no esté en la lista del formato cae en el código por defecto: un
     // código inventado hace que la DGII rechace el archivo entero.
     expect(src).toMatch(/VOID_REASONS\[String\(reasonCode \|\| ""\)\]/);
+  });
+});
+
+describe("distribución: el cupo del socio acota de verdad", () => {
+  /**
+   * `allotment` existía desde la migración 0010 con plazas, plazas usadas y
+   * días de liberación, y nadie la leía: se le prometían 10 plazas a una
+   * agencia por contrato y el sistema le dejaba vender las 40 de la salida, o
+   * ninguna. El cupo se llevaba en un Excel.
+   */
+
+  it("la venta comprueba el cupo, y solo cuando hay socio", () => {
+    // Sin socio no hay contrato que aplicar: el vendedor de la casa vende
+    // contra la capacidad, que es lo que debe ser.
+    const src = read("src/lib/booking-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/await assertAllotment\(/);
+    // Se mira el tramo entre el mapa del cupo y la comprobación, no una ventana
+    // de N caracteres: cualquier línea que se añada en medio movería la ventana
+    // y la guarda dejaría de mirar lo que dice mirar.
+    const desde = src.indexOf("const allotmentUse");
+    const hasta = src.indexOf("await assertAllotment(");
+    expect(desde).toBeGreaterThan(-1);
+    expect(desde).toBeLessThan(hasta);
+    expect(src.slice(desde, hasta)).toMatch(/if \(input\.partner_id\)/);
+  });
+
+  it("la capacidad se comprueba ANTES que el cupo", () => {
+    // La capacidad es un límite físico —no caben— y el cupo es un contrato. Si
+    // no caben, el motivo que hay que dar es ese.
+    const src = read("src/lib/booking-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src.indexOf("await assertCapacity(")).toBeLessThan(src.indexOf("await assertAllotment("));
+  });
+
+  it("el consumo se apunta DESPUÉS de que la venta exista", () => {
+    // Apuntarlo antes y que la saga se compensara dejaría el cupo consumido por
+    // una venta que no llegó a haber.
+    const src = read("src/lib/booking-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src.indexOf("await consumeAllotment(")).toBeGreaterThan(src.indexOf("const aviso"));
+    expect(src.indexOf("await consumeAllotment(")).toBeLessThan(src.lastIndexOf("return { order:"));
+  });
+
+  it("cancelar devuelve las plazas a SU cupo", () => {
+    const src = read("src/app/api/bookings/[id]/cancel/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/await releaseBookingAllotment\(/);
+    // Por las plazas que la reserva GUARDÓ, no por las que diga el cupo hoy.
+    expect(src).toMatch(/allotment_seats/);
+  });
+
+  it("la reserva guarda de qué cupo salió", () => {
+    // Sin el enlace, cancelar tendría que adivinar a qué cupo devolver.
+    const src = read("src/lib/booking-service.ts");
+    expect(src).toMatch(/allotment: used\[0\], allotment_seats: pax/);
+  });
+
+  it("la liberación automática está programada, no solo escrita", () => {
+    const vercel = JSON.parse(read("vercel.json")) as { crons: { path: string }[] };
+    expect(vercel.crons.map((c) => c.path)).toContain("/api/cron/allotments");
+  });
+
+  it("el barrido solo toca cupos garantizados con salida y con días de liberación", () => {
+    // Un cupo de producto sin salida no tiene fecha contra la que contar, y
+    // liberarlo «por si acaso» le quitaría plazas a un contrato vigente.
+    const src = read("src/app/api/cron/allotments/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/\.eq\("allotment_type", "guaranteed"\)/);
+    expect(src).toMatch(/\.not\("release_days", "is", null\)/);
+    expect(src).toMatch(/\.not\("departure_id", "is", null\)/);
+  });
+
+  it("el barrido acumula lo liberado en vez de reescribirlo", () => {
+    // Sin acumular, un reintento del cron devolvería a venta libre plazas que
+    // ya estaban en venta libre, y la salida aceptaría más de las que caben.
+    const src = read("src/app/api/cron/allotments/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/seats_released: Math\.max\(0, Math\.floor\(Number\(row\.seats_released \?\? 0\)\)\) \+ seats/);
+  });
+
+  it("lo liberado deja de contar como disponible para el socio", () => {
+    // Contarlo prometería dos veces la misma plaza: una al socio y otra a quien
+    // la compró después.
+    const src = read("src/lib/allotments.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/remaining: holds \? Math\.max\(0, seats - used - released\)/);
   });
 });
