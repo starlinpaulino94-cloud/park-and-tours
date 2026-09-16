@@ -29,7 +29,7 @@ import type { PlanStatus, LimitMetric } from "@/lib/plan";
 const METRIC_INFO: Record<LimitMetric, { label: string; help: string; icon: string }> = {
   max_users: {
     label: "Usuarios",
-    help: "Cuentas activas de tu equipo. Desactivar una libera su plaza.",
+    help: "Cuentas activas e invitaciones sin aceptar. Desactivar una libera su plaza.",
     icon: "Users",
   },
   max_bookings_month: {

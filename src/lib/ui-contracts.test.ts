@@ -1759,6 +1759,89 @@ describe("el importador", () => {
   });
 });
 
+describe("las cuentas del equipo", () => {
+  it("nadie otorga un rol por encima del suyo, por ninguna de las tres puertas", () => {
+    /**
+     * El alta, el cambio de rol y la invitación tienen que preguntar lo mismo.
+     * Cerrar solo una deja el agujero abierto: bastaría con crear un usuario
+     * normal y ascenderlo después, o invitarlo ya con el rol.
+     */
+    const team = read("src/app/api/team/route.ts");
+    expect(team).toMatch(/roleDecision\(ctx\.role, role\)/);
+    // Las dos llamadas —alta y cambio de rol— pasan el contexto.
+    expect(team).toMatch(/assertRole\(ctx, body\.role \|\| "seller"\)/);
+    expect(team).toMatch(/assertRole\(ctx, body\.role\)/);
+    const invite = read("src/app/api/team/invite/route.ts");
+    expect(invite).toMatch(/roleDecision\(ctx\.role, body\.role \|\| "seller"\)/);
+  });
+
+  it("la invitación nace PENDIENTE: un correo no es un acceso", () => {
+    // Solo las membresías activas resuelven inquilino. Si el correo acaba en la
+    // bandeja equivocada, quien lo reciba no entra a nada.
+    const invite = read("src/app/api/team/invite/route.ts");
+    expect(invite).toMatch(/status: "pending"/);
+    expect(invite).not.toMatch(/status: "active"/);
+  });
+
+  it("solo se activa la invitación de quien acaba de demostrar que es su correo", () => {
+    const callback = read("src/app/auth/callback/route.ts");
+    expect(callback).toMatch(/\.eq\("user_id", data\.user\.id\)/);
+    expect(callback).toMatch(/\.eq\("status", "pending"\)/);
+  });
+
+  it("el regreso desde el correo no sale de este dominio", () => {
+    // Un `next` externo convertiría el dominio propio en trampolín, con la
+    // sesión recién creada.
+    const callback = read("src/app/auth/callback/route.ts");
+    expect(callback).toMatch(/safeNextPath\(/);
+    expect(callback).toMatch(/url\.origin === origin/);
+  });
+
+  it("crear cuentas y mandar correos tiene freno", () => {
+    // Cada invitación manda un correo a una dirección que elige quien la pide:
+    // es un emisor de correo en manos de un usuario.
+    expect(read("src/app/api/team/invite/route.ts")).toMatch(/await assertRateLimit\(/);
+    expect(read("src/app/api/team/route.ts")).toMatch(/await assertRateLimit\(/);
+  });
+
+  it("la pantalla de entrada ofrece recuperar la contraseña", () => {
+    /**
+     * `resetPassword` existía en el cliente desde el principio y NADA la
+     * llamaba: olvidar la contraseña obligaba a que el administrador pusiera
+     * una nueva y la dijera por chat — es decir, olvidarla obligaba a
+     * compartirla.
+     */
+    expect(read("src/app/login/page.tsx")).toContain("/login/recuperar");
+    expect(read("src/app/login/recuperar/page.tsx")).toMatch(/supabaseAuth\.resetPassword/);
+  });
+
+  it("recuperar no dice si el correo existe", () => {
+    // Sería un detector de clientes: probar direcciones y saber quién usa el
+    // sistema. Se mira el código SIN comentarios: el propio comentario que
+    // explica por qué no se dice contiene la frase que se busca, y una guarda
+    // que obliga a borrar su explicación para pasar vale menos que la
+    // explicación.
+    const page = read("src/app/login/recuperar/page.tsx")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(page).toMatch(/Si ese correo tiene cuenta/);
+    expect(page).not.toMatch(/no (está|existe) registrad/i);
+  });
+
+  it("las dos pantallas del correo son públicas: quien llega aún no tiene sesión", () => {
+    const middleware = read("src/middleware.ts");
+    expect(middleware).toContain('"/auth/callback"');
+    expect(middleware).toContain('"/auth/establecer-clave"');
+  });
+
+  it("la invitación reserva plaza del plan", () => {
+    // Si no contara, un plan de cinco aceptaría veinte invitaciones y el tope
+    // saltaría delante de alguien que ya recibió el correo.
+    expect(read("src/app/api/team/invite/route.ts")).toMatch(/assertWithinLimit\(ctx, "max_users"\)/);
+    expect(read("src/lib/plan-service.ts")).toMatch(/\.in\("status", \["active", "pending"\]\)/);
+  });
+});
+
 describe("las notificaciones internas", () => {
   /**
    * La campana estuvo cuatro migraciones enseñando un cero. Lo que la vuelve a

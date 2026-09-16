@@ -6,12 +6,22 @@ import { supabaseService } from "@/lib/supabase/service";
 import { writeAudit } from "@/lib/audit";
 import type { AppRole } from "@/lib/auth";
 import { assertSameOriginMutation } from "@/lib/csrf";
+import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
+import { roleDecision, memberState } from "@/lib/team";
 
-const ASSIGNABLE_ROLES: AppRole[] = ["owner", "admin", "manager", "operations", "cashier", "seller", "partner"];
-
-function assertRole(role: string): AppRole {
-  if (!ASSIGNABLE_ROLES.includes(role as AppRole)) throw new TenantError(`Rol no válido: ${role}`, 400);
-  return role as AppRole;
+/**
+ * El rol que se va a otorgar, comprobado contra el de QUIEN lo otorga.
+ *
+ * Antes solo se comprobaba que el rol existiera, así que un administrador podía
+ * crear una cuenta de PROPIETARIO con una contraseña elegida por él y entrar
+ * con ella. Que no pudiera cambiarse su propio rol no cerraba nada: el camino
+ * de al lado estaba abierto. La decisión vive en `team.ts` para que el alta, la
+ * invitación y el cambio de rol respondan lo mismo.
+ */
+function assertRole(ctx: { role: string }, role: string): AppRole {
+  const decision = roleDecision(ctx.role, role);
+  if (decision.ok === false) throw new TenantError(decision.message!, decision.status);
+  return decision.role!;
 }
 
 // Auth de Supabase es global (no por tenant): un mismo email puede existir ya
@@ -38,16 +48,19 @@ function mapUser(user: any, membership: any) {
     phone: user.phone || user.user_metadata?.phone || null,
     role: membership.role,
     status: membership.status,
+    // «pendiente» en la base es «invitado, sin aceptar» para quien lo lee.
+    state: memberState(membership.status),
     company_id: membership.organization_id,
     createdAt: user.created_at,
     updatedAt: user.updated_at,
   };
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
     requireAtLeast(ctx, "manager");
+    await assertRateLimit({ key: rateLimitKey(req, "team:list", ctx.userId), limit: 60, windowMs: 60_000 });
 
     const sb = supabaseService();
     const { data: memberships, error } = await sb
@@ -74,6 +87,9 @@ export async function POST(req: NextRequest) {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
     requireAtLeast(ctx, "admin");
+    // Crear cuentas es exactamente lo que no puede ir sin freno: cada intento
+    // toca Supabase Auth y, sin tope, un bucle llena el equipo de una empresa.
+    await assertRateLimit({ key: rateLimitKey(req, "team:create", ctx.userId), limit: 20, windowMs: 60_000 });
     // El plan se comprueba ANTES de crear la cuenta en Supabase Auth: al revés
     // quedaría un usuario creado sin membresía —invisible en el equipo e
     // imposible de invitar otra vez porque el correo ya existe—.
@@ -84,7 +100,7 @@ export async function POST(req: NextRequest) {
     const name = (body.name || "").trim();
     const password = body.password || "";
     if (!email || !name) throw new TenantError("El nombre y el email son obligatorios", 400);
-    const role = assertRole(body.role || "seller");
+    const role = assertRole(ctx, body.role || "seller");
 
     const sb = supabaseService();
     const existing = await findAuthUserByEmail(sb, email);
@@ -177,6 +193,7 @@ export async function PUT(req: NextRequest) {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
     requireAtLeast(ctx, "admin");
+    await assertRateLimit({ key: rateLimitKey(req, "team:update", ctx.userId), limit: 60, windowMs: 60_000 });
 
     const body = await readJson<{ user_id?: string; role?: string; status?: string; phone?: string | null; name?: string }>(req);
     if (!body.user_id) throw new TenantError("Falta el identificador del usuario", 400);
@@ -194,7 +211,7 @@ export async function PUT(req: NextRequest) {
     if (!membership) throw new TenantError("Usuario no encontrado en esta empresa", 404);
 
     const patch: Record<string, unknown> = {};
-    if (body.role) patch.role = assertRole(body.role);
+    if (body.role) patch.role = assertRole(ctx, body.role);
     if (body.status) patch.status = body.status;
     if (Object.keys(patch).length > 0) {
       const { error } = await sb

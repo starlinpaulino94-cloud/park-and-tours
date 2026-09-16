@@ -19,6 +19,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CHANNEL, COMPANY_TYPE, GENERIC_STATUS, MODALITY_TYPE, MODULE_LABEL } from "@/lib/labels";
 import { formatDate, formatMoney, formatNumber, formatPercent } from "@/lib/format";
 import { CURRENCY_OPTIONS, optionsFrom } from "@/components/tf/options";
+import { passwordIssue, memberState, MEMBER_STATE_LABEL, type MemberState } from "@/lib/team";
 
 /* ------------------------------------------------------------------ company */
 
@@ -188,6 +189,16 @@ function Team() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<any>(null);
 
+  /**
+   * Cómo entra la persona.
+   *
+   * «invite» es el camino normal desde que existe `/api/team/invite`: recibe un
+   * correo y pone una contraseña que nadie más ha visto. El camino de la
+   * contraseña se queda porque hay casos reales sin correo fiable —un cajero de
+   * temporada, una tablet compartida—, pero deja de ser el primero que se ve.
+   */
+  const [mode, setMode] = useState<"invite" | "password">("invite");
+
   const [form, setForm] = useState({
     name: "", email: "", password: "", role: "seller", partner_id: "", branch: "", phone: "",
   });
@@ -215,8 +226,27 @@ function Team() {
 
   const create = async () => {
     if (!form.name.trim() || !form.email.trim()) { toast.error("El nombre y el email son obligatorios"); return; }
-    if (form.password.length < 8) { toast.error("La contraseña debe tener al menos 8 caracteres"); return; }
     if (form.role === "partner" && !form.partner_id) { toast.error("Elige el partner del usuario de portal"); return; }
+
+    if (mode === "invite") {
+      setBusy(true);
+      const res = await api.post("/api/team/invite", {
+        name: form.name.trim(), email: form.email.trim(), role: form.role,
+      });
+      setBusy(false);
+      if (!res.ok) {
+        toast.error(res.error?.message || "No se pudo enviar la invitación");
+        return;
+      }
+      toast.success("Invitación enviada. La persona pondrá su propia contraseña.");
+      setCreateOpen(false);
+      setForm({ name: "", email: "", password: "", role: "seller", partner_id: "", branch: "", phone: "" });
+      load();
+      return;
+    }
+
+    const issue = passwordIssue(form.password);
+    if (issue) { toast.error(issue); return; }
     setBusy(true);
     const res = await api.post<{ linked?: boolean }>("/api/team", {
       name: form.name.trim(), email: form.email.trim(), password: form.password,
@@ -304,7 +334,13 @@ function Team() {
           } },
           { key: "last", header: "Último acceso", hideOn: "lg",
             render: (u: any) => (u.last_login_at ? formatDate(u.last_login_at) : "Nunca") },
-          { key: "status", header: "Estado", render: (u: any) => <StatusBadge value={u.status} dict={GENERIC_STATUS} /> },
+          // «Invitado» es un estado que el administrador necesita distinguir:
+          // es la diferencia entre reenviar el correo y llamar por teléfono.
+          { key: "status", header: "Estado", render: (u: any) => (
+            <Pill tone={u.state === "invited" ? "warning" : u.state === "active" ? "success" : "neutral"}>
+              {MEMBER_STATE_LABEL[(u.state || memberState(u.status)) as MemberState]}
+            </Pill>
+          ) },
         ]}
       />
 
@@ -326,13 +362,33 @@ function Team() {
           <DialogHeader>
             <DialogTitle>Nuevo usuario</DialogTitle>
             <DialogDescription>
-              La cuenta se crea activa. Comparte la contraseña con la persona para su primer acceso.
+              {mode === "invite"
+                ? "Recibe un correo y elige su propia contraseña. Nadie más la ve, ni tú."
+                : "Le pones tú la contraseña inicial y se la tienes que hacer llegar. Úsalo solo si no tiene correo."}
             </DialogDescription>
           </DialogHeader>
+          {/* La invitación primero: compartir una contraseña por chat deja a
+              otra persona pudiendo firmar cierres de caja con esa cuenta. */}
+          <div className="flex gap-2 rounded-lg border border-border p-1">
+            {([["invite", "Invitar por correo"], ["password", "Con contraseña"]] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setMode(value)}
+                className={`flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  mode === value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Nombre completo" value={form.name} onChange={(v) => setForm({ ...form, name: v })} className="sm:col-span-2" />
             <Field label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
-            <Field label="Contraseña" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} />
+            {mode === "password" && (
+              <Field label="Contraseña" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} />
+            )}
             <div className="space-y-1.5">
               <Label>Rol</Label>
               <Select value={form.role} onValueChange={(v) => setForm({ ...form, role: v })}>
@@ -371,7 +427,9 @@ function Team() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancelar</Button>
-            <Button onClick={create} disabled={busy}>{busy ? "Creando…" : "Crear usuario"}</Button>
+            <Button onClick={create} disabled={busy}>
+              {busy ? "Enviando…" : mode === "invite" ? "Enviar invitación" : "Crear usuario"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -47,8 +47,12 @@ export async function loadPlan(planId: string | null | undefined): Promise<PlanS
 /**
  * El uso real de la empresa.
  *
- * · usuarios — membresías ACTIVAS. Una cuenta desactivada no ocupa plaza, que
- *   es lo que permite rotar personal sin subir de plan.
+ * · usuarios — membresías activas Y las invitaciones sin aceptar. La invitación
+ *   RESERVA la plaza: si no contara, un plan de cinco aceptaría veinte
+ *   invitaciones y el tope saltaría al aceptar la sexta —delante de alguien que
+ *   ya recibió el correo y no entiende por qué no puede entrar—. Una cuenta
+ *   desactivada sí libera su plaza, que es lo que permite rotar personal sin
+ *   subir de plan.
  * · reservas — creadas desde el día 1 del mes en curso, sin filtrar por estado:
  *   una reserva cancelada se creó igual, y si no contara, cancelar y recrear
  *   sería un contador infinito.
@@ -60,7 +64,7 @@ export async function loadUsage(companyId: string): Promise<PlanUsage> {
   const sb = supabaseService();
   const [users, bookings, products, org] = await Promise.all([
     sb.from("organization_memberships").select("id", { count: "exact", head: true })
-      .eq("organization_id", companyId).eq("status", "active"),
+      .eq("organization_id", companyId).in("status", ["active", "pending"]),
     sb.from("booking").select("id", { count: "exact", head: true })
       .eq("organization_id", companyId).gte("created_at", monthStart()),
     sb.from("product").select("id", { count: "exact", head: true })
