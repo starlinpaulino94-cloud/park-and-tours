@@ -3048,3 +3048,82 @@ describe("distribución: el cupo del socio acota de verdad", () => {
     expect(src).toMatch(/remaining: holds \? Math\.max\(0, seats - used - released\)/);
   });
 });
+
+describe("la marca: que los documentos sean de la empresa, no nuestros", () => {
+  /**
+   * La pantalla de Configuración pedía WhatsApp, logo, dirección y color desde
+   * el principio, `/api/company` los declaraba editables y el tipo `Company` los
+   * declaraba — y ninguna de esas columnas existía. PostgREST rechaza el UPDATE
+   * ENTERO cuando una sola columna del payload no existe, así que escribir un
+   * WhatsApp hacía perder también el nombre y el RNC del mismo formulario.
+   */
+
+  it("el acento del PDF sale del color de marca, no de una constante", () => {
+    // Era `rgb(0.05, 0.42, 0.42)` quemado: todas las empresas entregaban
+    // documentos del mismo verde.
+    const src = read("src/lib/pdf/doc.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/const accentOf = \(brand\?: DocumentBrand \| null\)/);
+    expect(src).toMatch(/accent = accentOf\(meta\.brand\)/);
+    // Y ya no queda ninguna constante de acento suelta.
+    expect(src).not.toMatch(/^const ACCENT\b/m);
+  });
+
+  it("los seis documentos llevan la marca, no solo algunos", () => {
+    // Seis builders y seis llamantes: bastaba con que uno se olvidara para que
+    // ESE documento saliera del color de casa sin que nadie supiera por qué.
+    const src = read("src/lib/pdf/documents.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const creates = src.match(/await PdfBuilder\.create\(\{/g) ?? [];
+    const brands = src.match(/await brandFor\(company, "/g) ?? [];
+    expect(creates.length).toBeGreaterThanOrEqual(6);
+    expect(brands.length).toBe(creates.length);
+  });
+
+  it("bajar el logo nunca puede dejar sin documento", () => {
+    // Generar un voucher ocurre delante de un cliente: un almacenamiento lento
+    // o un enlace roto no pueden dejarle sin papel.
+    const src = read("src/lib/pdf/logo.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/catch \(err\)/);
+    expect(src).toMatch(/return null;/);
+    expect(src).toMatch(/AbortController/);
+    expect(src).toMatch(/MAX_LOGO_BYTES/);
+  });
+
+  it("el logo se incrusta una sola vez aunque el documento tenga varias hojas", () => {
+    const src = read("src/lib/pdf/doc.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    // Se incrusta en `create`, no en `drawPageHeader`, que corre por hoja.
+    const header = src.slice(src.indexOf("private drawPageHeader"), src.indexOf("rule(): void"));
+    expect(header).not.toMatch(/embedPng|embedJpg/);
+    expect(src).toMatch(/builder\.logoImage =/);
+  });
+
+  it("solo llega al PDF un formato que el PDF sabe incrustar", () => {
+    // Un SVG se ve en pantalla y NO sale en el voucher: la empresa se enteraría
+    // por un cliente.
+    const subida = read("src/app/api/company/logo/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(subida).toMatch(/PDF_IMAGE_TYPES\.has\(file\.type\)/);
+    expect(read("src/lib/branding.ts")).toMatch(/PDF_IMAGE_TYPES = new Set\(\["image\/png", "image\/jpeg"\]\)/);
+  });
+
+  it("el color se valida antes de guardarse, no al pintarlo", () => {
+    // La base tiene un check que rechaza cualquier otra cosa: dejar pasar un
+    // "azul" del formulario convertiría un error de tecleo en un 500 sin
+    // explicación.
+    const src = read("src/app/api/company/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/normalizeColor\(dbPatch\.brand_color\)/);
+    const sql = read("supabase/migrations/0055_company_branding.sql");
+    expect(sql).toMatch(/brand_color ~ '\^#\[0-9a-f\]\{6\}\$'/);
+  });
+
+  it("la página pública valida el color en vez de fiarse de un respaldo", () => {
+    const src = read("src/app/reservar/[slug]/_components/booking-engine.tsx")
+      .replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/brandColor\(org\.brandColor\)/);
+    expect(src).not.toMatch(/org\.brandColor \|\|/);
+  });
+
+  it("las condiciones del voucher y la nota legal de la factura se imprimen", () => {
+    const src = read("src/lib/pdf/documents.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/pdf\.block\("Condiciones", brand\.terms\)/);
+    expect(src).toMatch(/pdf\.block\("Nota legal", brand\.terms\)/);
+  });
+});

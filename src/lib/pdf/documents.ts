@@ -4,6 +4,9 @@ import { PdfBuilder } from "@/lib/pdf/doc";
 import { formatDate, formatDateTime, formatMoney, formatNumber, formatTime, formatPercent } from "@/lib/format";
 import { formatTaxId } from "@/lib/invoicing";
 import { depositDue, optionBreakdown, lineGross } from "@/lib/quotes";
+import { documentBrand, type CompanyBranding, type DocumentKind } from "@/lib/branding";
+import { fetchLogo } from "@/lib/pdf/logo";
+import { APP_URL } from "@/lib/stripe";
 import type { ManifestRow, PickupStop, PaxSummary } from "@/lib/manifest";
 
 /**
@@ -17,9 +20,27 @@ import type { ManifestRow, PickupStop, PaxSummary } from "@/lib/manifest";
  * precio, la lista de quién viaja— y nada más.
  */
 
-interface CompanyInfo {
-  name?: string | null; email?: string | null; phone?: string | null;
-  whatsapp?: string | null; address?: string | null;
+/**
+ * Lo que un documento necesita saber de la empresa que lo emite.
+ *
+ * Antes eran cinco campos sueltos y el documento salía siempre del mismo verde.
+ * Ahora es la ficha de marca completa (0055): `documentBrand` la resuelve —el
+ * color validado, el logo incrustable, el RNC etiquetado, las condiciones que
+ * tocan a ESTE documento— y `PdfBuilder` la pinta.
+ */
+type CompanyInfo = CompanyBranding;
+
+/**
+ * La marca y el logo listos para el constructor.
+ *
+ * El logo se baja aquí y no en cada ruta: son seis documentos y seis llamantes,
+ * y bastaba con que uno se olvidara para que ESE documento saliera sin logo sin
+ * que nadie supiera por qué. `fetchLogo` nunca lanza — un almacenamiento lento
+ * o un enlace roto dejan el documento sin logo, no sin documento.
+ */
+async function brandFor(company: CompanyInfo | null, kind: DocumentKind) {
+  const brand = documentBrand(company, kind);
+  return { brand, logo: await fetchLogo(brand.logo, APP_URL) };
 }
 
 /* ------------------------------------------------------------------ voucher */
@@ -66,11 +87,14 @@ export interface VoucherData {
  */
 export async function buildVoucherPdf(company: CompanyInfo | null, data: VoucherData): Promise<Uint8Array> {
   const currency = data.currency || "usd";
+  const { brand, logo } = await brandFor(company, "voucher");
   const pdf = await PdfBuilder.create({
     kind: "VOUCHER",
     reference: data.booking_number,
     company,
     footer: company?.name || undefined,
+    brand,
+    logo,
   });
 
   pdf.heading(data.product_name || "Reserva");
@@ -140,6 +164,13 @@ export async function buildVoucherPdf(company: CompanyInfo | null, data: Voucher
   pdf.block("Política de cancelación", data.cancellation_policy);
   pdf.block("Notas", data.notes);
   if (data.sold_by) pdf.block("Vendido por", data.sold_by);
+
+  // 0055 — las condiciones que la empresa configuró para SUS vouchers. Van al
+  // final y no en la cabecera: el cliente busca primero la fecha y el punto de
+  // encuentro, y estas son la letra que se lee cuando hay discusión en la
+  // puerta. Las de la reserva concreta (`data.conditions`) siguen mandando
+  // sobre estas: lo pactado en la venta gana a la plantilla.
+  if (brand.terms) pdf.block("Condiciones", brand.terms);
 
   return pdf.finish();
 }
@@ -217,11 +248,14 @@ export async function buildQuotePdf(
   const currency = quote.currency || "usd";
   const money = (value: number | null | undefined) => formatMoney(value ?? 0, currency);
 
+  const { brand, logo } = await brandFor(company, "quote");
   const pdf = await PdfBuilder.create({
     kind: "COTIZACIÓN",
     reference: quote.code,
     company,
     footer: company?.name || undefined,
+    brand,
+    logo,
   });
 
   pdf.heading(quote.title || quote.code || "Propuesta");
@@ -374,11 +408,14 @@ export async function buildInvoicePdf(
   const money = (v: number | null | undefined) => formatMoney(v ?? 0, currency);
   const isCreditNote = invoice.invoice_type === "credit_note";
 
+  const { brand, logo } = await brandFor(company, "invoice");
   const pdf = await PdfBuilder.create({
     kind: isCreditNote ? "NOTA DE CRÉDITO" : "FACTURA",
     reference: invoice.ncf,
     company,
     footer: company?.name || undefined,
+    brand,
+    logo,
   });
 
   // El NCF va arriba y grande: es el dato por el que se busca el documento.
@@ -450,6 +487,12 @@ export async function buildInvoicePdf(
   }
 
   pdf.block("Notas", invoice.notes);
+  // 0055 — el texto legal del comprobante. En la República Dominicana cambia
+  // según el régimen de cada empresa, así que hasta ahora habría que pedirle a
+  // quien programa que lo añadiera al código.
+  // Con etiqueta y no en blanco: `block("")` dibujaría un rótulo vacío y dejaría
+  // una línea suelta encima del texto.
+  if (brand.terms) pdf.block("Nota legal", brand.terms);
   return pdf.finish();
 }
 
@@ -479,11 +522,14 @@ export async function buildManifestPdf(
   stops: PickupStop[],
   summary: PaxSummary
 ): Promise<Uint8Array> {
+  const { brand, logo } = await brandFor(company, "manifest");
   const pdf = await PdfBuilder.create({
     kind: "MANIFIESTO",
     reference: data.departure_at ? formatDate(data.departure_at) : undefined,
     company,
     footer: `Generado ${formatDateTime(new Date().toISOString())}`,
+    brand,
+    logo,
   });
 
   pdf.heading(data.product_name || "Salida");
@@ -625,11 +671,14 @@ export async function buildCashClosePdf(
   data: CashClosePdfData,
   currencies: CashClosePdfCurrency[]
 ): Promise<Uint8Array> {
+  const { brand, logo } = await brandFor(company, "cash");
   const pdf = await PdfBuilder.create({
     kind: "ARQUEO DE CAJA",
     reference: data.code,
     company,
     footer: `Generado ${formatDateTime(new Date().toISOString())}`,
+    brand,
+    logo,
   });
 
   pdf.heading(data.register || "Caja");
@@ -777,11 +826,14 @@ export async function buildSupplierStatementPdf(
   data: SupplierStatementPdfData,
   lines: SupplierStatementPdfLine[]
 ): Promise<Uint8Array> {
+  const { brand, logo } = await brandFor(company, "statement");
   const pdf = await PdfBuilder.create({
     kind: "ESTADO DE CUENTA",
     reference: data.code,
     company,
     footer: `Generado ${formatDateTime(new Date().toISOString())}`,
+    brand,
+    logo,
   });
 
   pdf.heading(data.supplier_name || "Proveedor");

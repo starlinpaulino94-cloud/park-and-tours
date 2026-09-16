@@ -20,6 +20,10 @@ import { CHANNEL, COMPANY_TYPE, GENERIC_STATUS, MODALITY_TYPE, MODULE_LABEL } fr
 import { formatDate, formatMoney, formatNumber, formatPercent } from "@/lib/format";
 import { CURRENCY_OPTIONS, optionsFrom } from "@/components/tf/options";
 import { passwordIssue, memberState, MEMBER_STATE_LABEL, type MemberState } from "@/lib/team";
+import {
+  brandColor, readableOn, hasReadableContrast, contrastRatio, brandingGaps,
+  logoProblem, LOGO_PROBLEM_MESSAGE, DEFAULT_BRAND_COLOR, MIN_CONTRAST,
+} from "@/lib/branding";
 
 /* ------------------------------------------------------------------ company */
 
@@ -114,10 +118,14 @@ function CompanyForm() {
             En blanco, nada expira. Una reserva con anticipo pagado nunca se cancela sola.
           </p>
         </div>
-        <Field label="Logo (URL)" value={company.logo_url} onChange={(v) => set("logo_url", v)} className="sm:col-span-2" />
         <div className="space-y-1.5 sm:col-span-2">
           <Label>Dirección</Label>
           <Textarea rows={2} value={company.address || ""} onChange={(e) => set("address", e.target.value)} />
+        </div>
+
+        {/* ------------------------------------------------- la marca (0055) */}
+        <div className="sm:col-span-2">
+          <Marca company={company} set={set} onSaved={load} />
         </div>
         {/* ------------------------------------------- página pública (0047) */}
         <div className="space-y-3 rounded-xl border border-border p-4 sm:col-span-2">
@@ -956,6 +964,202 @@ export default function SettingsPage() {
           <TabsContent key={t.value} value={t.value} className="mt-5">{t.node}</TabsContent>
         ))}
       </Tabs>
+    </div>
+  );
+}
+
+
+/**
+ * LA MARCA DE LA EMPRESA.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * ESTE BLOQUE EXISTE PORQUE ANTES NO SE PODÍA GUARDAR
+ *
+ * La pantalla pedía WhatsApp, logo, dirección y color desde el principio, y
+ * ninguna de esas columnas existía en la base. No es que se perdiera el campo:
+ * PostgREST rechaza el UPDATE ENTERO cuando una columna del payload no existe,
+ * así que en cuanto alguien escribía su WhatsApp se perdía también el nombre,
+ * el RNC y todo lo demás del formulario. La migración 0055 crea las columnas.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LA VISTA PREVIA NO ES ADORNO
+ *
+ * Un color se elige mirándolo, no imaginándoselo. Aquí se ve la cabecera tal y
+ * como saldrá en el voucher —logo, nombre, contacto, RNC— y el aviso de
+ * contraste aparece ANTES de que la empresa entregue mil documentos con un
+ * texto que no se lee encima de su amarillo corporativo.
+ */
+function Marca({
+  company, set, onSaved,
+}: {
+  company: any;
+  set: (k: string, v: string | number | boolean | null) => void;
+  onSaved: () => void;
+}) {
+  const [subiendo, setSubiendo] = useState(false);
+  const color = brandColor(company.brand_color);
+  const sobre = readableOn(color);
+  const legible = hasReadableContrast(color);
+  const problemaLogo = logoProblem(company.logo_url);
+  const pendientes = brandingGaps(company);
+
+  const subirLogo = async (file: File) => {
+    setSubiendo(true);
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch("/api/company/logo", { method: "POST", body: form, credentials: "same-origin" });
+    setSubiendo(false);
+    const payload = await res.json().catch(() => null);
+    if (!res.ok) {
+      toast.error(payload?.error?.message || "No se pudo subir el logo");
+      return;
+    }
+    toast.success("Logo actualizado. Ya sale en los documentos nuevos.");
+    onSaved();
+  };
+
+  const contacto = [company.phone || company.whatsapp, company.email,
+    [company.address, company.city].filter(Boolean).join(", ")].filter(Boolean).join("  ·  ");
+
+  return (
+    <div className="space-y-4 rounded-xl border border-border p-4">
+      <div>
+        <p className="font-medium">Tu marca en los documentos</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          El voucher, la cotización y la factura son lo único que el cliente se lleva a casa. Esto es lo que
+          decide cómo salen.
+        </p>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        {/* ------------------------------------------------------------ logo */}
+        <div className="space-y-2">
+          <Label>Logo</Label>
+          <div className="flex items-center gap-3">
+            {company.logo_url ? (
+              <img src={company.logo_url} alt="Logo" className="h-12 w-auto max-w-[140px] object-contain" />
+            ) : (
+              <div className="flex h-12 w-24 items-center justify-center rounded border border-dashed text-xs text-muted-foreground">
+                Sin logo
+              </div>
+            )}
+            <div>
+              <Input
+                type="file" accept="image/png,image/jpeg" disabled={subiendo}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) subirLogo(f);
+                }}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                PNG o JPG. El formato PDF no sabe incrustar SVG ni WebP: se vería en pantalla y no en el
+                voucher.
+              </p>
+            </div>
+          </div>
+          {problemaLogo && (
+            <p className="text-xs text-destructive">{LOGO_PROBLEM_MESSAGE[problemaLogo]}</p>
+          )}
+        </div>
+
+        {/* ----------------------------------------------------------- color */}
+        <div className="space-y-2">
+          <Label htmlFor="brand-color">Color de marca</Label>
+          <div className="flex items-center gap-2">
+            <input
+              id="brand-color" type="color" className="h-10 w-14 rounded border"
+              value={color}
+              onChange={(e) => set("brand_color", e.target.value.toLowerCase())}
+            />
+            <Input
+              className="w-32 font-mono"
+              value={company.brand_color || ""}
+              placeholder={DEFAULT_BRAND_COLOR}
+              onChange={(e) => set("brand_color", e.target.value || null)}
+            />
+          </div>
+          {!legible && (
+            <p className="text-xs text-amber-600">
+              Con este color el texto encima queda en {contrastRatio(color, sobre)}:1, por debajo del
+              mínimo legible de {MIN_CONTRAST}:1. Los documentos lo usarán igual, pero se leerá peor.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* --------------------------------------------------- vista previa */}
+      <div className="space-y-1.5">
+        <Label>Así sale la cabecera</Label>
+        <div className="rounded-lg border bg-white p-4 text-[#111]">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start gap-3">
+              {company.logo_url && (
+                  <img src={company.logo_url} alt="" className="h-8 w-auto max-w-[120px] object-contain" />
+              )}
+              <div className="min-w-0">
+                <p className="text-sm font-bold">{company.name || company.legal_name || "Nombre de tu empresa"}</p>
+                {company.legal_name && company.legal_name !== company.name && (
+                  <p className="text-[11px] text-neutral-500">{company.legal_name}</p>
+                )}
+                {contacto && <p className="text-[11px] text-neutral-500">{contacto}</p>}
+                {company.tax_id && <p className="text-[11px] text-neutral-500">RNC {company.tax_id}</p>}
+              </div>
+            </div>
+            <span className="shrink-0 text-xs font-bold" style={{ color }}>VOUCHER · RES-00042</span>
+          </div>
+          <div className="mt-3 h-px bg-neutral-200" />
+          {company.document_footer && (
+            <p className="mt-3 text-[10px] text-neutral-500">{company.document_footer}</p>
+          )}
+        </div>
+      </div>
+
+      {/* ------------------------------------------------- textos legales */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5 sm:col-span-2">
+          <Label>Pie legal (en todos los documentos)</Label>
+          <Textarea
+            rows={2} value={company.document_footer || ""}
+            onChange={(e) => set("document_footer", e.target.value)}
+            placeholder="RM 12345 · Autorizada por MITUR"
+          />
+          <p className="text-xs text-muted-foreground">
+            El registro mercantil, la leyenda de turismo o lo que te exijan. Va al pie de cada hoja.
+          </p>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Condiciones del voucher</Label>
+          <Textarea
+            rows={3} value={company.voucher_terms || ""}
+            onChange={(e) => set("voucher_terms", e.target.value)}
+            placeholder="Presentarse 15 minutos antes. Llevar documento de identidad."
+          />
+          <p className="text-xs text-muted-foreground">
+            Lo que el cliente enseña en la puerta. Las condiciones pactadas en una reserva concreta mandan
+            sobre estas.
+          </p>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Nota legal de la factura</Label>
+          <Textarea
+            rows={3} value={company.invoice_terms || ""}
+            onChange={(e) => set("invoice_terms", e.target.value)}
+            placeholder="Régimen ordinario. Esta factura es válida como crédito fiscal."
+          />
+          <p className="text-xs text-muted-foreground">
+            Cambia según el régimen de cada empresa, así que no puede venir escrita en el sistema.
+          </p>
+        </div>
+      </div>
+
+      {pendientes.length > 0 && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+          <p className="font-semibold">Lo que falta para que los documentos salgan completos</p>
+          <ul className="mt-1 space-y-0.5 text-muted-foreground">
+            {pendientes.map((g) => <li key={g}>· {g}</li>)}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

@@ -3,6 +3,8 @@ import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb, type RGB } from "pdf
 import {
   sanitizeForPdf, wrapText, truncate, columnPositions, cellX, type ColumnSpec,
 } from "@/lib/pdf/layout";
+import { toRgb, DEFAULT_BRAND_COLOR, type DocumentBrand } from "@/lib/branding";
+import type { FetchedLogo } from "@/lib/pdf/logo";
 
 /**
  * El constructor de documentos imprimibles.
@@ -27,7 +29,23 @@ const MARGIN = 48;
 const INK = rgb(0.07, 0.11, 0.13);
 const MUTED = rgb(0.42, 0.47, 0.49);
 const LINE = rgb(0.82, 0.85, 0.86);
-const ACCENT = rgb(0.05, 0.42, 0.42);
+
+/**
+ * El acento ya NO es una constante (0055).
+ *
+ * Era `rgb(0.05, 0.42, 0.42)` quemado, así que todas las empresas entregaban
+ * documentos del mismo verde. Ahora sale del color de marca, que `branding.ts`
+ * valida antes de que llegue aquí: un color inválido se convierte en NaN, y un
+ * PDF con un color NaN no se abre.
+ */
+const accentOf = (brand?: DocumentBrand | null) => {
+  const { r, g, b } = toRgb(brand?.color || DEFAULT_BRAND_COLOR);
+  return rgb(r, g, b);
+};
+
+/** Alto del logo en la cabecera. Ancho proporcional, con tope. */
+const LOGO_HEIGHT = 30;
+const LOGO_MAX_WIDTH = 140;
 
 export interface DocMeta {
   /** Nombre del documento, arriba a la derecha: VOUCHER, COTIZACIÓN… */
@@ -37,6 +55,15 @@ export interface DocMeta {
   company?: { name?: string | null; email?: string | null; phone?: string | null; whatsapp?: string | null; address?: string | null } | null;
   /** Pie legal o de contacto. */
   footer?: string | null;
+  /**
+   * La marca resuelta de la empresa (0055): color, logo y textos legales.
+   *
+   * Cuando viene, manda sobre `company`: trae el nombre, el contacto y el RNC ya
+   * armados por `documentBrand`, y el color con el que se pinta el documento.
+   */
+  brand?: DocumentBrand | null;
+  /** El logo ya descargado. Lo trae quien llama, porque bajarlo puede fallar. */
+  logo?: FetchedLogo | null;
 }
 
 export class PdfBuilder {
@@ -46,6 +73,8 @@ export class PdfBuilder {
   private bold!: PDFFont;
   private y = 0;
   private pageNumber = 0;
+  private accent = accentOf(null);
+  private logoImage: import("pdf-lib").PDFImage | null = null;
 
   private constructor(private readonly meta: DocMeta) {}
 
@@ -57,6 +86,22 @@ export class PdfBuilder {
     builder.doc.setTitle(`${meta.kind}${meta.reference ? ` ${meta.reference}` : ""}`);
     builder.doc.setProducer("Park & Tours");
     builder.doc.setCreationDate(new Date());
+    builder.accent = accentOf(meta.brand);
+
+    // El logo se incrusta UNA vez y se reutiliza en cada hoja: un manifiesto de
+    // tres páginas con el logo embebido tres veces pesa el triple sin mejorar
+    // nada. Si falla, el documento sale con el nombre en texto — que es como
+    // salía antes de todo esto.
+    if (meta.logo) {
+      try {
+        builder.logoImage = meta.logo.kind === "png"
+          ? await builder.doc.embedPng(meta.logo.bytes)
+          : await builder.doc.embedJpg(meta.logo.bytes);
+      } catch (err) {
+        console.warn("[pdf] el logo no se pudo incrustar:", (err as Error).message);
+      }
+    }
+
     builder.newPage();
     return builder;
   }
@@ -94,22 +139,63 @@ export class PdfBuilder {
     this.page.drawText(sanitizeForPdf(value), { x, y: this.y, size, font, color });
   }
 
-  /** La cabecera que se repite en cada hoja: quién manda el papel y cuál es. */
+  /**
+   * La cabecera que se repite en cada hoja: quién manda el papel y cuál es.
+   *
+   * Con logo, el bloque de la empresa se desplaza a su derecha y la cabecera
+   * crece hasta el alto del logo. Sin logo queda exactamente como estaba: una
+   * empresa que no ha subido el suyo no debe notar ningún cambio.
+   */
   private drawPageHeader(): void {
+    const brand = this.meta.brand;
     const company = this.meta.company;
-    this.text(company?.name || "", MARGIN, 13, this.bold, INK);
+    const top = this.y;
+
+    let textLeft = MARGIN;
+    if (this.logoImage) {
+      const scale = Math.min(
+        LOGO_HEIGHT / this.logoImage.height,
+        LOGO_MAX_WIDTH / this.logoImage.width
+      );
+      const w = this.logoImage.width * scale;
+      const h = this.logoImage.height * scale;
+      this.page.drawImage(this.logoImage, { x: MARGIN, y: top - h + 2, width: w, height: h });
+      textLeft = MARGIN + w + 12;
+    }
+
+    const name = brand?.name ?? company?.name ?? "";
+    this.page.drawText(sanitizeForPdf(name), { x: textLeft, y: top, size: 13, font: this.bold, color: INK });
+
     const kind = `${this.meta.kind}${this.meta.reference ? ` · ${this.meta.reference}` : ""}`;
     const kindWidth = this.width(kind, this.bold, 10);
-    this.text(kind, A4.width - MARGIN - kindWidth, 10, this.bold, ACCENT);
-    this.y -= 13;
+    this.page.drawText(sanitizeForPdf(kind), {
+      x: A4.width - MARGIN - kindWidth, y: top, size: 10, font: this.bold, color: this.accent,
+    });
 
-    const contact = [company?.phone || company?.whatsapp, company?.email, company?.address]
-      .filter(Boolean).join("  ·  ");
-    if (contact) {
-      this.text(contact, MARGIN, 8, this.regular, MUTED);
-      this.y -= 10;
+    let line = top - 11;
+    // La razón social solo cuando aporta: repetir el mismo nombre dos veces es
+    // ruido en un documento que ya va apretado.
+    if (brand?.legalName) {
+      this.page.drawText(sanitizeForPdf(brand.legalName), { x: textLeft, y: line, size: 8, font: this.regular, color: MUTED });
+      line -= 9;
     }
-    this.y -= 6;
+
+    const contact = brand
+      ? brand.contact
+      : [company?.phone || company?.whatsapp, company?.email, company?.address].filter(Boolean).join("  ·  ");
+    if (contact) {
+      this.page.drawText(sanitizeForPdf(contact), { x: textLeft, y: line, size: 8, font: this.regular, color: MUTED });
+      line -= 9;
+    }
+    if (brand?.taxLine) {
+      this.page.drawText(sanitizeForPdf(brand.taxLine), { x: textLeft, y: line, size: 8, font: this.regular, color: MUTED });
+      line -= 9;
+    }
+
+    // La cabecera acaba donde acabe lo más alto: el logo o el bloque de texto.
+    // Tomar solo uno de los dos hacía que el título del documento se comiera la
+    // primera línea cuando el otro era más largo.
+    this.y = Math.min(line, top - (this.logoImage ? LOGO_HEIGHT : 0)) - 4;
     this.rule();
     this.y -= 14;
   }
@@ -230,7 +316,7 @@ export class PdfBuilder {
     this.reserve(height);
     this.page.drawRectangle({
       x: MARGIN, y: this.y - height + 12, width: this.contentWidth, height,
-      borderColor: ACCENT, borderWidth: 0.8, color: rgb(0.96, 0.98, 0.98),
+      borderColor: this.accent, borderWidth: 0.8, color: rgb(0.96, 0.98, 0.98),
     });
     this.y -= 4;
     for (const line of lines) {
@@ -257,7 +343,25 @@ export class PdfBuilder {
    */
   async finish(): Promise<Uint8Array> {
     const pages = this.doc.getPages();
+    // El pie legal de la empresa —registro mercantil, leyenda de turismo— va a
+    // la IZQUIERDA y la numeración a la derecha: son dos cosas distintas y
+    // juntarlas en una sola línea hacía que la más larga empujara a la otra
+    // fuera de la página.
+    // Se recorta al ancho REAL disponible —lo que queda a la izquierda de la
+    // numeración— y no a un número de caracteres: un pie con muchas mayúsculas
+    // ocupa mucho más que uno del mismo largo en minúsculas, y se solaparían.
+    const reserved = this.regular.widthOfTextAtSize("Página 99 de 99", 7.5) + 24;
+    const legal = this.meta.brand?.footer
+      ? truncate(this.meta.brand.footer, this.contentWidth - reserved, (t) =>
+          this.regular.widthOfTextAtSize(sanitizeForPdf(t), 7))
+      : null;
+
     pages.forEach((page, index) => {
+      if (legal) {
+        page.drawText(legal, {
+          x: MARGIN, y: MARGIN - 14, size: 7, font: this.regular, color: MUTED,
+        });
+      }
       const label = sanitizeForPdf(
         `${this.meta.footer ? `${this.meta.footer}  ·  ` : ""}Página ${index + 1} de ${pages.length}`
       );

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { brandColor, readableOn } from "@/lib/branding";
 import type { PublicPage } from "@/lib/public-booking-service";
 import { MAX_PUBLIC_PAX } from "@/lib/public-booking";
 
@@ -56,10 +57,22 @@ export function BookingEngine({ slug, page }: { slug: string; page: PublicPage }
   const [error, setError] = useState("");
   const [done, setDone] = useState<Confirmation | null>(null);
 
-  // El color de la operadora manda sobre el nuestro: el cliente le está
-  // comprando a su marca.
-  const brand = org.brandColor || "#0f766e";
-  const style = useMemo(() => ({ "--marca": brand } as React.CSSProperties), [brand]);
+  /**
+   * El color de la operadora manda sobre el nuestro: el cliente le está
+   * comprando a su marca.
+   *
+   * Pasa por `brandColor` (0055) y no por un `||` a secas: hasta esa migración
+   * `brand_color` no existía como columna y este valor era SIEMPRE undefined,
+   * así que el respaldo tapaba el problema. Ahora que llega de verdad, un valor
+   * inválido guardado antes de la validación pintaría `background: verde` y
+   * dejaría media página sin color, sin que nada avisara.
+   */
+  const brand = brandColor(org.brandColor);
+  const onBrand = readableOn(brand);
+  const style = useMemo(
+    () => ({ "--marca": brand, "--sobre-marca": onBrand } as React.CSSProperties),
+    [brand, onBrand]
+  );
 
   const openProduct = useCallback(async (product: Product) => {
     setSelected(product);
@@ -239,7 +252,7 @@ export function BookingEngine({ slug, page }: { slug: string; page: PublicPage }
             type="submit"
             disabled={sending || pax === 0 || pax > MAX_PUBLIC_PAX || form.name.trim().length < 3}
             className="w-full rounded-xl px-4 py-3 text-base font-semibold text-white disabled:opacity-50"
-            style={{ background: brand }}
+            style={{ background: brand, color: onBrand }}
           >
             {sending ? "Enviando…" : "Pedir mi lugar"}
           </button>
