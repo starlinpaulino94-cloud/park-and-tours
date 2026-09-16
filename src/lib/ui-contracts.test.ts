@@ -2876,3 +2876,94 @@ describe("inventario: que comprar y vender muevan el almacén", () => {
     }
   });
 });
+
+describe("contabilidad: el mes cerrado se cierra de verdad", () => {
+  /**
+   * El mayor aceptaba cualquier asiento con cualquier fecha. El 607 se envía el
+   * día 20 y nada impedía contabilizar con fecha del mes anterior: lo declarado
+   * y los libros empezaban a decir cosas distintas, y la diferencia solo
+   * aparecía cuando la DGII cruzaba los comprobantes.
+   */
+
+  it("el mayor comprueba el periodo ANTES de escribir la primera línea", () => {
+    // Un asiento a medias en un mes cerrado sería peor que el problema que esto
+    // evita.
+    const src = read("src/lib/ledger.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const guarda = src.indexOf("postingBlocker(period, periods)");
+    const escritura = src.indexOf('await tenantCreate<{ _id: string }>(companyId, "ledger_entry"');
+    expect(guarda).toBeGreaterThan(-1);
+    expect(escritura).toBeGreaterThan(-1);
+    expect(guarda).toBeLessThan(escritura);
+  });
+
+  it("el periodo contable NO se puede escribir desde el CRUD genérico", () => {
+    // Bastaría con poner el estado en «abierto» para contabilizar dentro de un
+    // mes ya enviado a la DGII.
+    const resources = read("src/lib/resources.ts");
+    const bloque = /^ {2}accounting_period:\s*\{\n([\s\S]*?)^ {2}\},/m.exec(resources)?.[1] ?? "";
+    expect(bloque).toMatch(/writable:\s*\[\]/);
+  });
+
+  it("el balance de comprobación pagina en vez de truncar en silencio", () => {
+    // Pedía 5 000 asientos y se quedaba con lo que viniera: a partir de ahí el
+    // informe que existe para demostrar que los libros cuadran devolvía cifras
+    // incompletas y decía «cuadrado» igual.
+    const src = read("src/lib/ledger.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const fn = src.slice(src.indexOf("export async function trialBalance"));
+    expect(fn).toMatch(/_offset: offset/);
+    expect(fn).toMatch(/if \(page\.length < TRIAL_PAGE\) break;/);
+    // Y dice sobre cuántos asientos se calculó.
+    expect(fn).toMatch(/entries: entries\.length/);
+  });
+
+  it("el cierre del ejercicio es un ASIENTO, no una bandera", () => {
+    // Una bandera obligaría a cada informe a recordar excluir el año anterior.
+    const src = read("src/lib/financials-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/const lines = closingEntry\(/);
+    expect(src).toMatch(/await post\(companyId, \{/);
+    expect(src).toMatch(/RETAINED_EARNINGS|closingEntry/);
+  });
+
+  it("el ejercicio no se cierra dos veces", () => {
+    const src = read("src/lib/financials-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const fn = src.slice(src.indexOf("export async function closeYear"));
+    expect(fn).toMatch(/is_closing: true/);
+    expect(fn).toMatch(/ya está cerrado/);
+    expect(fn.indexOf("ya está cerrado")).toBeLessThan(fn.indexOf("await post("));
+  });
+
+  it("los estados financieros y las declaraciones son LECTURA", () => {
+    // Una empresa con la suscripción vencida sigue teniendo que declarar sus
+    // impuestos y cerrar su contabilidad.
+    for (const file of [
+      "src/app/api/ledger/statements/route.ts",
+      "src/app/api/reports/dgii/route.ts",
+    ]) {
+      const src = read(file);
+      const get = src.slice(src.indexOf("export async function GET"));
+      expect(get, file).toMatch(/await requireTenant\(\)/);
+      expect(get, file).not.toMatch(/await requireTenantWrite\(\)/);
+    }
+  });
+
+  it("el 608 está en el catálogo, en el servicio y en la pantalla", () => {
+    // Es el tercero de la terna y el que más se olvida: la DGII cruza los NCF
+    // emitidos con los anulados.
+    expect(read("src/lib/dgii.ts")).toMatch(/export function line608\(/);
+    // Se comprueba la LLAMADA, no el nombre: una función `load608` que nadie
+    // invoca deja la declaración vacía igual que si no existiera.
+    const servicio = read("src/lib/dgii-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(servicio).toMatch(/kind === "608" \? await load608\(ctx, month\)/);
+    expect(servicio).toMatch(/async function load608\(ctx/);
+    expect(read("src/app/api/reports/dgii/route.ts")).toMatch(/"606", "607", "608"/);
+    expect(read("src/app/dashboard/finanzas/declaraciones/page.tsx")).toMatch(/608 · Anulaciones/);
+  });
+
+  it("anular una factura guarda el código que el 608 exige", () => {
+    const src = read("src/lib/invoice-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/void_reason_code:/);
+    // Lo que no esté en la lista del formato cae en el código por defecto: un
+    // código inventado hace que la DGII rechace el archivo entero.
+    expect(src).toMatch(/VOID_REASONS\[String\(reasonCode \|\| ""\)\]/);
+  });
+});

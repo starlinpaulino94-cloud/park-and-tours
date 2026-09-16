@@ -1,7 +1,9 @@
 import "server-only";
 import { tenantQuery, type TenantContext } from "@/lib/tenant";
 import {
-  line606, line607, buildFile, fileName, purchaseProblems, saleProblems, totalsOf,
+  line606, line607, line608, buildFile, fileName,
+  purchaseProblems, saleProblems, voidProblems, totalsOf,
+  DEFAULT_VOID_REASON,
   type PurchaseRow, type SaleRow, type RowProblem, type FileTotals,
 } from "@/lib/dgii";
 
@@ -13,7 +15,7 @@ import {
  * que el modelo del sistema necesita para hablar el idioma de la DGII.
  */
 
-export type DgiiKind = "606" | "607";
+export type DgiiKind = "606" | "607" | "608";
 
 export interface DgiiRow {
   /** Lo que se enseña en pantalla para reconocer la fila. */
@@ -197,12 +199,61 @@ async function load606(ctx: TenantContext & { companyId: string }, month: string
 
 /* ------------------------------------------------------------- el informe */
 
+/* ---------------------------------------------------------------- 608 */
+
+/**
+ * Los comprobantes ANULADOS del mes.
+ *
+ * El 608 es el tercero de la terna y el que más se olvida. La DGII cruza los
+ * NCF emitidos con los anulados: un comprobante que se anuló y no se declaró
+ * sigue contando como venta, y esa diferencia aparece meses después.
+ *
+ * Se declaran por la fecha en que se EMITIERON, no por la de anulación: el
+ * formato pide la fecha del comprobante, y una factura de agosto anulada en
+ * septiembre va en el 608 de agosto.
+ */
+async function load608(ctx: TenantContext & { companyId: string }, month: string): Promise<DgiiRow[]> {
+  const { from, to } = monthRange(month);
+  const invoices = await tenantQuery<Record<string, unknown>>(ctx.companyId, "invoice", {
+    _filter: {
+      issued_at: { gte: from, lte: to },
+      status: "voided",
+    },
+    _sort: { issued_at: "asc" },
+    _limit: 3000,
+  });
+
+  return invoices.map((inv) => {
+    const voided = {
+      ncf: (inv.ncf as string) || null,
+      issuedAt: (inv.issued_at as string) || null,
+      reasonCode: (inv.void_reason_code as string) || DEFAULT_VOID_REASON,
+    };
+    const problems = voidProblems(voided);
+    return {
+      label: String(inv.invoice_number || inv.ncf || "Sin número"),
+      reference: String(inv.ncf || ""),
+      date: (inv.issued_at as string) || null,
+      // Una anulación no declara importes: el formato solo pide NCF, fecha y
+      // motivo. Enseñar el importe en pantalla ayuda a reconocerla; en el
+      // archivo no va.
+      amountTotal: Number(inv.total ?? 0),
+      itbis: 0,
+      problems,
+      columns: problems.length === 0 ? line608(voided) : null,
+    };
+  });
+}
+
 export async function dgiiReport(
   ctx: TenantContext & { companyId: string },
   kind: DgiiKind,
   month: string
 ): Promise<DgiiReport> {
-  const rows = kind === "607" ? await load607(ctx, month) : await load606(ctx, month);
+  const rows =
+    kind === "607" ? await load607(ctx, month)
+    : kind === "608" ? await load608(ctx, month)
+    : await load606(ctx, month);
   const declarables = rows.filter((row) => row.columns);
   return {
     kind,

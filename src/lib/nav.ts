@@ -531,10 +531,10 @@ export const WORKSPACES: Workspace[] = [
           // Lo que el contador necesita cada mes. Con `module: accounting`
           // porque es la profundidad fiscal del plan, y con rango de gerencia:
           // son los números fiscales de la empresa.
-          { id: "declaraciones", href: "/dashboard/finanzas/declaraciones", label: "Declaraciones 606/607",
+          { id: "declaraciones", href: "/dashboard/finanzas/declaraciones", label: "Declaraciones DGII",
             icon: "Landmark", module: "accounting", minRole: "manager",
-            description: "Compras y ventas del mes en el formato de la DGII, listo para subir.",
-            keywords: ["606", "607", "dgii", "itbis", "impuestos", "declaración", "fiscal"] },
+            description: "Compras, ventas y anulaciones del mes en el formato de la DGII.",
+            keywords: ["606", "607", "608", "dgii", "itbis", "impuestos", "declaración", "fiscal", "anulaciones"] },
           { id: "secuencias", href: "/dashboard/finanzas/secuencias", label: "Secuencias NCF", icon: "ListChecks", minRole: "admin",
             description: "Rangos autorizados por la DGII y lo que queda de cada uno.",
             keywords: ["ncf", "e-cf", "numeración", "dgii", "comprobantes"] },
@@ -549,6 +549,10 @@ export const WORKSPACES: Workspace[] = [
           { id: "diario", href: "/dashboard/finanzas/diario", label: "Libro diario", icon: "Scale", minRole: "admin",
             description: "Asientos de partida doble generados por cada operación.",
             keywords: ["ledger", "asientos", "partida doble"] },
+          { id: "estados", href: "/dashboard/finanzas/estados", label: "Estados financieros",
+            icon: "ChartColumn", module: "accounting", minRole: "manager",
+            description: "Resultados, balance general y cierre de periodo.",
+            keywords: ["estado de resultados", "balance general", "cierre", "periodo", "ejercicio", "contador"] },
         ],
       },
     ],

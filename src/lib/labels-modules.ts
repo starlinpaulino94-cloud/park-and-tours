@@ -281,6 +281,11 @@ export const CERT_TYPE = dict(
   ["other", "Otra"]
 );
 
+/** 0053 — el periodo contable. */
+export const PERIOD_STATUS = dict(
+  ["open", "Abierto", "info"], ["closed", "Cerrado", "warning"], ["locked", "Declarado", "success"]
+);
+
 /** 0051 — nómina. */
 export const PAYROLL_STATUS = dict(
   ["draft", "Borrador"], ["approved", "Aprobada", "info"], ["paid", "Pagada", "success"],

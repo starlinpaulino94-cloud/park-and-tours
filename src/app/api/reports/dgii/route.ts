@@ -7,7 +7,7 @@ import { dgiiReport, dgiiFile, type DgiiKind } from "@/lib/dgii-service";
 import { writeAudit } from "@/lib/audit";
 
 /**
- * GET /api/reports/dgii?kind=606|607&month=AAAA-MM[&format=txt]
+ * GET /api/reports/dgii?kind=606|607|608&month=AAAA-MM[&format=txt]
  *
  * El informe del mes para la pantalla, o el archivo listo para subir a la DGII.
  *
@@ -16,7 +16,7 @@ import { writeAudit } from "@/lib/audit";
  * sacar su 606 por no haber pagado el software sería convertir un problema de
  * cobro en un incumplimiento fiscal.
  */
-const KINDS: DgiiKind[] = ["606", "607"];
+const KINDS: DgiiKind[] = ["606", "607", "608"];
 
 export async function GET(req: NextRequest) {
   try {
@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
 
     const sp = req.nextUrl.searchParams;
     const kind = String(sp.get("kind") || "607") as DgiiKind;
-    if (!KINDS.includes(kind)) throw new TenantError("Formato desconocido: usa 606 o 607", 400);
+    if (!KINDS.includes(kind)) throw new TenantError("Formato desconocido: usa 606, 607 o 608", 400);
 
     const month = String(sp.get("month") || "").slice(0, 7);
     if (!/^\d{4}-\d{2}$/.test(month)) throw new TenantError("Indica el mes como AAAA-MM", 400);

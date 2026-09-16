@@ -1,5 +1,6 @@
 import "server-only";
 import { tenantCreate, tenantQuery, tenantUpdate, TenantError } from "@/lib/tenant";
+import { postingBlocker, type PeriodRow } from "@/lib/financials";
 
 /**
  * Double-entry ledger.
@@ -141,6 +142,23 @@ export async function post(companyId: string, input: PostingInput) {
   const accounts = await resolveAccounts(companyId, [...new Set(lines.map((l) => l.account))]);
   const postedAt = input.postedAt || new Date().toISOString();
   const period = postedAt.slice(0, 7); // YYYY-MM
+
+  // 0053 — no se contabiliza dentro de un mes ya cerrado.
+  //
+  // El 607 se envía el día 20 y hasta aquí nada impedía registrar un asiento
+  // con fecha del mes anterior: lo declarado y los libros empezaban a decir
+  // cosas distintas, y la diferencia solo aparecía cuando la DGII cruzaba los
+  // comprobantes, meses después y con recargo.
+  //
+  // La comprobación va DESPUÉS de resolver las cuentas y ANTES de escribir la
+  // primera línea: un asiento a medias en un mes cerrado sería peor que el
+  // problema que esto evita.
+  const periods = await tenantQuery<PeriodRow>(companyId, "accounting_period", {
+    _filter: { period },
+    _limit: 1,
+  });
+  const blocked = postingBlocker(period, periods);
+  if (blocked) throw new TenantError(blocked, 409);
   const entryCode = `AS-${period.replace("-", "")}-${Date.now().toString(36).toUpperCase().slice(-5)}`;
   const rate = Number(input.exchangeRate ?? 1) || 1;
 
@@ -212,13 +230,36 @@ export async function reverse(companyId: string, entryCode: string, userId?: str
   return result;
 }
 
+/**
+ * Cuántos asientos se leen de una vez al armar el balance.
+ *
+ * Existe un tope porque una empresa con años de historia no cabe en memoria de
+ * golpe, pero el tope se PAGINA: la versión anterior pedía 5 000 y se quedaba
+ * con lo que viniera, así que a partir del asiento 5 001 el balance de
+ * comprobación —el informe que existe para demostrar que los libros cuadran—
+ * devolvía cifras incompletas y decía «cuadrado» igual.
+ */
+const TRIAL_PAGE = 1000;
+/** Techo de seguridad: más que esto es un problema de datos, no un informe. */
+const TRIAL_MAX = 200_000;
+
 /** Trial balance grouped by account — the report that proves the books balance. */
 export async function trialBalance(companyId: string, period?: string) {
-  const entries = await tenantQuery<any>(companyId, "ledger_entry", {
-    ledger_account: true,
-    _filter: period ? { period } : {},
-    _limit: 5000,
-  });
+  const entries: any[] = [];
+  for (let offset = 0; offset < TRIAL_MAX; offset += TRIAL_PAGE) {
+    const page = await tenantQuery<any>(companyId, "ledger_entry", {
+      ledger_account: true,
+      _filter: period ? { period } : {},
+      _sort: { posted_at: "asc" },
+      _limit: TRIAL_PAGE,
+      _offset: offset,
+    });
+    entries.push(...page);
+    if (page.length < TRIAL_PAGE) break;
+  }
+  if (entries.length >= TRIAL_MAX) {
+    console.warn(`[ledger] balance de comprobación truncado en ${TRIAL_MAX} asientos`);
+  }
 
   const byAccount = new Map<string, { code: string; name: string; type: string; debit: number; credit: number }>();
   for (const e of entries) {
@@ -238,5 +279,13 @@ export async function trialBalance(companyId: string, period?: string) {
     (acc, r) => ({ debit: round(acc.debit + r.debit), credit: round(acc.credit + r.credit) }),
     { debit: 0, credit: 0 }
   );
-  return { rows, totals, balanced: totals.debit === totals.credit };
+  return {
+    rows,
+    totals,
+    balanced: totals.debit === totals.credit,
+    // Quien lo lea tiene que poder saber sobre cuántos asientos se calculó: un
+    // total sin esa cifra no se puede contrastar con nada.
+    entries: entries.length,
+    truncated: entries.length >= TRIAL_MAX,
+  };
 }

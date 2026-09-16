@@ -1129,6 +1129,23 @@ export const RESOURCES: Record<string, ResourceDef> = {
     writable: [],
     writeRole: "admin",
   },
+  /**
+   * El periodo contable.
+   *
+   * De SOLO LECTURA por el CRUD genérico: cerrar, reabrir y dar por declarado
+   * son acciones con reglas —no se reabre lo declarado, no se bloquea sin
+   * cerrar— que viven en `/api/ledger/periods`. Escribible por formulario,
+   * bastaría con poner el estado en «abierto» para contabilizar dentro de un
+   * mes ya enviado a la DGII, que es justo lo que esto viene a impedir.
+   */
+  accounting_period: {
+    table: "accounting_period",
+    search: ["period", "notes"],
+    expand: { closed_by: true, locked_by: true },
+    sort: { period: "desc" },
+    writable: [],
+    writeRole: "admin",
+  },
   task: {
     table: "task",
     search: ["title", "description"],
@@ -1317,6 +1334,7 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
   // `/api/erp/integration` y ver la configuración de cada conector. El menú no
   // es la barrera; esta tabla sí.
   audit_log: "admin", integration: "admin", ncf_sequence: "admin",
+  accounting_period: "manager",
   // La nómina es el dato más sensible que guarda una empresa pequeña: lo que
   // cobra cada compañero. Sin esto, cualquier usuario del inquilino podía
   // pedir `/api/erp/payroll_line` y leer el sueldo de todo el mundo.

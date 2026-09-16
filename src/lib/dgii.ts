@@ -271,6 +271,71 @@ export function line606(purchase: PurchaseRow): string[] {
 
 /* ------------------------------------------------------------ el archivo */
 
+/* ═══════════════════════════════════════════════ 608 — las anulaciones */
+
+/**
+ * Los comprobantes ANULADOS del mes.
+ *
+ * El 608 es el tercero de la terna y el que más se olvida: la DGII cruza los
+ * NCF emitidos con los anulados, y un comprobante que se anuló sin declararlo
+ * sigue contando como venta. El sistema ya anula facturas —emite su nota de
+ * crédito y todo—, y hasta aquí esa anulación no salía en ninguna declaración.
+ */
+export const COLUMNS_608 = [
+  "NCF", "Fecha comprobante", "Tipo de anulación",
+] as const;
+
+/**
+ * Los motivos que admite el formato.
+ *
+ * No es una lista decorativa: la DGII rechaza cualquier código fuera de ella, y
+ * el motivo correcto importa —«corrección de la información» y «devolución de
+ * productos» se revisan distinto—.
+ */
+export const VOID_REASONS: Record<string, string> = {
+  "01": "Deterioro de factura preimpresa",
+  "02": "Errores de impresión (factura preimpresa)",
+  "03": "Impresión defectuosa",
+  "04": "Duplicidad de factura",
+  "05": "Corrección de la información",
+  "06": "Cambio de productos",
+  "07": "Devolución de productos",
+  "08": "Omisión de productos",
+  "09": "Errores en secuencia de NCF",
+};
+
+/** El código por defecto cuando se anula desde el sistema. */
+export const DEFAULT_VOID_REASON = "05";
+
+export interface VoidedRow {
+  ncf?: string | null;
+  issuedAt?: string | null;
+  reasonCode?: string | null;
+}
+
+export function line608(voided: VoidedRow): string[] {
+  const code = String(voided.reasonCode || DEFAULT_VOID_REASON).padStart(2, "0");
+  return [
+    cleanNcf(voided.ncf),
+    dgiiDate(voided.issuedAt),
+    // Un código que el formato no admite tumba el archivo entero, así que lo
+    // que no esté en la lista cae en «corrección de la información», que es lo
+    // que de verdad ocurre cuando se anula desde el sistema.
+    VOID_REASONS[code] ? code : DEFAULT_VOID_REASON,
+  ];
+}
+
+/** Lo que impide declarar una anulación. */
+export function voidProblems(voided: VoidedRow): RowProblem[] {
+  const out: RowProblem[] = [];
+  if (!cleanNcf(voided.ncf)) out.push("sin_ncf");
+  if (!dgiiDate(voided.issuedAt)) out.push("sin_fecha");
+  return out;
+}
+
+/** Los tres formatos de la terna mensual. */
+export type DgiiKind = "606" | "607" | "608";
+
 /**
  * El archivo entero: cabecera y una línea por comprobante, separadas por `|`.
  *
@@ -278,13 +343,13 @@ export function line606(purchase: PurchaseRow): string[] {
  * Ese conteo es lo primero que valida la DGII: si no cuadra, rechaza el archivo
  * completo sin mirar el contenido.
  */
-export function buildFile(kind: "606" | "607", rnc: string, month: string, rows: string[][]): string {
+export function buildFile(kind: DgiiKind, rnc: string, month: string, rows: string[][]): string {
   const header = [kind, cleanTaxId(rnc), periodOf(month), String(rows.length)].join("|");
   return [header, ...rows.map((row) => row.join("|"))].join("\r\n") + "\r\n";
 }
 
 /** Nombre del archivo, como lo espera quien lo sube: DGII_606_RNC_AAAAMM.TXT */
-export function fileName(kind: "606" | "607", rnc: string, month: string): string {
+export function fileName(kind: DgiiKind, rnc: string, month: string): string {
   return `DGII_${kind}_${cleanTaxId(rnc)}_${periodOf(month)}.TXT`;
 }
 

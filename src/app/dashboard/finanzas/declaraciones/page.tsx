@@ -15,7 +15,7 @@ import { formatMoney, formatNumber, formatDate } from "@/lib/format";
 import { ROW_PROBLEM_MESSAGE, type RowProblem } from "@/lib/dgii";
 
 /**
- * DECLARACIONES 606 Y 607.
+ * DECLARACIONES 606, 607 Y 608.
  *
  * ────────────────────────────────────────────────────────────────────────────
  * LO QUE ESTA PANTALLA EVITA
@@ -46,7 +46,7 @@ interface Row {
 }
 
 interface Report {
-  kind: "606" | "607";
+  kind: "606" | "607" | "608";
   month: string;
   rows: Row[];
   totals: { rows: number; invoiced: number; itbis: number };
@@ -57,7 +57,7 @@ const thisMonth = () => new Date().toISOString().slice(0, 7);
 
 export default function Page() {
   const [month, setMonth] = useState(thisMonth);
-  const [kind, setKind] = useState<"606" | "607">("607");
+  const [kind, setKind] = useState<"606" | "607" | "608">("607");
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -100,7 +100,7 @@ export default function Page() {
     <div className="space-y-5">
       <PageHeader
         eyebrow="Finanzas"
-        title="Declaraciones 606 y 607"
+        title="Declaraciones 606, 607 y 608"
         description="Las compras y las ventas del mes, en el formato que pide la DGII. Sale de lo que ya está registrado: nada se vuelve a teclear."
       />
 
@@ -114,7 +114,7 @@ export default function Page() {
             <Input id="mes" type="month" value={month} max={thisMonth()} onChange={(e) => setMonth(e.target.value)} className="w-44" />
           </div>
           <div className="flex gap-2 rounded-lg border border-border p-1">
-            {(["607", "606"] as const).map((value) => (
+            {(["607", "606", "608"] as const).map((value) => (
               <button
                 key={value}
                 onClick={() => setKind(value)}
@@ -122,7 +122,7 @@ export default function Page() {
                   kind === value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
                 }`}
               >
-                {value === "607" ? "607 · Ventas" : "606 · Compras"}
+                {value === "607" ? "607 · Ventas" : value === "606" ? "606 · Compras" : "608 · Anulaciones"}
               </button>
             ))}
           </div>
