@@ -1652,3 +1652,41 @@ describe("el plan se aplica en la API, no solo en el menú", () => {
     }
   });
 });
+
+describe("el plan se ve venir, no se choca", () => {
+  it("la pantalla del plan no depende del plan", () => {
+    // Una pantalla que explica por qué estás bloqueado no puede estar detrás de
+    // un módulo: justo cuando hace falta sería lo primero que desaparece.
+    const nav = read("src/lib/nav.ts");
+    const entry = nav.slice(nav.indexOf('id: "plan"'), nav.indexOf('id: "plan"') + 400);
+    expect(entry).toContain("/dashboard/administracion/plan");
+    expect(entry).not.toContain("module:");
+  });
+
+  it("la lectura del plan no exige suscripción al día", () => {
+    // Es el único sitio donde se explica el bloqueo: exigir escritura aquí
+    // esconderia la explicación precisamente a quien está bloqueado.
+    const route = read("src/app/api/plan/route.ts");
+    expect(route).toMatch(/await requireTenant\(\)/);
+    expect(route).not.toContain("requireTenantWrite");
+  });
+
+  it("la pantalla y la API calculan los límites con la misma función", () => {
+    // Si la pantalla hiciera su propia aritmética, prometería un usuario que la
+    // API rechaza. El medidor sale de `planStatus`, que usa `limitCheck`.
+    const service = read("src/lib/plan-service.ts");
+    expect(service).toMatch(/planStatus\(plan, /);
+    expect(service).toMatch(/limitCheck\(metric, plan, used, wanted\)/);
+    const screen = read("src/app/dashboard/administracion/plan/page.tsx");
+    expect(screen).toContain('api.get<PlanStatus>("/api/plan")');
+    // Nada de recalcular porcentajes a mano en la pantalla.
+    expect(screen).not.toMatch(/used\s*\/\s*limit/);
+  });
+
+  it("el aviso del panel usa el dominio puro y lleva a la pantalla", () => {
+    const shell = read("src/components/tf/app-shell.tsx");
+    expect(shell).toMatch(/subscriptionState\(\{/);
+    expect(shell).toContain("blockMessage(state.reason!)");
+    expect(shell).toContain("/dashboard/administracion/plan");
+  });
+});

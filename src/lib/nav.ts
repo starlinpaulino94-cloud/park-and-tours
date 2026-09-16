@@ -651,6 +651,12 @@ export const WORKSPACES: Workspace[] = [
           { id: "hoteles", href: "/dashboard/administracion/hoteles", label: "Hoteles", icon: "Hotel",
             roles: ["superadmin", "owner", "admin", "manager", "operations"],
             description: "Alojamientos, zonas y puntos de recogida." },
+          // Sin `module`: la pantalla que explica el plan no puede depender del
+          // plan. Cuando un límite bloquea una venta, esto es donde se entiende
+          // por qué —y esconderlo justo entonces sería el peor momento posible.
+          { id: "plan", href: "/dashboard/administracion/plan", label: "Tu plan y uso", icon: "Gauge", minRole: "admin",
+            description: "Estado de la suscripción, límites consumidos y módulos incluidos.",
+            keywords: ["plan", "suscripción", "límites", "uso", "facturación", "prueba"] },
         ],
       },
       {
