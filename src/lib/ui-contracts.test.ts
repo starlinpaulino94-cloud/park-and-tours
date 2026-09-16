@@ -1407,6 +1407,11 @@ describe("blindaje CSRF de las rutas mutantes", () => {
     // trampa, el tope de personas y que NADA con valor económico se acepte del
     // cliente; hay guardas propias para las tres cosas.
     /^src\/app\/api\/public\//,
+    // La API de socios se autentica con una LLAVE en la cabecera, no con
+    // cookies: no hay sesión que un sitio ajeno pueda usar sin querer, que es
+    // justo lo que el CSRF protege. Lo que la protege es la llave, su alcance,
+    // su límite por llave y la idempotencia obligatoria.
+    /^src\/app\/api\/v1\//,
   ];
 
   it("toda ruta mutante verifica el origen de la solicitud", () => {
@@ -1563,6 +1568,9 @@ describe("el plan se aplica en la API, no solo en el menú", () => {
     /^src\/app\/api\/superadmin\//,
     /^src\/app\/api\/membego\/webhook\//,
     /^src\/app\/api\/setup\//,
+    // La API de socios tampoco tiene sesión: el inquilino sale de la llave y
+    // el plan se comprueba sobre la empresa de esa llave. Hay guarda propia.
+    /^src\/app\/api\/v1\//,
     // El motor público no tiene sesión de la que sacar el inquilino, así que
     // no puede llamar a `requireTenantWrite`. Comprueba el plan por su cuenta,
     // sobre la empresa del slug (`acceptsRequests`), y hay una guarda propia
@@ -1856,6 +1864,69 @@ describe("las cuentas del equipo", () => {
     // saltaría delante de alguien que ya recibió el correo.
     expect(read("src/app/api/team/invite/route.ts")).toMatch(/assertWithinLimit\(ctx, "max_users"\)/);
     expect(read("src/lib/plan-service.ts")).toMatch(/\.in\("status", \["active", "pending"\]\)/);
+  });
+});
+
+describe("la API de socios", () => {
+  it("el inquilino sale de la LLAVE, nunca del cuerpo de la petición", () => {
+    /**
+     * Es la propiedad que impide lo peor: que un socio con llave de una
+     * operadora cree reservas en otra pasando un identificador distinto.
+     */
+    const auth = read("src/lib/api-auth.ts");
+    expect(auth).toMatch(/companyId: verdict\.key\.organization_id/);
+    for (const file of ["src/app/api/v1/bookings/route.ts", "src/app/api/v1/products/route.ts"]) {
+      expect(read(file), file).not.toMatch(/body\.(company|organization|tenant)/);
+    }
+  });
+
+  it("el secreto de la llave no se guarda: solo su hash", () => {
+    const sql = read("supabase/migrations/0050_api_keys.sql");
+    expect(sql).toMatch(/secret_hash text not null/);
+    expect(sql).not.toMatch(/secret text/);
+    // Y la comparación es en tiempo constante.
+    expect(read("src/lib/api-keys.ts")).toMatch(/timingSafeEqual/);
+  });
+
+  it("crear una reserva exige clave de idempotencia, y se comprueba ANTES de escribir", () => {
+    /**
+     * Un sistema externo reintenta: se le cae la conexión, su cola lo reencola.
+     * Sin clave, cada reintento crea otra reserva y el socio descubre tres
+     * reservas idénticas cuando el cliente llega al bus.
+     */
+    const route = read("src/app/api/v1/bookings/route.ts");
+    // La COMPROBACIÓN, no la palabra: sin ella la cabecera se leería y se
+    // ignoraría, que es exactamente el fallo que esto evita.
+    expect(route).toMatch(/if \(!idempotencyKey\) \{/);
+    expect(route).toMatch(/Falta la cabecera «Idempotency-Key»/);
+    const body = route.slice(route.indexOf("export async function POST"));
+    expect(body.indexOf("idempotency_key")).toBeLessThan(body.indexOf("createPublicBooking("));
+    // Y la base lo hace cumplir: dos instancias a la vez no pueden duplicar.
+    expect(read("supabase/migrations/0050_api_keys.sql")).toMatch(/sales_order_idempotency_idx/);
+  });
+
+  it("una llave de lectura no crea reservas", () => {
+    expect(read("src/app/api/v1/bookings/route.ts")).toMatch(/requireApiKey\(req, "write"\)/);
+    expect(read("src/app/api/v1/products/route.ts")).toMatch(/requireApiKey\(req, "read"\)/);
+  });
+
+  it("el plan se comprueba aunque no haya sesión", () => {
+    const route = read("src/app/api/v1/bookings/route.ts");
+    expect(route).toMatch(/subscriptionState\(caller\.company\)/);
+    expect(route).toMatch(/status: 402/);
+  });
+
+  it("el socio ve el mismo catálogo publicado, sin costos ni proveedores", () => {
+    // Que una agencia tenga llave no le da acceso al margen de la operadora.
+    const products = read("src/app/api/v1/products/route.ts");
+    expect(products).toMatch(/toPublicCard\(/);
+    expect(products).not.toMatch(/base_cost|supplier/);
+  });
+
+  it("el límite de peticiones es POR LLAVE", () => {
+    // Un socio que integra mal no puede agotarle el cupo a los demás socios
+    // que comparten salida a internet.
+    expect(read("src/lib/api-auth.ts")).toMatch(/key: `api:\$\{verdict\.key\.id\}`/);
   });
 });
 

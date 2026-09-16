@@ -63,9 +63,23 @@ async function loadOrgBySlug(slug: string) {
   return data;
 }
 
-export async function loadPublicPage(slug: string): Promise<PublicPage> {
+export interface LoadPageOptions {
+  /**
+   * Arma el catálogo aunque la empresa no tenga su página pública activada.
+   *
+   * Lo usa la API de socios: vender por API y tener página pública son dos
+   * decisiones distintas, y una operadora puede querer la primera sin la
+   * segunda. Lo que NO cambia es qué productos salen —siguen siendo solo los
+   * publicados—, porque esa decisión es del catálogo, no del escaparate.
+   */
+  ignoreSwitch?: boolean;
+}
+
+export async function loadPublicPage(slug: string, options: LoadPageOptions = {}): Promise<PublicPage> {
   const org = await loadOrgBySlug(slug);
-  const state = publicPageState(org);
+  const state = options.ignoreSwitch && org && (org.status ?? "active") === "active"
+    ? "ok"
+    : publicPageState(org);
   if (state !== "ok" || !org) return { state, org: null, products: [], acceptsRequests: false };
 
   const { data: rows } = await supabaseService()
@@ -187,7 +201,10 @@ async function findOrCreateCustomer(orgId: string, request: PublicRequest): Prom
 }
 
 export interface PublicBookingResult {
+  /** El número de la reserva: lo que el cliente ve y dice por teléfono. */
   reference: string;
+  /** El número de la venta que la contiene, por donde se le pega la clave. */
+  orderNumber: string;
   total: number;
   currency: string;
   travelDate: string | null;
@@ -252,6 +269,7 @@ export async function createPublicBooking(
 
   return {
     reference: String(booking?.booking_number || result.order.order_number),
+    orderNumber: String(result.order.order_number),
     total: Number(result.order.total ?? 0),
     currency: String(result.order.currency || page.org.currency),
     travelDate: (booking?.travel_date as string) || null,

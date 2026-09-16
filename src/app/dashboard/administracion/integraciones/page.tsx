@@ -4,11 +4,13 @@ import { SimpleResource } from "@/components/tf/simple-resource";
 import { INTEGRATION_CATEGORY, INTEGRATION_PROVIDER, INTEGRATION_STATUS, SYNC_FREQUENCY } from "@/lib/labels-modules";
 import { optionsFrom } from "@/components/tf/options";
 import { MembegoCard } from "./membego-card";
+import { LlavesApi } from "./llaves-api";
 
 export default function Page() {
   return (
     <div className="space-y-6">
       <MembegoCard />
+      <LlavesApi />
       <SimpleResource
       resource="integration"
       eyebrow="Administración"
