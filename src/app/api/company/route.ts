@@ -12,6 +12,11 @@ const EDITABLE = [
   // 0039 — cuántas horas se guarda la plaza de una reserva sin cobrar. Nulo o
   // cero: nada expira.
   "hold_hours",
+  // 0047 — el motor de reservas público. Es un interruptor de la EMPRESA y por
+  // eso se edita aquí: activarlo pone su catálogo publicado a la vista de
+  // cualquiera, así que la decisión es de quien administra la cuenta y queda en
+  // la bitácora como el resto de este formulario.
+  "public_booking_enabled", "public_intro", "public_terms",
 ];
 
 /** GET /api/company — the signed-in tenant's own company profile. */

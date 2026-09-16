@@ -55,10 +55,10 @@ function CompanyForm() {
     load();
   };
 
-  // Acepta número y nulo además de texto: `hold_hours` es un entero, y mandarlo
-  // como cadena vacía lo guardaría como 0 —"expira al instante"— en vez de
-  // "sin límite".
-  const set = (k: string, v: string | number | null) => setCompany((c: any) => ({ ...c, [k]: v }));
+  // Acepta número, booleano y nulo además de texto: `hold_hours` es un entero
+  // —mandarlo como cadena vacía lo guardaría como 0, "expira al instante", en
+  // vez de "sin límite"— y la página pública es un sí/no.
+  const set = (k: string, v: string | number | boolean | null) => setCompany((c: any) => ({ ...c, [k]: v }));
 
   if (loading) {
     return <div className="space-y-3">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-20 w-full rounded-xl" />)}</div>;
@@ -119,6 +119,55 @@ function CompanyForm() {
           <Label>Dirección</Label>
           <Textarea rows={2} value={company.address || ""} onChange={(e) => set("address", e.target.value)} />
         </div>
+        {/* ------------------------------------------- página pública (0047) */}
+        <div className="space-y-3 rounded-xl border border-border p-4 sm:col-span-2">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="font-medium">Página pública de reservas</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Una página con tu marca donde un cliente elige su excursión, su fecha y pide su lugar sin
+                llamar a nadie. Se publican solo las excursiones que marques como «en la web».
+              </p>
+            </div>
+            <Select
+              value={company.public_booking_enabled ? "yes" : "no"}
+              onValueChange={(v) => set("public_booking_enabled", v === "yes")}
+            >
+              <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="no">Desactivada</SelectItem>
+                <SelectItem value="yes">Activada</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {company.public_booking_enabled && (
+            <>
+              <p className="rounded-lg bg-muted/60 px-3 py-2 text-xs">
+                Tu dirección:{" "}
+                <span className="font-mono">
+                  {typeof window !== "undefined" ? window.location.origin : ""}/reservar/{company.slug || "…"}
+                </span>
+                {!company.slug && " — pide que te asignen un identificador para poder compartirla."}
+              </p>
+              <div className="space-y-1.5">
+                <Label>Texto de bienvenida</Label>
+                <Textarea rows={2} value={company.public_intro || ""} onChange={(e) => set("public_intro", e.target.value)}
+                  placeholder="Excursiones en Bávaro desde 2011. Recogida en tu hotel." />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Qué ve al terminar</Label>
+                <Textarea rows={2} value={company.public_terms || ""} onChange={(e) => set("public_terms", e.target.value)}
+                  placeholder="Recibimos tu solicitud. Te confirmamos por WhatsApp y pagas el día de la excursión." />
+                <p className="text-xs text-muted-foreground">
+                  Aquí se dice cómo se paga. Si lo dejas vacío, el cliente lee que le confirmarás la plaza en
+                  breve — nunca que su reserva ya está confirmada.
+                </p>
+              </div>
+            </>
+          )}
+        </div>
+
         <div className="sm:col-span-2">
           <Button onClick={save} disabled={busy} className="gap-1.5">
             <Icon name="Save" className="size-4" /> {busy ? "Guardando…" : "Guardar cambios"}

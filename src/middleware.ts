@@ -37,6 +37,14 @@ const publicRoutes = [
   // exigiría, así que tiene que poder llegar sin una.
   "/sso/membego",
 
+  // El motor de reservas público: la página de una operadora y su API. Quien
+  // llega aquí es un cliente final sin cuenta —ese es el punto—, así que
+  // exigirle sesión sería exigirle que se registre para pedir una excursión.
+  // Lo que se enseña lo acota el propio código (0047): la empresa activa su
+  // página y publica producto por producto.
+  "/reservar",
+  "/api/public",
+
   // Los dos caminos que empiezan FUERA del sistema: la invitación de un
   // compañero y el «olvidé mi contraseña». Quien llega por ahí todavía no tiene
   // sesión —el canje del código es justo lo que va a creársela—, así que

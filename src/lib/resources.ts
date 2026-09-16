@@ -140,11 +140,17 @@ export const RESOURCES: Record<string, ResourceDef> = {
       // cuántos días de antelación se liquida el saldo. Es lo que hace que el
       // plan salga solo en cada venta en vez de teclearse.
       "deposit_type", "deposit_percent", "deposit_amount", "balance_due_days",
+      // 0047 — el motor público. `published` es el interruptor por producto:
+      // hay excursiones que solo se venden a agencias y otras a medio armar,
+      // así que publicar el catálogo entero por defecto sería enseñar lo que
+      // nadie quiso enseñar, y eso no se deshace una vez indexado.
+      "published", "public_price_from",
     ],
     numeric: [
       "duration_hours", "min_age", "default_capacity", "base_price", "base_cost", "sort_order",
-      "deposit_percent", "deposit_amount", "balance_due_days",
+      "deposit_percent", "deposit_amount", "balance_due_days", "public_price_from",
     ],
+    booleans: ["featured", "published"],
     writeRole: "manager",
   },
   product_modality: {

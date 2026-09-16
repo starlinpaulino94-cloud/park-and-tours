@@ -261,7 +261,9 @@ export async function createOrderWithBookings(
     seller: input.seller_id || undefined,
     partner: input.partner_id || undefined,
     promotion: input.promotion_id || undefined,
-    created_by: ctx.userId,
+    // Vacío en una reserva del motor público: no la creó nadie del equipo, y
+    // meter una cadena vacía en una columna de identificador la rompe.
+    created_by: ctx.userId || undefined,
     channel,
     status: "draft",
     order_date: new Date().toISOString(),
@@ -416,7 +418,7 @@ export async function createOrderWithBookings(
       seller: input.seller_id || undefined,
       partner: input.partner_id || undefined,
       pickup_hotel: item.pickup_hotel_id || undefined,
-      created_by: ctx.userId,
+      created_by: ctx.userId || undefined,
       channel,
       status: "pending_payment",
       booking_date: new Date().toISOString(),

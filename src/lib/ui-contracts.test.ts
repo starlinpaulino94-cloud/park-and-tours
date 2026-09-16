@@ -1401,6 +1401,12 @@ describe("blindaje CSRF de las rutas mutantes", () => {
     /^src\/app\/api\/membego\/webhook\//,
     /^src\/app\/api\/cron\//,
     /^src\/app\/api\/pricing\/quote\//,
+    // El motor público: no hay sesión con cookies que proteger —ese es justo
+    // el caso de uso—, así que exigir mismo origen no aportaría seguridad y sí
+    // rompería el formulario. Lo que la protege es el límite por IP, el campo
+    // trampa, el tope de personas y que NADA con valor económico se acepte del
+    // cliente; hay guardas propias para las tres cosas.
+    /^src\/app\/api\/public\//,
   ];
 
   it("toda ruta mutante verifica el origen de la solicitud", () => {
@@ -1557,6 +1563,11 @@ describe("el plan se aplica en la API, no solo en el menú", () => {
     /^src\/app\/api\/superadmin\//,
     /^src\/app\/api\/membego\/webhook\//,
     /^src\/app\/api\/setup\//,
+    // El motor público no tiene sesión de la que sacar el inquilino, así que
+    // no puede llamar a `requireTenantWrite`. Comprueba el plan por su cuenta,
+    // sobre la empresa del slug (`acceptsRequests`), y hay una guarda propia
+    // que lo exige: la exención es de la FORMA, no del fondo.
+    /^src\/app\/api\/public\//,
     // La seguridad de la propia cuenta no es una operación de la empresa: una
     // suscripción vencida no puede impedirle a nadie activar —ni QUITAR— su
     // segundo factor. Bloquearlo dejaría a alguien que acaba de desenrolar su
@@ -1845,6 +1856,112 @@ describe("las cuentas del equipo", () => {
     // saltaría delante de alguien que ya recibió el correo.
     expect(read("src/app/api/team/invite/route.ts")).toMatch(/assertWithinLimit\(ctx, "max_users"\)/);
     expect(read("src/lib/plan-service.ts")).toMatch(/\.in\("status", \["active", "pending"\]\)/);
+  });
+});
+
+describe("el motor de reservas público", () => {
+  /**
+   * Es la única puerta del sistema por la que entra alguien SIN cuenta, así que
+   * estas guardas van contra las dos cosas que salen caras: publicar lo que
+   * nadie quiso publicar, y aceptar del cliente algo que solo puede decidir el
+   * servidor.
+   */
+  it("nada se publica sin que la empresa Y el producto lo pidan", () => {
+    const sql = read("supabase/migrations/0047_public_booking.sql");
+    expect(sql).toMatch(/public_booking_enabled boolean not null default false/);
+    expect(sql).toMatch(/published boolean not null default false/);
+    // Y no se abre ninguna política a `anon`: lo público es lo que el código
+    // devuelve, no lo que una política deje ver.
+    expect(sql).not.toMatch(/to anon/);
+    expect(sql).not.toMatch(/create policy/);
+  });
+
+  it("la ficha pública se arma por lista blanca, no quitando campos", () => {
+    /**
+     * Es la diferencia entre un error y una fuga: construida quitando campos,
+     * el día que alguien añada `base_cost` al producto ese dato se publicaría
+     * solo, y el margen de la operadora acabaría en su propia página.
+     */
+    const lib = read("src/lib/public-booking.ts");
+    const card = lib.slice(lib.indexOf("export function toPublicCard"), lib.indexOf("/* --------------------------------------------------- la petición"));
+    for (const prohibido of ["base_cost", "supplier", "internal_notes", "product_cost"]) {
+      expect(card, prohibido).not.toContain(prohibido);
+    }
+    // La consulta tampoco los pide: lo que no se trae no se escapa ni en un log.
+    const service = read("src/lib/public-booking-service.ts");
+    const select = service.slice(service.indexOf('.from("product")'), service.indexOf('.eq("organization_id", org.id)'));
+    expect(select).not.toContain("base_cost");
+    expect(select).not.toContain("*");
+  });
+
+  it("del cliente no se acepta nada con valor económico", () => {
+    // Un motor público que acepta el precio del cliente es una tienda donde
+    // cada quien pone su etiqueta.
+    const lib = read("src/lib/public-booking.ts");
+    const reader = lib.slice(lib.indexOf("export function readPublicRequest"), lib.indexOf("export function splitName"));
+    for (const campo of ["total", "unit_price", "discount", "status", "currency"]) {
+      expect(reader, campo).not.toContain(`input.${campo}`);
+    }
+  });
+
+  it("la venta entra por el MISMO camino que el punto de venta", () => {
+    /**
+     * `createOrderWithBookings` valida cupo, calcula precio, genera comisiones,
+     * arma el plan de cobro y avisa. Un segundo camino «más simple» se olvida de
+     * la mitad, y esos errores aparecen semanas después en una salida
+     * sobrevendida.
+     */
+    const service = read("src/lib/public-booking-service.ts");
+    expect(service).toMatch(/createOrderWithBookings\(/);
+    expect(service).not.toMatch(/from\("booking"\)\s*\.insert/);
+  });
+
+  it("el plan se comprueba aunque no haya sesión", () => {
+    const service = read("src/lib/public-booking-service.ts");
+    expect(service).toMatch(/subscriptionState\(/);
+    const route = read("src/app/api/public/[slug]/request/route.ts");
+    expect(route).toMatch(/page\.acceptsRequests/);
+  });
+
+  it("el producto pedido se valida contra el catálogo publicado", () => {
+    // Sin esto, ese campo sería la forma de comprar algo que la operadora
+    // decidió no vender por la web.
+    const route = read("src/app/api/public/[slug]/request/route.ts");
+    expect(route).toMatch(/page\.products\.find\(/);
+    const availability = read("src/app/api/public/[slug]/availability/route.ts");
+    expect(availability).toMatch(/page\.products\.some\(/);
+  });
+
+  it("pedir tiene un freno duro, y ver uno holgado", () => {
+    const request = read("src/app/api/public/[slug]/request/route.ts");
+    expect(request).toMatch(/limit: 5, windowMs: 3_600_000/);
+    expect(read("src/app/api/public/[slug]/route.ts")).toMatch(/await assertRateLimit\(/);
+  });
+
+  it("una empresa sin página y un slug inventado se responden igual", () => {
+    // Distinguirlos le serviría a quien prueba nombres para averiguar qué
+    // empresas usan el sistema.
+    const route = read("src/app/api/public/[slug]/route.ts");
+    expect(route).toMatch(/page\.state !== "ok"/);
+    expect(route).toMatch(/status: 404/);
+  });
+
+  it("publicar es una decisión que se toma en dos sitios, y los dos se ven", () => {
+    // Activar la página es de quien administra la cuenta; publicar cada
+    // excursión, de quien lleva el catálogo. Si el interruptor de la empresa no
+    // estuviera en su formulario, la función existiría y nadie la encontraría.
+    expect(read("src/app/api/company/route.ts")).toMatch(/"public_booking_enabled", "public_intro", "public_terms"/);
+    expect(read("src/app/dashboard/configuracion/page.tsx")).toMatch(/public_booking_enabled/);
+    const productos = read("src/app/dashboard/productos/page.tsx");
+    expect(productos).toMatch(/name: "published"/);
+    // Y se ve desde el listado: es donde alguien se pregunta si ya está en la web.
+    expect(productos).toMatch(/header: "Web"/);
+  });
+
+  it("la página pública no exige sesión", () => {
+    const middleware = read("src/middleware.ts");
+    expect(middleware).toContain('"/api/public"');
+    expect(middleware).toContain('"/reservar"');
   });
 });
 
