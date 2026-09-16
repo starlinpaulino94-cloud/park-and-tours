@@ -21,7 +21,7 @@ function scopeFilter(userId: string): Record<string, unknown> {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "notifications:list", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "notifications:list", ctx.userId), limit: 120, windowMs: 60_000 });
 
     const sp = req.nextUrl.searchParams;
     const base = scopeFilter(ctx.userId);
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
-    assertRateLimit({ key: rateLimitKey(req, "notifications:markall", ctx.userId), limit: 30, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "notifications:markall", ctx.userId), limit: 30, windowMs: 60_000 });
 
     const body = await readJson<{ action?: string }>(req);
     if (body.action && body.action !== "mark_all_read") {

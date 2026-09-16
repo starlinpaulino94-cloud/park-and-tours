@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
-    assertRateLimit({ key: rateLimitKey(req, "payments:create", ctx.userId), limit: 30, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "payments:create", ctx.userId), limit: 30, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<{

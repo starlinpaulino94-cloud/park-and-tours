@@ -25,7 +25,7 @@ function bucketOf(dueDate?: string): AgingBucket {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "reports:aging", ctx.userId), limit: 30, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "reports:aging", ctx.userId), limit: 30, windowMs: 60_000 });
     requireAtLeast(ctx, "manager");
     const type = req.nextUrl.searchParams.get("type") === "payable" ? "payable" : "receivable";
 

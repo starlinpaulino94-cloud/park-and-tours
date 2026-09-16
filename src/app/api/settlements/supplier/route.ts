@@ -16,7 +16,7 @@ import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "settlements:supplier:list", ctx.userId), limit: 60, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "settlements:supplier:list", ctx.userId), limit: 60, windowMs: 60_000 });
     requireAtLeast(ctx, "manager");
     return ok({ pending: await pendingBySupplier(ctx.companyId) });
   } catch (err) {
@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
     assertModule(ctx, "settlements");
-    assertRateLimit({ key: rateLimitKey(req, "settlements:supplier:create", ctx.userId), limit: 20, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "settlements:supplier:create", ctx.userId), limit: 20, windowMs: 60_000 });
     requireAtLeast(ctx, "manager");
 
     const body = await readJson<{

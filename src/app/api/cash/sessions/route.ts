@@ -11,7 +11,7 @@ import type { CashSession, Currency } from "@/lib/types";
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "cash:sessions:list", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "cash:sessions:list", ctx.userId), limit: 120, windowMs: 60_000 });
     const status = req.nextUrl.searchParams.get("status");
     const filter: Record<string, unknown> = {};
     if (status) filter.status = status;
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
-    assertRateLimit({ key: rateLimitKey(req, "cash:sessions:create", ctx.userId), limit: 20, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "cash:sessions:create", ctx.userId), limit: 20, windowMs: 60_000 });
     requireAtLeast(ctx, "cashier");
 
     const body = await readJson<{ cash_register_id?: string; opening_amount?: number; currency?: Currency; notes?: string }>(req);

@@ -27,7 +27,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const { id } = await params;
     const ctx = await requireTenantWrite();
     assertModule(ctx, "settlements");
-    assertRateLimit({ key: rateLimitKey(req, "settlements:confirm", ctx.userId), limit: 30, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "settlements:confirm", ctx.userId), limit: 30, windowMs: 60_000 });
     requireAtLeast(ctx, "manager");
 
     const body = await readJson<{

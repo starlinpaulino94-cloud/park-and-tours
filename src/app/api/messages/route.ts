@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
-    assertRateLimit({ key: rateLimitKey(req, "messages:send", ctx.userId), limit: 60, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "messages:send", ctx.userId), limit: 60, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<{
@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "messages:list", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "messages:list", ctx.userId), limit: 120, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
     const sp = req.nextUrl.searchParams;

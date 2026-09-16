@@ -24,7 +24,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     assertSameOriginMutation(req);
     const { id } = await params;
     const ctx = await requireTenantWrite();
-    assertRateLimit({ key: rateLimitKey(req, "bookings:cancel", ctx.userId), limit: 30, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "bookings:cancel", ctx.userId), limit: 30, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<{ reason?: string; refund_override?: number }>(req);

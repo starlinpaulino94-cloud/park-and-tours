@@ -21,7 +21,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   try {
     const { id } = await params;
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "departures:manifest", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "departures:manifest", ctx.userId), limit: 120, windowMs: 60_000 });
     // Un partner vería el manifiesto de toda la salida, incluidas las reservas
     // de la competencia: es una lista de clientes ajenos.
     if (ctx.role === "partner") throw new TenantError("El manifiesto es de uso interno", 403);

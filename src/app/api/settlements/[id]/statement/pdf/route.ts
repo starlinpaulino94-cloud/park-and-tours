@@ -19,7 +19,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   try {
     const { id } = await params;
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "settlements:statement:pdf", ctx.userId), limit: 60, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "settlements:statement:pdf", ctx.userId), limit: 60, windowMs: 60_000 });
     if (ctx.role === "partner") throw new TenantError("El estado de cuenta es de uso interno", 403);
     requireAtLeast(ctx, "manager");
 

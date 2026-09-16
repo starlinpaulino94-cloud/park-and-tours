@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
-    assertRateLimit({ key: rateLimitKey(req, "orders:create", ctx.userId), limit: 20, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "orders:create", ctx.userId), limit: 20, windowMs: 60_000 });
     requireAtLeast(ctx, "partner");
 
     const body = await readJson<CreateOrderInput>(req);
@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "orders:list", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "orders:list", ctx.userId), limit: 120, windowMs: 60_000 });
     const sp = req.nextUrl.searchParams;
     const filter: Record<string, unknown> = {};
     if (sp.get("status")) filter.status = sp.get("status");

@@ -18,7 +18,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
     if (!def) throw new TenantError(`Recurso desconocido: ${resource}`, 404);
 
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, `erp:list:${def.table}`, ctx.userId), limit: 180, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, `erp:list:${def.table}`, ctx.userId), limit: 180, windowMs: 60_000 });
 
     // AUD-004 follow-up: read authorization for sensitive resources. El ámbito
     // del partner lo aplica `buildListFilter` (su rango fallaría aquí).
@@ -92,7 +92,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ res
     if (def.writable.length === 0) throw new TenantError("Este recurso es de solo lectura", 405);
 
     const ctx = await requireTenantWrite();
-    assertRateLimit({ key: rateLimitKey(req, `erp:create:${def.table}`, ctx.userId), limit: 60, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, `erp:create:${def.table}`, ctx.userId), limit: 60, windowMs: 60_000 });
     // AUD-004: partners are read-only in the generic ERP.
     if (ctx.role === "partner") throw new TenantError("No tienes permisos para crear este recurso", 403);
     if (def.writeRole) requireAtLeast(ctx, def.writeRole);

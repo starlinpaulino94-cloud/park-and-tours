@@ -23,7 +23,7 @@ export async function PUT(
     assertSameOriginMutation(req);
     const { id, optionId } = await params;
     const ctx = await requireTenantWrite();
-    assertRateLimit({ key: rateLimitKey(req, "quotes:option:edit", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "quotes:option:edit", ctx.userId), limit: 120, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<Record<string, unknown>>(req);
@@ -92,7 +92,7 @@ export async function DELETE(
     assertSameOriginMutation(req);
     const { id, optionId } = await params;
     const ctx = await requireTenantWrite();
-    assertRateLimit({ key: rateLimitKey(req, "quotes:option:delete", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "quotes:option:delete", ctx.userId), limit: 120, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
     const { quote, options } = await loadQuoteBundle(ctx.companyId, id);

@@ -20,7 +20,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const { id } = await params;
     const ctx = await requireTenantWrite();
     assertModule(ctx, "accounting");
-    assertRateLimit({ key: rateLimitKey(req, "invoices:void", ctx.userId), limit: 30, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "invoices:void", ctx.userId), limit: 30, windowMs: 60_000 });
     // Anular consume otro número de la secuencia y deja rastro fiscal: es una
     // decisión de gestión, no del cajero que se equivocó.
     requireAtLeast(ctx, "manager");

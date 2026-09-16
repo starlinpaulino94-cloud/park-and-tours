@@ -12,7 +12,7 @@ function escapeRegex(input: string): string {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "checkin:lookup", ctx.userId), limit: 60, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "checkin:lookup", ctx.userId), limit: 60, windowMs: 60_000 });
     // AUD-B06: check-in is an operations action. Without a role gate any tenant
     // user — including an external B2B `partner` — could enumerate every
     // booking's voucher (the only credential a ticket has) across all partners.

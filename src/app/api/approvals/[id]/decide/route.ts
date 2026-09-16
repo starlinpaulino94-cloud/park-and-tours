@@ -21,7 +21,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     assertSameOriginMutation(req);
 
     const ctx = await requireTenantWrite();
-    assertRateLimit({ key: rateLimitKey(req, "approvals:decide", ctx.userId), limit: 30, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "approvals:decide", ctx.userId), limit: 30, windowMs: 60_000 });
 
     const { id } = await params;
     const body = await readJson<{ action: "approve" | "reject"; comment?: string }>(req);

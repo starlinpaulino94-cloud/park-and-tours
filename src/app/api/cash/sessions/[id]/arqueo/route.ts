@@ -15,7 +15,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   try {
     const { id } = await params;
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "cash:arqueo", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "cash:arqueo", ctx.userId), limit: 120, windowMs: 60_000 });
     requireAtLeast(ctx, "cashier");
 
     // Una sesión abierta se recalcula al abrir el arqueo: el cajero cuenta

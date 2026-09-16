@@ -14,7 +14,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   try {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
-    assertRateLimit({ key: rateLimitKey(req, "notifications:read", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "notifications:read", ctx.userId), limit: 120, windowMs: 60_000 });
 
     const { id } = await params;
     const notification = await tenantFindOne<{ user_id?: string | null }>(ctx.companyId, "notification", id);

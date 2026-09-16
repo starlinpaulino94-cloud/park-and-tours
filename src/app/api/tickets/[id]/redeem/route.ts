@@ -34,7 +34,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     assertSameOriginMutation(req);
     const { id } = await params;
     const ctx = await requireTenantWrite();
-    assertRateLimit({ key: rateLimitKey(req, "tickets:redeem", ctx.userId), limit: 240, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "tickets:redeem", ctx.userId), limit: 240, windowMs: 60_000 });
     requireAtLeast(ctx, "cashier");
 
     const body = await readJson<{ force?: boolean; reason?: string; notes?: string }>(req);
@@ -88,7 +88,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   try {
     const { id } = await params;
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "tickets:redeem:check", ctx.userId), limit: 240, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "tickets:redeem:check", ctx.userId), limit: 240, windowMs: 60_000 });
 
     const ticket = await tenantFindOne<AccessTicketRow>(ctx.companyId, "access_ticket", id);
     const blocker = redeemBlocker(ticket, new Date());

@@ -34,7 +34,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     assertSameOriginMutation(req);
     const { id } = await params;
     const ctx = await requireTenantWrite();
-    assertRateLimit({ key: rateLimitKey(req, "gift-cards:redeem", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "gift-cards:redeem", ctx.userId), limit: 120, windowMs: 60_000 });
     requireAtLeast(ctx, "cashier");
 
     const body = await readJson<{ amount?: number; order?: string; notes?: string; currency?: string }>(req);
@@ -82,7 +82,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   try {
     const { id } = await params;
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "gift-cards:check", ctx.userId), limit: 240, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "gift-cards:check", ctx.userId), limit: 240, windowMs: 60_000 });
 
     const card = await tenantFindOne<GiftCardRow>(ctx.companyId, "gift_card", id);
     const blocker = giftCardBlocker(card);

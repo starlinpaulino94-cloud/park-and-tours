@@ -41,7 +41,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
 
     const ctx = await requireTenant();
     // Más estricto que el listado: un archivo completo es más caro de servir.
-    assertRateLimit({ key: rateLimitKey(req, `export:${def.table}`, ctx.userId), limit: 10, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, `export:${def.table}`, ctx.userId), limit: 10, windowMs: 60_000 });
 
     // La misma autorización de lectura que el listado. Sin esto, un rol que no
     // puede VER un recurso podría llevárselo entero en un archivo.

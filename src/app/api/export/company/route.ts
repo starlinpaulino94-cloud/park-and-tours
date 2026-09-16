@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
     requireAtLeast(ctx, "admin");
-    assertRateLimit({ key: rateLimitKey(req, "export:company", ctx.userId), limit: 3, windowMs: 3_600_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "export:company", ctx.userId), limit: 3, windowMs: 3_600_000 });
 
     const companyName = ctx.company?.name || ctx.company?.legal_name || "empresa";
     const exportado = await buildCompanyExport(ctx, companyName);

@@ -13,7 +13,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   try {
     const { id } = await params;
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "orders:schedule:get", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "orders:schedule:get", ctx.userId), limit: 120, windowMs: 60_000 });
 
     const order = await tenantFindOne<Order>(ctx.companyId, "order", id, { customer: true, partner: true });
     // Un socio solo ve lo suyo: el calendario dice cuánto debe alguien.
@@ -65,7 +65,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     assertSameOriginMutation(req);
     const { id } = await params;
     const ctx = await requireTenantWrite();
-    assertRateLimit({ key: rateLimitKey(req, "orders:schedule:set", ctx.userId), limit: 30, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "orders:schedule:set", ctx.userId), limit: 30, windowMs: 60_000 });
     // Cambiar cuándo y cuánto se cobra es una decisión comercial, no una
     // corrección de datos: un vendedor no se aplaza su propio saldo.
     requireAtLeast(ctx, "manager");

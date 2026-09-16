@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
     assertModule(ctx, "accounting");
-    assertRateLimit({ key: rateLimitKey(req, "invoices:issue", ctx.userId), limit: 60, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "invoices:issue", ctx.userId), limit: 60, windowMs: 60_000 });
     // Emitir un comprobante fiscal compromete a la empresa ante la DGII: no es
     // una acción de mostrador.
     requireAtLeast(ctx, "cashier");
@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    assertRateLimit({ key: rateLimitKey(req, "invoices:list", ctx.userId), limit: 120, windowMs: 60_000 });
+    await assertRateLimit({ key: rateLimitKey(req, "invoices:list", ctx.userId), limit: 120, windowMs: 60_000 });
     requireAtLeast(ctx, "cashier");
 
     const sp = req.nextUrl.searchParams;

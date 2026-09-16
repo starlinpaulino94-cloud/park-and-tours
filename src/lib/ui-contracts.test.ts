@@ -1753,6 +1753,63 @@ describe("el importador", () => {
   });
 });
 
+describe("el límite de peticiones", () => {
+  it("TODA llamada lleva await: sin él, el límite deja de existir en silencio", () => {
+    /**
+     * `assertRateLimit` es asíncrona desde 0043. Una llamada sin `await`
+     * devuelve una promesa que nadie mira: la petición sigue de largo, el 429
+     * nunca se lanza y no falla nada a la vista —el límite simplemente deja de
+     * aplicarse—. Es el fallo más caro posible de esta refactorización, así que
+     * se vigila en las setenta y cinco llamadas a la vez.
+     */
+    const offenders: string[] = [];
+    for (const dir of ["src/lib", "src/app", "src/components"]) {
+      for (const file of walk(path.join(ROOT, dir))) {
+        if (!/\.tsx?$/.test(file)) continue;
+        const rel = path.relative(ROOT, file).replace(/\\/g, "/");
+        if (rel === "src/lib/rate-limit.ts" || rel.endsWith(".test.ts") || rel.endsWith(".test.tsx")) continue;
+        readFileSync(file, "utf8").split("\n").forEach((line, index) => {
+          if (/(?<!await )assertRateLimit\(/.test(line)) offenders.push(`${rel}:${index + 1}`);
+        });
+      }
+    }
+    expect(offenders, "estas llamadas al limitador no se esperan, así que no limitan").toEqual([]);
+  });
+
+  it("el contador compartido va por el rol de servicio, no por la sesión", () => {
+    /**
+     * Esto corre también ANTES de que haya sesión —el intento de contraseña es
+     * justo donde más falta hace—, y la función de la base está vedada a `anon`
+     * y a `authenticated` a propósito: si la pudiera llamar el cliente,
+     * inflaría el contador de la clave de OTRA persona hasta dejarla fuera.
+     */
+    const lib = read("src/lib/rate-limit.ts");
+    expect(lib).toMatch(/supabaseService\(\)/);
+    expect(lib).not.toMatch(/supabaseServer\(/);
+    expect(lib).toMatch(/rpc\("rate_limit_hit"/);
+  });
+
+  it("si la base falla, degrada a la memoria en vez de abrirse", () => {
+    // Un limitador caído no puede tumbar el sistema, pero tampoco desaparecer.
+    const lib = read("src/lib/rate-limit.ts");
+    const shared = lib.slice(lib.indexOf("async function hitShared"), lib.indexOf("export interface RateLimitOptions"));
+    expect(shared).toMatch(/catch/);
+    expect(shared).toMatch(/return null/);
+    // Y el veredicto local se aplica ANTES de consultar la base.
+    const assert = lib.slice(lib.indexOf("export async function assertRateLimit"));
+    expect(assert.indexOf("hitLocal(")).toBeLessThan(assert.indexOf("hitShared("));
+  });
+
+  it("la función de la base existe con la firma que la aplicación llama", () => {
+    // Una migración que renombre el parámetro dejaría el límite degradado a
+    // memoria en producción, en silencio y para siempre.
+    const sql = read("supabase/migrations/0043_rate_limit.sql");
+    expect(sql).toMatch(/function public\.rate_limit_hit\(p_key text, p_limit integer, p_window_ms integer\)/);
+    expect(sql).toMatch(/grant execute on function public\.rate_limit_hit\(text, integer, integer\) to service_role/);
+    expect(sql).toMatch(/revoke execute on function public\.rate_limit_hit\(text, integer, integer\) from anon/);
+  });
+});
+
 describe("higiene del código fuente", () => {
   it("ningún carácter invisible se cuela en el fuente", () => {
     /**
