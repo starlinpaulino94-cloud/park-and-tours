@@ -114,6 +114,54 @@ export function ResourcePage<T extends { _id: string }>({
     load();
   };
 
+  /**
+   * EXPORTAR LO QUE SE ESTÁ VIENDO.
+   *
+   * Va aquí —en el componente compartido— y no en cada pantalla: así las 35
+   * pantallas genéricas del ERP lo tienen a la vez, y ninguna se queda fuera
+   * porque nadie se acordó de añadírselo.
+   *
+   * Manda los MISMOS parámetros que el listado (búsqueda, filtros, fijos y
+   * orden), y la ruta los resuelve con el mismo armador de filtros: el archivo
+   * no puede traer filas distintas de las que se ven. Y exporta TODAS las que
+   * cumplen el filtro, no la página actual, que es lo que espera cualquiera que
+   * pulsa «exportar» con trescientos registros en pantalla.
+   */
+  const [exporting, setExporting] = useState(false);
+
+  const exportar = async () => {
+    setExporting(true);
+    try {
+      const qs = new URLSearchParams();
+      if (search) qs.set("q", search);
+      for (const [name, value] of Object.entries({ ...(fixedFilters || {}), ...filterValues })) {
+        if (value) qs.set(`filter.${name}`, String(value));
+      }
+      if (initialSort) qs.set("sort", initialSort);
+
+      const res = await fetch(`/api/export/${resource}?${qs.toString()}`, { credentials: "same-origin" });
+      if (!res.ok) {
+        // El cuerpo de error es JSON aunque el éxito sea CSV.
+        const detail = await res.json().catch(() => null);
+        toast.error(detail?.error?.message || "No se pudo exportar");
+        return;
+      }
+      const filas = Number(res.headers.get("X-Row-Count") || 0);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${resource}-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success(`${filas} registro${filas === 1 ? "" : "s"} exportado${filas === 1 ? "" : "s"}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const actionColumn: Column<T> = {
     key: "__actions",
     header: "",
@@ -175,6 +223,16 @@ export function ResourcePage<T extends { _id: string }>({
         ))}
         <Button variant="outline" size="icon" onClick={load} aria-label="Actualizar">
           <Icon name="RefreshCw" className="size-4" />
+        </Button>
+        <Button
+          variant="outline"
+          size="icon"
+          onClick={exportar}
+          disabled={exporting || total === 0}
+          aria-label="Exportar a CSV"
+          title="Exportar lo que estás viendo a CSV"
+        >
+          <Icon name="ArrowDownToLine" className="size-4" />
         </Button>
         {embedded && actions}
       </div>

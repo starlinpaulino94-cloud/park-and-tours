@@ -1340,8 +1340,13 @@ describe("consistencia de contadores", () => {
   });
 
   it("la pantalla de aprobaciones delega el ámbito en el servidor", () => {
-    const route = read("src/app/api/erp/[resource]/route.ts");
-    expect(route).toContain("decidableFilter(ctx)");
+    // El ámbito vive en el armador de filtros compartido, así que lo aplican
+    // por igual el listado y la exportación: un manager exportando aprobaciones
+    // no puede llevarse las que no le toca decidir.
+    const query = read("src/lib/erp-query.ts");
+    expect(query).toContain("decidableFilter(ctx)");
+    // Y sin ámbito decidible NO se devuelve todo: se devuelve nada.
+    expect(query).toMatch(/if \(!decidable\) return \{ _none: true \}/);
     expect(read("src/app/dashboard/administracion/aprobaciones/page.tsx")).toContain("decidable");
   });
 });
@@ -1751,7 +1756,7 @@ describe("el importador", () => {
 describe("higiene del código fuente", () => {
   it("ningún carácter invisible se cuela en el fuente", () => {
     /**
-     * Escribir `﻿` o `̀-ͯ` y que en el archivo acabe el CARÁCTER
+     * Escribir `\uFEFF` o `̀-ͯ` y que en el archivo acabe el CARÁCTER
      * en vez de la secuencia funciona igual en ejecución y es ilegible al leer:
      * un rango de diacríticos combinantes se ve como dos marcas sueltas sobre
      * un corchete, y un BOM no se ve en absoluto. Pasó escribiendo el
@@ -1762,7 +1767,7 @@ describe("higiene del código fuente", () => {
      * algo en una revisión de código, así que un fuente sin invisibles es
      * también una propiedad de seguridad que sale gratis.
      */
-    const INVISIBLE = /[̀-ͯ﻿​-‍⁠­]/;
+    const INVISIBLE = /[̀-ͯ\uFEFF​-‍⁠­]/;
     const offenders: string[] = [];
     for (const dir of ["src/lib", "src/app", "src/components"]) {
       for (const file of walk(path.join(ROOT, dir))) {
@@ -1773,5 +1778,100 @@ describe("higiene del código fuente", () => {
       }
     }
     expect(offenders, "estos archivos traen caracteres invisibles en el fuente").toEqual([]);
+  });
+});
+
+describe("las exportaciones", () => {
+  it("exportar es una LECTURA: el bloqueo por plan no se la quita al cliente", () => {
+    /**
+     * Desde 0042 una empresa bloqueada conserva «consultar y exportar», y el
+     * mensaje del bloqueo se lo promete por escrito. Si esta ruta exigiera
+     * suscripción al día, esa promesa sería falsa justo cuando más importa:
+     * dejar de pagar le impediría llevarse sus propios datos.
+     */
+    const route = read("src/app/api/export/[resource]/route.ts");
+    expect(route).toMatch(/await requireTenant\(\)/);
+    // La LLAMADA, no la palabra: el comentario de la ruta explica por qué NO se
+    // usa la guarda de escritura, y ese comentario vale más que una guarda que
+    // obligue a borrarlo para pasar.
+    expect(route).not.toMatch(/await requireTenantWrite\(\)/);
+  });
+
+  it("la exportación aplica la MISMA autorización de lectura que el listado", () => {
+    // Sin esto, un rol que no puede ver un recurso en pantalla se lo llevaría
+    // entero en un archivo.
+    const route = read("src/app/api/export/[resource]/route.ts");
+    expect(route).toMatch(/readRoleFor\(def\.table\)/);
+    expect(route).toMatch(/requireAtLeast\(ctx, rr\)/);
+  });
+
+  it("el listado y su exportación comparten el armado del filtro", () => {
+    /**
+     * Copiado en dos sitios, la divergencia es cuestión de tiempo y se
+     * manifiesta de la peor forma: un archivo que dice traer los datos
+     * filtrados y trae otros, que nadie revisa porque «lo exportó el sistema».
+     */
+    const list = read("src/app/api/erp/[resource]/route.ts");
+    const exportRoute = read("src/app/api/export/[resource]/route.ts");
+    for (const source of [list, exportRoute]) {
+      expect(source).toMatch(/buildListFilter\(def, ctx, sp\)/);
+      expect(source).toMatch(/buildListSort\(def, sp\)/);
+    }
+    // Y ninguna de las dos rearma el filtro por su cuenta.
+    for (const source of [list, exportRoute]) {
+      expect(source).not.toContain("allowedFilterFields(");
+      expect(source).not.toContain("partnerScopeFor(");
+    }
+  });
+
+  it("un filtro imposible devuelve nada, nunca todo", () => {
+    // `_none` sale del ámbito de aprobaciones cuando el rol no puede decidir
+    // ninguna. Ignorarlo convertiría «ninguna» en «todas», que es la fuga.
+    for (const file of ["src/app/api/erp/[resource]/route.ts", "src/app/api/export/[resource]/route.ts"]) {
+      expect(read(file), file).toMatch(/filter\._none/);
+    }
+  });
+
+  it("el archivo no se guarda en ninguna caché intermedia", () => {
+    // La siguiente persona pediría el mismo recurso y podría recibir el archivo
+    // de otra empresa.
+    const route = read("src/app/api/export/[resource]/route.ts");
+    expect(route).toMatch(/"Cache-Control": "no-store, private"/);
+  });
+
+  it("toda exportación queda en la bitácora", () => {
+    // Sacar la cartera de clientes en un archivo es justo el movimiento que
+    // alguien querría poder revisar después.
+    const route = read("src/app/api/export/[resource]/route.ts");
+    expect(route).toMatch(/action: "data_exported"/);
+  });
+
+  it("el botón vive en el componente compartido, no pantalla por pantalla", () => {
+    // Puesto en cada pantalla, la número 36 se queda sin él y nadie se entera.
+    const shared = read("src/components/tf/resource-page.tsx");
+    expect(shared).toMatch(/\/api\/export\/\$\{resource\}/);
+    expect(shared).toMatch(/aria-label="Exportar a CSV"/);
+  });
+
+  it("exporta lo que se ve, con los mismos parámetros que el listado", () => {
+    const shared = read("src/components/tf/resource-page.tsx");
+    const block = shared.slice(shared.indexOf("const exportar ="), shared.indexOf("const actionColumn"));
+    // Búsqueda, filtros fijos, filtros del usuario y orden: los cuatro.
+    expect(block).toContain('qs.set("q", search)');
+    expect(block).toContain("fixedFilters");
+    expect(block).toContain("filterValues");
+    expect(block).toContain('qs.set("sort", initialSort)');
+    // Y NO manda paginación: exportar veinticinco de trescientas no es exportar.
+    expect(block).not.toContain('qs.set("limit"');
+    expect(block).not.toContain('qs.set("offset"');
+  });
+
+  it("lo exportado se puede volver a importar: mismos formatos", () => {
+    // La propiedad que hace posible el ciclo exportar → corregir en Excel →
+    // reimportar. La prueba del círculo completo vive en export.test.ts; aquí se
+    // vigila que nadie rompa el acoplamiento deliberado entre los dos módulos.
+    const exportLib = read("src/lib/export.ts");
+    expect(exportLib).toContain('from "@/lib/import"');
+    expect(exportLib).toMatch(/IMPORT_TARGETS/);
   });
 });
