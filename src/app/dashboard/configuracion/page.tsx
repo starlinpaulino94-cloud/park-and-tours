@@ -232,6 +232,7 @@ function Team() {
       setBusy(true);
       const res = await api.post("/api/team/invite", {
         name: form.name.trim(), email: form.email.trim(), role: form.role,
+        branch: form.branch || null,
       });
       setBusy(false);
       if (!res.ok) {
@@ -436,6 +437,12 @@ function Team() {
                     {branches.map((b) => <SelectItem key={b._id} value={b._id}>{b.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
+                {/* Ahora acota de verdad: antes se elegía y no pasaba nada. */}
+                <p className="text-xs text-muted-foreground">
+                  Con una sucursal asignada, esta persona ve y exporta solo las reservas, cajas, salidas y
+                  gastos de esa sucursal —y lo que registre nacerá en ella—. El catálogo y los clientes siguen
+                  siendo de toda la empresa.
+                </p>
               </div>
             )}
           </div>

@@ -1848,6 +1848,59 @@ describe("las cuentas del equipo", () => {
   });
 });
 
+describe("el alcance por sucursal", () => {
+  it("el campo que pide la pantalla se guarda de verdad", () => {
+    /**
+     * La pantalla de equipo pedía «Sucursal (opcional)» desde el principio y la
+     * API la tiraba: se elegía, no pasaba nada, y el administrador creía que ya
+     * había separado sus puntos de venta.
+     */
+    const team = read("src/app/api/team/route.ts");
+    expect(team).toMatch(/branch_id: branchId/);
+    expect(team).toMatch(/patch\.branch_id/);
+    expect(read("src/app/api/team/invite/route.ts")).toMatch(/branch_id: \(body\.branch/);
+  });
+
+  it("el listado y su exportación aplican el MISMO corte", () => {
+    // Un archivo que se lleva las tres sucursales mientras la pantalla enseña
+    // una es el fallo que nadie revisa, porque «lo exportó el sistema».
+    const shared = read("src/lib/erp-query.ts");
+    expect(shared).toMatch(/branchFilterFor\(def\.table, ctx\.branchId\)/);
+    // Y ni el listado ni la exportación lo rearman por su cuenta.
+    for (const file of ["src/app/api/erp/[resource]/route.ts", "src/app/api/export/[resource]/route.ts"]) {
+      expect(read(file), file).not.toMatch(/branchFilterFor\(/);
+    }
+  });
+
+  it("se combina con «y»: dos grupos de «o» en el mismo objeto se pisan", () => {
+    const shared = read("src/lib/erp-query.ts");
+    expect(shared).toMatch(/_and: \[filter, branchFilter\]/);
+  });
+
+  it("la venta nace en la sucursal de quien vende", () => {
+    const service = read("src/lib/booking-service.ts");
+    expect(service).toMatch(/branch: input\.branch_id \|\| ctx\.branchId/);
+  });
+
+  it("los catálogos NO se acotan: acotarlo todo deja al vendedor sin vender", () => {
+    const lib = read("src/lib/branch-scope.ts");
+    const map = lib.slice(lib.indexOf("BRANCH_SCOPED"), lib.indexOf("export function isBranchScoped"));
+    for (const table of ["product:", "hotel:", "customer:", "price_rule:", "cancellation_policy:"]) {
+      expect(map, `${table} no debería acotarse por sucursal`).not.toContain(table);
+    }
+  });
+
+  it("la sucursal viaja en el token, no en una consulta por petición", () => {
+    const sql = read("supabase/migrations/0046_branch_scope.sql");
+    expect(sql).toMatch(/jsonb_build_object\('branch_id', m\.branch_id\)/);
+    // Y el resto de las reclamaciones siguen ahí: la función se reescribe
+    // entera porque `create or replace` lo exige, no porque cambie nada más.
+    for (const claim of ["org_id", "app_role", "status", "partner_id"]) {
+      expect(sql, claim).toContain(`'${claim}'`);
+    }
+  });
+});
+
 describe("reprogramar una reserva", () => {
   it("mueve la plaza en LAS DOS salidas", () => {
     /**

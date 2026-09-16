@@ -2,6 +2,7 @@ import "server-only";
 import type { ResourceDef } from "@/lib/resources";
 import { allowedFilterFields, partnerScopeFor } from "@/lib/resources";
 import { decidableFilter } from "@/lib/approvals";
+import { branchFilterFor } from "@/lib/branch-scope";
 import { TenantError, type TenantContext } from "@/lib/tenant";
 
 /**
@@ -82,7 +83,17 @@ export function buildListFilter(
     }
   }
 
-  return filter;
+  // Y la sucursal, cuando la persona tiene una. Va aquí —en el armador que
+  // comparten el listado y su exportación— para que no puedan discrepar: un
+  // archivo que se lleva las reservas de las tres sucursales mientras la
+  // pantalla enseña una es exactamente el fallo que nadie revisa, porque «lo
+  // exportó el sistema».
+  //
+  // Se combina con `_and` en lugar de fusionarlo: dos `_or` en el mismo objeto
+  // se pisan —solo sobreviviría uno, y decidiría él solo—, y el traductor
+  // aplica los `_and` uno tras otro, que es justo lo que hace falta.
+  const branchFilter = branchFilterFor(def.table, ctx.branchId);
+  return branchFilter ? { _and: [filter, branchFilter] } : filter;
 }
 
 /** El orden del listado: el pedido, o el que declara el recurso. */

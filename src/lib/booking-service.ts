@@ -254,7 +254,10 @@ export async function createOrderWithBookings(
   const order = await tenantCreate<Order>(companyId, "order", {
     order_number: await uniqueCode(companyId, "order", "order_number", newOrderNumber),
     customer: input.customer_id,
-    branch: input.branch_id || undefined,
+    // La sucursal de quien vende, salvo que la venta diga otra. Sin esto, la
+    // venta del tour center nacía sin sucursal y el corte por punto de venta
+    // dejaba fuera justo lo que se quería separar.
+    branch: input.branch_id || ctx.branchId || undefined,
     seller: input.seller_id || undefined,
     partner: input.partner_id || undefined,
     promotion: input.promotion_id || undefined,
@@ -409,7 +412,7 @@ export async function createOrderWithBookings(
       product: item.product_id,
       departure: item.departure_id || undefined,
       modality: item.modality_id || undefined,
-      branch: input.branch_id || undefined,
+      branch: input.branch_id || ctx.branchId || undefined,
       seller: input.seller_id || undefined,
       partner: input.partner_id || undefined,
       pickup_hotel: item.pickup_hotel_id || undefined,
