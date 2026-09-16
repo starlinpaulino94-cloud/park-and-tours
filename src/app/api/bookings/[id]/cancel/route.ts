@@ -7,6 +7,7 @@ import { syncOrderTotals } from "@/lib/booking-service";
 import { postPayment } from "@/lib/ledger-events";
 import { writeAudit } from "@/lib/audit";
 import { notifyBookingCancelled } from "@/lib/messaging/events";
+import { notify } from "@/lib/notify-service";
 import { parseJson } from "@/lib/format";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -169,6 +170,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     } catch (err) {
       console.error("[cancel] no se pudo encolar el aviso de cancelación:", err);
     }
+
+    // El aviso interno: una cancelación libera cupo y casi siempre mueve
+    // dinero, así que el gerente se entera sin tener que entrar a mirar.
+    await notify({
+      companyId: ctx.companyId,
+      event: "booking_cancelled",
+      entityType: "booking",
+      entityId: booking._id,
+      vars: {
+        referencia: booking.booking_number,
+        motivo: body.reason || null,
+      },
+    });
 
     console.log(`[cancel] reserva ${booking.booking_number} cancelada · reembolso ${refund}`);
     // La cancelación ya está registrada y la plaza liberada. El aviso al cliente

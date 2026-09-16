@@ -225,16 +225,22 @@ describe("Panel ejecutivo", () => {
     expect(page).toContain('title="Notificaciones"');
     expect(page).toContain("Marcar todas como leídas");
     expect(page).toContain("/api/notifications");
-    // La API acota a las notificaciones propias más los avisos a toda la empresa.
+    // La API acota a las notificaciones propias más los avisos de empresa que
+    // le tocan por rol, con la MISMA función que el contador de la campana.
     const route = read("src/app/api/notifications/route.ts");
-    expect(route).toContain("_or: [{ user_id: userId }, { user_id: null }]");
+    expect(route).toMatch(/inboxFilter\(ctx\.userId, ctx\.role\)/);
     expect(route).toContain("mark_all_read");
+    // Y no rearma el alcance por su cuenta: dos definiciones del buzón acaban
+    // en un contador que promete avisos que la bandeja no enseña.
+    expect(route).not.toMatch(/_or: \[\{ user_id/);
     // La ruta de marcado verifica pertenencia antes de escribir.
     const readRoute = read("src/app/api/notifications/[id]/read/route.ts");
     expect(readRoute).toContain("Esta notificación no es tuya");
-    // El sidebar cuenta las no leídas con el mismo alcance personal.
+    // El sidebar cuenta las no leídas con ese mismo alcance.
     expect(read("src/lib/nav.ts")).toContain('badgeKey: "notifications"');
-    expect(read("src/app/dashboard/layout.tsx")).toContain("_or: [{ user_id: userId }, { user_id: null }], read_status: false");
+    const layout = read("src/app/dashboard/layout.tsx");
+    expect(layout).toMatch(/inboxFilter\(userId, ctx\.role\)/);
+    expect(layout).not.toMatch(/_or: \[\{ user_id/);
   });
 
   it("POS — cobro con cambio en efectivo, total exacto y guardas de caja", () => {
@@ -1750,6 +1756,72 @@ describe("el importador", () => {
     const entry = nav.slice(at, at + 400);
     expect(entry).toContain("/dashboard/administracion/importar");
     expect(entry).not.toContain("module:");
+  });
+});
+
+describe("las notificaciones internas", () => {
+  /**
+   * La campana estuvo cuatro migraciones enseñando un cero. Lo que la vuelve a
+   * dejar así no es borrar código: es que un refactor se lleve por delante el
+   * enganche y nadie lo note, porque un aviso que no se escribe no rompe nada.
+   * Estas guardas atan cada evento del catálogo al sitio donde ocurre el hecho.
+   */
+  const HOOKS: [string, string][] = [
+    ["booking_created", "src/lib/booking-service.ts"],
+    ["booking_cancelled", "src/app/api/bookings/[id]/cancel/route.ts"],
+    ["payment_refunded", "src/app/api/payments/route.ts"],
+    ["cash_close_mismatch", "src/app/api/cash/sessions/[id]/close/route.ts"],
+    ["settlement_confirmed", "src/app/api/settlements/[id]/confirm/route.ts"],
+    ["invoice_voided", "src/lib/invoice-service.ts"],
+    ["receivable_overdue", "src/app/api/cron/collections/route.ts"],
+    ["quote_accepted", "src/app/api/quotes/[id]/decide/route.ts"],
+    ["stock_low", "src/lib/inventory.ts"],
+    ["plan_limit_near", "src/lib/plan-service.ts"],
+    ["incident_opened", "src/lib/notify.ts"],
+  ];
+
+  it("cada evento del catálogo se dispara desde algún sitio", () => {
+    // Un evento en el catálogo que nadie emite es una promesa que el sistema no
+    // cumple, y es exactamente el estado del que venimos.
+    const catalogo = read("src/lib/notify.ts");
+    const declarados = [...catalogo.matchAll(/^  ([a-z_]+): \{$/gm)].map((m) => m[1]);
+    expect(declarados.sort()).toEqual(HOOKS.map(([event]) => event).sort());
+  });
+
+  it("el enganche vive donde ocurre el hecho", () => {
+    for (const [event, file] of HOOKS) {
+      expect(read(file), `${event} debería emitirse desde ${file}`).toContain(`"${event}"`);
+    }
+  });
+
+  it("escribir un aviso no puede tumbar la operación que lo provocó", () => {
+    /**
+     * Se llama sin try/catch desde una venta ya cobrada y desde un cierre de
+     * caja: la función se traga sus propios errores. Si dejara de hacerlo, un
+     * fallo de la base al escribir un aviso revertiría un cobro.
+     */
+    const service = read("src/lib/notify-service.ts");
+    const body = service.slice(service.indexOf("export async function notify"));
+    expect(body).toMatch(/try \{/);
+    expect(body).toMatch(/catch \(err\)/);
+    // Y no relanza: ni `throw` propio ni un `Promise.reject`.
+    expect(body).not.toMatch(/\bthrow\b/);
+  });
+
+  it("los avisos se escriben con el rol de servicio, que es el que sirve en un cron", () => {
+    // La cobranza y el barrido de existencias corren sin sesión: bajo RLS, las
+    // ayudas de inquilino resolverían cero filas y el aviso no se escribiría.
+    const service = read("src/lib/notify-service.ts");
+    expect(service).toMatch(/supabaseService\(\)/);
+    expect(service).toMatch(/organization_id: input\.companyId/);
+  });
+
+  it("la clave de dedupe la guarda la base, no solo la aplicación", () => {
+    // Dos instancias escribiendo a la vez dejarían dos copias si el único
+    // control fuera un `select` previo desde la aplicación.
+    const sql = read("supabase/migrations/0044_notifications.sql");
+    expect(sql).toMatch(/create unique index if not exists notification_dedupe_idx/);
+    expect(sql).toMatch(/on notification \(organization_id, dedupe_key\)/);
   });
 });
 

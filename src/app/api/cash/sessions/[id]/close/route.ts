@@ -9,6 +9,7 @@ import {
 } from "@/lib/cash-close";
 import { postCashDifference } from "@/lib/ledger-events";
 import { writeAudit } from "@/lib/audit";
+import { notify } from "@/lib/notify-service";
 import type { CashSession } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -176,6 +177,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       severity: classifyDifference(worst, tolerance) === "balanced" ? "info" : "warning",
       metadata: { results, tolerance, requires_approval: requiresApproval },
     });
+
+    // El descuadre se avisa al gerente. Es la alerta más cara de descubrir
+    // tarde: cuando se nota en el arqueo del mes, ya no hay a quién preguntar.
+    if (classifyDifference(worst, tolerance) !== "balanced") {
+      await notify({
+        companyId: ctx.companyId,
+        event: "cash_close_mismatch",
+        entityType: "cash_session",
+        entityId: id,
+        vars: {
+          diferencia: worst,
+          moneda: primary,
+          caja: session.code,
+        },
+      });
+    }
 
     console.log(`[cash] sesión ${session.code} cerrada · ${requiresApproval ? "a revisión" : "cuadrada"}`);
     return ok({

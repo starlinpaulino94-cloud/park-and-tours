@@ -252,6 +252,11 @@ const METRIC_LABEL: Record<LimitMetric, { one: string; many: string }> = {
   max_storage_mb: { one: "MB de almacenamiento", many: "MB de almacenamiento" },
 };
 
+/** El nombre de la métrica en plural, para hablar de ella en una frase. */
+export function metricLabel(metric: LimitMetric): string {
+  return METRIC_LABEL[metric].many;
+}
+
 /** El mensaje del límite alcanzado: qué se llenó, cuánto cabía y qué hacer. */
 export function limitMessage(check: LimitCheck, planName?: string | null): string {
   const label = METRIC_LABEL[check.metric];

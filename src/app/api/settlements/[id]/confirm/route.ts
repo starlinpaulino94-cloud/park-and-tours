@@ -5,6 +5,7 @@ import { assertModule } from "@/lib/plan-service";
 import { loadSupplierStatement } from "@/lib/supplier-settlement-service";
 import { retentionsFor, settlementTotals, reconcile } from "@/lib/supplier-settlement";
 import { writeAudit } from "@/lib/audit";
+import { notify } from "@/lib/notify-service";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import type { Settlement } from "@/lib/types";
@@ -166,6 +167,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         services: totals.services, confirmed: totals.confirmed,
         retentions: totals.retentions, net: totals.net,
         disputed, accepted: body.accept_variance === true,
+      },
+    });
+
+    // Una liquidación conciliada es dinero que hay que pagar: el aviso la pone
+    // delante de quien firma, en vez de esperar a que abra la pantalla.
+    await notify({
+      companyId: ctx.companyId,
+      event: "settlement_confirmed",
+      entityType: "settlement",
+      entityId: id,
+      vars: {
+        referencia: settlement.code,
+        monto: totals.net,
+        moneda: settlement.currency,
+        contraparte: body.invoice_number ? `Factura ${body.invoice_number}` : null,
       },
     });
 

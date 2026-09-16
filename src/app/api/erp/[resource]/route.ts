@@ -5,6 +5,8 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { assertModule, assertWithinLimit } from "@/lib/plan-service";
+import { notificationForCreate } from "@/lib/notify";
+import { notify } from "@/lib/notify-service";
 import { buildListFilter, buildListSort } from "@/lib/erp-query";
 
 /** Generic tenant-scoped list endpoint: GET /api/erp/:resource */
@@ -107,6 +109,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ res
     if (Object.keys(payload).length === 0) throw new TenantError("No se enviaron datos válidos", 400);
 
     const created = await tenantCreate(ctx.companyId, def.table, payload);
+
+    // Lo que se registra por una pantalla genérica también puede merecer un
+    // aviso: un incidente del parque no tiene ruta propia donde colgarlo. Qué
+    // avisa y qué no lo decide `notify.ts`, que devuelve null para casi todo.
+    const aviso = notificationForCreate(def.table, created as Record<string, unknown>);
+    if (aviso) {
+      await notify({
+        companyId: ctx.companyId,
+        event: aviso.event,
+        entityType: aviso.entityType,
+        entityId: aviso.entityId,
+        vars: aviso.vars,
+      });
+    }
+
     console.log(`[api] ${ctx.email} creó ${def.table}`);
     return ok(created);
   } catch (err) {

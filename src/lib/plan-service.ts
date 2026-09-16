@@ -1,9 +1,10 @@
 import "server-only";
 import { supabaseService } from "@/lib/supabase/service";
 import { TenantError, type TenantContext } from "@/lib/tenant";
+import { notify } from "@/lib/notify-service";
 import type { ModuleKey } from "@/lib/types";
 import {
-  planStatus, limitCheck, limitMessage, moduleAllowed, moduleMessage, monthStart,
+  planStatus, limitCheck, limitMessage, metricLabel, moduleAllowed, moduleMessage, monthStart,
   type LimitMetric, type PlanSnapshot, type PlanStatus, type PlanUsage,
 } from "@/lib/plan";
 
@@ -108,6 +109,26 @@ export async function assertWithinLimit(
     : usage.storageMb;
 
   const check = limitCheck(metric, plan, used, wanted);
+
+  // Avisar ANTES de chocar. El banner de la pantalla solo lo ve quien entra a
+  // mirarla, y el límite que rechaza una venta sin previo aviso convierte una
+  // decisión comercial en un error de sistema delante del cliente. La semilla
+  // lleva el mes, así que se repite una vez al mes por métrica y no una sola
+  // vez en la vida de la empresa.
+  if (check.allowed && check.warn) {
+    await notify({
+      companyId: ctx.companyId,
+      event: "plan_limit_near",
+      dedupeSeed: `${metric}:${new Date().toISOString().slice(0, 7)}`,
+      vars: {
+        metrica: metricLabel(metric),
+        porcentaje: check.percent,
+        usado: check.used,
+        limite: check.limit,
+      },
+    });
+  }
+
   if (!check.allowed) {
     throw Object.assign(new Error(limitMessage(check, plan?.name)), {
       status: 402,
