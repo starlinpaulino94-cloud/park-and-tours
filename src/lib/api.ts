@@ -12,6 +12,14 @@ export interface ApiResponse<T = unknown> {
   data?: T;
   total?: number;
   error?: any;
+  /**
+   * El código HTTP, o 0 cuando no hubo respuesta (sin red, tiempo agotado).
+   *
+   * Hace falta para decidir si algo se reintenta: un 409 no mejora esperando y
+   * un «sin conexión» sí. Sin esta distinción, la cola del check-in sin señal
+   * reintentaría para siempre lo que el servidor ya rechazó.
+   */
+  status?: number;
 }
 
 async function request<T>(
@@ -22,6 +30,7 @@ async function request<T>(
   try {
     const res = await fetch(url, options);
     const json = (await res.json()) as ApiResponse<T>;
+    json.status = res.status;
     const elapsed = (typeof performance !== "undefined" ? performance.now() : Date.now()) - started;
     if (process.env.NODE_ENV !== "production" && elapsed > 800) {
       console.warn(`[api] ${options?.method || "GET"} ${url} tardó ${Math.round(elapsed)}ms`);
@@ -32,7 +41,8 @@ async function request<T>(
     if (process.env.NODE_ENV !== "production") {
       console.warn(`[api] ${options?.method || "GET"} ${url} falló tras ${Math.round(elapsed)}ms`);
     }
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    // Cero es «no hubo respuesta»: ni siquiera se llegó al servidor.
+    return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

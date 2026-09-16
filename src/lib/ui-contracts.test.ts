@@ -1859,6 +1859,80 @@ describe("las cuentas del equipo", () => {
   });
 });
 
+describe("el check-in del guía: QR y sin señal", () => {
+  it("el QR del voucher por fin se puede leer", () => {
+    /**
+     * El voucher lleva su QR impreso desde el kit de documentos y NADIE podía
+     * leerlo: el guía miraba el papel y tecleaba el código en la puerta del
+     * bus, con cuarenta personas esperando. Un QR que nadie escanea es un
+     * adorno caro.
+     */
+    const page = read("src/app/dashboard/checkin/page.tsx");
+    expect(page).toMatch(/<EscanerQR onCode=\{onScan\}/);
+    const escaner = read("src/app/dashboard/checkin/_components/escaner.tsx");
+    // Dos lectores: el nativo donde existe y jsQR donde no —hoy, iPhone—.
+    expect(escaner).toMatch(/BarcodeDetector/);
+    expect(escaner).toMatch(/await import\("jsqr"\)/);
+  });
+
+  it("escanear NO es el único camino", () => {
+    // Un guía con el permiso de cámara mal dado no se puede quedar sin poder
+    // embarcar a nadie.
+    const escaner = read("src/app/dashboard/checkin/_components/escaner.tsx");
+    expect(escaner).toMatch(/denied|unsupported/);
+    expect(read("src/app/dashboard/checkin/page.tsx")).toMatch(/onKeyDown=\{\(e\) => \{ if \(e\.key === "Enter"\) search\(\); \}\}/);
+  });
+
+  it("cada embarque lleva su clave, y el servidor la usa para reconocer el reintento", () => {
+    /**
+     * Sin la clave hay que elegir entre aceptar dos veces el mismo voucher o
+     * marcar como error un reintento que sí funcionó. Con ella se distinguen:
+     * misma clave = misma petición otra vez; clave distinta = dos personas con
+     * el mismo papel.
+     */
+    const page = read("src/app/dashboard/checkin/page.tsx");
+    expect(page).toMatch(/idempotency_key: key/);
+    const route = read("src/app/api/bookings/[id]/checkin/route.ts");
+    expect(route).toMatch(/stored === key/);
+    expect(route).toMatch(/repeated: true/);
+    // Y sigue rechazando el voucher presentado por otra persona.
+    expect(route).toMatch(/Esta reserva ya tiene el check-in completado/);
+  });
+
+  it("lo que el servidor rechaza no se reintenta para siempre", () => {
+    const lib = read("src/lib/offline-queue.ts");
+    expect(lib).toMatch(/export function shouldRetry/);
+    const page = read("src/app/dashboard/checkin/page.tsx");
+    expect(page).toMatch(/shouldRetry\(res\.status/);
+  });
+
+  it("el trabajador de servicio no responde escrituras desde la caché", () => {
+    /**
+     * Contestar «ya está» a un check-in o a un cobro que no llegó al servidor
+     * sería mentir sobre algo que mueve dinero y plazas. Lo que se hace sin
+     * señal lo guarda la aplicación en su cola, con su clave.
+     */
+    const sw = read("public/sw.js");
+    expect(sw).toMatch(/request\.method !== "GET"/);
+    expect(sw).toMatch(/response\.ok/);
+  });
+
+  it("la aplicación se instala y abre en el check-in", () => {
+    const manifest = JSON.parse(read("public/manifest.webmanifest"));
+    expect(manifest.start_url).toBe("/dashboard/checkin");
+    expect(manifest.display).toBe("standalone");
+    expect(manifest.icons.length).toBeGreaterThan(0);
+    expect(read("src/app/layout.tsx")).toMatch(/manifest: "\/manifest\.webmanifest"/);
+  });
+
+  it("el trabajador de servicio se registra dentro del panel, no en la raíz", () => {
+    // Lo que tiene que sobrevivir sin señal es la operación; la página pública
+    // y el login sin red no pueden hacer nada útil de todas formas.
+    expect(read("src/app/dashboard/layout.tsx")).toMatch(/<ServiceWorkerRegistrar \/>/);
+    expect(read("src/app/layout.tsx")).not.toMatch(/ServiceWorkerRegistrar/);
+  });
+});
+
 describe("el motor de reservas público", () => {
   /**
    * Es la única puerta del sistema por la que entra alguien SIN cuenta, así que

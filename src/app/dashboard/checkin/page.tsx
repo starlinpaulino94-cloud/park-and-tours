@@ -4,6 +4,11 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/tf/page-header";
+import { EscanerQR } from "./_components/escaner";
+import {
+  readQueue, enqueue, removeFromQueue, updateQueued, shouldRetry, queueSummary, newCheckinKey,
+  type QueuedCheckin,
+} from "@/lib/offline-queue";
 import { StatusBadge, Pill } from "@/components/tf/status-badge";
 import { EmptyState } from "@/components/tf/empty-state";
 import { Icon } from "@/components/tf/icon";
@@ -33,6 +38,17 @@ export default function CheckinPage() {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [today, setToday] = useState<Booking[]>([]);
+
+  /**
+   * LO QUE SE HIZO SIN SEÑAL.
+   *
+   * El guía embarca en la playa y en el parking del hotel, donde no hay red.
+   * Antes de esto el check-in sencillamente no funcionaba ahí: se marcaba en
+   * papel y alguien lo pasaba por la tarde, cuando el manifiesto ya no servía.
+   * Ahora lo que hace se guarda en su teléfono con su clave y se manda solo.
+   */
+  const [queued, setQueued] = useState<QueuedCheckin[]>([]);
+  const [online, setOnline] = useState(true);
 
   const [target, setTarget] = useState<Booking | null>(null);
   const [pax, setPax] = useState("");
@@ -82,8 +98,24 @@ export default function CheckinPage() {
       toast.error(res.error?.message || "No se pudo buscar la reserva");
       return;
     }
-    setResults(res.data || []);
-    if ((res.data || []).length === 0) toast.error("No se encontró ninguna reserva con ese código");
+    const rows = res.data || [];
+    setResults(rows);
+    if (rows.length === 0) toast.error("No se encontró ninguna reserva con ese código");
+    return rows;
+  };
+
+  /**
+   * Un código escaneado abre el check-in directamente.
+   *
+   * Escanear y que aparezca una lista de uno para volver a tocar es no haber
+   * escaneado: en la puerta del bus el guía tiene una mano en el papel y la
+   * otra en el teléfono. Si el QR trae un código que identifica a UNA reserva,
+   * se abre esa; si trae algo ambiguo, se enseña la lista como siempre.
+   */
+  const onScan = async (scanned: string) => {
+    setCode(scanned);
+    const rows = await search(scanned);
+    if (rows && rows.length === 1) openCheckin(rows[0]);
   };
 
   const openCheckin = (b: Booking) => {
@@ -94,23 +126,89 @@ export default function CheckinPage() {
     setSelectedParticipants(new Set((b.participant || []).map((p: any) => p._id)));
   };
 
+  /** Manda un embarque ya armado. Devuelve si quedó resuelto. */
+  const send = async (bookingId: string, body: Record<string, unknown>) =>
+    api.post<{ status: string; checked_in_pax?: number; total_pax?: number }>(
+      `/api/bookings/${bookingId}/checkin`, body
+    );
+
+  /**
+   * Vacía la cola.
+   *
+   * Cada embarque lleva su clave, así que reintentar es seguro: el servidor
+   * reconoce el mismo embarque y contesta que sí en vez de «ya estaba hecho».
+   * Lo que el servidor RECHAZA —un 409 de otro embarque, un 403— sale de la
+   * cola y se le enseña al guía: reintentarlo sería pedir el mismo no cien
+   * veces y gastarle la batería.
+   */
+  const flushQueue = useCallback(async () => {
+    const pending = readQueue(window.localStorage);
+    if (pending.length === 0 || !navigator.onLine) return;
+    let enviados = 0;
+    for (const item of pending) {
+      const res = await send(item.bookingId, item.body);
+      if (res.ok) {
+        removeFromQueue(window.localStorage, item.key);
+        enviados++;
+        continue;
+      }
+      if (shouldRetry(res.status ?? 0)) {
+        updateQueued(window.localStorage, item.key, { tries: item.tries + 1, lastError: res.error?.message });
+        break; // sin red: no tiene sentido seguir con los demás
+      }
+      removeFromQueue(window.localStorage, item.key);
+      toast.error(`${item.label}: ${res.error?.message || "el servidor lo rechazó"}`);
+    }
+    setQueued(readQueue(window.localStorage));
+    if (enviados > 0) {
+      toast.success(`${enviados} embarque${enviados === 1 ? "" : "s"} enviado${enviados === 1 ? "" : "s"}`);
+      loadToday();
+    }
+  }, [loadToday]);
+
+  // Al volver la señal se vacía sola: el guía no tiene que acordarse de nada.
+  useEffect(() => {
+    const sync = () => { setOnline(navigator.onLine); if (navigator.onLine) void flushQueue(); };
+    sync();
+    setQueued(readQueue(window.localStorage));
+    window.addEventListener("online", sync);
+    window.addEventListener("offline", sync);
+    return () => {
+      window.removeEventListener("online", sync);
+      window.removeEventListener("offline", sync);
+    };
+  }, [flushQueue]);
+
   const submit = async (noShow = false, booking?: Booking) => {
     const b = booking || target;
     if (!b) return;
     setBusy(true);
-    const res = await api.post<{ status: string; checked_in_pax?: number; total_pax?: number }>(
-      `/api/bookings/${b._id}/checkin`,
-      {
-        pax: noShow ? undefined : Number(pax) || 0,
-        no_show: noShow,
-        participant_ids: noShow ? undefined : [...selectedParticipants],
-        notes: notes || undefined,
-        force,
-      }
-    );
+    // La clave se genera AQUÍ, una vez por embarque: es lo que permite
+    // reintentar sin que el servidor lo confunda con un voucher presentado dos
+    // veces por dos personas distintas.
+    const key = newCheckinKey();
+    const body = {
+      pax: noShow ? undefined : Number(pax) || 0,
+      no_show: noShow,
+      participant_ids: noShow ? undefined : [...selectedParticipants],
+      notes: notes || undefined,
+      force,
+      idempotency_key: key,
+    };
+    const res = await send(b._id!, body);
     setBusy(false);
     if (!res.ok) {
       console.error("[checkin] error registrando el check-in:", res.error);
+      if (shouldRetry(res.status ?? 0)) {
+        // No llegó al servidor: se guarda y el guía sigue embarcando.
+        const label = `${b.booking_number || ""} · ${typeof b.customer === "object" ? (b.customer as any)?.first_name || "" : ""}`.trim();
+        setQueued(enqueue(window.localStorage, {
+          key, bookingId: b._id!, label: label || "Reserva", body, at: Date.now(), tries: 1,
+        }));
+        toast.success("Guardado en este teléfono. Se enviará al volver la señal.");
+        setTarget(null);
+        return;
+      }
       toast.error(res.error?.message || "No se pudo registrar el check-in");
       return;
     }
@@ -138,6 +236,23 @@ export default function CheckinPage() {
         description="Valida el voucher, comprueba el saldo y marca la asistencia. Un voucher utilizado no se puede volver a usar."
       />
 
+      {/* Lo que el guía necesita saber de un vistazo: si está sin señal y
+          cuántos embarques lleva guardados. Sin esto, trabajar sin conexión da
+          miedo aunque funcione. */}
+      {(!online || queued.length > 0) && (
+        <div className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3 text-sm ${
+          online ? "border-primary/40 bg-primary/5" : "border-amber-500/40 bg-amber-500/5"
+        }`}>
+          <span className="flex items-center gap-2">
+            <Icon name={online ? "RefreshCw" : "CloudOff"} className="size-4" />
+            {queueSummary(queued, online)}
+          </span>
+          {online && queued.length > 0 && (
+            <Button size="sm" variant="outline" onClick={() => flushQueue()}>Enviar ahora</Button>
+          )}
+        </div>
+      )}
+
       <section className="tf-card p-5">
         <Label className="text-xs">Código de voucher, número de reserva o habitación</Label>
         <div className="mt-2 flex flex-wrap gap-2">
@@ -160,6 +275,12 @@ export default function CheckinPage() {
               <Icon name="X" className="size-4" /> Ver las de hoy
             </Button>
           )}
+        </div>
+        {/* El voucher lleva su QR impreso desde el kit de documentos y hasta
+            ahora nadie podía leerlo: se teclaba a mano, en la puerta del bus,
+            con cuarenta personas esperando. */}
+        <div className="mt-3">
+          <EscanerQR onCode={onScan} />
         </div>
       </section>
 

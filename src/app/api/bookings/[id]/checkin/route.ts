@@ -21,7 +21,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const body = await readJson<{
       pax?: number; no_show?: boolean; participant_ids?: string[]; notes?: string; force?: boolean;
+      /** La clave del embarque, generada por el teléfono del guía (0048). */
+      idempotency_key?: string;
     }>(req);
+    const key = (body.idempotency_key || "").trim().slice(0, 64) || null;
 
     const booking = await tenantFindOne<Booking>(ctx.companyId, "booking", id, { participant: { _limit: 100 } });
 
@@ -32,7 +35,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // AUD-B04: block re-use of an already completed check-in. The UI disables
     // the button, but the API previously accepted a repeat check-in, letting a
     // ticket be presented twice. no_show is still allowed to correct a mistake.
+    //
+    // 0048 — salvo que sea EL MISMO embarque otra vez. El guía trabaja sin
+    // señal y su teléfono reintenta: si la clave que llega es la que ya está
+    // guardada, esto no es un voucher presentado dos veces, es la misma
+    // petición llegando por segunda vez, y contestarle «ya estaba hecho» como
+    // si fuera un error dejaría su cola marcando en rojo algo que sí ocurrió.
     if (booking.checkin_status === "done" && !body.no_show) {
+      const stored = (booking as { checkin_key?: string }).checkin_key;
+      if (key && stored && stored === key) {
+        return ok({
+          status: "checked_in",
+          checked_in_pax: booking.checked_in_pax ?? booking.pax_total ?? 0,
+          total_pax: booking.pax_total ?? 0,
+          repeated: true,
+        });
+      }
       throw Object.assign(new Error("Esta reserva ya tiene el check-in completado"), { status: 409 });
     }
 
@@ -98,6 +116,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       checked_in_at: new Date().toISOString(),
       checked_in_by: ctx.userId,
       internal_notes: body.notes || booking.internal_notes,
+      // Se guarda la clave del embarque para reconocer su reintento.
+      ...(key ? { checkin_key: key } : {}),
     });
 
     // Mark the individual participants when provided.
