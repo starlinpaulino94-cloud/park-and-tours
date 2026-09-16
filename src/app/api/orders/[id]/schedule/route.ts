@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantFindOne, tenantQuery, tenantUpdate } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, requireAtLeast, tenantFindOne, tenantQuery, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { ensureSchedule, setSchedule, refreshAllocation } from "@/lib/schedule-service";
 import { buildSchedule, dayOf, collectionStatus, type PlannedInstallment } from "@/lib/collections";
@@ -64,7 +64,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   try {
     assertSameOriginMutation(req);
     const { id } = await params;
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     assertRateLimit({ key: rateLimitKey(req, "orders:schedule:set", ctx.userId), limit: 30, windowMs: 60_000 });
     // Cambiar cuándo y cuánto se cobra es una decisión comercial, no una
     // corrección de datos: un vendedor no se aplaza su propio saldo.

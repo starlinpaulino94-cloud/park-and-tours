@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantFindOne, tenantUpdate } from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast, tenantFindOne, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { assertModule } from "@/lib/plan-service";
 import { writeAudit } from "@/lib/audit";
 import type { Commission, CommissionStatus } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -14,7 +15,8 @@ const ALLOWED: CommissionStatus[] = ["approved", "held", "disputed", "cancelled"
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
+    assertModule(ctx, "commissions");
     requireAtLeast(ctx, "manager");
 
     const body = await readJson<{ ids?: string[]; status?: CommissionStatus; notes?: string }>(req);

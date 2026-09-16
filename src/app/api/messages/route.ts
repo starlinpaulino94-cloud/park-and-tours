@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -26,7 +26,7 @@ const CHANNELS = new Set(["email", "whatsapp", "sms"]);
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     assertRateLimit({ key: rateLimitKey(req, "messages:send", ctx.userId), limit: 60, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 

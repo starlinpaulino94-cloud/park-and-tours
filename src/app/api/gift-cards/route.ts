@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantCreate } from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast, tenantCreate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -21,7 +21,7 @@ interface GiftCardRow { _id: string; code?: string }
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     assertRateLimit({ key: rateLimitKey(req, "gift-cards:issue", ctx.userId), limit: 60, windowMs: 60_000 });
     requireAtLeast(ctx, "cashier");
 

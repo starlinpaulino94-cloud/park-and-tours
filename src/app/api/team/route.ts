@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, TenantError } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, requireAtLeast, TenantError } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { assertWithinLimit } from "@/lib/plan-service";
 import { supabaseService } from "@/lib/supabase/service";
 import { writeAudit } from "@/lib/audit";
 import type { AppRole } from "@/lib/auth";
@@ -71,8 +72,12 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     requireAtLeast(ctx, "admin");
+    // El plan se comprueba ANTES de crear la cuenta en Supabase Auth: al revés
+    // quedaría un usuario creado sin membresía —invisible en el equipo e
+    // imposible de invitar otra vez porque el correo ya existe—.
+    await assertWithinLimit(ctx, "max_users");
 
     const body = await readJson<{ email?: string; name?: string; password?: string; role?: string; phone?: string | null }>(req);
     const email = (body.email || "").trim().toLowerCase();
@@ -170,7 +175,7 @@ export async function POST(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     requireAtLeast(ctx, "admin");
 
     const body = await readJson<{ user_id?: string; role?: string; status?: string; phone?: string | null; name?: string }>(req);

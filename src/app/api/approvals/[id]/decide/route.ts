@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, TenantError } from "@/lib/tenant";
+import { requireTenantWrite, TenantError } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { decide } from "@/lib/approvals";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // que no comprobaba el origen ni tenía límite de tasa.
     assertSameOriginMutation(req);
 
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     assertRateLimit({ key: rateLimitKey(req, "approvals:decide", ctx.userId), limit: 30, windowMs: 60_000 });
 
     const { id } = await params;

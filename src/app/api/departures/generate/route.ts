@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantCreate, tenantQuery } from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast, tenantCreate, tenantQuery } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import type { Product } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -13,7 +13,7 @@ const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     requireAtLeast(ctx, "operations");
 
     const body = await readJson<{

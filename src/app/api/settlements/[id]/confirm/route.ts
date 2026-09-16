@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantFindOne, tenantQuery, tenantUpdate } from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast, tenantFindOne, tenantQuery, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { assertModule } from "@/lib/plan-service";
 import { loadSupplierStatement } from "@/lib/supplier-settlement-service";
 import { retentionsFor, settlementTotals, reconcile } from "@/lib/supplier-settlement";
 import { writeAudit } from "@/lib/audit";
@@ -24,7 +25,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   try {
     assertSameOriginMutation(req);
     const { id } = await params;
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
+    assertModule(ctx, "settlements");
     assertRateLimit({ key: rateLimitKey(req, "settlements:confirm", ctx.userId), limit: 30, windowMs: 60_000 });
     requireAtLeast(ctx, "manager");
 

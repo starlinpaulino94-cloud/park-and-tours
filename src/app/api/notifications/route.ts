@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, tenantQuery, tenantCount, tenantUpdate } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, tenantQuery, tenantCount, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -45,7 +45,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     assertRateLimit({ key: rateLimitKey(req, "notifications:markall", ctx.userId), limit: 30, windowMs: 60_000 });
 
     const body = await readJson<{ action?: string }>(req);

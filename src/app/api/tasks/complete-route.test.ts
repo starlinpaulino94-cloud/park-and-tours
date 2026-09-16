@@ -9,7 +9,7 @@ import type { AppRole } from "@/lib/auth";
  * ajena se rechaza aunque la petición llegue directamente a la API.
  */
 
-const requireTenant = vi.fn();
+const requireTenantWrite = vi.fn();
 const tenantFindOne = vi.fn();
 const tenantUpdate = vi.fn();
 const writeAudit = vi.fn();
@@ -18,7 +18,7 @@ vi.mock("@/lib/tenant", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/tenant")>();
   return {
     ...actual,
-    requireTenant: (...args: unknown[]) => requireTenant(...args),
+    requireTenantWrite: (...args: unknown[]) => requireTenantWrite(...args),
     tenantFindOne: (...args: unknown[]) => tenantFindOne(...args),
     tenantUpdate: (...args: unknown[]) => tenantUpdate(...args),
   };
@@ -49,7 +49,7 @@ beforeEach(() => {
 
 describe("POST /api/tasks/:id/complete", () => {
   it("completa la tarea propia y la registra en auditoría", async () => {
-    requireTenant.mockResolvedValue(ctxOf("seller"));
+    requireTenantWrite.mockResolvedValue(ctxOf("seller"));
     tenantFindOne.mockResolvedValue({ _id: "t1", title: "Cerrar caja", status: "todo", assigned_to_id: "user-1" });
 
     const { status, body } = await call();
@@ -61,7 +61,7 @@ describe("POST /api/tasks/:id/complete", () => {
   });
 
   it("rechaza completar la tarea de otra persona", async () => {
-    requireTenant.mockResolvedValue(ctxOf("seller"));
+    requireTenantWrite.mockResolvedValue(ctxOf("seller"));
     tenantFindOne.mockResolvedValue({ _id: "t1", title: "Ajena", status: "todo", assigned_to_id: "user-9" });
 
     const { status, body } = await call();
@@ -71,14 +71,14 @@ describe("POST /api/tasks/:id/complete", () => {
   });
 
   it("un rol de gestión sí puede cerrar la tarea de su equipo", async () => {
-    requireTenant.mockResolvedValue(ctxOf("manager"));
+    requireTenantWrite.mockResolvedValue(ctxOf("manager"));
     tenantFindOne.mockResolvedValue({ _id: "t1", title: "Ajena", status: "todo", assigned_to_id: "user-9" });
 
     expect((await call()).status).toBe(200);
   });
 
   it("no permite completar dos veces", async () => {
-    requireTenant.mockResolvedValue(ctxOf("manager"));
+    requireTenantWrite.mockResolvedValue(ctxOf("manager"));
     tenantFindOne.mockResolvedValue({ _id: "t1", title: "Hecha", status: "done", assigned_to_id: "user-1" });
 
     const { status } = await call();
@@ -87,13 +87,13 @@ describe("POST /api/tasks/:id/complete", () => {
   });
 
   it("no permite completar una tarea cancelada", async () => {
-    requireTenant.mockResolvedValue(ctxOf("manager"));
+    requireTenantWrite.mockResolvedValue(ctxOf("manager"));
     tenantFindOne.mockResolvedValue({ _id: "t1", title: "X", status: "cancelled", assigned_to_id: "user-1" });
     expect((await call()).status).toBe(409);
   });
 
   it("una tarea de otra empresa no existe para el usuario", async () => {
-    requireTenant.mockResolvedValue(ctxOf("manager"));
+    requireTenantWrite.mockResolvedValue(ctxOf("manager"));
     tenantFindOne.mockRejectedValue(Object.assign(new Error("Registro no encontrado"), { status: 404 }));
 
     const { status } = await call("de-otro-tenant");
@@ -103,9 +103,23 @@ describe("POST /api/tasks/:id/complete", () => {
 
   it("sin sesión no se completa nada", async () => {
     const { TenantError } = await import("@/lib/tenant");
-    requireTenant.mockRejectedValue(new TenantError("No autenticado", 401));
+    requireTenantWrite.mockRejectedValue(new TenantError("No autenticado", 401));
 
     const { status } = await call();
     expect(status).toBe(401);
+  });
+
+  it("con la suscripción bloqueada no se completa nada", async () => {
+    // La guarda vive en `requireTenantWrite` y esta ruta la usa, así que el
+    // bloqueo llega antes de tocar la tarea. Lo que se comprueba es que la ruta
+    // NO sigue adelante cuando la guarda lanza: un 402 con la tarea ya marcada
+    // sería lo peor de los dos mundos.
+    const bloqueo = Object.assign(new Error("Tu periodo de prueba terminó."), { status: 402 });
+    requireTenantWrite.mockRejectedValue(bloqueo);
+
+    const { status } = await call();
+    expect(status).toBe(402);
+    expect(tenantUpdate).not.toHaveBeenCalled();
+    expect(writeAudit).not.toHaveBeenCalled();
   });
 });

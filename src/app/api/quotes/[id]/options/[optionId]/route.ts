@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantUpdate, tenantDelete } from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast, tenantUpdate, tenantDelete } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -22,7 +22,7 @@ export async function PUT(
   try {
     assertSameOriginMutation(req);
     const { id, optionId } = await params;
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     assertRateLimit({ key: rateLimitKey(req, "quotes:option:edit", ctx.userId), limit: 120, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
@@ -91,7 +91,7 @@ export async function DELETE(
   try {
     assertSameOriginMutation(req);
     const { id, optionId } = await params;
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     assertRateLimit({ key: rateLimitKey(req, "quotes:option:delete", ctx.userId), limit: 120, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 

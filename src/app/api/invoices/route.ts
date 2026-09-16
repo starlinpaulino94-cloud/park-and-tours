@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { assertModule } from "@/lib/plan-service";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { issueInvoice } from "@/lib/invoice-service";
@@ -22,7 +23,8 @@ const NCF_TYPES = new Set(["b01", "b02", "b04", "b14", "b15", "e31", "e32", "e34
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
+    assertModule(ctx, "accounting");
     assertRateLimit({ key: rateLimitKey(req, "invoices:issue", ctx.userId), limit: 60, windowMs: 60_000 });
     // Emitir un comprobante fiscal compromete a la empresa ante la DGII: no es
     // una acción de mostrador.

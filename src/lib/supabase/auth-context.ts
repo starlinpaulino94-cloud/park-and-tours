@@ -107,6 +107,12 @@ async function loadOrganization(orgId: string): Promise<Company | null> {
       base_currency: data.currency,
       modules_enabled: data.modules_enabled,
       subscription_status: data.subscription_status,
+      // 0042 — sin estas tres, la decisión de suscripción no tiene con qué
+      // decidir: el periodo de prueba no podía vencer porque su fecha nunca
+      // llegaba al contexto, y el medidor de almacenamiento no tenía qué medir.
+      trial_ends_at: data.trial_ends_at,
+      next_billing_at: data.next_billing_at,
+      storage_used_mb: data.storage_used_mb,
       status: data.status,
       // Necesarios para que la lógica temporal use la zona de la empresa y no
       // la del servidor (UTC en Vercel). La columna existía en 0002 pero no se

@@ -1,10 +1,11 @@
 import { NextRequest } from "next/server";
-import { requireTenant, tenantQuery, tenantCreate, tenantCount, requireAtLeast, TenantError } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, tenantQuery, tenantCreate, tenantCount, requireAtLeast, TenantError } from "@/lib/tenant";
 import { getResource, sanitizePayload, partnerScopeFor, readRoleFor, allowedFilterFields } from "@/lib/resources";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { decidableFilter } from "@/lib/approvals";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
+import { assertModule, assertWithinLimit } from "@/lib/plan-service";
 
 /** Generic tenant-scoped list endpoint: GET /api/erp/:resource */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ resource: string }> }) {
@@ -147,11 +148,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ res
     if (!def) throw new TenantError(`Recurso desconocido: ${resource}`, 404);
     if (def.writable.length === 0) throw new TenantError("Este recurso es de solo lectura", 405);
 
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     assertRateLimit({ key: rateLimitKey(req, `erp:create:${def.table}`, ctx.userId), limit: 60, windowMs: 60_000 });
     // AUD-004: partners are read-only in the generic ERP.
     if (ctx.role === "partner") throw new TenantError("No tienes permisos para crear este recurso", 403);
     if (def.writeRole) requireAtLeast(ctx, def.writeRole);
+    // El plan, después del rol y antes de escribir: el módulo acota lo que se
+    // puede CREAR (leer lo ya registrado nunca se bloquea), y el catálogo tiene
+    // techo en los planes con límite.
+    if (def.module) assertModule(ctx, def.module);
+    if (def.table === "product") await assertWithinLimit(ctx, "max_products");
 
     const body = await readJson(req);
     const payload = sanitizePayload(def, body);

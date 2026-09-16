@@ -491,6 +491,23 @@ export const ACCRUED_COST_STATUS = dict(
   ["waived", "Perdonado", "violet"]
 );
 
+/* ----------------------------------------------------------------- el plan */
+/**
+ * Estado de la suscripción de la empresa (0042).
+ *
+ * El dominio de la columna lo fija el check de `organizations`, y el tono no es
+ * decorativo: `past_due` y `trial` van en ámbar porque son estados con cuenta
+ * atrás —hay algo que hacer antes de una fecha—, mientras `cancelled` y
+ * `suspended` ya bloquean la escritura.
+ */
+export const SUBSCRIPTION_STATUS = dict(
+  ["trial", "En prueba", "warning"],
+  ["active", "Al día", "success"],
+  ["past_due", "Pago pendiente", "warning"],
+  ["cancelled", "Cancelada", "danger"],
+  ["suspended", "Suspendida", "danger"]
+);
+
 /** `[{value,label}]` list for a Select, from any of the dictionaries above. */
 export function toOptions(source: Record<string, LabelDef>): { value: string; label: string }[] {
   return Object.entries(source).map(([value, def]) => ({ value, label: def.label }));

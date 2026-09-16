@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, requireAtLeast } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { assertModule } from "@/lib/plan-service";
 import { generateSupplierSettlement, pendingBySupplier } from "@/lib/supplier-settlement-service";
 import { writeAudit } from "@/lib/audit";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -33,7 +34,8 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
+    assertModule(ctx, "settlements");
     assertRateLimit({ key: rateLimitKey(req, "settlements:supplier:create", ctx.userId), limit: 20, windowMs: 60_000 });
     requireAtLeast(ctx, "manager");
 

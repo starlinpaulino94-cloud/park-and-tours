@@ -1530,3 +1530,125 @@ describe("integración con MembeGo", () => {
     expect(sql).toMatch(/jti\s+text primary key/);
   });
 });
+
+describe("el plan se aplica en la API, no solo en el menú", () => {
+  /**
+   * Las mismas exenciones que el blindaje CSRF, por el mismo motivo: son rutas
+   * que no actúan en nombre de una empresa con suscripción. El cron barre todos
+   * los inquilinos, el webhook de Stripe es precisamente quien CAMBIA el estado
+   * de la suscripción —bloquearlo dejaría a una empresa impagada sin poder
+   * volver a pagar—, el superadmin gobierna la plataforma y `setup` crea la
+   * empresa que todavía no existe.
+   */
+  const writeExempt = [
+    /^src\/app\/api\/stripe\//,
+    /^src\/app\/api\/cron\//,
+    /^src\/app\/api\/superadmin\//,
+    /^src\/app\/api\/membego\/webhook\//,
+    /^src\/app\/api\/setup\//,
+  ];
+
+  it("toda ruta que escribe exige una suscripción que permita escribir", () => {
+    /**
+     * `requireTenant` autentica; `requireTenantWrite` autentica Y comprueba que
+     * la suscripción esté al día. Una ruta mutante que se quede con la primera
+     * deja un agujero por el que una empresa con la prueba vencida sigue
+     * registrando operaciones — y el agujero no se nota, porque todo funciona.
+     *
+     * Se mira la LLAMADA dentro de la función mutante, no el import: un archivo
+     * con GET y POST importa las dos guardas legítimamente, así que comprobar
+     * el import daría por bueno el POST que se quedó con la de lectura.
+     */
+    const offenders: string[] = [];
+    for (const file of walk(path.join(ROOT, "src/app/api"))) {
+      const rel = path.relative(ROOT, file).replace(/\\/g, "/");
+      if (writeExempt.some((re) => re.test(rel))) continue;
+      const source = readFileSync(file, "utf8");
+
+      // Trocear por función exportada: cada tramo es el cuerpo de un handler.
+      const marks = [...source.matchAll(/^export async function (\w+)\s*\(/gm)]
+        .map((m) => ({ at: m.index ?? 0, name: m[1] }));
+      for (let i = 0; i < marks.length; i++) {
+        const { at, name } = marks[i];
+        if (!["POST", "PUT", "PATCH", "DELETE"].includes(name)) continue;
+        const body = source.slice(at, marks[i + 1]?.at ?? source.length);
+        if (!/await requireTenantWrite\(\)/.test(body)) offenders.push(`${rel} → ${name}`);
+      }
+    }
+    expect(
+      offenders,
+      "estas rutas escriben sin comprobar que la suscripción lo permita"
+    ).toEqual([]);
+  });
+
+  it("la lectura NUNCA se bloquea por el plan", () => {
+    // El principio que sostiene todo lo demás: una empresa que no paga pierde
+    // la capacidad de registrar, no el acceso a lo suyo. Un GET que exigiera la
+    // guarda de escritura le secuestraría sus datos —con obligación fiscal de
+    // conservarlos, además— y convertiría cada impago en una urgencia.
+    const offenders: string[] = [];
+    for (const file of walk(path.join(ROOT, "src/app/api"))) {
+      const source = readFileSync(file, "utf8");
+      const marks = [...source.matchAll(/^export async function (\w+)\s*\(/gm)]
+        .map((m) => ({ at: m.index ?? 0, name: m[1] }));
+      for (let i = 0; i < marks.length; i++) {
+        const { at, name } = marks[i];
+        if (name !== "GET") continue;
+        const body = source.slice(at, marks[i + 1]?.at ?? source.length);
+        if (/requireTenantWrite\(\)/.test(body)) {
+          offenders.push(path.relative(ROOT, file).replace(/\\/g, "/"));
+        }
+      }
+    }
+    expect(offenders, "estas rutas bloquean una LECTURA por el estado del plan").toEqual([]);
+  });
+
+  it("el estado de la suscripción decide sobre datos que el contexto ya trae", () => {
+    // Si la fecha de fin de prueba no llega al contexto, la prueba no puede
+    // vencer: era exactamente el fallo que 0042 cierra, y la columna sin mapear
+    // lo dejaría abierto otra vez sin que nada falle.
+    const authContext = read("src/lib/supabase/auth-context.ts");
+    for (const field of ["trial_ends_at", "next_billing_at", "storage_used_mb"]) {
+      expect(authContext, `el contexto no trae ${field}`).toContain(`${field}: data.${field}`);
+    }
+    // Y la guarda no cuesta una consulta: decide con `ctx.company`.
+    const tenant = read("src/lib/tenant.ts");
+    expect(tenant).toMatch(/subscriptionState\(ctx\.company/);
+  });
+
+  it("el alta fija la fecha de fin de la prueba", () => {
+    // Un `subscription_status = 'trial'` sin fecha no vence nunca. El alta es el
+    // único momento en que se puede poner, y si alguien la quita, el producto
+    // vuelve a ser gratis para siempre sin que nada falle.
+    const setup = read("src/app/api/setup/route.ts");
+    // La CLAVE del objeto que se inserta, no la subcadena: `toContain` daba por
+    // bueno un `trial_ends_at_DESACTIVADO`, que es exactamente la forma que
+    // toma este descuido cuando alguien quiere «probar algo un momento».
+    expect(setup).toMatch(/^\s*trial_ends_at:/m);
+    expect(setup).toMatch(/plan\?\.trial_days/);
+  });
+
+  it("los límites se cuentan desde los datos, no desde un contador", () => {
+    // Un contador se desincroniza y entonces cobra de más o deja pasar de más.
+    // Es la misma razón por la que `availability.ts` recalcula los pasajeros.
+    const service = read("src/lib/plan-service.ts");
+    expect(service).toMatch(/from\("booking"\)[\s\S]{0,200}count: "exact"/);
+    expect(service).toContain("monthStart()");
+    expect(service).not.toContain("usage_counter");
+  });
+
+  it("los puntos donde se crea algo con techo comprueban el techo", () => {
+    const points: [string, string][] = [
+      ["src/app/api/team/route.ts", "max_users"],
+      ["src/app/api/orders/route.ts", "max_bookings_month"],
+      ["src/app/api/erp/[resource]/route.ts", "max_products"],
+      ["src/app/api/storage/upload/route.ts", "max_storage_mb"],
+    ];
+    for (const [file, metric] of points) {
+      const source = read(file);
+      expect(source, `${file} no comprueba ${metric}`).toMatch(
+        new RegExp(`assertWithinLimit\\(\\s*ctx,\\s*"${metric}"`)
+      );
+    }
+  });
+});

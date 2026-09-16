@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { requestApproval, pendingFor, type RequestInput } from "@/lib/approvals";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -18,7 +18,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     const body = await readJson<RequestInput>(req);
     const row = await requestApproval(ctx, body);
     return ok(row);

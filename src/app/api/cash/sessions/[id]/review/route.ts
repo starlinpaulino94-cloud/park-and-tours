@@ -1,7 +1,5 @@
 import { NextRequest } from "next/server";
-import {
-  requireTenant, requireAtLeast, tenantDelete, tenantFindOne, tenantQuery, tenantUpdate,
-} from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast, tenantDelete, tenantFindOne, tenantQuery, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { recalcCashSession } from "@/lib/cash";
 import { postCashDifference } from "@/lib/ledger-events";
@@ -33,7 +31,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   try {
     assertSameOriginMutation(req);
     const { id } = await params;
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     assertRateLimit({ key: rateLimitKey(req, "cash:review", ctx.userId), limit: 30, windowMs: 60_000 });
     requireAtLeast(ctx, "manager");
 

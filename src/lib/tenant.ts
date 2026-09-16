@@ -7,6 +7,7 @@ import {
   spQuery, spCount, spFindOne, spCreate, spUpdate, spDelete,
 } from "@/lib/supabase/data-provider";
 import { getSupabaseTenantContext } from "@/lib/supabase/auth-context";
+import { subscriptionState, blockMessage } from "@/lib/plan";
 import { splitExpand, expandRows } from "@/lib/supabase/expand";
 
 /**
@@ -74,6 +75,35 @@ export async function requireTenant(): Promise<TenantContext & { companyId: stri
     );
   }
   return ctx as TenantContext & { companyId: string };
+}
+
+/**
+ * Igual que `requireTenant`, y además exige que la suscripción permita ESCRIBIR.
+ *
+ * Toda ruta que crea, modifica o borra pasa por aquí; las que solo leen siguen
+ * usando `requireTenant`. Esa separación ES la política: una empresa que no paga
+ * pierde la capacidad de registrar operaciones, nunca el acceso a lo suyo —sus
+ * reservas, su caja y su contabilidad son datos de su negocio, con obligación
+ * fiscal de conservarlos en parte, y secuestrarlos como palanca de cobro no es
+ * defendible—.
+ *
+ * La decisión es pura (`subscriptionState` en `plan.ts`) y se toma sobre datos
+ * que el contexto ya trae: no cuesta ni una consulta más. Los límites por
+ * cantidad viven aparte, en `plan-service.ts`, porque esos sí exigen contar.
+ *
+ * Responde 402 (Pago requerido) y no 403: al usuario no le faltan permisos, a la
+ * empresa le falta plan al día. Son dos conversaciones con personas distintas.
+ */
+export async function requireTenantWrite(): Promise<TenantContext & { companyId: string }> {
+  const ctx = await requireTenant();
+  const state = subscriptionState(ctx.company ?? null);
+  if (!state.canWrite && state.reason) {
+    throw Object.assign(new TenantError(blockMessage(state.reason), 402), {
+      code: "PLAN_BLOCKED",
+      reason: state.reason,
+    });
+  }
+  return ctx;
 }
 
 /** Throws unless the caller is the platform owner. */

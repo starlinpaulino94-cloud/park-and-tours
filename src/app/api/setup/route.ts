@@ -91,7 +91,15 @@ export async function POST(req: NextRequest) {
       currency,
       plan_id: plan?.id || null,
       subscription_status: "trial",
-      modules_enabled: DEFAULT_MODULES,
+      // 0042 — la prueba nace CON FECHA DE FIN. Sin esto, `subscription_status`
+      // se quedaba en 'trial' para siempre: el estado existía, la fecha no, y
+      // una empresa registrada podía operar sin pagar nunca. Sin `trial_days`
+      // en el plan no se inventa un plazo: se deja nula y la prueba no vence,
+      // que es lo que hace hoy toda empresa ya dada de alta.
+      trial_ends_at: plan?.trial_days
+        ? new Date(Date.now() + plan.trial_days * 86_400_000).toISOString()
+        : null,
+      modules_enabled: (plan?.modules_enabled?.length ? plan.modules_enabled : DEFAULT_MODULES),
       status: "active",
       metadata: { city: body.city, group_name: body.group_name, seed_demo_requested: body.seed_demo === true },
     }).select("*").single();

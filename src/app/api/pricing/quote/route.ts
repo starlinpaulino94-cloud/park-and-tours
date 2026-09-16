@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant } from "@/lib/tenant";
+import { requireTenantWrite } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { resolvePrice, billablePax } from "@/lib/pricing";
 import type { Channel } from "@/lib/types";
@@ -22,7 +22,7 @@ interface QuoteItem {
  */
 export async function POST(req: NextRequest) {
   try {
-    const ctx = await requireTenant();
+    const ctx = await requireTenantWrite();
     const body = await readJson<{
       items?: QuoteItem[]; partner_id?: string | null; seller_id?: string | null; channel?: Channel | null;
     }>(req);

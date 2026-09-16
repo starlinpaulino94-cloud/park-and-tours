@@ -1,3 +1,4 @@
+import type { ModuleKey } from "@/lib/types";
 import "server-only";
 import type { AppRole } from "@/lib/auth";
 
@@ -20,6 +21,15 @@ export interface ResourceDef {
   writable: string[];
   /** Minimum role required to write. Reads require any authenticated tenant user. */
   writeRole?: AppRole;
+  /**
+   * Módulo del plan al que pertenece este recurso (0042).
+   *
+   * Solo acota la ESCRITURA. Una empresa que baja de plan sigue leyendo y
+   * exportando lo que ya registró —sus comisiones y sus asientos son datos de
+   * su negocio—, pero no puede seguir creando en un módulo que no tiene
+   * contratado. Sin este campo, el recurso no está acotado por plan.
+   */
+  module?: ModuleKey;
   /** Fields coerced to numbers before writing. */
   numeric?: string[];
   /** Fields coerced to ISO dates before writing. */
@@ -295,6 +305,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     numeric: ["priority", "value", "min_sales", "max_sales"],
     dates: ["season_from", "season_to"],
     writeRole: "admin",
+    module: "commissions",
   },
   commission: {
     table: "commission",
@@ -307,6 +318,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     // `/api/settlements/generate`.
     writable: ["notes"],
     writeRole: "manager",
+    module: "commissions",
   },
   settlement: {
     table: "settlement",
@@ -325,6 +337,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     // a `paid_total` be set with no money behind it.
     writable: ["notes"],
     writeRole: "manager",
+    module: "settlements",
   },
   cash_register: {
     table: "cash_register",
@@ -502,6 +515,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     numeric: ["capacity"],
     dates: ["insurance_expiry", "inspection_expiry"],
     writeRole: "operations",
+    module: "transport",
   },
   product_cost: {
     table: "product_cost",
@@ -521,6 +535,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     writable: ["departure", "zone", "vehicle", "driver", "guide", "name", "start_time", "pax_total", "stops_count", "status", "notes"],
     numeric: ["pax_total", "stops_count"],
     writeRole: "operations",
+    module: "pickups",
   },
   pickup: {
     table: "pickup",
@@ -530,6 +545,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     writable: ["booking", "hotel", "route", "pickup_time", "location", "room", "pax", "status", "notes"],
     numeric: ["pax"],
     writeRole: "operations",
+    module: "pickups",
   },
   departure_resource: {
     table: "departure_resource",
@@ -539,6 +555,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     writable: ["departure", "vehicle", "staff", "resource_role", "pax_assigned", "start_time", "end_time", "cost", "currency", "status", "notes"],
     numeric: ["pax_assigned", "cost"],
     writeRole: "operations",
+    module: "operations",
   },
   audit_log: {
     table: "audit_log",
@@ -931,6 +948,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     numeric: ["max_number"],
     dates: ["expires_at"],
     writeRole: "admin",
+    module: "accounting",
   },
   allotment: {
     table: "allotment",
@@ -941,6 +959,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     numeric: ["seats", "seats_used", "seats_released", "release_days"],
     dates: ["valid_from", "valid_to"],
     writeRole: "manager",
+    module: "b2b_portal",
   },
   ledger_account: {
     table: "ledger_account",
@@ -953,6 +972,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     writable: ["code", "name", "account_type", "subledger", "normal_side", "is_postable", "currency", "status", "parent"],
     booleans: ["is_postable"],
     writeRole: "admin",
+    module: "accounting",
   },
   ledger_entry: {
     table: "ledger_entry",
@@ -963,6 +983,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     numeric: ["line_no", "debit", "credit", "exchange_rate", "amount_base"],
     dates: ["posted_at"],
     writeRole: "admin",
+    module: "accounting",
   },
   invoice: {
     table: "invoice",
@@ -981,6 +1002,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     numeric: ["subtotal", "tax", "tax_rate", "discount", "total", "paid_amount", "exchange_rate"],
     dates: ["issued_at", "due_date", "voided_at"],
     writeRole: "manager",
+    module: "accounting",
   },
   tax_profile: {
     table: "tax_profile",
@@ -991,6 +1013,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     numeric: ["tax_rate", "tourism_tax_rate", "service_charge_rate", "ncf_next"],
     dates: ["ncf_expires"],
     writeRole: "admin",
+    module: "accounting",
   },
   shift: {
     table: "shift",
