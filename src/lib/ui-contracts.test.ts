@@ -1690,3 +1690,88 @@ describe("el plan se ve venir, no se choca", () => {
     expect(shell).toContain("/dashboard/administracion/plan");
   });
 });
+
+describe("el importador", () => {
+  it("nada se escribe sin vista previa: el ensayo es el valor por defecto", () => {
+    // Un importador que escribe primero y explica después es un importador que
+    // nadie usa dos veces. `dryRun` distinto de `false` no escribe.
+    const route = read("src/app/api/import/route.ts");
+    expect(route).toMatch(/if \(body\.dryRun !== false\)/);
+    // Y el camino que escribe está DESPUÉS de ese retorno, no antes.
+    expect(route.indexOf("if (body.dryRun !== false)")).toBeLessThan(route.indexOf("runImport("));
+  });
+
+  it("importar exige el mismo rango que crear a mano ese recurso", () => {
+    // Importar mil clientes no puede ser más fácil que crear uno.
+    const route = read("src/app/api/import/route.ts");
+    expect(route).toMatch(/requireAtLeast\(ctx, target\.minRole\)/);
+    expect(route).toMatch(/await requireTenantWrite\(\)/);
+  });
+
+  it("el techo del plan se comprueba por TODAS las filas, antes de la primera", () => {
+    // Con sitio para diez y un archivo de sesenta, fallar en la once deja al
+    // cliente con diez productos importados y ninguna forma de saber cuáles.
+    const service = read("src/lib/import-service.ts");
+    expect(service).toMatch(/assertWithinLimit\(ctx, target\.limitMetric, toCreate\.length\)/);
+    // Y antes de escribir: la comprobación precede al primer `tenantCreate`.
+    expect(service.indexOf("assertWithinLimit")).toBeLessThan(service.indexOf("tenantCreate("));
+  });
+
+  it("actualizar solo toca los campos que trae el archivo", () => {
+    // Pasar un objeto completo con los ausentes en null es cómo una importación
+    // de teléfonos deja a toda la cartera sin correo.
+    const service = read("src/lib/import-service.ts");
+    expect(service).toMatch(/tenantUpdate\(ctx\.companyId, resource\.table, id, row\.values\)/);
+  });
+
+  it("toda importación queda en la bitácora con sus números", () => {
+    const service = read("src/lib/import-service.ts");
+    expect(service).toMatch(/action: "data_imported"/);
+    expect(service).toMatch(/severity: "warning"/);
+  });
+
+  it("el parser no se apoya en split: las comas dentro de comillas son datos", () => {
+    const lib = read("src/lib/import.ts");
+    expect(lib).not.toMatch(/\.split\(delimiter\)/);
+    expect(lib).toContain("\\uFEFF");   // el BOM de Excel se quita
+    expect(lib).toMatch(/detectDelimiter/);
+  });
+
+  it("la pantalla del importador no está detrás de un plan ni de un rol alto", () => {
+    // Importar es lo PRIMERO que hace una empresa nueva.
+    const nav = read("src/lib/nav.ts");
+    const at = nav.indexOf('id: "importar"');
+    expect(at).toBeGreaterThan(0);
+    const entry = nav.slice(at, at + 400);
+    expect(entry).toContain("/dashboard/administracion/importar");
+    expect(entry).not.toContain("module:");
+  });
+});
+
+describe("higiene del código fuente", () => {
+  it("ningún carácter invisible se cuela en el fuente", () => {
+    /**
+     * Escribir `﻿` o `̀-ͯ` y que en el archivo acabe el CARÁCTER
+     * en vez de la secuencia funciona igual en ejecución y es ilegible al leer:
+     * un rango de diacríticos combinantes se ve como dos marcas sueltas sobre
+     * un corchete, y un BOM no se ve en absoluto. Pasó escribiendo el
+     * importador, y las cuatro pantallas de exportación lo arrastraban desde
+     * antes sin que nadie lo notara.
+     *
+     * Peor que ilegible: un carácter invisible es la forma clásica de esconder
+     * algo en una revisión de código, así que un fuente sin invisibles es
+     * también una propiedad de seguridad que sale gratis.
+     */
+    const INVISIBLE = /[̀-ͯ﻿​-‍⁠­]/;
+    const offenders: string[] = [];
+    for (const dir of ["src/lib", "src/app", "src/components"]) {
+      for (const file of walk(path.join(ROOT, dir))) {
+        if (!/\.tsx?$/.test(file)) continue;
+        const lines = readFileSync(file, "utf8").split("\n");
+        const at = lines.findIndex((line) => INVISIBLE.test(line));
+        if (at >= 0) offenders.push(`${path.relative(ROOT, file).replace(/\\/g, "/")}:${at + 1}`);
+      }
+    }
+    expect(offenders, "estos archivos traen caracteres invisibles en el fuente").toEqual([]);
+  });
+});

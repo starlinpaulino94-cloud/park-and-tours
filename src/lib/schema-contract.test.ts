@@ -7,6 +7,8 @@ vi.mock("@/lib/user-directory", () => ({ resolveUserNames: vi.fn() }));
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { DEFAULT_FIELD_ALIASES, TABLE_FIELD_ALIASES } from "@/lib/supabase/query-translator";
+import { IMPORT_TARGETS } from "@/lib/import";
+import { RESOURCES } from "@/lib/resources";
 import {
   RELATION_RESOURCE, TABLE_RELATION_RESOURCE, USER_REF_FIELDS, childForeignKey,
 } from "@/lib/supabase/expand";
@@ -520,5 +522,36 @@ describe("el esquema cubre todo lo que la aplicación escribe", () => {
     }
 
     expect(problems, "resources.ts declara relaciones que no se pueden resolver").toEqual([]);
+  });
+});
+
+describe("el importador escribe columnas que existen", () => {
+  it("cada campo importable es una columna real de su tabla", () => {
+    /**
+     * El importador resuelve su tabla en ejecución (`resource.table`), así que
+     * la guarda de payloads no puede verificarlo leyendo el texto: para ella es
+     * una llamada opaca. Esto es lo que SÍ se puede comprobar, y cubre el mismo
+     * riesgo: un campo con el nombre mal escrito en `IMPORT_TARGETS` pasaría la
+     * validación pura —que solo mira el tipo— y fallaría en la fila 1 de la
+     * primera importación de un cliente nuevo, que es el peor momento posible.
+     */
+    const problems: string[] = [];
+    for (const target of IMPORT_TARGETS) {
+      for (const field of target.fields) {
+        const gap = miss(target.resource, field.name);
+        if (gap) problems.push(`${target.key}.${field.name} -> ${gap}`);
+      }
+      // Y el recurso tiene que aceptar escribirlo: una columna que existe pero
+      // que `resources.ts` no declara escribible se descarta en silencio al
+      // guardar, y la importación diría «creado» sin ese dato.
+      const def = RESOURCES[target.resource];
+      if (!def) { problems.push(`${target.key}: recurso ${target.resource} inexistente`); continue; }
+      for (const field of target.fields) {
+        if (!def.writable.includes(field.name)) {
+          problems.push(`${target.key}.${field.name} no es escribible en resources.ts`);
+        }
+      }
+    }
+    expect(problems, "el importador declara campos que no se pueden escribir").toEqual([]);
   });
 });

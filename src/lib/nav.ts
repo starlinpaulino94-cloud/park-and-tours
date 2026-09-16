@@ -654,6 +654,12 @@ export const WORKSPACES: Workspace[] = [
           // Sin `module`: la pantalla que explica el plan no puede depender del
           // plan. Cuando un límite bloquea una venta, esto es donde se entiende
           // por qué —y esconderlo justo entonces sería el peor momento posible.
+          // Sin `module` y con rango bajo: importar es lo PRIMERO que hace una
+          // empresa nueva, y esconderlo detrás de un plan o de un rol alto
+          // convierte la migración de sus datos en un trámite con el dueño.
+          { id: "importar", href: "/dashboard/administracion/importar", label: "Importar datos", icon: "Upload", minRole: "seller",
+            description: "Trae clientes, productos y proveedores desde una hoja de cálculo.",
+            keywords: ["importar", "csv", "excel", "migrar", "cargar", "subir datos"] },
           { id: "plan", href: "/dashboard/administracion/plan", label: "Tu plan y uso", icon: "Gauge", minRole: "admin",
             description: "Estado de la suscripción, límites consumidos y módulos incluidos.",
             keywords: ["plan", "suscripción", "límites", "uso", "facturación", "prueba"] },
