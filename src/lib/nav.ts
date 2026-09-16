@@ -660,6 +660,12 @@ export const WORKSPACES: Workspace[] = [
           { id: "importar", href: "/dashboard/administracion/importar", label: "Importar datos", icon: "Upload", minRole: "seller",
             description: "Trae clientes, productos y proveedores desde una hoja de cálculo.",
             keywords: ["importar", "csv", "excel", "migrar", "cargar", "subir datos"] },
+          // Sin `module` y sin depender de la suscripción: llevarse los datos
+          // propios es lo único que NUNCA se condiciona al plan. Va junto a
+          // Importar porque son la entrada y la salida de la misma puerta.
+          { id: "exportar", href: "/dashboard/administracion/exportar", label: "Llévate tus datos", icon: "Download", minRole: "admin",
+            description: "Descarga toda la empresa: un CSV por tabla, en un solo archivo.",
+            keywords: ["exportar", "descargar", "respaldo", "backup", "portabilidad", "csv", "zip", "mis datos"] },
           { id: "plan", href: "/dashboard/administracion/plan", label: "Tu plan y uso", icon: "Gauge", minRole: "admin",
             description: "Estado de la suscripción, límites consumidos y módulos incluidos.",
             keywords: ["plan", "suscripción", "límites", "uso", "facturación", "prueba"] },

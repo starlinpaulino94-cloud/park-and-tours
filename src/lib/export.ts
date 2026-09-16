@@ -62,6 +62,18 @@ export interface CsvOptions {
   bom?: boolean;
 }
 
+export interface ExportOptions extends CsvOptions {
+  /**
+   * Saca también `created_at` y `updated_at`.
+   *
+   * En el listado estorban —ocupan dos columnas que nadie mira—, pero en el
+   * volcado de «llévate tus datos» son parte del registro: cuándo se creó una
+   * reserva es un dato del negocio, y quien recibe el volcado no puede
+   * reconstruirlo de ninguna otra parte.
+   */
+  keepTimestamps?: boolean;
+}
+
 /** Arma el archivo entero a partir de las cabeceras y las filas ya formateadas. */
 export function toCsv(
   headers: string[],
@@ -159,12 +171,28 @@ export interface ExportColumn {
  * `organization_id` es el inquilino —el mismo en todas las filas—, y los
  * identificadores internos solo tienen sentido dentro de esta base.
  */
-const HIDDEN = new Set([
-  "organization_id", "tenant_org_id", "createdAt", "updatedAt", "created_at", "updated_at",
-]);
+const HIDDEN = new Set(["organization_id", "tenant_org_id"]);
+
+/** Las marcas de tiempo: fuera del listado, dentro del volcado completo. */
+const TIMESTAMPS = new Set(["createdAt", "updatedAt", "created_at", "updated_at"]);
+
+/**
+ * Cabeceras fijas para las columnas que no son del negocio.
+ *
+ * `prettify` las dejaría en «Created at», que en un archivo en español canta —y
+ * en el volcado que se lleva un cliente, canta el doble.
+ */
+const FIXED_HEADERS: Record<string, string> = {
+  _id: "Id interno",
+  created_at: "Creado el",
+  createdAt: "Creado el",
+  updated_at: "Actualizado el",
+  updatedAt: "Actualizado el",
+};
 
 /** Cabecera legible a partir del nombre de la columna, si no hay nada mejor. */
 export function prettify(field: string): string {
+  if (FIXED_HEADERS[field]) return FIXED_HEADERS[field];
   const clean = field.replace(/_id$/, "").replace(/_/g, " ").trim();
   return clean.charAt(0).toUpperCase() + clean.slice(1);
 }
@@ -178,7 +206,11 @@ export function prettify(field: string): string {
  * después, con su nombre legible, porque quien exporta quiere todo lo que tiene
  * y no solo lo que un día decidimos que se podía importar.
  */
-export function exportColumns(resourceKey: string, rows: Record<string, unknown>[]): ExportColumn[] {
+export function exportColumns(
+  resourceKey: string,
+  rows: Record<string, unknown>[],
+  options: ExportOptions = {}
+): ExportColumn[] {
   const target = IMPORT_TARGETS.find((t) => t.resource === resourceKey);
   const importable = new Map((target?.fields ?? []).map((f) => [f.name, f.label]));
 
@@ -188,6 +220,7 @@ export function exportColumns(resourceKey: string, rows: Record<string, unknown>
   for (const row of rows) {
     for (const key of Object.keys(row)) {
       if (HIDDEN.has(key) || seen.includes(key)) continue;
+      if (!options.keepTimestamps && TIMESTAMPS.has(key)) continue;
       seen.push(key);
     }
   }
@@ -200,7 +233,7 @@ export function exportColumns(resourceKey: string, rows: Record<string, unknown>
   }
   for (const field of seen) {
     if (importable.has(field)) continue;
-    columns.push({ field, header: field === "_id" ? "Id interno" : prettify(field) });
+    columns.push({ field, header: prettify(field) });
   }
   return columns;
 }
@@ -209,9 +242,9 @@ export function exportColumns(resourceKey: string, rows: Record<string, unknown>
 export function buildExport(
   resourceKey: string,
   rows: Record<string, unknown>[],
-  options: CsvOptions = {}
+  options: ExportOptions = {}
 ): { csv: string; columns: ExportColumn[] } {
-  const columns = exportColumns(resourceKey, rows);
+  const columns = exportColumns(resourceKey, rows, options);
   const csv = toCsv(
     columns.map((c) => c.header),
     rows.map((row) => columns.map((c) => formatValue(row[c.field]))),

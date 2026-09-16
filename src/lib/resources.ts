@@ -1224,6 +1224,15 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
   commission_rule: "manager", product_cost: "manager", price_rule: "manager",
   ledger_account: "manager", ledger_entry: "manager", invoice: "manager",
   expense: "manager", tax_profile: "manager", purchase_order: "manager", purchase_order_line: "manager",
+  // Gobierno de la cuenta — solo administración.
+  //
+  // Las tres se escriben solo con rol de administrador y sus pantallas también
+  // lo exigen, pero la LECTURA por la API genérica estaba abierta a cualquier
+  // usuario del inquilino. Un vendedor podía pedir `/api/erp/audit_log` y leer
+  // el rastro completo de la empresa —quién cobró qué y quién anuló qué—, o
+  // `/api/erp/integration` y ver la configuración de cada conector. El menú no
+  // es la barrera; esta tabla sí.
+  audit_log: "admin", integration: "admin", ncf_sequence: "admin",
 };
 
 /** Minimum role required to READ a resource (for non-partner roles). */

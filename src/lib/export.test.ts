@@ -221,3 +221,33 @@ describe("el nombre del archivo", () => {
     expect(exportFilename("customer", new Date("2026-09-16T10:00:00Z"))).toBe("customer-2026-09-16.csv");
   });
 });
+
+describe("las marcas de tiempo", () => {
+  const rows = [{ _id: "1", first_name: "Juan", created_at: "2026-01-02T10:00:00Z", updated_at: "2026-03-04T11:00:00Z" }];
+
+  it("en el listado no salen: dos columnas que nadie mira", () => {
+    expect(exportColumns("customer", rows).map((c) => c.field)).not.toContain("created_at");
+  });
+
+  it("en el volcado completo sí, porque son parte del registro", () => {
+    // «Cuándo se creó esta reserva» no se reconstruye de ninguna otra parte, y
+    // quien recibe el volcado para mudarse lo necesita.
+    const columns = exportColumns("customer", rows, { keepTimestamps: true }).map((c) => c.field);
+    expect(columns).toContain("created_at");
+    expect(columns).toContain("updated_at");
+  });
+
+  it("salen con cabecera en español, no «Created at»", () => {
+    // En un archivo en español una cabecera en inglés canta, y en el volcado
+    // que se lleva un cliente canta el doble.
+    const columns = exportColumns("customer", rows, { keepTimestamps: true });
+    expect(columns.find((c) => c.field === "created_at")!.header).toBe("Creado el");
+    expect(columns.find((c) => c.field === "updated_at")!.header).toBe("Actualizado el");
+    expect(columns.find((c) => c.field === "_id")!.header).toBe("Id interno");
+  });
+
+  it("el inquilino no sale ni con marcas de tiempo", () => {
+    const columns = exportColumns("customer", [{ ...rows[0], organization_id: "org" }], { keepTimestamps: true });
+    expect(columns.map((c) => c.field)).not.toContain("organization_id");
+  });
+});

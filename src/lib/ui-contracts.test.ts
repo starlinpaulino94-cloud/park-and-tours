@@ -1866,6 +1866,52 @@ describe("las exportaciones", () => {
     expect(block).not.toContain('qs.set("offset"');
   });
 
+  it("llevarse la empresa entera tampoco lo bloquea el plan", () => {
+    // Misma promesa que el listado, y aquí pesa más: es el archivo que le
+    // permite a un cliente irse. Condicionarlo al pago sería un rehén.
+    const route = read("src/app/api/export/company/route.ts");
+    expect(route).toMatch(/await requireTenant\(\)/);
+    expect(route).not.toMatch(/await requireTenantWrite\(\)/);
+  });
+
+  it("el volcado completo exige administrador y deja rastro crítico", () => {
+    /**
+     * Es la copia entera del negocio: clientes, precios, comisiones y
+     * contabilidad. Un vendedor no la descarga, y quien la descarga queda en la
+     * bitácora — es exactamente el movimiento que alguien querría revisar
+     * después de una salida conflictiva.
+     */
+    const route = read("src/app/api/export/company/route.ts");
+    expect(route).toMatch(/requireAtLeast\(ctx, "admin"\)/);
+    expect(route).toMatch(/action: "company_data_exported"/);
+    expect(route).toMatch(/severity: "critical"/);
+    expect(route).toMatch(/"Cache-Control": "no-store, private"/);
+  });
+
+  it("la pantalla pide el mismo rol que la ruta, y lo explica", () => {
+    // Enseñar el botón a quien la API va a rechazar produce un 403 que se lee
+    // como «algo se rompió».
+    const page = read("src/app/dashboard/administracion/exportar/page.tsx");
+    expect(page).toMatch(/atLeast\(ctx\.role, "admin"\)/);
+  });
+
+  it("el volcado no expande relaciones: fiel y del tamaño que cabe", () => {
+    // Expandir ochenta y ocho tablas multiplica las consultas y agota el tiempo
+    // de la función. Los identificadores se cruzan dentro del propio archivo.
+    const service = read("src/lib/company-export-service.ts");
+    expect(service).not.toMatch(/def\.expand/);
+    expect(service).toMatch(/keepTimestamps: true/);
+  });
+
+  it("«llévate tus datos» no depende del plan ni se esconde en el menú", () => {
+    const nav = read("src/lib/nav.ts");
+    const item = nav.slice(nav.indexOf('id: "exportar"'), nav.indexOf('id: "plan"'));
+    expect(item).toContain("/dashboard/administracion/exportar");
+    // Sin `module`: condicionarlo a una capacidad del plan es justo lo que no
+    // puede pasar con los datos propios del cliente.
+    expect(item).not.toContain("module:");
+  });
+
   it("lo exportado se puede volver a importar: mismos formatos", () => {
     // La propiedad que hace posible el ciclo exportar → corregir en Excel →
     // reimportar. La prueba del círculo completo vive en export.test.ts; aquí se
