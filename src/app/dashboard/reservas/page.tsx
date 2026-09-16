@@ -19,6 +19,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { BOOKING_STATUS, CHANNEL, CHECKIN_STATUS, PAYMENT_METHOD, VOUCHER_STATUS } from "@/lib/labels";
 import { formatDate, formatDateTime, formatMoney, formatNumber, formatPercent, formatTime, parseJson } from "@/lib/format";
+import { FORCEABLE_RESCHEDULE_BLOCKS } from "@/lib/reschedule";
 import { optionsFrom } from "@/components/tf/options";
 
 interface Booking {
@@ -59,6 +60,19 @@ export default function BookingsPage() {
   const [cancelling, setCancelling] = useState<Booking | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [refundOverride, setRefundOverride] = useState("");
+
+  /**
+   * Reprogramar: mover la reserva a otra salida del MISMO producto.
+   *
+   * Existe para que el cambio de fecha deje de hacerse cancelando y vendiendo
+   * otra vez —que anula el voucher del cliente, regenera comisiones con el
+   * precio de hoy y le manda un aviso de cancelación a quien no canceló—.
+   */
+  const [rescheduling, setRescheduling] = useState<Booking | null>(null);
+  const [rescheduleOptions, setRescheduleOptions] = useState<any[] | null>(null);
+  const [rescheduleTarget, setRescheduleTarget] = useState("");
+  const [rescheduleReason, setRescheduleReason] = useState("");
+  const [rescheduleForce, setRescheduleForce] = useState(false);
 
   const [paying, setPaying] = useState<Booking | null>(null);
   const [payAmount, setPayAmount] = useState("");
@@ -167,6 +181,53 @@ export default function BookingsPage() {
       return;
     }
     setDetail(res.data || b);
+  };
+
+  /** Abre el diálogo y trae las salidas futuras del mismo producto. */
+  const openReschedule = async (booking: Booking) => {
+    setRescheduling(booking);
+    setRescheduleTarget("");
+    setRescheduleReason("");
+    setRescheduleForce(false);
+    setRescheduleOptions(null);
+    const productId = typeof booking.product === "object" && booking.product
+      ? (booking.product as any)._id
+      : (booking.product as string | undefined);
+    if (!productId) { setRescheduleOptions([]); return; }
+    // Solo del mismo producto y de hoy en adelante: ofrecer otras es ofrecer
+    // algo que el servidor va a rechazar.
+    const params = new URLSearchParams({
+      "filter.product": productId,
+      dateField: "departure_at",
+      from: new Date().toISOString().slice(0, 10),
+      sort: "departure_at",
+      limit: "60",
+    });
+    const res = await api.get<any[]>(`/api/erp/departure?${params}`);
+    setRescheduleOptions(res.ok ? (res.data || []).filter((d) => d._id !== (booking as any).departure?._id) : []);
+  };
+
+  const reschedule = async () => {
+    if (!rescheduling || !rescheduleTarget) return;
+    if (!rescheduleReason.trim()) { toast.error("Indica por qué se reprograma"); return; }
+    setBusy(true);
+    const res = await api.post<{ reschedule_count: number; pickups_released: number }>(
+      `/api/bookings/${rescheduling._id}/reschedule`,
+      { departure_id: rescheduleTarget, reason: rescheduleReason.trim(), force: rescheduleForce }
+    );
+    setBusy(false);
+    if (!res.ok) {
+      // El motivo del rechazo viaja en `code`. Si es de los que se pueden
+      // levantar —el plazo o el número de veces—, aparece la casilla de forzar;
+      // el cupo y el producto no están en esa lista a propósito.
+      if (FORCEABLE_RESCHEDULE_BLOCKS.includes((res.error?.code || "") as never)) setRescheduleForce(true);
+      toast.error(res.error?.message || "No se pudo reprogramar");
+      return;
+    }
+    toast.success("Reserva movida. El cliente recibe la fecha nueva y su voucher sigue valiendo.");
+    setRescheduling(null);
+    setDetail(null);
+    load();
   };
 
   const cancel = async () => {
@@ -545,6 +606,11 @@ export default function BookingsPage() {
                 <Link href={`/dashboard/checkin?code=${detail.voucher_code || detail.booking_number || ""}`}>
                   <Button variant="outline" className="gap-1.5"><Icon name="ScanLine" className="size-4" /> Check-in</Button>
                 </Link>
+                {!["cancelled", "refunded", "checked_in", "completed"].includes(detail.status || "") && (
+                  <Button variant="outline" className="gap-1.5" onClick={() => openReschedule(detail)}>
+                    <Icon name="CalendarClock" className="size-4" /> Reprogramar
+                  </Button>
+                )}
                 {!["cancelled", "refunded"].includes(detail.status || "") && (
                   <Button variant="outline" className="gap-1.5 text-destructive hover:text-destructive"
                     onClick={() => setCancelling(detail)}>
@@ -556,6 +622,68 @@ export default function BookingsPage() {
           )}
         </SheetContent>
       </Sheet>
+
+      {/* ---- reschedule -------------------------------------------------- */}
+      <Dialog open={!!rescheduling} onOpenChange={(v) => !v && setRescheduling(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reprogramar {rescheduling?.booking_number}</DialogTitle>
+            <DialogDescription>
+              La reserva mantiene su número, su precio y su voucher: solo cambia el día. Se libera la plaza en
+              la salida actual y se toma en la nueva.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label>Nueva salida</Label>
+              {rescheduleOptions === null ? (
+                <p className="text-sm text-muted-foreground">Buscando salidas…</p>
+              ) : rescheduleOptions.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No hay otras salidas futuras de este producto. Crea la salida primero en Operaciones.
+                </p>
+              ) : (
+                <Select value={rescheduleTarget} onValueChange={setRescheduleTarget}>
+                  <SelectTrigger><SelectValue placeholder="Elige la fecha" /></SelectTrigger>
+                  <SelectContent>
+                    {rescheduleOptions.map((d) => (
+                      <SelectItem key={d._id} value={d._id}>
+                        {formatDateTime(d.departure_at)}
+                        {typeof d.available_pax === "number" ? ` · ${d.available_pax} libres` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              <Label>Motivo</Label>
+              <Textarea rows={2} value={rescheduleReason} onChange={(e) => setRescheduleReason(e.target.value)}
+                placeholder="Lluvia, cambio de vuelo, el cliente pidió otro día…" />
+              <p className="text-xs text-muted-foreground">
+                Queda en la reserva y en la bitácora: es lo que después permite ver si se mueve por el clima o
+                por otra cosa.
+              </p>
+            </div>
+            {rescheduleForce && (
+              <label className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+                <input type="checkbox" checked={rescheduleForce} onChange={(e) => setRescheduleForce(e.target.checked)}
+                  className="mt-0.5" />
+                <span>
+                  Forzar el cambio saltando el plazo o el número de veces. Requiere permisos de gerencia y queda
+                  auditado. No sirve para saltarse el cupo: eso dejaría al cliente en el lobby.
+                </span>
+              </label>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRescheduling(null)}>Volver</Button>
+            <Button onClick={reschedule} disabled={busy || !rescheduleTarget}>
+              {busy ? "Moviendo…" : "Reprogramar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ---- cancel ------------------------------------------------------ */}
       <Dialog open={!!cancelling} onOpenChange={(v) => !v && setCancelling(null)}>

@@ -82,6 +82,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       balance_amount: 0,
     });
 
+    // ---- recogidas ---------------------------------------------------------
+    // La recogida de una reserva cancelada seguía en «pendiente» y en su ruta:
+    // el conductor pasaba igual por el hotel a buscar a alguien que canceló, y
+    // el cupo del vehículo seguía contándolo. Nadie lo notaba hasta el lobby.
+    const pickupsToCancel = await tenantQuery<{ _id: string }>(ctx.companyId, "pickup", {
+      // Los estados reales de `pickup` (0011): pendiente, confirmada, recogida,
+      // no-show y cancelada. Una ya recogida no se toca: eso ya ocurrió.
+      _filter: { booking: id, status: { nin: ["cancelled", "picked_up"] } }, _limit: 20,
+    });
+    for (const pickup of pickupsToCancel) {
+      await tenantUpdate(ctx.companyId, "pickup", pickup._id, { status: "cancelled", route: null });
+    }
+
     // ---- void commissions --------------------------------------------------
     const commissions = await tenantQuery<{ _id: string; status?: string }>(ctx.companyId, "commission", {
       _filter: { booking: id, status: { in: ["pending", "approved"] } }, _limit: 50,
@@ -189,7 +202,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // sale ahora: tiene que saberlo antes de presentarse en el lobby, y el
     // barrido diario podría llegar después de la hora de recogida.
     flushOutboxAfterResponse(ctx.company, ctx.companyId);
-    return ok({ cancelled: true, refund, refund_pct: refundPct, policy: policyName, commissions_voided: commissions.length });
+    return ok({
+      cancelled: true, refund, refund_pct: refundPct, policy: policyName,
+      commissions_voided: commissions.length, pickups_cancelled: pickupsToCancel.length,
+    });
   } catch (err) {
     return fail(err);
   }

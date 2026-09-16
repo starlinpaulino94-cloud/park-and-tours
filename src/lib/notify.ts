@@ -85,6 +85,17 @@ export const NOTIFY_EVENTS = {
     link: () => "/dashboard/reservas",
   },
 
+  /** Una reserva cambia de día: el manifiesto de dos días deja de ser el mismo. */
+  booking_rescheduled: {
+    type: "booking",
+    audience: "operations",
+    title: (v) => `Reserva movida ${v.referencia ?? ""}`.trim(),
+    message: (v) =>
+      [v.fecha ? `Nueva fecha: ${v.fecha}` : null, v.motivo ? `· ${v.motivo}` : null]
+        .filter(Boolean).join(" ") || "Cambió de fecha.",
+    link: () => "/dashboard/reservas",
+  },
+
   /** Sale dinero. Un reembolso siempre se revisa; un cobro normal, no. */
   payment_refunded: {
     type: "payment",

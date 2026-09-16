@@ -33,6 +33,10 @@ export const TEMPLATE_VARIABLES: Record<TemplateKey, string[]> = {
     "total", "saldo", "moneda", "voucher", "punto_encuentro", "telefono_empresa",
   ],
   booking_cancelled: ["cliente", "empresa", "reserva", "producto", "fecha", "motivo", "telefono_empresa"],
+  booking_rescheduled: [
+    "cliente", "empresa", "reserva", "producto", "fecha_anterior", "fecha", "hora",
+    "motivo", "punto_encuentro", "telefono_empresa",
+  ],
   pre_tour_reminder: [
     "cliente", "empresa", "producto", "fecha", "hora_recogida", "lugar_recogida",
     "punto_encuentro", "pax", "saldo", "moneda", "telefono_empresa",
@@ -47,6 +51,7 @@ export const TEMPLATE_VARIABLES: Record<TemplateKey, string[]> = {
 export const TEMPLATE_TRIGGER: Record<TemplateKey, string> = {
   booking_confirmation: "Al crear la reserva",
   booking_cancelled: "Al cancelar la reserva",
+  booking_rescheduled: "Al mover la reserva de fecha",
   pre_tour_reminder: "24 horas antes de la salida",
   payment_receipt: "Al registrar un cobro",
   balance_due: "Cuando la reserva llega con saldo pendiente",
@@ -157,6 +162,34 @@ Si el cargo procede de un reembolso, verás el abono en los próximos días
 según tu medio de pago. Cualquier duda, escríbenos a {{telefono_empresa}}.
 
 {{empresa}}`,
+  },
+  {
+    key: "booking_rescheduled", channel: "email", language: "es",
+    trigger: TEMPLATE_TRIGGER.booking_rescheduled,
+    subject: "Nueva fecha para {{producto}}: {{fecha}}",
+    body: `Hola {{cliente}},
+
+Tu excursión cambió de fecha. Tu reserva sigue siendo la misma y el voucher que
+ya tienes sirve igual: solo cambia el día.
+
+Reserva: {{reserva}}
+Excursión: {{producto}}
+Fecha anterior: {{fecha_anterior}}
+NUEVA FECHA: {{fecha}} a las {{hora}}
+Punto de encuentro: {{punto_encuentro}}
+
+Motivo del cambio: {{motivo}}
+
+Si esta fecha no te sirve, escríbenos a {{telefono_empresa}} y lo resolvemos.
+
+{{empresa}}`,
+  },
+  {
+    key: "booking_rescheduled", channel: "whatsapp", language: "es",
+    trigger: TEMPLATE_TRIGGER.booking_rescheduled,
+    body: `Hola {{cliente}}: tu excursión {{producto}} se movió del {{fecha_anterior}} al {{fecha}} a las {{hora}}.
+Motivo: {{motivo}}. Tu voucher {{reserva}} sigue valiendo.
+Si esa fecha no te sirve, escríbenos. {{empresa}}`,
   },
   {
     key: "quote_sent", channel: "email", language: "es",

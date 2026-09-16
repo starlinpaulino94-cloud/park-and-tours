@@ -1848,6 +1848,69 @@ describe("las cuentas del equipo", () => {
   });
 });
 
+describe("reprogramar una reserva", () => {
+  it("mueve la plaza en LAS DOS salidas", () => {
+    /**
+     * Si la salida de origen no recalcula, se queda con el cupo tomado por una
+     * reserva que ya no está: esa salida se vende de menos el resto del mes y
+     * nadie lo nota hasta que el bus sale medio vacío.
+     */
+    const route = read("src/app/api/bookings/[id]/reschedule/route.ts");
+    expect(route).toMatch(/recalculateDeparture\(ctx\.companyId, originId\)/);
+    expect(route).toMatch(/recalculateDeparture\(ctx\.companyId, targetId\)/);
+  });
+
+  it("no toca el número de reserva, el voucher ni las comisiones", () => {
+    // Es la MISMA venta: regenerar comisiones cambiaría lo que cobra el
+    // vendedor por algo que ya vendió, y cambiar el código dejaría sin valor el
+    // papel que el cliente tiene en la mano.
+    const route = read("src/app/api/bookings/[id]/reschedule/route.ts");
+    expect(route).not.toMatch(/booking_number:/);
+    expect(route).not.toMatch(/voucher_code:/);
+    expect(route).not.toMatch(/generateCommissionsForBooking|"commission"/);
+  });
+
+  it("suelta la recogida de la ruta del día anterior", () => {
+    const route = read("src/app/api/bookings/[id]/reschedule/route.ts");
+    expect(route).toMatch(/"pickup"/);
+    expect(route).toMatch(/route: null/);
+  });
+
+  it("cancelar también suelta su recogida", () => {
+    // Era un fallo anterior: el conductor pasaba igual por el hotel a buscar a
+    // alguien que había cancelado.
+    const cancel = read("src/app/api/bookings/[id]/cancel/route.ts");
+    expect(cancel).toMatch(/status: "cancelled", route: null/);
+  });
+
+  it("lo imposible no se puede forzar y lo de política sí, con rango", () => {
+    const route = read("src/app/api/bookings/[id]/reschedule/route.ts");
+    expect(route).toMatch(/isForceable\(blocker\)/);
+    expect(route).toMatch(/if \(forced\) requireAtLeast\(ctx, "manager"\)/);
+    // Y la lista de lo levantable vive en el dominio puro, no en la ruta.
+    const lib = read("src/lib/reschedule.ts");
+    expect(lib).toMatch(/FORCEABLE_RESCHEDULE_BLOCKS: RescheduleBlock\[\] = \["cutoff", "too_many"\]/);
+  });
+
+  it("la pantalla ofrece solo salidas del mismo producto y futuras", () => {
+    // Ofrecer otras es ofrecer algo que el servidor va a rechazar.
+    const page = read("src/app/dashboard/reservas/page.tsx");
+    const block = page.slice(page.indexOf("const openReschedule"), page.indexOf("const reschedule ="));
+    expect(block).toContain('"filter.product": productId');
+    expect(block).toMatch(/dateField: "departure_at"/);
+  });
+
+  it("el cliente se entera de la fecha nueva", () => {
+    // El peor momento de una reprogramación es el cliente en el lobby el día
+    // que ya no es.
+    const route = read("src/app/api/bookings/[id]/reschedule/route.ts");
+    expect(route).toMatch(/notifyBookingRescheduled\(/);
+    const templates = read("src/lib/messaging/templates.ts");
+    expect(templates).toMatch(/key: "booking_rescheduled", channel: "email"/);
+    expect(templates).toMatch(/key: "booking_rescheduled", channel: "whatsapp"/);
+  });
+});
+
 describe("la verificación en dos pasos", () => {
   it("se exige en la API, no solo en la pantalla", () => {
     /**
@@ -1926,6 +1989,7 @@ describe("las notificaciones internas", () => {
   const HOOKS: [string, string][] = [
     ["booking_created", "src/lib/booking-service.ts"],
     ["booking_cancelled", "src/app/api/bookings/[id]/cancel/route.ts"],
+    ["booking_rescheduled", "src/app/api/bookings/[id]/reschedule/route.ts"],
     ["payment_refunded", "src/app/api/payments/route.ts"],
     ["cash_close_mismatch", "src/app/api/cash/sessions/[id]/close/route.ts"],
     ["settlement_confirmed", "src/app/api/settlements/[id]/confirm/route.ts"],

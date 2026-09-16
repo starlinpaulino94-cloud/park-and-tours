@@ -16,6 +16,7 @@ export type MessageChannel = "email" | "whatsapp" | "sms";
 export type TemplateKey =
   | "booking_confirmation"
   | "booking_cancelled"
+  | "booking_rescheduled"
   | "pre_tour_reminder"
   | "payment_receipt"
   | "balance_due"
