@@ -86,6 +86,8 @@ export const COMPANY_EXPORT_AREAS: CompanyExportArea[] = [
       seller: "vendedores",
       seller_type: "tipos-de-vendedor",
       seller_link: "enlaces-de-vendedor",
+      seller_goal: "metas-comerciales",
+      seller_bonus: "bonos-de-vendedor",
       // El embudo se lleva entero: es la prueba de quién trajo a cada cliente,
       // y sin él las comisiones del histórico no se pueden defender.
       seller_attribution: "atribuciones",

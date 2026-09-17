@@ -103,6 +103,33 @@ export const RESOURCES: Record<string, ResourceDef> = {
     writable: [],
     writeRole: "manager",
   },
+  seller_goal: {
+    table: "seller_goal",
+    search: ["name", "reward"],
+    expand: { seller: true, seller_type: true, branch: true, product: true, category: true },
+    sort: { created_at: "desc" },
+    writable: [
+      "name", "seller", "seller_type", "branch", "product", "category",
+      "period", "period_from", "period_to",
+      "target_signups", "target_bookings", "target_sales", "target_pax", "target_revenue",
+      "currency", "reward", "status",
+    ],
+    numeric: ["target_signups", "target_bookings", "target_sales", "target_pax", "target_revenue"],
+    dates: ["period_from", "period_to"],
+    writeRole: "manager",
+  },
+  seller_bonus: {
+    table: "seller_bonus",
+    search: ["description", "notes"],
+    expand: { seller: true, goal: true, settlement: true },
+    sort: { awarded_at: "desc" },
+    writable: [
+      "seller", "goal", "description", "amount", "currency",
+      "payout_kind", "status", "notes",
+    ],
+    numeric: ["amount"],
+    writeRole: "manager",
+  },
   seller_type: {
     table: "seller_type",
     search: ["name"],

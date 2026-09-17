@@ -114,6 +114,7 @@ export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   selected_option: "selected_option_id",
   seller: "seller_id",
   seller_link: "link_id",
+  goal: "goal_id",
   seller_type: "seller_type_id",
   settlement: "settlement_id",
   shift: "shift_id",
@@ -150,6 +151,7 @@ export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
 export const TABLE_FIELD_ALIASES: Record<string, Record<string, string>> = {
   product: { category: "category_id" },
   commission_rule: { category: "category_id" },
+  seller_goal: { category: "category_id" },
   expense: { category: "category_id" },
   document_ack: { document: "document_id" },
   quote: { cancellation_policy: "cancellation_policy" },

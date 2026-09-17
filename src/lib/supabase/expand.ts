@@ -62,6 +62,7 @@ export const RELATION_RESOURCE: Record<string, string> = {
   revision_of: "quote",
   selected_option: "quote_option",
   seller_link: "seller_link",
+  goal: "seller_goal",
   seller_type: "seller_type",
   parent_partner: "partner",
   pickup_hotel: "hotel",
@@ -82,6 +83,7 @@ export const RELATION_RESOURCE: Record<string, string> = {
 export const TABLE_RELATION_RESOURCE: Record<string, Record<string, string>> = {
   product: { category: "product_category" },
   commission_rule: { category: "product_category" },
+  seller_goal: { category: "product_category" },
   expense: { category: "expense_category" },
 };
 

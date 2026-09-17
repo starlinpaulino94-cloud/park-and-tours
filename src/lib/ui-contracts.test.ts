@@ -3843,3 +3843,69 @@ describe("Comisiones: explicarlas y corregirlas (0059)", () => {
     expect(page).toContain("/api/commissions/adjust");
   });
 });
+
+describe("Metas y bonos (0060)", () => {
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("un premio en especie NO se transfiere: la liquidación lo separa", () => {
+    /**
+     * Es el fallo que esto evita: sumar un pase regalado al total a pagar hace
+     * que la operadora transfiera dinero por algo que ya entregó — y el
+     * vendedor no va a ser quien lo reporte.
+     */
+    const dominio = sinComentarios("src/lib/seller-goals.ts");
+    expect(dominio).toMatch(/if \(normalizePayoutKind\(bonus\.payout_kind\) === "in_kind"\) inKind \+= amount;/);
+    expect(dominio).toMatch(/return Math\.round\(\(num\(commissionNet\) \+ totals\.cash\) \* 100\) \/ 100;/);
+
+    // Y quien genera la liquidación transfiere solo lo que es dinero.
+    const generate = sinComentarios("src/app/api/settlements/generate/route.ts");
+    expect(generate).toMatch(/pending_total: round2\(commissionTotal \+ bonusTotals\.cash\)/);
+    expect(generate).toMatch(/in_kind_total: bonusTotals\.inKind/);
+    // Lo que se debe de verdad es lo mismo que se transfiere.
+    expect(generate).toMatch(/balance: round2\(commissionTotal \+ bonusTotals\.cash\)/);
+  });
+
+  it("la liquidación paga el NETO de la comisión, no lo que decía al nacer", () => {
+    // Una comisión con ajustes vale su neto (0059). Sumar `amount` pagaría otra
+    // vez lo que ya se descontó, y el descuadre aparecería en el banco.
+    const generate = sinComentarios("src/app/api/settlements/generate/route.ts");
+    expect(generate).toMatch(/commissionTotal \+= fresh\.net_amount \?\? fresh\.amount \?\? 0;/);
+  });
+
+  it("el progreso se mide, no se guarda en un contador", () => {
+    // Un contador denormalizado sería un segundo sitio donde se decide si
+    // alguien cobra su premio, y nadie mira un contador: solo la barra.
+    const servicio = sinComentarios("src/lib/seller-goals-service.ts");
+    expect(servicio).toContain('.from("seller_attribution")');
+    expect(servicio).toContain('.from("booking")');
+    // Y una reserva en borrador o cancelada no cuenta como venta.
+    expect(servicio).toMatch(/COUNTED_BOOKING = \[\s*"confirmed", "partially_paid", "paid", "checked_in", "completed",/);
+  });
+
+  it("una meta se cumple cuando se cumplen TODAS sus dimensiones", () => {
+    // «40 ventas y 150 pasajeros» es UNA meta con dos condiciones: dar por
+    // buena la primera y pagar el premio sería regalarlo a medias.
+    const dominio = sinComentarios("src/lib/seller-goals.ts");
+    expect(dominio).toMatch(/return lines\.length > 0 && lines\.every\(\(l\) => l\.met\);/);
+  });
+
+  it("el bono lo otorga una persona, no el sistema", () => {
+    // Un premio automático sobre una meta que alguien bajó el día 30 se pagaría
+    // sin que nadie lo mirara.
+    const servicio = sinComentarios("src/lib/seller-goals-service.ts");
+    expect(servicio).toContain("awardGoalBonus");
+    // Y no se otorga dos veces por dos clics o un reintento.
+    expect(servicio).toContain("ya tiene el bono de esta meta");
+    // Con la condición congelada dentro.
+    expect(servicio).toContain("achievementSnapshot");
+  });
+
+  it("la pantalla solo pinta lo que la meta pide", () => {
+    const page = read("src/app/dashboard/vendedores/metas/page.tsx");
+    expect(page).toContain("row.lines.map");
+    expect(page).toContain("Faltan ");
+    // Y avisa de que lo que está en especie no se transfiere.
+    expect(page).toContain("no se transfiere");
+  });
+});

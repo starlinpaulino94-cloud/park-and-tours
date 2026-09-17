@@ -357,6 +357,35 @@ export const CALC_TYPE: Record<string, LabelDef> = {
   per_child: def("Fijo por niño", "info"),
 };
 
+/** Los estados de un bono (0060). */
+export const BONUS_STATUS: Record<string, LabelDef> = {
+  pending: def("Pendiente de aprobar", "warning"),
+  approved: def("Aprobado", "info"),
+  settled: def("En liquidación", "accent"),
+  paid: def("Pagado", "success"),
+  cancelled: def("Anulado", "neutral"),
+};
+
+/**
+ * Cómo se paga un bono (0060).
+ *
+ * La distinción decide dinero: un premio en especie tiene valor para el
+ * expediente pero NO se transfiere. Sumarlo al total a pagar haría que la
+ * operadora transfiriera dinero por un pase que ya regaló.
+ */
+export const PAYOUT_KIND: Record<string, LabelDef> = {
+  cash: def("En efectivo", "success"),
+  in_kind: def("En especie", "violet"),
+};
+
+/** Los periodos de una meta comercial (0060). */
+export const GOAL_PERIOD: Record<string, LabelDef> = {
+  daily: def("Diaria"),
+  weekly: def("Semanal", "info"),
+  monthly: def("Mensual", "accent"),
+  range: def("Entre dos fechas", "violet"),
+};
+
 /** Los motivos de un ajuste de comisión (0059). */
 export const ADJUSTMENT_REASON: Record<string, LabelDef> = {
   cancellation: def("Venta cancelada", "danger"),

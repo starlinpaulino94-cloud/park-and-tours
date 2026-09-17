@@ -7,6 +7,7 @@ import { writeAudit } from "@/lib/audit";
 import type { BeneficiaryType, Commission, Currency, Settlement } from "@/lib/types";
 import { refId } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
+import { attachBonusesToSettlement } from "@/lib/seller-goals-service";
 
 /**
  * POST /api/settlements/generate
@@ -104,7 +105,18 @@ export async function POST(req: NextRequest) {
 
       claimed++;
       base += fresh.base_amount ?? 0;
-      commissionTotal += fresh.amount ?? 0;
+      /**
+       * SE LIQUIDA EL NETO, NO EL IMPORTE (0059).
+       *
+       * Una comisión con ajustes firmados —una venta que se cayó después de
+       * pagarse, una corrección— vale su neto, no lo que decía el día que
+       * nació. Sumar `amount` aquí pagaría otra vez lo que ya se descontó, y el
+       * descuadre aparecería en el banco y no en ninguna pantalla.
+       *
+       * El respaldo a `amount` cubre las comisiones anteriores a 0059, que no
+       * tienen neto guardado.
+       */
+      commissionTotal += fresh.net_amount ?? fresh.amount ?? 0;
       const booking: any = fresh.booking;
       if (booking && typeof booking === "object" && ["cancelled", "refunded"].includes(booking.status)) {
         cancellations += booking.total_amount ?? 0;
@@ -117,13 +129,32 @@ export async function POST(req: NextRequest) {
       throw Object.assign(new Error("Las comisiones ya fueron liquidadas"), { status: 409 });
     }
 
+    /**
+     * LOS BONOS APROBADOS ENTRAN EN ESTA LIQUIDACIÓN (0060).
+     *
+     * Al vendedor se le paga todo junto, pero el documento tiene que separar
+     * dos cosas que no son lo mismo: lo que sale del banco y lo que ya se
+     * entregó. Un premio en especie —dos pases, una noche de hotel— tiene su
+     * valor en el expediente, y sumarlo al importe a transferir haría que la
+     * operadora pagara dinero por algo que ya regaló.
+     *
+     * Solo aplica a las liquidaciones de un VENDEDOR: un partner no tiene
+     * bonos, y un proveedor tampoco.
+     */
+    const bonusTotals = body.seller_id
+      ? await attachBonusesToSettlement(ctx, settlement._id, body.seller_id)
+      : { cash: 0, inKind: 0, count: 0 };
+
     // Update the settlement with the totals from the commissions actually claimed.
     await tenantUpdate(ctx.companyId, "settlement", settlement._id, {
       sales_total: round2(base + cancellations),
       cancellations_total: round2(cancellations),
       base_total: round2(base),
       commission_total: round2(commissionTotal),
-      pending_total: round2(commissionTotal),
+      bonus_total: bonusTotals.cash,
+      in_kind_total: bonusTotals.inKind,
+      // Lo que se transfiere: comisiones netas más bonos EN EFECTIVO.
+      pending_total: round2(commissionTotal + bonusTotals.cash),
     });
 
     await tenantCreate(ctx.companyId, "payable", {
@@ -132,9 +163,11 @@ export async function POST(req: NextRequest) {
       settlement: settlement._id,
       concept: `Liquidación ${settlement.code}`,
       category: "commission",
-      amount: round2(commissionTotal),
+      // La cuenta por pagar es lo que se transfiere, no lo que aparece en el
+      // documento: un premio ya entregado no se debe.
+      amount: round2(commissionTotal + bonusTotals.cash),
       paid_amount: 0,
-      balance: round2(commissionTotal),
+      balance: round2(commissionTotal + bonusTotals.cash),
       currency,
       issue_date: new Date().toISOString(),
       due_date: new Date(Date.now() + 15 * 86_400_000).toISOString(),
@@ -145,12 +178,29 @@ export async function POST(req: NextRequest) {
     await writeAudit({
       companyId: ctx.companyId, userId: ctx.userId,
       action: "settlement_generated", entityType: "settlement", entityId: settlement._id,
-      description: `Liquidación ${settlement.code} por ${round2(commissionTotal)} ${currency} (${claimed} comisiones)`,
-      metadata: { commissions: claimed, from: from.toISOString(), to: to.toISOString() },
+      description:
+        `Liquidación ${settlement.code} por ${round2(commissionTotal + bonusTotals.cash)} ${currency} ` +
+        `(${claimed} comisiones${bonusTotals.count ? `, ${bonusTotals.count} bonos` : ""})` +
+        (bonusTotals.inKind ? ` · ${bonusTotals.inKind} ${currency} en especie, ya entregados` : ""),
+      metadata: {
+        commissions: claimed, bonuses: bonusTotals.count,
+        bonus_cash: bonusTotals.cash, bonus_in_kind: bonusTotals.inKind,
+        from: from.toISOString(), to: to.toISOString(),
+      },
     });
 
     console.log(`[settlements] ${settlement.code}: ${claimed} comisiones · ${commissionTotal} ${currency}`);
-    return ok({ settlement: { ...settlement, commission_total: round2(commissionTotal) }, commissions: claimed });
+    return ok({
+      settlement: {
+        ...settlement,
+        commission_total: round2(commissionTotal),
+        bonus_total: bonusTotals.cash,
+        in_kind_total: bonusTotals.inKind,
+        pending_total: round2(commissionTotal + bonusTotals.cash),
+      },
+      commissions: claimed,
+      bonuses: bonusTotals.count,
+    });
   } catch (err) {
     return fail(err);
   }

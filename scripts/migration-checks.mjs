@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0032-0059 tienen que haber creado.
+ * El inventario de lo que las migraciones 0032-0060 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -276,5 +276,21 @@ export const MIGRATION_CHECKS = [
     // Los tres tipos de cálculo por pasajero: sin ellos, una regla guardada con
     // uno de ellos rompería el INSERT entero.
     enums: [["commission_rule", "calc_type", "per_adult"]],
+  },
+  {
+    migration: "0060 — metas comerciales y bonos",
+    tables: ["seller_goal", "seller_bonus"],
+    columns: [
+      ["seller_goal", ["seller_id", "seller_type_id", "branch_id", "product_id", "category_id",
+                       "period", "period_from", "period_to",
+                       "target_signups", "target_bookings", "target_sales",
+                       "target_pax", "target_revenue", "currency", "reward", "status"]],
+      ["seller_bonus", ["seller_id", "goal_id", "description", "condition", "amount",
+                        "currency", "payout_kind", "status", "settlement_id",
+                        "awarded_at", "paid_at", "approved_by"]],
+      // Sin estas dos, la liquidación no puede separar lo que se transfiere de
+      // lo que ya se entregó, y la operadora transfiere de más.
+      ["settlement", ["bonus_total", "in_kind_total"]],
+    ],
   },
 ];
