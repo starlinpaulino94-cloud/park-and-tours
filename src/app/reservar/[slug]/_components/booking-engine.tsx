@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { brandColor, readableOn } from "@/lib/branding";
+import { PUBLIC_DICTIONARY, SUPPORTED_LOCALES, LOCALE_LABEL, translator, type Locale } from "@/lib/i18n";
 import type { PublicPage } from "@/lib/public-booking-service";
 import { MAX_PUBLIC_PAX } from "@/lib/public-booking";
 
@@ -45,8 +46,17 @@ const dayLabel = (iso: string) =>
 const timeLabel = (iso: string) =>
   new Date(iso).toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit" });
 
-export function BookingEngine({ slug, page }: { slug: string; page: PublicPage }) {
+export function BookingEngine({ slug, page, locale: initial }: { slug: string; page: PublicPage; locale: Locale }) {
   const org = page.org!;
+  /**
+   * El idioma se decide en el SERVIDOR y aquí solo se puede cambiar a mano.
+   *
+   * Al revés —detectar en el navegador— el huésped ve la página en español
+   * durante el primer pintado y salta al inglés después, que es exactamente el
+   * segundo en el que decide si se queda.
+   */
+  const [locale, setLocale] = useState<Locale>(initial);
+  const t = translator(PUBLIC_DICTIONARY, locale);
   const [selected, setSelected] = useState<Product | null>(null);
   const [departures, setDepartures] = useState<Departure[] | null>(null);
   const [departureId, setDepartureId] = useState("");
@@ -101,17 +111,20 @@ export function BookingEngine({ slug, page }: { slug: string; page: PublicPage }
           productId: selected.id,
           departureId: departureId || null,
           adults, children,
+          // El idioma en el que reservó viaja con la solicitud: los avisos de
+          // la víspera salen cuando ya no hay navegador del que deducirlo.
+          language: locale,
           ...form,
         }),
       });
       const body = await res.json().catch(() => null);
       if (!res.ok || !body?.ok) {
-        setError(body?.error?.message || "No pudimos enviar tu solicitud. Inténtalo de nuevo.");
+        setError(body?.error?.message || t("engine.errorSend"));
         return;
       }
       setDone(body.data as Confirmation);
     } catch {
-      setError("No pudimos conectar. Revisa tu conexión e inténtalo de nuevo.");
+      setError(t("engine.errorNetwork"));
     } finally {
       setSending(false);
     }
@@ -124,19 +137,19 @@ export function BookingEngine({ slug, page }: { slug: string; page: PublicPage }
         <Header org={org} />
         <div className="mt-8 rounded-2xl border border-black/10 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-neutral-900">
           <p className="text-sm font-semibold uppercase tracking-wider" style={{ color: brand }}>
-            Solicitud recibida
+            {t("engine.received")}
           </p>
-          <h1 className="mt-2 text-2xl font-bold">Tu referencia es {done.reference}</h1>
+          <h1 className="mt-2 text-2xl font-bold">{t("engine.yourReference")} {done.reference}</h1>
           <dl className="mt-5 space-y-2 text-sm">
-            <Row label="Excursión" value={done.product} />
-            {done.date && <Row label="Fecha" value={`${dayLabel(done.date)} · ${timeLabel(done.date)}`} />}
-            <Row label="Personas" value={String(done.pax)} />
-            <Row label="Total estimado" value={money(done.total, done.currency)} />
+            <Row label={t("engine.product")} value={done.product} />
+            {done.date && <Row label={t("engine.date")} value={`${dayLabel(done.date)} · ${timeLabel(done.date)}`} />}
+            <Row label={t("engine.people")} value={String(done.pax)} />
+            <Row label={t("engine.estimatedTotal")} value={money(done.total, done.currency)} />
           </dl>
           <p className="mt-5 rounded-xl bg-black/5 p-4 text-sm dark:bg-white/5">{done.payNote}</p>
           <p className="mt-4 text-sm text-neutral-600 dark:text-neutral-400">
-            Guarda tu referencia. Si necesitas cambiar algo, escríbenos
-            {org.whatsapp ? ` al ${org.whatsapp}` : org.phone ? ` al ${org.phone}` : ""} con ese número delante.
+            {t("engine.keepReference")}
+            {org.whatsapp ? ` ${org.whatsapp}` : org.phone ? ` ${org.phone}` : ""} {t("engine.keepReferenceEnd")}
           </p>
         </div>
       </main>
@@ -165,26 +178,26 @@ export function BookingEngine({ slug, page }: { slug: string; page: PublicPage }
           <div className="mt-3 flex flex-wrap gap-3 text-sm text-neutral-600 dark:text-neutral-400">
             {selected.durationHours ? <span>⏱ {selected.durationHours} h</span> : null}
             {selected.location ? <span>📍 {selected.location}</span> : null}
-            {selected.minAge ? <span>Edad mínima: {selected.minAge}</span> : null}
+            {selected.minAge ? <span>{t("engine.minAge")}: {selected.minAge}</span> : null}
           </div>
           {selected.description && (
             <p className="mt-4 whitespace-pre-line text-sm leading-relaxed">{selected.description}</p>
           )}
           {selected.inclusions && (
             <div className="mt-4">
-              <h2 className="text-sm font-semibold">Incluye</h2>
+              <h2 className="text-sm font-semibold">{t("engine.included")}</h2>
               <p className="mt-1 whitespace-pre-line text-sm text-neutral-600 dark:text-neutral-400">{selected.inclusions}</p>
             </div>
           )}
         </article>
 
         <form onSubmit={submit} className="mt-8 space-y-5 rounded-2xl border border-black/10 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-neutral-900">
-          <h2 className="text-lg font-semibold">Pide tu lugar</h2>
+          <h2 className="text-lg font-semibold">{t("engine.cta")}</h2>
 
           <div>
             <label className="text-sm font-medium">¿Qué día?</label>
             {departures === null ? (
-              <p className="mt-2 text-sm text-neutral-500">Buscando fechas…</p>
+              <p className="mt-2 text-sm text-neutral-500">{t("engine.loadingDates")}</p>
             ) : departures.length === 0 ? (
               <p className="mt-2 text-sm text-neutral-500">
                 No hay fechas publicadas ahora mismo. Escríbenos y te decimos cuándo sale.
@@ -220,8 +233,8 @@ export function BookingEngine({ slug, page }: { slug: string; page: PublicPage }
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <Counter label="Adultos" value={adults} min={0} max={MAX_PUBLIC_PAX} onChange={setAdults} />
-            <Counter label="Niños" value={children} min={0} max={MAX_PUBLIC_PAX} onChange={setChildren} />
+            <Counter label={t("engine.adults")} value={adults} min={0} max={MAX_PUBLIC_PAX} onChange={setAdults} />
+            <Counter label={t("engine.children")} value={children} min={0} max={MAX_PUBLIC_PAX} onChange={setChildren} />
           </div>
           {pax > MAX_PUBLIC_PAX && (
             <p className="text-sm text-amber-600">
@@ -230,12 +243,12 @@ export function BookingEngine({ slug, page }: { slug: string; page: PublicPage }
           )}
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Tu nombre" value={form.name} onChange={(v) => setForm({ ...form, name: v })} required autoComplete="name" />
-            <Field label="Correo" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} autoComplete="email" />
-            <Field label="Teléfono o WhatsApp" value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} autoComplete="tel" />
-            <Field label="Hotel donde te hospedas" value={form.hotel} onChange={(v) => setForm({ ...form, hotel: v })} />
-            <Field label="Habitación (opcional)" value={form.room} onChange={(v) => setForm({ ...form, room: v })} />
-            <Field label="Algo que debamos saber" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} className="sm:col-span-2" />
+            <Field label={t("engine.name")} value={form.name} onChange={(v) => setForm({ ...form, name: v })} required autoComplete="name" />
+            <Field label={t("engine.email")} type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} autoComplete="email" />
+            <Field label={t("engine.phone")} value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} autoComplete="tel" />
+            <Field label={t("engine.hotel")} value={form.hotel} onChange={(v) => setForm({ ...form, hotel: v })} />
+            <Field label={t("engine.room")} value={form.room} onChange={(v) => setForm({ ...form, room: v })} />
+            <Field label={t("engine.notes")} value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} className="sm:col-span-2" />
           </div>
 
           {/* Campo trampa: invisible para una persona, irresistible para un
@@ -254,7 +267,7 @@ export function BookingEngine({ slug, page }: { slug: string; page: PublicPage }
             className="w-full rounded-xl px-4 py-3 text-base font-semibold text-white disabled:opacity-50"
             style={{ background: brand, color: onBrand }}
           >
-            {sending ? "Enviando…" : "Pedir mi lugar"}
+            {sending ? t("engine.sending") : t("engine.submit")}
           </button>
           <p className="text-center text-xs text-neutral-500">
             No se cobra nada ahora. {org.name} te confirma la plaza y cómo pagar.
@@ -265,15 +278,54 @@ export function BookingEngine({ slug, page }: { slug: string; page: PublicPage }
   }
 
   /* ------------------------------------------------------------- el catálogo */
+
+  /**
+   * Cambiar de idioma recarga con `?lang=`.
+   *
+   * No se hace solo en el cliente a propósito: la página se pinta en el
+   * servidor, y un cambio que solo viva en el estado dejaría el HTML inicial
+   * —el que ve un buscador y el que se lee el primer segundo— en el otro
+   * idioma.
+   */
+  const cambiarIdioma = (next: Locale) => {
+    setLocale(next);
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("lang", next);
+    window.location.href = url.toString();
+  };
+
+  const selectorIdioma = (
+    <div className="flex items-center gap-1 text-xs" aria-label={t("lang.switch")}>
+      {SUPPORTED_LOCALES.map((one) => (
+        <button
+          key={one}
+          type="button"
+          onClick={() => cambiarIdioma(one)}
+          aria-current={one === locale ? "true" : undefined}
+          className={
+            one === locale
+              ? "rounded-full px-2.5 py-1 font-semibold"
+              : "rounded-full px-2.5 py-1 opacity-60 hover:opacity-100"
+          }
+          style={one === locale ? { background: brand, color: onBrand } : undefined}
+        >
+          {LOCALE_LABEL[one]}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <main style={style} className="mx-auto min-h-screen max-w-3xl px-5 py-10">
-      <Header org={org} />
+      <div className="flex items-start justify-between gap-4">
+        <Header org={org} />
+        {selectorIdioma}
+      </div>
       {org.intro && <p className="mt-4 text-neutral-600 dark:text-neutral-400">{org.intro}</p>}
 
       {page.products.length === 0 ? (
-        <p className="mt-10 text-neutral-500">
-          Todavía no hay excursiones publicadas. Escríbenos y te contamos qué tenemos.
-        </p>
+        <p className="mt-10 text-neutral-500">{t("page.noProducts")}</p>
       ) : (
         <ul className="mt-8 grid gap-4 sm:grid-cols-2">
           {page.products.map((product) => (
@@ -293,7 +345,7 @@ export function BookingEngine({ slug, page }: { slug: string; page: PublicPage }
                     <p className="mt-1 line-clamp-2 text-sm text-neutral-600 dark:text-neutral-400">{product.summary}</p>
                   )}
                   <p className="mt-3 text-sm font-semibold" style={{ color: brand }}>
-                    {product.priceFrom ? `Desde ${money(product.priceFrom, product.currency)}` : "Consultar precio"}
+                    {product.priceFrom ? t("engine.priceFrom", { price: money(product.priceFrom, product.currency) }) : t("engine.quote")}
                   </p>
                 </div>
               </button>

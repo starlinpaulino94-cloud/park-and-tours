@@ -5,6 +5,7 @@ import { createOrderWithBookings, releaseExpiredHolds, syncOrderTotals } from "@
 import { cancelBookingFully, TERMINAL_STATES } from "@/lib/booking-cancel-service";
 import { resolvePrice } from "@/lib/pricing";
 import { parseJson } from "@/lib/format";
+import { normalizeLocale } from "@/lib/i18n";
 import { APP_URL } from "@/lib/stripe";
 import {
   DEFAULT_OPTION_ID, SELLABLE_DEPARTURE,
@@ -557,6 +558,13 @@ async function resolveCustomer(companyId: string, input: ReservationInput): Prom
     email,
     phone: input.contact?.phoneNumber ?? null,
     country: input.contact?.country ?? null,
+    /**
+     * OCTO manda `locales` en el contacto, y ahí es donde el revendedor dice en
+     * qué idioma habla su cliente. Ignorarlo dejaría que el recordatorio de la
+     * víspera —el que lleva la hora de recogida— le llegara en español a
+     * alguien que compró en inglés en GetYourGuide.
+     */
+    language: normalizeLocale(input.contact?.locales?.[0]) ?? null,
     source: "ota",
     status: "active",
     notes: input.contact?.notes ?? null,

@@ -3134,7 +3134,9 @@ describe("la marca: que los documentos sean de la empresa, no nuestros", () => {
 
   it("las condiciones del voucher y la nota legal de la factura se imprimen", () => {
     const src = read("src/lib/pdf/documents.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
-    expect(src).toMatch(/pdf\.block\("Condiciones", brand\.terms\)/);
+    // Desde la ola 6 la etiqueta va en el idioma del huésped: lo que se ata es
+    // que las condiciones de la empresa SIGUEN imprimiéndose en el voucher.
+    expect(src).toMatch(/pdf\.block\(t\("doc\.terms"\), brand\.terms\)/);
     expect(src).toMatch(/pdf\.block\("Nota legal", brand\.terms\)/);
   });
 });
@@ -3566,5 +3568,128 @@ describe("analítica: que una previsión no sea una corazonada con cara de cálc
     const nav = read("src/lib/nav.ts");
     expect(nav).toContain('href: "/dashboard/analitica/cohortes"');
     expect(nav).toContain('href: "/dashboard/analitica/ocupacion"');
+  });
+});
+
+describe("i18n: que el huésped que no habla español entienda lo que compró", () => {
+  /**
+   * ────────────────────────────────────────────────────────────────────────
+   * EL FALLO QUE ESTO ARREGLA
+   *
+   * El mecanismo de idiomas existía desde la ola 3 —`resolveTemplate` buscaba
+   * la plantilla del idioma del cliente— y NO HABÍA una sola plantilla que no
+   * fuera española. Buscaba el inglés, no lo encontraba y caía al español, así
+   * que el turista que reservaba en inglés recibía la confirmación, el
+   * recordatorio de la víspera y el recibo en un idioma que no lee.
+   *
+   * El recordatorio de la víspera es el que más importa: lleva la hora y el
+   * lugar de recogida. Un huésped que no lo entiende no es un huésped molesto,
+   * es un asiento vacío y una reclamación.
+   */
+
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("cada plantilla española tiene su equivalente en inglés", () => {
+    // Si falta una, no se rompe nada: cae al español. Por eso nadie se entera.
+    const src = read("src/lib/messaging/templates.ts");
+    const entradas = [...src.matchAll(/key: "(\w+)", channel: "(\w+)", language: "(\w+)"/g)]
+      .map((m) => ({ key: m[1], channel: m[2], language: m[3] }));
+    const es = entradas.filter((e) => e.language === "es");
+    const en = new Set(entradas.filter((e) => e.language === "en").map((e) => `${e.key}:${e.channel}`));
+    const faltan = es.filter((e) => !en.has(`${e.key}:${e.channel}`)).map((e) => `${e.key}/${e.channel}`);
+    expect(faltan, "plantillas sin versión en inglés").toEqual([]);
+    expect(es.length).toBeGreaterThan(0);
+  });
+
+  it("a los diccionarios no les falta ninguna clave", () => {
+    // Un botón en español en medio de una página en inglés: no rompe, solo
+    // queda mal, y por eso nadie lo reporta.
+    const src = read("src/lib/i18n.ts");
+    const bloque = (nombre: string) => {
+      const at = src.indexOf(`const ${nombre}: Dictionary = {`);
+      return src.slice(at, src.indexOf("\n};", at));
+    };
+    const claves = (nombre: string) => new Set([...bloque(nombre).matchAll(/^\s+"([^"]+)":/gm)].map((m) => m[1]));
+    for (const [a, b] of [["PUBLIC_ES", "PUBLIC_EN"], ["DOC_ES", "DOC_EN"]] as const) {
+      const faltan = [...claves(a)].filter((k) => !claves(b).has(k));
+      expect(faltan, `claves que le faltan a ${b}`).toEqual([]);
+      expect(claves(a).size).toBeGreaterThan(5);
+    }
+  });
+
+  it("el idioma se decide en el SERVIDOR, antes de pintar", () => {
+    // Detectarlo en el navegador enseñaría la página en español durante el
+    // primer pintado, que es justo el segundo en el que el cliente decide si
+    // se queda.
+    const page = sinComentarios("src/app/reservar/[slug]/page.tsx");
+    expect(page).toMatch(/pickLocale\(\{/);
+    expect(page).toMatch(/acceptLanguage: \(await headers\(\)\)\.get\("accept-language"\)/);
+    expect(page).toMatch(/locale=\{locale\}/);
+  });
+
+  it("la página pública no se cachea en un solo idioma", () => {
+    // Con `revalidate`, la primera visita fijaría el HTML para todos: a un
+    // inglés le tocaría la versión que pidió un español diez segundos antes.
+    const page = sinComentarios("src/app/reservar/[slug]/page.tsx");
+    expect(page).toMatch(/export const dynamic = "force-dynamic"/);
+    expect(page).not.toMatch(/export const revalidate/);
+  });
+
+  it("el idioma en el que reservó queda en su ficha", () => {
+    // Los avisos de la víspera salen cuando ya no hay navegador del que
+    // deducirlo.
+    const motor = sinComentarios("src/app/reservar/[slug]/_components/booking-engine.tsx");
+    expect(motor).toMatch(/language: locale,/);
+    const servicio = sinComentarios("src/lib/public-booking-service.ts");
+    expect(servicio).toMatch(/language: request\.language/);
+    // Y se refresca en la ficha que ya existía: quien reservó en español el año
+    // pasado y hoy reserva en inglés está diciendo en qué idioma quiere que le
+    // escriban AHORA.
+    expect(servicio).toMatch(/\.update\(\{ language: request\.language \}\)/);
+  });
+
+  it("el voucher sale en el idioma del huésped, no en el de la operadora", () => {
+    // Lo enseña ÉL en la puerta, a veces a alguien que no lo emitió.
+    const doc = sinComentarios("src/lib/pdf/documents.ts");
+    expect(doc).toMatch(/const locale = normalizeLocale\(data\.language\) \?\? DEFAULT_LOCALE/);
+    expect(doc).toMatch(/const t = translator\(DOC_DICTIONARY, locale\)/);
+    // Y la fecha también: un voucher que mezcla formatos se lee dos veces.
+    expect(doc).toMatch(/formatDateFor\(locale, data\.travel_date\)/);
+  });
+
+  it("los dos sitios que emiten el voucher le pasan el idioma", () => {
+    for (const ruta of ["src/app/api/bookings/[id]/voucher/route.ts", "src/lib/messaging/attachments.ts"]) {
+      expect(sinComentarios(ruta), ruta).toMatch(/language: \(row|language: \(booking/);
+    }
+    // Y la consulta lo TRAE: sin la columna, el idioma es siempre undefined y
+    // el voucher adjunto sale siempre en español.
+    expect(read("src/lib/messaging/attachments.ts"))
+      .toContain("customer:customer_id (first_name, last_name, language)");
+  });
+
+  it("el idioma que manda una OTA no se tira a la basura", () => {
+    // OCTO manda `locales` en el contacto: ahí es donde el revendedor dice en
+    // qué idioma habla su cliente.
+    const src = sinComentarios("src/lib/octo-service.ts");
+    expect(src).toMatch(/language: normalizeLocale\(input\.contact\?\.locales\?\.\[0\]\)/);
+  });
+
+  it("nunca se enseña la clave del diccionario", () => {
+    // Una pantalla que dice `engine.submit` parece rota; el español se entiende
+    // con el contexto mucho mejor que eso.
+    const src = sinComentarios("src/lib/i18n.ts");
+    expect(src).toMatch(/dictionaries\[locale\]\?\.\[key\] \?\? dictionaries\[DEFAULT_LOCALE\]\?\.\[key\] \?\? key/);
+  });
+
+  it("el panel de la operadora NO se traduce, y es una decisión escrita", () => {
+    // Traducir cuarenta pantallas de gestión para un equipo que trabaja en
+    // español es el trabajo que parece internacionalización y no sirve a nadie.
+    // La guarda existe para que nadie lo empiece «por completar».
+    const src = read("src/lib/i18n.ts");
+    expect(src).toMatch(/NO se traduce el panel de la operadora/);
+    const claves = [...src.matchAll(/^\s+"([^"]+)":/gm)].map((m) => m[1]);
+    const fuera = claves.filter((k) => !k.startsWith("engine.") && !k.startsWith("page.") && !k.startsWith("doc.") && !k.startsWith("lang."));
+    expect(fuera, "claves de i18n fuera de las superficies del huésped").toEqual([]);
   });
 });

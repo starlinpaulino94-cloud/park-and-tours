@@ -1,6 +1,8 @@
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import { loadPublicPage } from "@/lib/public-booking-service";
+import { pickLocale } from "@/lib/i18n";
 import { BookingEngine } from "./_components/booking-engine";
 
 /**
@@ -23,7 +25,15 @@ import { BookingEngine } from "./_components/booking-engine";
  * está comprando a SU marca, no a la nuestra.
  */
 
-export const revalidate = 60;
+/**
+ * La página se sirve por petición y no desde caché.
+ *
+ * Con `revalidate` la primera visita fijaba el HTML para todos: el idioma sale
+ * de `Accept-Language` y de `?lang=`, así que una copia cacheada le habría
+ * servido a un inglés la versión que pidió un español diez segundos antes. El
+ * catálogo cambia poco; el idioma cambia con cada visitante.
+ */
+export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
@@ -40,13 +50,36 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   };
 }
 
-export default async function Page({ params }: { params: Promise<{ slug: string }> }) {
+export default async function Page({
+  params, searchParams,
+}: {
+  params: Promise<{ slug: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const { slug } = await params;
+  const query = await searchParams;
   const page = await loadPublicPage(String(slug || "").toLowerCase());
   // Una empresa sin su página activada y un slug inventado se contestan igual:
   // la diferencia solo le sirve a quien prueba nombres para averiguar qué
   // empresas usan el sistema.
   if (page.state !== "ok" || !page.org) notFound();
 
-  return <BookingEngine slug={slug} page={page} />;
+  /**
+   * El idioma se decide AQUÍ, en el servidor.
+   *
+   * Lo elegido a mano manda sobre el navegador: si alguien pulsó «English»,
+   * seguir hablándole en español porque su `Accept-Language` dice otra cosa
+   * sería ignorar lo único que dijo de forma explícita.
+   *
+   * Y se decide antes de pintar porque esta página se renderiza en el servidor:
+   * detectarlo en el navegador enseñaría la página en español durante el primer
+   * pintado, que es justo el segundo en el que el cliente decide si se queda.
+   */
+  const chosen = Array.isArray(query.lang) ? query.lang[0] : query.lang;
+  const locale = pickLocale({
+    chosen,
+    acceptLanguage: (await headers()).get("accept-language"),
+  });
+
+  return <BookingEngine slug={slug} page={page} locale={locale} />;
 }

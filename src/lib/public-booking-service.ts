@@ -177,7 +177,22 @@ async function findOrCreateCustomer(orgId: string, request: PublicRequest): Prom
     const { data } = request.email
       ? await query.eq("email", request.email)
       : await query.eq("phone", request.phone);
-    if (data && data[0]) return data[0].id as string;
+    if (data && data[0]) {
+      /**
+       * El idioma de la ficha se refresca con el de esta reserva.
+       *
+       * Quien reservó en español el año pasado y hoy está reservando en inglés
+       * está diciendo en qué idioma quiere que le escriban AHORA. Dejar el
+       * viejo haría que el recordatorio de la víspera —el que lleva la hora de
+       * recogida— saliera en el idioma equivocado.
+       */
+      const id = data[0].id as string;
+      if (request.language) {
+        await sb.from("customer").update({ language: request.language })
+          .eq("organization_id", orgId).eq("id", id);
+      }
+      return id;
+    }
   }
 
   const { first, last } = splitName(request.name);
