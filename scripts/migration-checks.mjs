@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0032-0060 tienen que haber creado.
+ * El inventario de lo que las migraciones 0032-0061 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -291,6 +291,18 @@ export const MIGRATION_CHECKS = [
       // Sin estas dos, la liquidación no puede separar lo que se transfiere de
       // lo que ya se entregó, y la operadora transfiere de más.
       ["settlement", ["bonus_total", "in_kind_total"]],
+    ],
+  },
+  {
+    migration: "0061 — combos y paquetes",
+    tables: ["product_bundle_item"],
+    columns: [
+      ["product_bundle_item", ["bundle_id", "product_id", "modality_id", "day_offset",
+                               "sort_order", "fixed_time", "allow_overlap", "is_optional"]],
+      ["product", ["is_bundle", "bundle_buffer_minutes"]],
+      // Sin estas dos, cancelar un paquete no encuentra sus actividades y
+      // quedan plazas bloqueadas en salidas sin ninguna reserva que las explique.
+      ["booking", ["bundle_booking_id", "bundle_item_id"]],
     ],
   },
 ];

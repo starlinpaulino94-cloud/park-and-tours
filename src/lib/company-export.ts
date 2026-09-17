@@ -77,6 +77,7 @@ export const COMPANY_EXPORT_AREAS: CompanyExportArea[] = [
       product: "productos",
       product_category: "categorias-de-producto",
       product_modality: "modalidades",
+      product_bundle_item: "componentes-de-paquete",
       product_extra: "extras",
       product_cost: "costos-de-producto",
       price_rule: "reglas-de-precio",

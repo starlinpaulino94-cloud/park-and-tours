@@ -18,6 +18,7 @@ import { assertAllotment, consumeAllotment } from "@/lib/allotment-service";
 import { allotmentState, type AllotmentRow } from "@/lib/allotments";
 import { priceExtras, unknownSelections, type ExtraOffer, type ExtraSelection } from "@/lib/extras";
 import { resolveOrderAttribution, recordTouch, recordPurchaseOnce } from "@/lib/attribution-service";
+import { planBundle, loadBundle } from "@/lib/bundle-service";
 import type {
   Booking, Channel, Currency, Departure, Order, Partner, Product, Seller,
 } from "@/lib/types";
@@ -42,6 +43,26 @@ export interface BookingItemInput {
   infants?: number;
   discount_pct?: number;
   tax_pct?: number;
+  /**
+   * Vender un PAQUETE (0061).
+   *
+   * El navegador manda solo esto: qué paquete y en qué día empieza. El servidor
+   * resuelve el itinerario, elige las salidas reales y expande la línea en la
+   * cabecera más sus componentes. Aceptar del cliente las salidas y sus precios
+   * sería un formulario de «pon tú qué te cobro».
+   */
+  bundle_start_day?: string | null;
+  /**
+   * Marcas que pone la EXPANSIÓN del servidor, nunca el cliente.
+   *
+   * La ruta las borra del cuerpo antes de llegar aquí, igual que hace con
+   * `unit_price_override`: un componente de paquete se cobra a cero, así que
+   * poder declararse uno a mano sería poder regalarse cualquier excursión.
+   */
+  bundle_component?: boolean;
+  bundle_item_id?: string | null;
+  /** Índice de la cabecera a la que pertenece este componente. */
+  bundle_group?: number | null;
   pickup_hotel_id?: string | null;
   pickup_time?: string | null;
   pickup_location?: string | null;
@@ -130,6 +151,103 @@ function toCount(value: unknown): number {
 }
 
 /**
+ * EXPANDE LOS PAQUETES ANTES DE VENDER (0061).
+ *
+ * Una línea de paquete se convierte en N+1: la CABECERA con el precio del
+ * paquete —sin salida, porque el paquete no sale ningún día: salen sus
+ * actividades— y un COMPONENTE por actividad, con su salida real, sus
+ * pasajeros y su importe a CERO.
+ *
+ * Se hace aquí, en el servidor, y no en el navegador: el cliente dice qué
+ * paquete y qué día, y nada más. Si mandara las salidas, mandaría también
+ * cuáles tienen sitio; si mandara los componentes, se cobraría a sí mismo cero
+ * por una excursión suelta.
+ *
+ * Si el itinerario no se puede armar, la venta se rechaza AQUÍ, antes de
+ * escribir nada. Vender medio paquete y descubrirlo después deja plazas
+ * bloqueadas y a un cliente con la mitad de lo que compró.
+ */
+async function expandBundles(
+  ctx: TenantContext & { companyId: string },
+  items: BookingItemInput[]
+): Promise<BookingItemInput[]> {
+  const out: BookingItemInput[] = [];
+
+  for (const item of items) {
+    // Las marcas internas nunca llegan del cliente: la ruta las borra. Si
+    // alguna llegara igual, se ignora — una línea suelta no es un componente.
+    const clean: BookingItemInput = { ...item };
+    delete clean.bundle_component;
+    delete clean.bundle_item_id;
+    delete clean.bundle_group;
+
+    const [product] = await tenantQuery<Product & { is_bundle?: boolean }>(
+      ctx.companyId, "product", { _filter: { _id: item.product_id }, _limit: 1 }
+    );
+    if (!product?.is_bundle) {
+      out.push(clean);
+      continue;
+    }
+
+    const adults = toCount(item.adults);
+    const children = toCount(item.children);
+    const infants = toCount(item.infants);
+    const pax = Math.max(1, adults + children + infants);
+
+    const startDay = (item.bundle_start_day || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDay)) {
+      throw Object.assign(
+        new Error(`Falta el día en que empieza el paquete «${product.name}».`),
+        { status: 400 }
+      );
+    }
+
+    const definition = await loadBundle(ctx.companyId, String(item.product_id));
+    if (!definition || definition.items.length === 0) {
+      throw Object.assign(
+        new Error(`El paquete «${product.name}» no tiene ninguna actividad configurada.`),
+        { status: 400 }
+      );
+    }
+
+    const plan = await planBundle(ctx, { bundleId: String(item.product_id), startDay, pax });
+    if (!plan || plan.blocker) {
+      throw Object.assign(
+        new Error(plan?.blocker || `No se pudo armar el itinerario de «${product.name}».`),
+        { status: 409 }
+      );
+    }
+
+    // La cabecera guarda el precio y la fecha de viaje del paquete: la de su
+    // primera actividad, que es cuando el cliente tiene que estar en el lobby.
+    const headerIndex = out.length;
+    out.push({ ...clean, bundle_start_day: startDay });
+
+    for (const block of plan.blocks) {
+      out.push({
+        product_id: block.productId,
+        departure_id: block.departureId,
+        modality_id: definition.items.find((i) => i.id === block.itemId)?.modalityId ?? null,
+        // Los mismos pasajeros en cada actividad: el paquete lo compra el grupo
+        // entero. Si alguien no fuera a una de ellas, sería otro producto.
+        adults, children, infants,
+        bundle_component: true,
+        bundle_item_id: block.itemId,
+        bundle_group: headerIndex,
+        // Cero, y por el camino del precio pactado: así el snapshot dice que
+        // fue una decisión y no un producto que vale cero en el catálogo.
+        unit_price_override: 0,
+        pickup_hotel_id: item.pickup_hotel_id,
+        pickup_location: item.pickup_location,
+        room_number: item.room_number,
+      });
+    }
+  }
+
+  return out;
+}
+
+/**
  * Estimación del total de una venta antes de construirla.
  *
  * Solo la usa el control de crédito. Resuelve el precio de cada línea con el
@@ -201,6 +319,16 @@ export async function createOrderWithBookings(
   if (!input.items?.length) throw new Error("La orden debe incluir al menos un producto");
 
   const companyId = ctx.companyId;
+
+  /**
+   * Los paquetes se expanden ANTES de nada (0061).
+   *
+   * A partir de aquí no hay paquetes: hay una cabecera con el precio y N
+   * componentes con su salida. Todo lo que viene después —el cupo, el cupo del
+   * socio, el precio, las comisiones, el plan de cobro— funciona igual que
+   * siempre porque ya no tiene nada raro delante.
+   */
+  input = { ...input, items: await expandBundles(ctx, input.items) };
   const currency = (input.currency || ctx.company?.base_currency || "usd") as Currency;
   // AUD-F30: resolve the base-currency rate on the server from `currency_rate`,
   // never trusting the client's `exchange_rate` (which defaulted to 1 and made
@@ -760,6 +888,29 @@ export async function createOrderWithBookings(
       description: `Override de cupo aplicado en la orden ${order.order_number}. Motivo: ${input.override_reason || "no indicado"}`,
       severity: "warning",
       metadata: { items: input.items.length, reason: input.override_reason },
+    });
+  }
+
+  /**
+   * Cada componente apunta a su cabecera (0061).
+   *
+   * Se hace después de crear todas las reservas porque la cabecera no tiene id
+   * hasta entonces. `bookings[i]` corresponde a `input.items[i]`: el bucle de
+   * arriba escribe una reserva por línea, en orden.
+   *
+   * Sin este enlace, cancelar el paquete no encontraría sus actividades y
+   * quedarían plazas bloqueadas en tres salidas sin ninguna reserva que las
+   * explicara.
+   */
+  for (let i = 0; i < input.items.length; i++) {
+    const item = input.items[i];
+    if (!item.bundle_component || item.bundle_group == null) continue;
+    const header = bookings[item.bundle_group];
+    const component = bookings[i];
+    if (!header?._id || !component?._id) continue;
+    await tenantUpdate(companyId, "booking", component._id, {
+      bundle_booking: header._id,
+      bundle_item: item.bundle_item_id || undefined,
     });
   }
 

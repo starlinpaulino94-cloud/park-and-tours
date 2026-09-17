@@ -3909,3 +3909,65 @@ describe("Metas y bonos (0060)", () => {
     expect(page).toContain("no se transfiere");
   });
 });
+
+describe("Paquetes (0061)", () => {
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("el navegador dice QUÉ paquete y QUÉ día, y nada más", () => {
+    /**
+     * Si mandara las salidas, mandaría también cuáles tienen sitio. Si mandara
+     * los componentes, se cobraría a sí mismo cero por una excursión suelta —
+     * un componente de paquete vale cero por diseño.
+     */
+    const ruta = sinComentarios("src/app/api/orders/route.ts");
+    expect(ruta).toContain("delete item.bundle_component");
+    expect(ruta).toContain("delete item.bundle_item_id");
+    expect(ruta).toContain("delete item.bundle_group");
+
+    // Y la expansión las vuelve a borrar antes de decidir nada.
+    const servicio = sinComentarios("src/lib/booking-service.ts");
+    expect(servicio).toMatch(/delete clean\.bundle_component;/);
+  });
+
+  it("el itinerario se resuelve en el servidor, al vender", () => {
+    // Entre que se pintó la pantalla y se pulsó el botón, una salida puede
+    // haberse llenado. Confiar en un itinerario de hace tres minutos es vender
+    // una plaza que ya no existe.
+    const servicio = sinComentarios("src/lib/booking-service.ts");
+    expect(servicio).toContain("expandBundles");
+    expect(servicio).toMatch(/input = \{ \.\.\.input, items: await expandBundles\(ctx, input\.items\) \}/);
+    // Y si no se puede armar, la venta se rechaza antes de escribir nada.
+    expect(servicio).toMatch(/if \(!plan \|\| plan\.blocker\)/);
+  });
+
+  it("cancelar el paquete cancela sus actividades", () => {
+    // Sin esto quedarían tres reservas vivas ocupando plazas, con importe cero
+    // y sin nadie que las reclame: el manifiesto llevaría gente que no sube.
+    const cancel = sinComentarios("src/lib/booking-cancel-service.ts");
+    expect(cancel).toMatch(/_filter: \{ bundle_booking: id \}/);
+    expect(cancel).toContain("cancelBookingFully(ctx, component");
+  });
+
+  it("el motor no inventa salidas: solo usa las que están programadas y abiertas", () => {
+    const servicio = sinComentarios("src/lib/bundle-service.ts");
+    expect(servicio).toContain('.from("departure")');
+    // Una salida cerrada, llena o cancelada no sirve para armar nada.
+    expect(servicio).toMatch(/\.in\("status", \["available", "almost_full"\]\)/);
+  });
+
+  it("el día es el de la operadora, no el de UTC", () => {
+    // Una salida a las 21:00 de Santo Domingo es del día 10 allí y del 11 en
+    // UTC: resolver en UTC pondría un combo de un día en dos días distintos.
+    const servicio = sinComentarios("src/lib/bundle-service.ts");
+    expect(servicio).toContain("ctx.company as { timezone?: string }");
+    expect(servicio).toContain("dayOf(at, timeZone)");
+  });
+
+  it("la pantalla explica qué choca, no solo que no se puede", () => {
+    const page = read("src/app/dashboard/catalogo/paquetes/page.tsx");
+    expect(page).toContain("{plan.blocker}");
+    expect(page).toContain("plan.conflicts.map");
+    expect(page).toContain("la actividad más ajustada");
+  });
+});

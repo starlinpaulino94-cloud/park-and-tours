@@ -133,6 +133,38 @@ export async function cancelBookingFully(
     await tenantUpdate(ctx.companyId, "pickup", pickup._id, { status: "cancelled", route: null });
   }
 
+  /**
+   * CANCELAR UN PAQUETE CANCELA SUS ACTIVIDADES (0061).
+   *
+   * Sin esto, cancelar la cabecera dejaría tres reservas vivas ocupando plazas
+   * en tres salidas, con importe cero y sin nadie que las reclame: el
+   * manifiesto del autobús llevaría a cuatro personas que no van a subir.
+   *
+   * Se hace ANTES de tocar la cabecera para que cada componente libere su cupo
+   * por el mismo camino que cualquier otra reserva — el que ya sabe devolver
+   * plazas a su cupo de socio y soltar sus existencias.
+   */
+  const components = await tenantQuery<Booking>(ctx.companyId, "booking", {
+    _filter: { bundle_booking: id }, _limit: 50,
+  });
+  for (const component of components) {
+    if (TERMINAL_STATES.includes(component.status || "")) continue;
+    /**
+     * Sin `refundOverride`, y no por descuido.
+     *
+     * Un componente vale cero, así que el prorrateo de los pagos le asigna cero
+     * cobrado y la política le calcula un reembolso de cero por su cuenta.
+     * Forzarlo a cero a mano tendría además un efecto que no se ve: la ruta
+     * exige rango de gerencia para cualquier reembolso forzado, y un vendedor
+     * cancelando su propio paquete se encontraría con un «no tienes permiso»
+     * que no viene de ninguna decisión suya.
+     */
+    await cancelBookingFully(ctx, component, {
+      ...options,
+      reason: `Paquete ${booking.booking_number ?? id} cancelado`,
+    });
+  }
+
   // ---- las comisiones (0059) --------------------------------------------
   //
   // Antes esto anulaba las `pending` y `approved` y NO TOCABA las `settled` ni

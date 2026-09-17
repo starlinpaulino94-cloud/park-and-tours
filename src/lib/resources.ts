@@ -103,6 +103,19 @@ export const RESOURCES: Record<string, ResourceDef> = {
     writable: [],
     writeRole: "manager",
   },
+  product_bundle_item: {
+    table: "product_bundle_item",
+    search: [],
+    expand: { bundle: true, product: true, modality: true },
+    sort: { day_offset: "asc" },
+    writable: [
+      "bundle", "product", "modality", "day_offset", "sort_order",
+      "fixed_time", "allow_overlap", "is_optional",
+    ],
+    numeric: ["day_offset", "sort_order"],
+    booleans: ["allow_overlap", "is_optional"],
+    writeRole: "manager",
+  },
   seller_goal: {
     table: "seller_goal",
     search: ["name", "reward"],
@@ -206,6 +219,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     sort: { sort_order: "asc" },
     writable: [
       "category", "cancellation_policy", "name", "code", "product_type", "short_description", "description",
+      "is_bundle", "bundle_buffer_minutes",
       "cover_image_url", "video_url", "location", "meeting_point", "duration_hours", "languages",
       "min_age", "default_capacity", "restrictions", "recommendations", "inclusions", "exclusions",
       "terms", "instructions", "base_price", "base_cost", "currency", "featured", "sort_order", "status",
@@ -223,7 +237,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
       "duration_hours", "min_age", "default_capacity", "base_price", "base_cost", "sort_order",
       "deposit_percent", "deposit_amount", "balance_due_days", "public_price_from",
     ],
-    booleans: ["featured", "published"],
+    booleans: ["is_bundle", "featured", "published"],
     writeRole: "manager",
   },
   product_modality: {
