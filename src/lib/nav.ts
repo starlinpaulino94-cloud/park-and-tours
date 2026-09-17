@@ -638,6 +638,18 @@ export const WORKSPACES: Workspace[] = [
         ],
       },
       {
+        id: "ana-clientes",
+        title: "Clientes y demanda",
+        items: [
+          { id: "cohortes", href: "/dashboard/analitica/cohortes", label: "Cohortes", icon: "Repeat", minRole: "manager",
+            description: "Si el cliente que vino en enero volvió en marzo.",
+            keywords: ["retención", "recompra", "fidelidad", "cohorte", "ltv"] },
+          { id: "ocupacion", href: "/dashboard/analitica/ocupacion", label: "Previsión de ocupación", icon: "TrendingUp", minRole: "manager",
+            description: "Qué salidas van camino de vacía o de llenarse, con tiempo para decidir.",
+            keywords: ["previsión", "forecast", "ocupación", "pickup", "anticipación", "alertas"] },
+        ],
+      },
+      {
         id: "ana-reportes",
         title: "Informes",
         items: [

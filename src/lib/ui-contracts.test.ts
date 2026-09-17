@@ -3463,3 +3463,108 @@ describe("canje de beneficios MembeGo: que el descuento lo respalde alguien", ()
     expect(sql).not.toMatch(/client_secret/);
   });
 });
+
+describe("analítica: que una previsión no sea una corazonada con cara de cálculo", () => {
+  /**
+   * Una analítica equivocada es peor que ninguna, porque se toman decisiones
+   * con ella: confirmar el segundo autobús, soltar cupo, cancelar. Lo que se
+   * ata aquí son las tres formas concretas de que un número parezca sólido sin
+   * serlo.
+   */
+
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("la curva se aprende de salidas PASADAS, no de las que están a medio vender", () => {
+    // Meter las futuras haría creer que la venta se desploma cerca de la fecha.
+    const src = sinComentarios("src/lib/analytics-service.ts");
+    const at = src.indexOf("let departureQuery");
+    expect(at).toBeGreaterThan(-1);
+    const consulta = src.slice(at, src.indexOf("const { data: departures }", at));
+    expect(consulta).toMatch(/\.lt\("departure_at", now\.toISOString\(\)\)/);
+  });
+
+  it("las cohortes no cuentan reservas canceladas", () => {
+    // Inflarían la retención con clientes que pidieron y no llegaron a viajar.
+    const src = sinComentarios("src/lib/analytics-service.ts");
+    expect(src).toMatch(/\.in\("status", VALID_BOOKING\)/);
+    const validos = /const VALID_BOOKING = \[([\s\S]*?)\];/.exec(src)?.[1] ?? "";
+    expect(validos).not.toContain("cancelled");
+    expect(validos).not.toContain("refunded");
+    expect(validos).not.toContain("draft");
+  });
+
+  it("lo vendido incluye lo retenido: una plaza en retención ocupa el asiento", () => {
+    // Prever sin ella diría que hay sitio de sobra justo en la salida que está
+    // a punto de llenarse.
+    const src = sinComentarios("src/lib/analytics-service.ts");
+    expect(src).toMatch(/Number\(departure\.booked_pax \?\? 0\) \+ Number\(departure\.pending_pax \?\? 0\)/);
+  });
+
+  it("no se prevé dividiendo por una cuota minúscula", () => {
+    // A 80 días con el 2 % vendido, dividir entre 0,02 convierte dos plazas en
+    // cien.
+    const src = sinComentarios("src/lib/analytics.ts");
+    expect(src).toMatch(/if \(!\(share >= MIN_CURVE_SHARE\)\)/);
+  });
+
+  it("sin historia no se inventa una previsión", () => {
+    const src = sinComentarios("src/lib/analytics.ts");
+    expect(src).toMatch(/if \(input\.curve\.sample === 0 \|\| input\.curve\.share\.length === 0\)/);
+  });
+
+  it("una previsión sin confianza no dispara alerta de ocupación", () => {
+    const src = sinComentarios("src/lib/analytics.ts");
+    const at = src.indexOf("export function departureAlerts(");
+    const cuerpo = src.slice(at);
+    expect(cuerpo).toMatch(/if \(forecast\.confidence === "none"\) continue;/);
+    // Y lo que sí se avisa siempre es lo que no necesita previsión.
+    expect(cuerpo.indexOf('kind: "over_capacity"')).toBeLessThan(cuerpo.indexOf('if (forecast.confidence === "none") continue;'));
+    expect(cuerpo.indexOf('kind: "no_pickup"')).toBeLessThan(cuerpo.indexOf('if (forecast.confidence === "none") continue;'));
+  });
+
+  it("solo se avisa dentro del horizonte en el que se puede hacer algo", () => {
+    // Una salida a cuatro meses no admite ninguna decisión hoy, y el ruido hace
+    // que se dejen de mirar las alertas que sí importan.
+    const src = sinComentarios("src/lib/analytics.ts");
+    expect(src).toMatch(/if \(departure\.daysOut > thresholds\.horizonDays\) continue;/);
+  });
+
+  it("la pantalla enseña de cuántas salidas se aprendió la curva", () => {
+    // Sin ese número, una previsión de una operadora recién estrenada tendría
+    // el mismo aspecto que una con tres años de historia.
+    const api = sinComentarios("src/app/api/analytics/occupancy/route.ts");
+    expect(api).toMatch(/occupancyReport/);
+    const servicio = sinComentarios("src/lib/analytics-service.ts");
+    expect(servicio).toMatch(/curveSample: curve\.sample/);
+    const pantalla = read("src/app/dashboard/analitica/ocupacion/page.tsx");
+    expect(pantalla).toMatch(/curveSample/);
+  });
+
+  it("la analítica es una lectura y no la bloquea una suscripción vencida", () => {
+    for (const ruta of ["src/app/api/analytics/cohorts/route.ts", "src/app/api/analytics/occupancy/route.ts"]) {
+      const src = sinComentarios(ruta);
+      expect(src, ruta).toMatch(/await requireTenant\(\)/);
+      expect(src, ruta).not.toMatch(/requireTenantWrite/);
+      // Y con techo de peticiones: un informe pesado repetido en bucle tumba a
+      // la operadora que más datos tiene, que es la que más lo necesita.
+      expect(src, ruta).toMatch(/assertRateLimit/);
+    }
+  });
+
+  it("las consultas de analítica están acotadas", () => {
+    const src = sinComentarios("src/lib/analytics-service.ts");
+    expect(src).toMatch(/const MAX_ROWS = \d+/);
+    // Ninguna lectura sin `.limit(`: un barrido sin techo no se nota en la
+    // operadora de tres salidas y tumba a la de treinta al día.
+    const selects = [...src.matchAll(/\.from\("(\w+)"\)/g)].length;
+    const limites = [...src.matchAll(/\.limit\(/g)].length;
+    expect(limites, "hay consultas de analítica sin techo de filas").toBeGreaterThanOrEqual(selects);
+  });
+
+  it("las pantallas de analítica están en el menú", () => {
+    const nav = read("src/lib/nav.ts");
+    expect(nav).toContain('href: "/dashboard/analitica/cohortes"');
+    expect(nav).toContain('href: "/dashboard/analitica/ocupacion"');
+  });
+});
