@@ -37,7 +37,7 @@ async function voucherFor(companyId: string, bookingId: string, company: Company
     .select(
       "id, booking_number, voucher_code, status, travel_date, adults, children, infants, pax_total, " +
       "pickup_time, pickup_location, room_number, total_amount, paid_amount, balance_amount, currency, notes, " +
-      "customer:customer_id (first_name, last_name), " +
+      "customer:customer_id (first_name, last_name, language), " +
       "product:product_id (name, meeting_point, terms, inclusions, exclusions, recommendations, restrictions, instructions), " +
       "modality:modality_id (name), " +
       "hotel:hotel_id (name)"
@@ -75,6 +75,8 @@ async function voucherFor(companyId: string, bookingId: string, company: Company
     voucher_code: voucher?.code || row.voucher_code,
     status: row.status,
     customer_name: personName(row.customer),
+    // El voucher adjunto sale en el mismo idioma que el correo que lo lleva.
+    language: (row.customer as { language?: string } | null)?.language ?? null,
     product_name: row.product?.name ?? null,
     modality_name: row.modality?.name ?? null,
     travel_date: row.travel_date,

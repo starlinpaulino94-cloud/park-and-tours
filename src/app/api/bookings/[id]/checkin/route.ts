@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
+import { settleBookingStock } from "@/lib/stock-commitment-service";
 import type { Booking } from "@/lib/types";
 
 /**
@@ -21,7 +22,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const body = await readJson<{
       pax?: number; no_show?: boolean; participant_ids?: string[]; notes?: string; force?: boolean;
+      /** La clave del embarque, generada por el teléfono del guía (0048). */
+      idempotency_key?: string;
     }>(req);
+    const key = (body.idempotency_key || "").trim().slice(0, 64) || null;
 
     const booking = await tenantFindOne<Booking>(ctx.companyId, "booking", id, { participant: { _limit: 100 } });
 
@@ -32,7 +36,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // AUD-B04: block re-use of an already completed check-in. The UI disables
     // the button, but the API previously accepted a repeat check-in, letting a
     // ticket be presented twice. no_show is still allowed to correct a mistake.
+    //
+    // 0048 — salvo que sea EL MISMO embarque otra vez. El guía trabaja sin
+    // señal y su teléfono reintenta: si la clave que llega es la que ya está
+    // guardada, esto no es un voucher presentado dos veces, es la misma
+    // petición llegando por segunda vez, y contestarle «ya estaba hecho» como
+    // si fuera un error dejaría su cola marcando en rojo algo que sí ocurrió.
     if (booking.checkin_status === "done" && !body.no_show) {
+      const stored = (booking as { checkin_key?: string }).checkin_key;
+      if (key && stored && stored === key) {
+        return ok({
+          status: "checked_in",
+          checked_in_pax: booking.checked_in_pax ?? booking.pax_total ?? 0,
+          total_pax: booking.pax_total ?? 0,
+          repeated: true,
+        });
+      }
       throw Object.assign(new Error("Esta reserva ya tiene el check-in completado"), { status: 409 });
     }
 
@@ -98,6 +117,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       checked_in_at: new Date().toISOString(),
       checked_in_by: ctx.userId,
       internal_notes: body.notes || booking.internal_notes,
+      // Se guarda la clave del embarque para reconocer su reintento.
+      ...(key ? { checkin_key: key } : {}),
     });
 
     // Mark the individual participants when provided.
@@ -115,6 +136,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         continue;
       }
       await tenantUpdate(ctx.companyId, "participant", pid, { checkin_status: "done" });
+    }
+
+    // 0052 — lo vendido sale del almacén AQUÍ, no al vender.
+    //
+    // El almuerzo estaba apartado desde la venta; ahora el cliente se lo lleva,
+    // así que la reserva se suelta y sale un movimiento de consumo de verdad.
+    // Solo en el embarque completo: un check-in parcial deja gente por subir, y
+    // consumir su comida antes de que llegue sería descontarla dos veces si
+    // después suben.
+    //
+    // No puede tumbar el embarque: el guía está en la playa con cuarenta
+    // personas y un fallo del almacén no puede dejarle la lista sin cerrar.
+    if (complete) {
+      try {
+        const almacen = await settleBookingStock(ctx.companyId, id, "consume", ctx.userId);
+        for (const problema of almacen.problems) console.warn(`[checkin] almacén: ${problema}`);
+      } catch (err) {
+        console.error("[checkin] no se pudo consumir el stock de los extras:", err);
+      }
     }
 
     // Burn the voucher so it cannot be reused.

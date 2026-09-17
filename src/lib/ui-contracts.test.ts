@@ -323,7 +323,6 @@ describe("Panel ejecutivo", () => {
       participant: "se crea con su reserva",
       payable: "la genera el cierre de liquidaciones",
       pickup: "lo arma el despacho de operaciones",
-      purchase_order_line: "es hija de su orden de compra",
       receivable: "la genera la venta a crédito",
       settlement: "la genera el proceso de liquidación",
       stock_level: "es el saldo derivado de los movimientos de inventario",
@@ -459,7 +458,9 @@ describe("Panel ejecutivo", () => {
     for (const file of [
       "src/lib/booking-service.ts",
       "src/app/api/payments/route.ts",
-      "src/app/api/bookings/[id]/cancel/route.ts",
+      // La cancelación dejó de vivir en su ruta: ahora hay más de un origen
+      // (mostrador y conector OCTO) y todos pasan por el mismo servicio.
+      "src/lib/booking-cancel-service.ts",
       "src/app/api/quotes/[id]/send/route.ts",
     ]) {
       const src = read(file);
@@ -926,7 +927,7 @@ describe("Panel ejecutivo", () => {
   it("Proveedores — una reserva cancelada no le debe nada a nadie", () => {
     // Dejar el devengo vivo se lo pagaría al transportista en la liquidación
     // del viernes por un viaje que no salió.
-    expect(read("src/app/api/bookings/[id]/cancel/route.ts")).toContain("cancelBookingCosts");
+    expect(read("src/lib/booking-cancel-service.ts")).toContain("cancelBookingCosts");
     expect(read("src/lib/booking-service.ts")).toContain("cancelBookingCosts");
     // Y un servicio ya pagado no se toca: ese dinero salió.
     const service = read("src/lib/supplier-settlement-service.ts");
@@ -1401,6 +1402,22 @@ describe("blindaje CSRF de las rutas mutantes", () => {
     /^src\/app\/api\/membego\/webhook\//,
     /^src\/app\/api\/cron\//,
     /^src\/app\/api\/pricing\/quote\//,
+    // El motor público: no hay sesión con cookies que proteger —ese es justo
+    // el caso de uso—, así que exigir mismo origen no aportaría seguridad y sí
+    // rompería el formulario. Lo que la protege es el límite por IP, el campo
+    // trampa, el tope de personas y que NADA con valor económico se acepte del
+    // cliente; hay guardas propias para las tres cosas.
+    /^src\/app\/api\/public\//,
+    // La API de socios se autentica con una LLAVE en la cabecera, no con
+    // cookies: no hay sesión que un sitio ajeno pueda usar sin querer, que es
+    // justo lo que el CSRF protege. Lo que la protege es la llave, su alcance,
+    // su límite por llave y la idempotencia obligatoria.
+    /^src\/app\/api\/v1\//,
+    // El conector OCTO es lo mismo con otro nombre: un servidor de una OTA
+    // llamando con una llave en la cabecera, sin navegador y sin cookies. La
+    // exención es de la FORMA; hay guarda propia que exige que TODA ruta que
+    // escribe autentique la llave con alcance de escritura.
+    /^src\/app\/api\/octo\/v1\//,
   ];
 
   it("toda ruta mutante verifica el origen de la solicitud", () => {
@@ -1557,12 +1574,24 @@ describe("el plan se aplica en la API, no solo en el menú", () => {
     /^src\/app\/api\/superadmin\//,
     /^src\/app\/api\/membego\/webhook\//,
     /^src\/app\/api\/setup\//,
+    // La API de socios tampoco tiene sesión: el inquilino sale de la llave y
+    // el plan se comprueba sobre la empresa de esa llave. Hay guarda propia.
+    /^src\/app\/api\/v1\//,
+    // El motor público no tiene sesión de la que sacar el inquilino, así que
+    // no puede llamar a `requireTenantWrite`. Comprueba el plan por su cuenta,
+    // sobre la empresa del slug (`acceptsRequests`), y hay una guarda propia
+    // que lo exige: la exención es de la FORMA, no del fondo.
+    /^src\/app\/api\/public\//,
     // La seguridad de la propia cuenta no es una operación de la empresa: una
     // suscripción vencida no puede impedirle a nadie activar —ni QUITAR— su
     // segundo factor. Bloquearlo dejaría a alguien que acaba de desenrolar su
     // teléfono con la marca puesta y sin factores, es decir, fuera de su
     // cuenta por no pagar.
     /^src\/app\/api\/account\/mfa\//,
+    // El conector OCTO tampoco tiene sesión: el inquilino sale de la llave. El
+    // plan SÍ se comprueba, con `assertCanSell` sobre la empresa de esa llave,
+    // y hay guarda propia que lo exige en cada ruta que vende.
+    /^src\/app\/api\/octo\/v1\//,
   ];
 
   it("toda ruta que escribe exige una suscripción que permita escribir", () => {
@@ -1848,6 +1877,435 @@ describe("las cuentas del equipo", () => {
   });
 });
 
+describe("la API de socios", () => {
+  it("el inquilino sale de la LLAVE, nunca del cuerpo de la petición", () => {
+    /**
+     * Es la propiedad que impide lo peor: que un socio con llave de una
+     * operadora cree reservas en otra pasando un identificador distinto.
+     */
+    const auth = read("src/lib/api-auth.ts");
+    expect(auth).toMatch(/companyId: verdict\.key\.organization_id/);
+    for (const file of ["src/app/api/v1/bookings/route.ts", "src/app/api/v1/products/route.ts"]) {
+      expect(read(file), file).not.toMatch(/body\.(company|organization|tenant)/);
+    }
+  });
+
+  it("el secreto de la llave no se guarda: solo su hash", () => {
+    const sql = read("supabase/migrations/0050_api_keys.sql");
+    expect(sql).toMatch(/secret_hash text not null/);
+    expect(sql).not.toMatch(/secret text/);
+    // Y la comparación es en tiempo constante.
+    expect(read("src/lib/api-keys.ts")).toMatch(/timingSafeEqual/);
+  });
+
+  it("crear una reserva exige clave de idempotencia, y se comprueba ANTES de escribir", () => {
+    /**
+     * Un sistema externo reintenta: se le cae la conexión, su cola lo reencola.
+     * Sin clave, cada reintento crea otra reserva y el socio descubre tres
+     * reservas idénticas cuando el cliente llega al bus.
+     */
+    const route = read("src/app/api/v1/bookings/route.ts");
+    // La COMPROBACIÓN, no la palabra: sin ella la cabecera se leería y se
+    // ignoraría, que es exactamente el fallo que esto evita.
+    expect(route).toMatch(/if \(!idempotencyKey\) \{/);
+    expect(route).toMatch(/Falta la cabecera «Idempotency-Key»/);
+    const body = route.slice(route.indexOf("export async function POST"));
+    expect(body.indexOf("idempotency_key")).toBeLessThan(body.indexOf("createPublicBooking("));
+    // Y la base lo hace cumplir: dos instancias a la vez no pueden duplicar.
+    expect(read("supabase/migrations/0050_api_keys.sql")).toMatch(/sales_order_idempotency_idx/);
+  });
+
+  it("una llave de lectura no crea reservas", () => {
+    expect(read("src/app/api/v1/bookings/route.ts")).toMatch(/requireApiKey\(req, "write"\)/);
+    expect(read("src/app/api/v1/products/route.ts")).toMatch(/requireApiKey\(req, "read"\)/);
+  });
+
+  it("el plan se comprueba aunque no haya sesión", () => {
+    const route = read("src/app/api/v1/bookings/route.ts");
+    expect(route).toMatch(/subscriptionState\(caller\.company\)/);
+    expect(route).toMatch(/status: 402/);
+  });
+
+  it("el socio ve el mismo catálogo publicado, sin costos ni proveedores", () => {
+    // Que una agencia tenga llave no le da acceso al margen de la operadora.
+    const products = read("src/app/api/v1/products/route.ts");
+    expect(products).toMatch(/toPublicCard\(/);
+    expect(products).not.toMatch(/base_cost|supplier/);
+  });
+
+  it("el límite de peticiones es POR LLAVE", () => {
+    // Un socio que integra mal no puede agotarle el cupo a los demás socios
+    // que comparten salida a internet.
+    expect(read("src/lib/api-auth.ts")).toMatch(/key: `api:\$\{verdict\.key\.id\}`/);
+  });
+});
+
+describe("las declaraciones 606 y 607", () => {
+  it("el orden de las columnas vive en UN sitio", () => {
+    /**
+     * La DGII ajusta el formato de vez en cuando. Con el orden repartido por el
+     * código, ese cambio se hace en cinco sitios y se olvida uno; con una lista
+     * documentada, se hace en la lista.
+     */
+    const lib = read("src/lib/dgii.ts");
+    expect(lib).toMatch(/export const COLUMNS_606 =/);
+    expect(lib).toMatch(/export const COLUMNS_607 =/);
+    // Y las líneas se arman con esa longitud: hay pruebas que lo comparan.
+    expect(read("src/lib/dgii.test.ts")).toMatch(/COLUMNS_606\.length/);
+    expect(read("src/lib/dgii.test.ts")).toMatch(/COLUMNS_607\.length/);
+  });
+
+  it("declarar es una LECTURA: el plan no la bloquea", () => {
+    /**
+     * Una empresa con la suscripción vencida sigue teniendo que declarar sus
+     * impuestos. No poder sacar su 606 por no haber pagado el software
+     * convertiría un problema de cobro en un incumplimiento fiscal.
+     */
+    const route = read("src/app/api/reports/dgii/route.ts");
+    expect(route).toMatch(/await requireTenant\(\)/);
+    expect(route).not.toMatch(/await requireTenantWrite\(\)/);
+  });
+
+  it("sin RNC de la empresa no se genera un archivo anónimo", () => {
+    // El archivo identifica a quien declara: sin RNC no vale para nada y el
+    // mensaje dice dónde ponerlo.
+    const route = read("src/app/api/reports/dgii/route.ts");
+    expect(route).toMatch(/no tiene RNC registrado/);
+  });
+
+  it("lo que no se puede declarar se avisa ANTES de generar el archivo", () => {
+    // La DGII rechaza el archivo entero por una línea incompleta, días después
+    // y sin decir cuál.
+    const service = read("src/lib/dgii-service.ts");
+    expect(service).toMatch(/purchaseProblems\(/);
+    expect(service).toMatch(/saleProblems\(/);
+    const page = read("src/app/dashboard/finanzas/declaraciones/page.tsx");
+    expect(page).toMatch(/se queda fuera|se quedan fuera/);
+    expect(page).toMatch(/ROW_PROBLEM_MESSAGE/);
+  });
+
+  it("el gasto puede capturar lo que el 606 exige", () => {
+    // Sin estos campos el gasto existe en el sistema y no se puede declarar: el
+    // contador acaba tecleándolo otra vez en un Excel.
+    const gastos = read("src/app/dashboard/gastos/page.tsx");
+    for (const field of ["ncf", "supplier_rnc", "itbis_amount", "goods_service_type"]) {
+      expect(gastos, field).toContain(`name: "${field}"`);
+    }
+    const resources = read("src/lib/resources.ts");
+    expect(resources).toMatch(/"ncf", "ncf_type", "ncf_modified", "supplier_rnc", "goods_service_type"/);
+  });
+
+  it("una factura sin cobros se declara a crédito, no como efectivo", () => {
+    // Repartirla en efectivo «porque suele ser así» sería inventar un dato en
+    // una declaración fiscal.
+    const service = read("src/lib/dgii-service.ts");
+    expect(service).toMatch(/credit: Math\.max\(0, total - cobrado\)/);
+  });
+
+  it("la pantalla pide validar el primer archivo con la DGII", () => {
+    // El formato está construido según el envío vigente; una validación de dos
+    // minutos evita un rechazo que se descubre días después.
+    const page = read("src/app/dashboard/finanzas/declaraciones/page.tsx");
+    expect(page).toMatch(/herramienta de la DGII/);
+  });
+});
+
+describe("el check-in del guía: QR y sin señal", () => {
+  it("el QR del voucher por fin se puede leer", () => {
+    /**
+     * El voucher lleva su QR impreso desde el kit de documentos y NADIE podía
+     * leerlo: el guía miraba el papel y tecleaba el código en la puerta del
+     * bus, con cuarenta personas esperando. Un QR que nadie escanea es un
+     * adorno caro.
+     */
+    const page = read("src/app/dashboard/checkin/page.tsx");
+    expect(page).toMatch(/<EscanerQR onCode=\{onScan\}/);
+    const escaner = read("src/app/dashboard/checkin/_components/escaner.tsx");
+    // Dos lectores: el nativo donde existe y jsQR donde no —hoy, iPhone—.
+    expect(escaner).toMatch(/BarcodeDetector/);
+    expect(escaner).toMatch(/await import\("jsqr"\)/);
+  });
+
+  it("escanear NO es el único camino", () => {
+    // Un guía con el permiso de cámara mal dado no se puede quedar sin poder
+    // embarcar a nadie.
+    const escaner = read("src/app/dashboard/checkin/_components/escaner.tsx");
+    expect(escaner).toMatch(/denied|unsupported/);
+    expect(read("src/app/dashboard/checkin/page.tsx")).toMatch(/onKeyDown=\{\(e\) => \{ if \(e\.key === "Enter"\) search\(\); \}\}/);
+  });
+
+  it("cada embarque lleva su clave, y el servidor la usa para reconocer el reintento", () => {
+    /**
+     * Sin la clave hay que elegir entre aceptar dos veces el mismo voucher o
+     * marcar como error un reintento que sí funcionó. Con ella se distinguen:
+     * misma clave = misma petición otra vez; clave distinta = dos personas con
+     * el mismo papel.
+     */
+    const page = read("src/app/dashboard/checkin/page.tsx");
+    expect(page).toMatch(/idempotency_key: key/);
+    const route = read("src/app/api/bookings/[id]/checkin/route.ts");
+    expect(route).toMatch(/stored === key/);
+    expect(route).toMatch(/repeated: true/);
+    // Y sigue rechazando el voucher presentado por otra persona.
+    expect(route).toMatch(/Esta reserva ya tiene el check-in completado/);
+  });
+
+  it("lo que el servidor rechaza no se reintenta para siempre", () => {
+    const lib = read("src/lib/offline-queue.ts");
+    expect(lib).toMatch(/export function shouldRetry/);
+    const page = read("src/app/dashboard/checkin/page.tsx");
+    expect(page).toMatch(/shouldRetry\(res\.status/);
+  });
+
+  it("el trabajador de servicio no responde escrituras desde la caché", () => {
+    /**
+     * Contestar «ya está» a un check-in o a un cobro que no llegó al servidor
+     * sería mentir sobre algo que mueve dinero y plazas. Lo que se hace sin
+     * señal lo guarda la aplicación en su cola, con su clave.
+     */
+    const sw = read("public/sw.js");
+    expect(sw).toMatch(/request\.method !== "GET"/);
+    expect(sw).toMatch(/response\.ok/);
+  });
+
+  it("la aplicación se instala y abre en el check-in", () => {
+    const manifest = JSON.parse(read("public/manifest.webmanifest"));
+    expect(manifest.start_url).toBe("/dashboard/checkin");
+    expect(manifest.display).toBe("standalone");
+    expect(manifest.icons.length).toBeGreaterThan(0);
+    expect(read("src/app/layout.tsx")).toMatch(/manifest: "\/manifest\.webmanifest"/);
+  });
+
+  it("el trabajador de servicio se registra dentro del panel, no en la raíz", () => {
+    // Lo que tiene que sobrevivir sin señal es la operación; la página pública
+    // y el login sin red no pueden hacer nada útil de todas formas.
+    expect(read("src/app/dashboard/layout.tsx")).toMatch(/<ServiceWorkerRegistrar \/>/);
+    expect(read("src/app/layout.tsx")).not.toMatch(/ServiceWorkerRegistrar/);
+  });
+});
+
+describe("el motor de reservas público", () => {
+  /**
+   * Es la única puerta del sistema por la que entra alguien SIN cuenta, así que
+   * estas guardas van contra las dos cosas que salen caras: publicar lo que
+   * nadie quiso publicar, y aceptar del cliente algo que solo puede decidir el
+   * servidor.
+   */
+  it("nada se publica sin que la empresa Y el producto lo pidan", () => {
+    const sql = read("supabase/migrations/0047_public_booking.sql");
+    expect(sql).toMatch(/public_booking_enabled boolean not null default false/);
+    expect(sql).toMatch(/published boolean not null default false/);
+    // Y no se abre ninguna política a `anon`: lo público es lo que el código
+    // devuelve, no lo que una política deje ver.
+    expect(sql).not.toMatch(/to anon/);
+    expect(sql).not.toMatch(/create policy/);
+  });
+
+  it("la ficha pública se arma por lista blanca, no quitando campos", () => {
+    /**
+     * Es la diferencia entre un error y una fuga: construida quitando campos,
+     * el día que alguien añada `base_cost` al producto ese dato se publicaría
+     * solo, y el margen de la operadora acabaría en su propia página.
+     */
+    const lib = read("src/lib/public-booking.ts");
+    const card = lib.slice(lib.indexOf("export function toPublicCard"), lib.indexOf("/* --------------------------------------------------- la petición"));
+    for (const prohibido of ["base_cost", "supplier", "internal_notes", "product_cost"]) {
+      expect(card, prohibido).not.toContain(prohibido);
+    }
+    // La consulta tampoco los pide: lo que no se trae no se escapa ni en un log.
+    const service = read("src/lib/public-booking-service.ts");
+    const select = service.slice(service.indexOf('.from("product")'), service.indexOf('.eq("organization_id", org.id)'));
+    expect(select).not.toContain("base_cost");
+    expect(select).not.toContain("*");
+  });
+
+  it("del cliente no se acepta nada con valor económico", () => {
+    // Un motor público que acepta el precio del cliente es una tienda donde
+    // cada quien pone su etiqueta.
+    const lib = read("src/lib/public-booking.ts");
+    const reader = lib.slice(lib.indexOf("export function readPublicRequest"), lib.indexOf("export function splitName"));
+    for (const campo of ["total", "unit_price", "discount", "status", "currency"]) {
+      expect(reader, campo).not.toContain(`input.${campo}`);
+    }
+  });
+
+  it("la venta entra por el MISMO camino que el punto de venta", () => {
+    /**
+     * `createOrderWithBookings` valida cupo, calcula precio, genera comisiones,
+     * arma el plan de cobro y avisa. Un segundo camino «más simple» se olvida de
+     * la mitad, y esos errores aparecen semanas después en una salida
+     * sobrevendida.
+     */
+    const service = read("src/lib/public-booking-service.ts");
+    expect(service).toMatch(/createOrderWithBookings\(/);
+    expect(service).not.toMatch(/from\("booking"\)\s*\.insert/);
+  });
+
+  it("el plan se comprueba aunque no haya sesión", () => {
+    const service = read("src/lib/public-booking-service.ts");
+    expect(service).toMatch(/subscriptionState\(/);
+    const route = read("src/app/api/public/[slug]/request/route.ts");
+    expect(route).toMatch(/page\.acceptsRequests/);
+  });
+
+  it("el producto pedido se valida contra el catálogo publicado", () => {
+    // Sin esto, ese campo sería la forma de comprar algo que la operadora
+    // decidió no vender por la web.
+    const route = read("src/app/api/public/[slug]/request/route.ts");
+    expect(route).toMatch(/page\.products\.find\(/);
+    const availability = read("src/app/api/public/[slug]/availability/route.ts");
+    expect(availability).toMatch(/page\.products\.some\(/);
+  });
+
+  it("pedir tiene un freno duro, y ver uno holgado", () => {
+    const request = read("src/app/api/public/[slug]/request/route.ts");
+    expect(request).toMatch(/limit: 5, windowMs: 3_600_000/);
+    expect(read("src/app/api/public/[slug]/route.ts")).toMatch(/await assertRateLimit\(/);
+  });
+
+  it("una empresa sin página y un slug inventado se responden igual", () => {
+    // Distinguirlos le serviría a quien prueba nombres para averiguar qué
+    // empresas usan el sistema.
+    const route = read("src/app/api/public/[slug]/route.ts");
+    expect(route).toMatch(/page\.state !== "ok"/);
+    expect(route).toMatch(/status: 404/);
+  });
+
+  it("publicar es una decisión que se toma en dos sitios, y los dos se ven", () => {
+    // Activar la página es de quien administra la cuenta; publicar cada
+    // excursión, de quien lleva el catálogo. Si el interruptor de la empresa no
+    // estuviera en su formulario, la función existiría y nadie la encontraría.
+    expect(read("src/app/api/company/route.ts")).toMatch(/"public_booking_enabled", "public_intro", "public_terms"/);
+    expect(read("src/app/dashboard/configuracion/page.tsx")).toMatch(/public_booking_enabled/);
+    const productos = read("src/app/dashboard/productos/page.tsx");
+    expect(productos).toMatch(/name: "published"/);
+    // Y se ve desde el listado: es donde alguien se pregunta si ya está en la web.
+    expect(productos).toMatch(/header: "Web"/);
+  });
+
+  it("la página pública no exige sesión", () => {
+    const middleware = read("src/middleware.ts");
+    expect(middleware).toContain('"/api/public"');
+    expect(middleware).toContain('"/reservar"');
+  });
+});
+
+describe("el alcance por sucursal", () => {
+  it("el campo que pide la pantalla se guarda de verdad", () => {
+    /**
+     * La pantalla de equipo pedía «Sucursal (opcional)» desde el principio y la
+     * API la tiraba: se elegía, no pasaba nada, y el administrador creía que ya
+     * había separado sus puntos de venta.
+     */
+    const team = read("src/app/api/team/route.ts");
+    expect(team).toMatch(/branch_id: branchId/);
+    expect(team).toMatch(/patch\.branch_id/);
+    expect(read("src/app/api/team/invite/route.ts")).toMatch(/branch_id: \(body\.branch/);
+  });
+
+  it("el listado y su exportación aplican el MISMO corte", () => {
+    // Un archivo que se lleva las tres sucursales mientras la pantalla enseña
+    // una es el fallo que nadie revisa, porque «lo exportó el sistema».
+    const shared = read("src/lib/erp-query.ts");
+    expect(shared).toMatch(/branchFilterFor\(def\.table, ctx\.branchId\)/);
+    // Y ni el listado ni la exportación lo rearman por su cuenta.
+    for (const file of ["src/app/api/erp/[resource]/route.ts", "src/app/api/export/[resource]/route.ts"]) {
+      expect(read(file), file).not.toMatch(/branchFilterFor\(/);
+    }
+  });
+
+  it("se combina con «y»: dos grupos de «o» en el mismo objeto se pisan", () => {
+    const shared = read("src/lib/erp-query.ts");
+    expect(shared).toMatch(/_and: \[filter, branchFilter\]/);
+  });
+
+  it("la venta nace en la sucursal de quien vende", () => {
+    const service = read("src/lib/booking-service.ts");
+    expect(service).toMatch(/branch: input\.branch_id \|\| ctx\.branchId/);
+  });
+
+  it("los catálogos NO se acotan: acotarlo todo deja al vendedor sin vender", () => {
+    const lib = read("src/lib/branch-scope.ts");
+    const map = lib.slice(lib.indexOf("BRANCH_SCOPED"), lib.indexOf("export function isBranchScoped"));
+    for (const table of ["product:", "hotel:", "customer:", "price_rule:", "cancellation_policy:"]) {
+      expect(map, `${table} no debería acotarse por sucursal`).not.toContain(table);
+    }
+  });
+
+  it("la sucursal viaja en el token, no en una consulta por petición", () => {
+    const sql = read("supabase/migrations/0046_branch_scope.sql");
+    expect(sql).toMatch(/jsonb_build_object\('branch_id', m\.branch_id\)/);
+    // Y el resto de las reclamaciones siguen ahí: la función se reescribe
+    // entera porque `create or replace` lo exige, no porque cambie nada más.
+    for (const claim of ["org_id", "app_role", "status", "partner_id"]) {
+      expect(sql, claim).toContain(`'${claim}'`);
+    }
+  });
+});
+
+describe("reprogramar una reserva", () => {
+  it("mueve la plaza en LAS DOS salidas", () => {
+    /**
+     * Si la salida de origen no recalcula, se queda con el cupo tomado por una
+     * reserva que ya no está: esa salida se vende de menos el resto del mes y
+     * nadie lo nota hasta que el bus sale medio vacío.
+     */
+    const route = read("src/app/api/bookings/[id]/reschedule/route.ts");
+    expect(route).toMatch(/recalculateDeparture\(ctx\.companyId, originId\)/);
+    expect(route).toMatch(/recalculateDeparture\(ctx\.companyId, targetId\)/);
+  });
+
+  it("no toca el número de reserva, el voucher ni las comisiones", () => {
+    // Es la MISMA venta: regenerar comisiones cambiaría lo que cobra el
+    // vendedor por algo que ya vendió, y cambiar el código dejaría sin valor el
+    // papel que el cliente tiene en la mano.
+    const route = read("src/app/api/bookings/[id]/reschedule/route.ts");
+    expect(route).not.toMatch(/booking_number:/);
+    expect(route).not.toMatch(/voucher_code:/);
+    expect(route).not.toMatch(/generateCommissionsForBooking|"commission"/);
+  });
+
+  it("suelta la recogida de la ruta del día anterior", () => {
+    const route = read("src/app/api/bookings/[id]/reschedule/route.ts");
+    expect(route).toMatch(/"pickup"/);
+    expect(route).toMatch(/route: null/);
+  });
+
+  it("cancelar también suelta su recogida", () => {
+    // Era un fallo anterior: el conductor pasaba igual por el hotel a buscar a
+    // alguien que había cancelado.
+    const cancel = read("src/lib/booking-cancel-service.ts");
+    expect(cancel).toMatch(/status: "cancelled", route: null/);
+  });
+
+  it("lo imposible no se puede forzar y lo de política sí, con rango", () => {
+    const route = read("src/app/api/bookings/[id]/reschedule/route.ts");
+    expect(route).toMatch(/isForceable\(blocker\)/);
+    expect(route).toMatch(/if \(forced\) requireAtLeast\(ctx, "manager"\)/);
+    // Y la lista de lo levantable vive en el dominio puro, no en la ruta.
+    const lib = read("src/lib/reschedule.ts");
+    expect(lib).toMatch(/FORCEABLE_RESCHEDULE_BLOCKS: RescheduleBlock\[\] = \["cutoff", "too_many"\]/);
+  });
+
+  it("la pantalla ofrece solo salidas del mismo producto y futuras", () => {
+    // Ofrecer otras es ofrecer algo que el servidor va a rechazar.
+    const page = read("src/app/dashboard/reservas/page.tsx");
+    const block = page.slice(page.indexOf("const openReschedule"), page.indexOf("const reschedule ="));
+    expect(block).toContain('"filter.product": productId');
+    expect(block).toMatch(/dateField: "departure_at"/);
+  });
+
+  it("el cliente se entera de la fecha nueva", () => {
+    // El peor momento de una reprogramación es el cliente en el lobby el día
+    // que ya no es.
+    const route = read("src/app/api/bookings/[id]/reschedule/route.ts");
+    expect(route).toMatch(/notifyBookingRescheduled\(/);
+    const templates = read("src/lib/messaging/templates.ts");
+    expect(templates).toMatch(/key: "booking_rescheduled", channel: "email"/);
+    expect(templates).toMatch(/key: "booking_rescheduled", channel: "whatsapp"/);
+  });
+});
+
 describe("la verificación en dos pasos", () => {
   it("se exige en la API, no solo en la pantalla", () => {
     /**
@@ -1925,7 +2383,8 @@ describe("las notificaciones internas", () => {
    */
   const HOOKS: [string, string][] = [
     ["booking_created", "src/lib/booking-service.ts"],
-    ["booking_cancelled", "src/app/api/bookings/[id]/cancel/route.ts"],
+    ["booking_cancelled", "src/lib/booking-cancel-service.ts"],
+    ["booking_rescheduled", "src/app/api/bookings/[id]/reschedule/route.ts"],
     ["payment_refunded", "src/app/api/payments/route.ts"],
     ["cash_close_mismatch", "src/app/api/cash/sessions/[id]/close/route.ts"],
     ["settlement_confirmed", "src/app/api/settlements/[id]/confirm/route.ts"],
@@ -1935,6 +2394,8 @@ describe("las notificaciones internas", () => {
     ["stock_low", "src/lib/inventory.ts"],
     ["plan_limit_near", "src/lib/plan-service.ts"],
     ["incident_opened", "src/lib/notify.ts"],
+    ["certification_expiring", "src/app/api/cron/certifications/route.ts"],
+    ["allotment_released", "src/app/api/cron/allotments/route.ts"],
   ];
 
   it("cada evento del catálogo se dispara desde algún sitio", () => {
@@ -2205,5 +2666,1047 @@ describe("las exportaciones", () => {
     const exportLib = read("src/lib/export.ts");
     expect(exportLib).toContain('from "@/lib/import"');
     expect(exportLib).toMatch(/IMPORT_TARGETS/);
+  });
+});
+
+describe("RR. HH.: que lo que se teclea sirva para algo", () => {
+  /**
+   * Tres campos llevaban desde 0009 pidiéndose y sin que nadie los leyera:
+   * `blocks_assignment`, el `status` de la certificación y `hours_worked`.
+   * Lo que los devuelve a ese estado no es borrar código —es que un refactor
+   * se lleve por delante el enganche y nadie lo note, porque un bloqueo que no
+   * se comprueba no rompe ninguna prueba de la UI—.
+   */
+
+  it("la API genérica comprueba la certificación al CREAR y al EDITAR", () => {
+    // Solo al crear no basta: bastaría con crear el turno vacío y asignarle
+    // después la persona para saltarse el bloqueo entero.
+    for (const file of [
+      "src/app/api/erp/[resource]/route.ts",
+      "src/app/api/erp/[resource]/[id]/route.ts",
+    ]) {
+      const src = read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+      expect(src, file).toMatch(/await assertPayloadAssignable\(ctx\.companyId, def\.table, payload\)/);
+    }
+  });
+
+  it("la comprobación va ANTES de escribir, no después", () => {
+    for (const [file, escritura] of [
+      ["src/app/api/erp/[resource]/route.ts", "await tenantCreate(ctx.companyId, def.table, payload)"],
+      ["src/app/api/erp/[resource]/[id]/route.ts", "await tenantUpdate(ctx.companyId, def.table, id, payload)"],
+    ] as const) {
+      const src = read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+      expect(src.indexOf("assertPayloadAssignable"), file).toBeLessThan(src.indexOf(escritura));
+    }
+  });
+
+  it("publicar el cuadrante comprueba solape Y certificación", () => {
+    const src = read("src/app/api/shifts/publish/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/await assertStaffAssignable\(/);
+    expect(src).toMatch(/await findShiftConflict\(/);
+    expect(src).toMatch(/publishDecision\(/);
+  });
+
+  it("lo que impide pagar dos veces NO es escribible por formulario", () => {
+    // `payroll_run_id` es el enlace que reclama un marcaje, y `approved_at`
+    // quién dio el visto bueno. Escribibles, bastaría con ponerlos a null para
+    // volver a cobrar una quincena ya pagada.
+    const resources = read("src/lib/resources.ts");
+    const bloque = /^ {2}attendance:\s*\{\n([\s\S]*?)^ {2}\},/m.exec(resources)?.[1] ?? "";
+    expect(bloque).not.toMatch(/"payroll_run_id"/);
+    expect(bloque).not.toMatch(/"approved_at"/);
+  });
+
+  it("la nómina no se teclea: las líneas son de solo lectura y los importes de la corrida tampoco entran", () => {
+    const resources = read("src/lib/resources.ts");
+    const linea = /^ {2}payroll_line:\s*\{\n([\s\S]*?)^ {2}\},/m.exec(resources)?.[1] ?? "";
+    expect(linea).toMatch(/writable:\s*\[\]/);
+
+    const corrida = /^ {2}payroll_run:\s*\{\n([\s\S]*?)^ {2}\},/m.exec(resources)?.[1] ?? "";
+    for (const campo of ["gross_amount", "net_amount", "deductions_amount", "employer_cost", "status"]) {
+      expect(corrida, campo).not.toMatch(new RegExp(`"${campo}"`));
+    }
+  });
+
+  it("los sueldos no los lee cualquiera del inquilino", () => {
+    // Es el dato más sensible que guarda una empresa pequeña: lo que cobra cada
+    // compañero. Sin esto, `/api/erp/payroll_line` estaba abierto a todos.
+    const resources = read("src/lib/resources.ts");
+    const mapa = /const READ_ROLE[\s\S]*?\n\};/.exec(resources)?.[0] ?? "";
+    expect(mapa).toMatch(/payroll_run:\s*"admin"/);
+    expect(mapa).toMatch(/payroll_line:\s*"admin"/);
+  });
+
+  it("el barrido de certificaciones está programado, no solo escrito", () => {
+    const vercel = JSON.parse(read("vercel.json")) as { crons: { path: string }[] };
+    expect(vercel.crons.map((c) => c.path)).toContain("/api/cron/certifications");
+  });
+
+  it("el barrido no vuelve a avisar todos los días de lo mismo", () => {
+    const src = read("src/app/api/cron/certifications/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/reminder_sent_at/);
+    expect(src).toMatch(/REMINDER_COOLDOWN_DAYS/);
+  });
+
+  it("el barrido no pisa lo que decidió una persona", () => {
+    // Revocada y pendiente son decisiones administrativas: el calendario no
+    // puede devolverlas a «vigente» ni a «por vencer».
+    const src = read("src/app/api/cron/certifications/route.ts");
+    expect(src).toMatch(/\(revoked,pending\)/);
+  });
+
+  it("exportar la nómina sale de lo guardado, no de un recálculo", () => {
+    // Lo que se exporta tiene que ser lo que se aprobó: recalcular al exportar
+    // haría que el archivo cambiara si alguien tocó un marcaje después.
+    const src = read("src/app/api/payroll/[id]/export/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/await linesOf\(ctx\.companyId, id\)/);
+    expect(src).not.toMatch(/generatePayrollRun/);
+  });
+
+  it("la pantalla de certificaciones pinta el estado DEDUCIDO, no la columna", () => {
+    const page = read("src/app/dashboard/equipo/certificaciones/page.tsx");
+    // Se mira LA COLUMNA DE ESTADO, no el archivo entero: `certificationState`
+    // aparece también al pintar la fecha, así que buscarlo en cualquier sitio
+    // daría por buena una insignia que volviera a leer `c.status`.
+    const inicio = page.indexOf('key: "status"');
+    expect(inicio, "no se encontró la columna de estado").toBeGreaterThan(-1);
+    const columna = page.slice(inicio, page.indexOf("},", inicio));
+    expect(columna).toMatch(/certificationState\(c, hoy\(\)\)/);
+    expect(columna).not.toMatch(/value=\{c\.status\}/);
+    expect(columna).not.toMatch(/kind: "badge"/);
+  });
+
+  it("la asistencia dejó de pedir las horas a mano en el formulario de alta", () => {
+    // Era un campo «Horas trabajadas» teniendo la entrada y la salida al lado.
+    const page = read("src/app/dashboard/equipo/asistencia/page.tsx");
+    expect(page).not.toMatch(/name: "hours_worked"/);
+    expect(page).toMatch(/\/api\/attendance\/clock/);
+  });
+});
+
+describe("inventario: que comprar y vender muevan el almacén", () => {
+  /**
+   * El motor de inventario (0013) siempre estuvo bien; lo que faltaba era quién
+   * lo llamaba. Recibir una compra no movía una unidad y vender tampoco, así
+   * que lo comprado, lo vendido y lo que hay en el estante eran tres cifras que
+   * solo se encontraban en el conteo físico de fin de mes.
+   */
+
+  it("recibir una orden de compra mueve stock de verdad", () => {
+    const src = read("src/lib/purchasing-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/await postMovement\(companyId, \{/);
+    expect(src).toMatch(/movement_type: "receipt"/);
+    // Y queda atado a SU línea: sin eso, lo recibido solo vive en una columna
+    // que se puede teclear.
+    expect(src).toMatch(/purchase_order_line: linea\.lineId/);
+  });
+
+  it("el movimiento se escribe ANTES de dar la línea por recibida", () => {
+    // Al revés, una caída a medias deja la orden diciendo «recibida» con el
+    // almacén vacío, y eso no se detecta hasta el conteo físico.
+    const src = read("src/lib/purchasing-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src.indexOf("await postMovement")).toBeLessThan(src.indexOf('"purchase_order_line", linea.lineId'));
+  });
+
+  it("lo recibido se cuenta por los movimientos, no por la columna", () => {
+    const src = read("src/lib/purchasing-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/export async function receivedByLine/);
+    expect(src).toMatch(/"stock_movement"/);
+    // Y una devolución al proveedor resta: contar solo entradas daría la orden
+    // por cerrada con mercancía que ya no está.
+    expect(src).toMatch(/movement_type === "return" \? -1 : 1/);
+  });
+
+  it("el saldo de existencias NO se puede escribir desde el CRUD genérico", () => {
+    // `inventory.ts` abre prometiendo que nada más lo escribe directamente, y el
+    // CRUD lo tenía entero como escribible: editarlo ahí lo separa del libro de
+    // movimientos que es su única explicación.
+    const resources = read("src/lib/resources.ts");
+    const bloque = /^ {2}stock_level:\s*\{\n([\s\S]*?)^ {2}\},/m.exec(resources)?.[1] ?? "";
+    expect(bloque).toMatch(/writable:\s*\[\]/);
+  });
+
+  it("lo recibido de una línea de compra tampoco se teclea", () => {
+    const resources = read("src/lib/resources.ts");
+    const bloque = /^ {2}purchase_order_line:\s*\{\n([\s\S]*?)^ {2}\},/m.exec(resources)?.[1] ?? "";
+    const writable = /writable:\s*\[([^\]]*)\]/.exec(bloque)?.[1] ?? "";
+    expect(writable).not.toMatch(/"quantity_received"/);
+  });
+
+  it("vender aparta existencias sin escribir un movimiento", () => {
+    // La mercancía no ha salido: escribir un movimiento al vender llenaría el
+    // libro de salidas que nunca ocurrieron.
+    const src = read("src/lib/stock-commitment-service.ts");
+    const reservar = src.slice(
+      src.indexOf("export async function reserveForSale"),
+      src.indexOf("export interface SettleResult")
+    );
+    expect(reservar).toMatch(/stock_state: "reserved"/);
+    expect(reservar).not.toMatch(/postMovement/);
+  });
+
+  it("los tres momentos del ciclo están enganchados donde ocurren", () => {
+    const venta = read("src/lib/booking-service.ts");
+    expect(venta).toMatch(/reserveForSale\(/);
+
+    const embarque = read("src/app/api/bookings/[id]/checkin/route.ts");
+    expect(embarque).toMatch(/settleBookingStock\(ctx\.companyId, id, "consume"/);
+
+    const cancelacion = read("src/lib/booking-cancel-service.ts");
+    expect(cancelacion).toMatch(/settleBookingStock\(ctx\.companyId, id, "release"/);
+  });
+
+  it("el almacén nunca tumba una venta ni un embarque", () => {
+    // Un ERP que no deja vender porque un extra está mal configurado es un ERP
+    // que se desinstala. Los tres enganches van dentro de un try.
+    for (const [file, llamada] of [
+      ["src/lib/booking-service.ts", "reserveForSale("],
+      ["src/app/api/bookings/[id]/checkin/route.ts", "settleBookingStock("],
+      ["src/lib/booking-cancel-service.ts", "settleBookingStock("],
+    ] as const) {
+      const src = read(file);
+      const at = src.indexOf(llamada);
+      expect(at, file).toBeGreaterThan(-1);
+      // El `try {` más cercano por delante tiene que estar dentro de un margen
+      // corto: el enganche está envuelto, no suelto en medio de la saga.
+      const antes = src.slice(Math.max(0, at - 700), at);
+      expect(antes, file).toMatch(/try \{/);
+    }
+  });
+
+  it("el extra solo consume almacén si alguien lo enciende a propósito", () => {
+    // Nace en false: una recogida en el hotel no sale de ningún estante, y
+    // deducirlo sería descontar cosas que no existen.
+    const sql = read("supabase/migrations/0052_receipts_and_stock.sql");
+    expect(sql).toMatch(/consumes_stock boolean not null default false/);
+  });
+
+  it("la pantalla de extras deja configurar de dónde salen", () => {
+    const page = read("src/app/dashboard/catalogo/extras/page.tsx");
+    for (const campo of ["consumes_stock", "inventory_item", "warehouse", "stock_per_unit"]) {
+      expect(page, campo).toMatch(new RegExp(`name: "${campo}"`));
+    }
+  });
+});
+
+describe("contabilidad: el mes cerrado se cierra de verdad", () => {
+  /**
+   * El mayor aceptaba cualquier asiento con cualquier fecha. El 607 se envía el
+   * día 20 y nada impedía contabilizar con fecha del mes anterior: lo declarado
+   * y los libros empezaban a decir cosas distintas, y la diferencia solo
+   * aparecía cuando la DGII cruzaba los comprobantes.
+   */
+
+  it("el mayor comprueba el periodo ANTES de escribir la primera línea", () => {
+    // Un asiento a medias en un mes cerrado sería peor que el problema que esto
+    // evita.
+    const src = read("src/lib/ledger.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const guarda = src.indexOf("postingBlocker(period, periods)");
+    const escritura = src.indexOf('await tenantCreate<{ _id: string }>(companyId, "ledger_entry"');
+    expect(guarda).toBeGreaterThan(-1);
+    expect(escritura).toBeGreaterThan(-1);
+    expect(guarda).toBeLessThan(escritura);
+  });
+
+  it("el periodo contable NO se puede escribir desde el CRUD genérico", () => {
+    // Bastaría con poner el estado en «abierto» para contabilizar dentro de un
+    // mes ya enviado a la DGII.
+    const resources = read("src/lib/resources.ts");
+    const bloque = /^ {2}accounting_period:\s*\{\n([\s\S]*?)^ {2}\},/m.exec(resources)?.[1] ?? "";
+    expect(bloque).toMatch(/writable:\s*\[\]/);
+  });
+
+  it("el balance de comprobación pagina en vez de truncar en silencio", () => {
+    // Pedía 5 000 asientos y se quedaba con lo que viniera: a partir de ahí el
+    // informe que existe para demostrar que los libros cuadran devolvía cifras
+    // incompletas y decía «cuadrado» igual.
+    const src = read("src/lib/ledger.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const fn = src.slice(src.indexOf("export async function trialBalance"));
+    expect(fn).toMatch(/_offset: offset/);
+    expect(fn).toMatch(/if \(page\.length < TRIAL_PAGE\) break;/);
+    // Y dice sobre cuántos asientos se calculó.
+    expect(fn).toMatch(/entries: entries\.length/);
+  });
+
+  it("el cierre del ejercicio es un ASIENTO, no una bandera", () => {
+    // Una bandera obligaría a cada informe a recordar excluir el año anterior.
+    const src = read("src/lib/financials-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/const lines = closingEntry\(/);
+    expect(src).toMatch(/await post\(companyId, \{/);
+    expect(src).toMatch(/RETAINED_EARNINGS|closingEntry/);
+  });
+
+  it("el ejercicio no se cierra dos veces", () => {
+    const src = read("src/lib/financials-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const fn = src.slice(src.indexOf("export async function closeYear"));
+    expect(fn).toMatch(/is_closing: true/);
+    expect(fn).toMatch(/ya está cerrado/);
+    expect(fn.indexOf("ya está cerrado")).toBeLessThan(fn.indexOf("await post("));
+  });
+
+  it("los estados financieros y las declaraciones son LECTURA", () => {
+    // Una empresa con la suscripción vencida sigue teniendo que declarar sus
+    // impuestos y cerrar su contabilidad.
+    for (const file of [
+      "src/app/api/ledger/statements/route.ts",
+      "src/app/api/reports/dgii/route.ts",
+    ]) {
+      const src = read(file);
+      const get = src.slice(src.indexOf("export async function GET"));
+      expect(get, file).toMatch(/await requireTenant\(\)/);
+      expect(get, file).not.toMatch(/await requireTenantWrite\(\)/);
+    }
+  });
+
+  it("el 608 está en el catálogo, en el servicio y en la pantalla", () => {
+    // Es el tercero de la terna y el que más se olvida: la DGII cruza los NCF
+    // emitidos con los anulados.
+    expect(read("src/lib/dgii.ts")).toMatch(/export function line608\(/);
+    // Se comprueba la LLAMADA, no el nombre: una función `load608` que nadie
+    // invoca deja la declaración vacía igual que si no existiera.
+    const servicio = read("src/lib/dgii-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(servicio).toMatch(/kind === "608" \? await load608\(ctx, month\)/);
+    expect(servicio).toMatch(/async function load608\(ctx/);
+    expect(read("src/app/api/reports/dgii/route.ts")).toMatch(/"606", "607", "608"/);
+    expect(read("src/app/dashboard/finanzas/declaraciones/page.tsx")).toMatch(/608 · Anulaciones/);
+  });
+
+  it("anular una factura guarda el código que el 608 exige", () => {
+    const src = read("src/lib/invoice-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/void_reason_code:/);
+    // Lo que no esté en la lista del formato cae en el código por defecto: un
+    // código inventado hace que la DGII rechace el archivo entero.
+    expect(src).toMatch(/VOID_REASONS\[String\(reasonCode \|\| ""\)\]/);
+  });
+});
+
+describe("distribución: el cupo del socio acota de verdad", () => {
+  /**
+   * `allotment` existía desde la migración 0010 con plazas, plazas usadas y
+   * días de liberación, y nadie la leía: se le prometían 10 plazas a una
+   * agencia por contrato y el sistema le dejaba vender las 40 de la salida, o
+   * ninguna. El cupo se llevaba en un Excel.
+   */
+
+  it("la venta comprueba el cupo, y solo cuando hay socio", () => {
+    // Sin socio no hay contrato que aplicar: el vendedor de la casa vende
+    // contra la capacidad, que es lo que debe ser.
+    const src = read("src/lib/booking-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/await assertAllotment\(/);
+    // Se mira el tramo entre el mapa del cupo y la comprobación, no una ventana
+    // de N caracteres: cualquier línea que se añada en medio movería la ventana
+    // y la guarda dejaría de mirar lo que dice mirar.
+    const desde = src.indexOf("const allotmentUse");
+    const hasta = src.indexOf("await assertAllotment(");
+    expect(desde).toBeGreaterThan(-1);
+    expect(desde).toBeLessThan(hasta);
+    expect(src.slice(desde, hasta)).toMatch(/if \(input\.partner_id\)/);
+  });
+
+  it("la capacidad se comprueba ANTES que el cupo", () => {
+    // La capacidad es un límite físico —no caben— y el cupo es un contrato. Si
+    // no caben, el motivo que hay que dar es ese.
+    const src = read("src/lib/booking-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src.indexOf("await assertCapacity(")).toBeLessThan(src.indexOf("await assertAllotment("));
+  });
+
+  it("el consumo se apunta DESPUÉS de que la venta exista", () => {
+    // Apuntarlo antes y que la saga se compensara dejaría el cupo consumido por
+    // una venta que no llegó a haber.
+    const src = read("src/lib/booking-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src.indexOf("await consumeAllotment(")).toBeGreaterThan(src.indexOf("const aviso"));
+    expect(src.indexOf("await consumeAllotment(")).toBeLessThan(src.lastIndexOf("return { order:"));
+  });
+
+  it("cancelar devuelve las plazas a SU cupo", () => {
+    const src = read("src/lib/booking-cancel-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/await releaseBookingAllotment\(/);
+    // Por las plazas que la reserva GUARDÓ, no por las que diga el cupo hoy.
+    expect(src).toMatch(/allotment_seats/);
+  });
+
+  it("la reserva guarda de qué cupo salió", () => {
+    // Sin el enlace, cancelar tendría que adivinar a qué cupo devolver.
+    const src = read("src/lib/booking-service.ts");
+    expect(src).toMatch(/allotment: used\[0\], allotment_seats: pax/);
+  });
+
+  it("la liberación automática está programada, no solo escrita", () => {
+    const vercel = JSON.parse(read("vercel.json")) as { crons: { path: string }[] };
+    expect(vercel.crons.map((c) => c.path)).toContain("/api/cron/allotments");
+  });
+
+  it("el barrido solo toca cupos garantizados con salida y con días de liberación", () => {
+    // Un cupo de producto sin salida no tiene fecha contra la que contar, y
+    // liberarlo «por si acaso» le quitaría plazas a un contrato vigente.
+    const src = read("src/app/api/cron/allotments/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/\.eq\("allotment_type", "guaranteed"\)/);
+    expect(src).toMatch(/\.not\("release_days", "is", null\)/);
+    expect(src).toMatch(/\.not\("departure_id", "is", null\)/);
+  });
+
+  it("el barrido acumula lo liberado en vez de reescribirlo", () => {
+    // Sin acumular, un reintento del cron devolvería a venta libre plazas que
+    // ya estaban en venta libre, y la salida aceptaría más de las que caben.
+    const src = read("src/app/api/cron/allotments/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/seats_released: Math\.max\(0, Math\.floor\(Number\(row\.seats_released \?\? 0\)\)\) \+ seats/);
+  });
+
+  it("lo liberado deja de contar como disponible para el socio", () => {
+    // Contarlo prometería dos veces la misma plaza: una al socio y otra a quien
+    // la compró después.
+    const src = read("src/lib/allotments.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/remaining: holds \? Math\.max\(0, seats - used - released\)/);
+  });
+});
+
+describe("la marca: que los documentos sean de la empresa, no nuestros", () => {
+  /**
+   * La pantalla de Configuración pedía WhatsApp, logo, dirección y color desde
+   * el principio, `/api/company` los declaraba editables y el tipo `Company` los
+   * declaraba — y ninguna de esas columnas existía. PostgREST rechaza el UPDATE
+   * ENTERO cuando una sola columna del payload no existe, así que escribir un
+   * WhatsApp hacía perder también el nombre y el RNC del mismo formulario.
+   */
+
+  it("el acento del PDF sale del color de marca, no de una constante", () => {
+    // Era `rgb(0.05, 0.42, 0.42)` quemado: todas las empresas entregaban
+    // documentos del mismo verde.
+    const src = read("src/lib/pdf/doc.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/const accentOf = \(brand\?: DocumentBrand \| null\)/);
+    expect(src).toMatch(/accent = accentOf\(meta\.brand\)/);
+    // Y ya no queda ninguna constante de acento suelta.
+    expect(src).not.toMatch(/^const ACCENT\b/m);
+  });
+
+  it("los seis documentos llevan la marca, no solo algunos", () => {
+    // Seis builders y seis llamantes: bastaba con que uno se olvidara para que
+    // ESE documento saliera del color de casa sin que nadie supiera por qué.
+    const src = read("src/lib/pdf/documents.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const creates = src.match(/await PdfBuilder\.create\(\{/g) ?? [];
+    const brands = src.match(/await brandFor\(company, "/g) ?? [];
+    expect(creates.length).toBeGreaterThanOrEqual(6);
+    expect(brands.length).toBe(creates.length);
+  });
+
+  it("bajar el logo nunca puede dejar sin documento", () => {
+    // Generar un voucher ocurre delante de un cliente: un almacenamiento lento
+    // o un enlace roto no pueden dejarle sin papel.
+    const src = read("src/lib/pdf/logo.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/catch \(err\)/);
+    expect(src).toMatch(/return null;/);
+    expect(src).toMatch(/AbortController/);
+    expect(src).toMatch(/MAX_LOGO_BYTES/);
+  });
+
+  it("el logo se incrusta una sola vez aunque el documento tenga varias hojas", () => {
+    const src = read("src/lib/pdf/doc.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    // Se incrusta en `create`, no en `drawPageHeader`, que corre por hoja.
+    const header = src.slice(src.indexOf("private drawPageHeader"), src.indexOf("rule(): void"));
+    expect(header).not.toMatch(/embedPng|embedJpg/);
+    expect(src).toMatch(/builder\.logoImage =/);
+  });
+
+  it("solo llega al PDF un formato que el PDF sabe incrustar", () => {
+    // Un SVG se ve en pantalla y NO sale en el voucher: la empresa se enteraría
+    // por un cliente.
+    const subida = read("src/app/api/company/logo/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(subida).toMatch(/PDF_IMAGE_TYPES\.has\(file\.type\)/);
+    expect(read("src/lib/branding.ts")).toMatch(/PDF_IMAGE_TYPES = new Set\(\["image\/png", "image\/jpeg"\]\)/);
+  });
+
+  it("el color se valida antes de guardarse, no al pintarlo", () => {
+    // La base tiene un check que rechaza cualquier otra cosa: dejar pasar un
+    // "azul" del formulario convertiría un error de tecleo en un 500 sin
+    // explicación.
+    const src = read("src/app/api/company/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/normalizeColor\(dbPatch\.brand_color\)/);
+    const sql = read("supabase/migrations/0055_company_branding.sql");
+    expect(sql).toMatch(/brand_color ~ '\^#\[0-9a-f\]\{6\}\$'/);
+  });
+
+  it("la página pública valida el color en vez de fiarse de un respaldo", () => {
+    const src = read("src/app/reservar/[slug]/_components/booking-engine.tsx")
+      .replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src).toMatch(/brandColor\(org\.brandColor\)/);
+    expect(src).not.toMatch(/org\.brandColor \|\|/);
+  });
+
+  it("las condiciones del voucher y la nota legal de la factura se imprimen", () => {
+    const src = read("src/lib/pdf/documents.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    // Desde la ola 6 la etiqueta va en el idioma del huésped: lo que se ata es
+    // que las condiciones de la empresa SIGUEN imprimiéndose en el voucher.
+    expect(src).toMatch(/pdf\.block\(t\("doc\.terms"\), brand\.terms\)/);
+    expect(src).toMatch(/pdf\.block\("Nota legal", brand\.terms\)/);
+  });
+});
+
+describe("conector OCTO: que una OTA venda sin romper nada por dentro", () => {
+  /**
+   * ────────────────────────────────────────────────────────────────────────
+   * QUÉ PROTEGEN ESTAS GUARDAS
+   *
+   * El riesgo de un conector no es que no funcione: es que funcione a medias y
+   * nadie se entere. Una reserva de OTA que se escribe directamente contra la
+   * tabla «se ve bien» —aparece en la lista, tiene número, tiene importe— y no
+   * comprueba el cupo, no consume el contrato del socio, no devenga la
+   * comisión, no aparta el almuerzo, no genera voucher y no sale en el
+   * manifiesto. Se descubre en el punto de encuentro.
+   *
+   * Por eso lo que se ata aquí es que las reservas de OTA pasen por EL MISMO
+   * camino que las del mostrador, y que las exenciones de CSRF y de plan estén
+   * compensadas por comprobaciones equivalentes.
+   */
+
+  const octoRoutes = () =>
+    walk(path.join(ROOT, "src/app/api/octo/v1"))
+      .map((file) => path.relative(ROOT, file).replace(/\\/g, "/"));
+
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("toda ruta del conector autentica con llave, y la que escribe con alcance de escritura", () => {
+    // Esto es lo que EARNA la exención del blindaje CSRF: no hay cookies que
+    // proteger porque no hay sesión, pero sí hay una llave que comprobar. Una
+    // ruta del conector sin `octoRequest` sería pública de verdad.
+    const sinLlave: string[] = [];
+    const escrituraSinAlcance: string[] = [];
+    for (const rel of octoRoutes()) {
+      const src = sinComentarios(rel);
+      if (!/await octoRequest\(req, "(read|write)"\)/.test(src)) sinLlave.push(rel);
+      const muta = /export async function (POST|PUT|PATCH|DELETE)\(/.test(src);
+      if (muta && !/await octoRequest\(req, "write"\)/.test(src)) escrituraSinAlcance.push(rel);
+    }
+    expect(sinLlave, "rutas OCTO sin autenticar").toEqual([]);
+    // La disponibilidad es POST por el estándar y es una LECTURA: se exceptúa
+    // por nombre, no por descuido.
+    expect(
+      escrituraSinAlcance.filter((rel) => !rel.includes("/availability/")),
+      "rutas OCTO que mutan con llave de solo lectura"
+    ).toEqual([]);
+  });
+
+  it("vender por el conector exige que la suscripción lo permita", () => {
+    // Esto es lo que EARNA la exención del contrato del plan. Sin ella, una
+    // operadora con la cuenta vencida seguiría recibiendo reservas de OTA que
+    // después no podría operar.
+    for (const rel of ["src/app/api/octo/v1/bookings/route.ts",
+                       "src/app/api/octo/v1/bookings/[uuid]/confirm/route.ts"]) {
+      expect(sinComentarios(rel), rel).toMatch(/assertCanSell\(ctx\)/);
+    }
+  });
+
+  it("la reserva de una OTA pasa por el motor de ventas, no por un atajo", () => {
+    // Un insert a mano en `booking` es diez líneas y deja media operación
+    // mintiendo: sin cupo comprobado, sin comisión, sin voucher, sin manifiesto.
+    const src = sinComentarios("src/lib/octo-service.ts");
+    expect(src).toMatch(/await createOrderWithBookings\(saleCtx, \{/);
+    // Y no hay ninguna creación directa de la reserva por fuera del motor.
+    expect(src).not.toMatch(/from\("booking"\)\s*\.insert/);
+    expect(src).not.toMatch(/tenantCreate\([^,]+,\s*"booking"/);
+  });
+
+  it("cancelar desde una OTA hace exactamente lo mismo que cancelar de mostrador", () => {
+    const src = sinComentarios("src/lib/octo-service.ts");
+    expect(src).toMatch(/await cancelBookingFully\(cancelCtx, booking\[0\] as never, \{/);
+  });
+
+  it("el `force` del estándar no decide el reembolso", () => {
+    // OCTO admite que el revendedor pida saltarse el corte de cancelación.
+    // Obedecerlo sería dejar que decida desde su servidor cuánto se le
+    // devuelve, que es el acuerdo comercial de la operadora.
+    const src = sinComentarios("src/app/api/octo/v1/bookings/[uuid]/cancel/route.ts");
+    expect(src).not.toMatch(/body\.force/);
+    const servicio = sinComentarios("src/lib/octo-service.ts");
+    expect(servicio).not.toMatch(/refundOverride/);
+  });
+
+  it("un revendedor no puede leer las reservas de otro", () => {
+    // Sin el filtro por socio bastaría con adivinar un uuid para ver el nombre
+    // y el teléfono del cliente de la competencia.
+    const src = sinComentarios("src/lib/octo-service.ts");
+    const inicio = src.indexOf("async function loadRow(");
+    expect(inicio).toBeGreaterThan(-1);
+    const cuerpo = src.slice(inicio, src.indexOf("}", src.indexOf('.eq("octo_uuid", uuid)')) + 1);
+    expect(cuerpo).toMatch(/if \(ctx\.partnerId\) query = query\.eq\("partner_id", ctx\.partnerId\)/);
+    // Y el listado tiene el mismo filtro: sin él, la búsqueda por referencia
+    // sería la puerta de atrás del mismo dato.
+    const listado = src.slice(src.indexOf("export async function listBookings("));
+    expect(listado.slice(0, listado.indexOf("const { data }")))
+      .toMatch(/if \(ctx\.partnerId\) query = query\.eq\("partner_id", ctx\.partnerId\)/);
+  });
+
+  it("antes de contar plazas se sueltan las retenciones vencidas", () => {
+    // Una retención de OTA dura minutos y el barrido general corre una vez al
+    // día: sin esto se contesta SOLD_OUT por un carrito abandonado por la
+    // mañana, y la venta se pierde.
+    const src = sinComentarios("src/lib/octo-service.ts");
+    for (const fn of ["octoAvailability", "octoCalendar", "reserve"]) {
+      const at = src.indexOf(`export async function ${fn}(`);
+      expect(at, fn).toBeGreaterThan(-1);
+      const cabeza = src.slice(at, at + 600);
+      expect(cabeza, `${fn} no barre las retenciones vencidas`)
+        .toMatch(/await sweepExpiredOctoHolds\(ctx\.companyId\)/);
+    }
+    // Y se MARCA vencida antes de cancelarla: al revés, el revendedor leería
+    // CANCELLED —una incidencia que atender— en vez de EXPIRED, que es suya.
+    const barrido = src.slice(src.indexOf("export async function sweepExpiredOctoHolds("));
+    expect(barrido.indexOf('octo_status: "EXPIRED"'))
+      .toBeLessThan(barrido.indexOf("await releaseExpiredHolds("));
+  });
+
+  it("el precio y la moneda no vienen del revendedor", () => {
+    // Una llave de API es una contraseña que vende en nombre de la operadora;
+    // si además dejara poner el precio, sería una que regala su margen.
+    const dominio = sinComentarios("src/lib/octo.ts");
+    const lectura = dominio.slice(dominio.indexOf("export function readReservation("));
+    const cuerpo = lectura.slice(0, lectura.indexOf("\n}\n"));
+    expect(cuerpo).not.toMatch(/body\.pricing/);
+    expect(cuerpo).not.toMatch(/body\.currency/);
+    expect(cuerpo).not.toMatch(/body\.unitPrice/);
+  });
+
+  it("los estados del estándar son los mismos en el dominio y en la base", () => {
+    // Escribir un estado que OCTO no define sería inventarse una palabra que el
+    // revendedor no sabe interpretar, y se descubriría en producción.
+    const dominio = read("src/lib/octo.ts");
+    const union = /export type OctoBookingStatus =([\s\S]*?);/.exec(dominio)?.[1] ?? "";
+    const enDominio = [...union.matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]).sort();
+    const sql = read("supabase/migrations/0056_octo_connector.sql");
+    const check = /octo_status in \(([\s\S]*?)\)/.exec(sql)?.[1] ?? "";
+    const enBase = [...check.matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]).sort();
+    expect(enBase, "los estados de la migración no coinciden con los del dominio").toEqual(enDominio);
+  });
+
+  it("la pantalla de canales es una lectura y no la bloquea una suscripción vencida", () => {
+    // Mirar lo que ya se vendió tiene que seguir funcionando justo cuando la
+    // cuenta está vencida, que es cuando más falta hace.
+    const src = sinComentarios("src/app/api/octo/channels/route.ts");
+    expect(src).toMatch(/await requireTenant\(\)/);
+    expect(src).not.toMatch(/requireTenantWrite/);
+  });
+
+  it("las retenciones vencidas se marcan ANTES de cancelarse, también en el repaso diario", () => {
+    /**
+     * Esta guarda nació pidiendo un cron horario propio y la realidad la
+     * corrigió: el plan Hobby de Vercel solo admite trabajos diarios, así que
+     * ese cron NO DESPLEGABA. La lección no fue «hace falta el plan Pro», sino
+     * que la frecuencia del cron nunca era lo que sostenía esto.
+     *
+     * Lo que lo sostiene es el barrido al consultar disponibilidad y al
+     * reservar —ya atado en la guarda de arriba—, porque una plaza bloqueada de
+     * más solo hace daño cuando alguien intenta comprarla, y ese intento es lo
+     * que dispara el barrido.
+     *
+     * Lo que se ata aquí es el repaso diario y, sobre todo, su ORDEN.
+     */
+    const cron = sinComentarios("src/app/api/cron/collections/route.ts");
+    expect(cron).toMatch(/await markExpiredOctoHolds\(companyId, now\)/);
+    // Marcar ANTES de cancelar: al revés, el revendedor lee CANCELLED —una
+    // incidencia con reembolso que decidir— en vez de EXPIRED, que es suya.
+    expect(cron.indexOf("await markExpiredOctoHolds("))
+      .toBeLessThan(cron.indexOf("await releaseExpiredHolds("));
+    expect(cron).toMatch(/process\.env\.CRON_SECRET/);
+
+    // Y ningún trabajo programado puede ser más frecuente que diario: el plan
+    // no lo admite y el despliegue entero falla, no solo ese cron.
+    const vercel = JSON.parse(read("vercel.json")) as { crons: { path: string; schedule: string }[] };
+    const subDiarios = vercel.crons.filter((c) => !/^\S+ \d+ \* \* \*$/.test(c.schedule));
+    expect(subDiarios.map((c) => `${c.path} (${c.schedule})`), "crons más frecuentes que diarios").toEqual([]);
+  });
+
+  it("solo se anuncian las capacidades que se cumplen", () => {
+    // Anunciar una que no se cumple hace que el revendedor deje de mandar los
+    // campos que compensaban su ausencia, y todo falla más tarde y peor.
+    const dominio = read("src/lib/octo.ts");
+    const lista = /export const SUPPORTED_CAPABILITIES: OctoCapability\[\] = \[([\s\S]*?)\];/.exec(dominio)?.[1] ?? "";
+    const anunciadas = [...lista.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(anunciadas.length).toBeGreaterThan(0);
+    // Cada una tiene que estar REALMENTE consultada en el código, no solo
+    // declarada.
+    const usadas = read("src/lib/octo.ts") + read("src/lib/octo-service.ts");
+    for (const cap of anunciadas) {
+      expect(usadas, `se anuncia ${cap} y no se usa en ninguna parte`).toContain(`"${cap}"`);
+    }
+  });
+});
+
+describe("canje de beneficios MembeGo: que el descuento lo respalde alguien", () => {
+  /**
+   * ────────────────────────────────────────────────────────────────────────
+   * LA REGLA QUE ESTAS GUARDAS SOSTIENEN
+   *
+   * La migración 0041 dejó escrito, hace dos olas, por qué la elegibilidad no
+   * se copia: «decide dinero y una copia desfasada regala un beneficio ya
+   * consumido». El canje es justo el punto donde esa regla se rompe sola si
+   * alguien busca un atajo — una tabla local de «beneficios del cliente», una
+   * caché de cinco minutos, rebajar primero y consumir después.
+   *
+   * Lo que se ata aquí es el orden y la ausencia de caché, que son las dos
+   * formas concretas de regalar dinero.
+   */
+
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("primero se consume en MembeGo y DESPUÉS se rebaja la venta", () => {
+    // Al revés, un beneficio gastado hace diez minutos en otra sucursal dejaría
+    // la venta rebajada sin nada que la respalde.
+    const src = sinComentarios("src/lib/membego-redemption-service.ts");
+    const canje = src.indexOf("await redeemMembership(");
+    const rebaja = src.indexOf('await tenantUpdate(companyId, "booking", chosen.id, {');
+    expect(canje, "no se consume en MembeGo").toBeGreaterThan(-1);
+    expect(rebaja, "no se rebaja la línea").toBeGreaterThan(-1);
+    expect(canje, "la venta se rebaja antes de consumir el beneficio").toBeLessThan(rebaja);
+  });
+
+  it("la elegibilidad no se guarda en ninguna parte", () => {
+    // Ni en la base ni en memoria. Lo único que se cachea es el token, que no
+    // es un dato de negocio.
+    const servicio = sinComentarios("src/lib/membego-redemption-service.ts");
+    expect(servicio).not.toMatch(/from\("membego_customer"\)[\s\S]{0,200}eligib/i);
+    const cliente = sinComentarios("src/lib/membego-platform.ts");
+    // El único cacheo del cliente es el token.
+    const cacheos = [...cliente.matchAll(/cached\s*=/g)].length;
+    expect(cacheos, "hay más de una cosa cacheada además del token").toBeLessThanOrEqual(2);
+    expect(cliente).toMatch(/interface CachedToken/);
+  });
+
+  it("cada canje viaja con una clave de idempotencia derivada, no aleatoria", () => {
+    // El doble clic del cajero tiene que encontrarse con el primer canje, no
+    // consumir un segundo uso.
+    const dominio = sinComentarios("src/lib/membego-benefits.ts");
+    expect(dominio).toMatch(/return `pt:\$\{orderId\}:\$\{benefitId\}`/);
+    const cliente = sinComentarios("src/lib/membego-platform.ts");
+    expect(cliente).toMatch(/"Idempotency-Key": options\.idempotencyKey/);
+    const servicio = sinComentarios("src/lib/membego-redemption-service.ts");
+    expect(servicio).toMatch(/idempotencyKeyFor\(input\.orderId, input\.benefit\.id\)/);
+  });
+
+  it("se piden los dos permisos al emitir el token", () => {
+    const cliente = sinComentarios("src/lib/membego-platform.ts");
+    expect(cliente).toMatch(/scope: REQUIRED_SCOPES\.join\(" "\)/);
+  });
+
+  it("cancelar una reserva devuelve el beneficio, y no tumba la cancelación si falla", () => {
+    // El cliente perdió un uso por una venta que no llegó a existir. Y que
+    // MembeGo no conteste no puede dejar la reserva a medio cancelar.
+    const src = sinComentarios("src/lib/booking-cancel-service.ts");
+    expect(src).toMatch(/await reverseForOrder\(/);
+    const at = src.indexOf("await reverseForOrder(");
+    expect(src.slice(Math.max(0, at - 300), at), "la reversa no está protegida").toMatch(/try \{/);
+  });
+
+  it("la venta rebajada recalcula su total en vez de quedarse con el de antes", () => {
+    // Sin esto, la línea baja y la orden sigue cobrando el importe original.
+    const src = sinComentarios("src/lib/membego-redemption-service.ts");
+    const rebaja = src.indexOf('await tenantUpdate(companyId, "booking", chosen.id, {');
+    const sync = src.indexOf("await syncOrderTotals(companyId, input.orderId)");
+    expect(sync).toBeGreaterThan(rebaja);
+  });
+
+  it("el canje se ofrece sobre una venta creada, no sobre el carrito", () => {
+    // Un uso consumido contra un carrito abandonado es un uso que el cliente
+    // perdió sin recibir nada.
+    const pos = read("src/app/dashboard/pos/page.tsx");
+    const at = pos.indexOf("<MembegoBenefits");
+    expect(at, "el canje no está montado en el punto de venta").toBeGreaterThan(-1);
+    expect(pos.slice(Math.max(0, at - 200), at)).toMatch(/payFor\?\.order\?\._id/);
+  });
+
+  it("el importe a cobrar sigue al descuento en vez de quedarse con el total viejo", () => {
+    // Si no, el cajero cobra de más un descuento que sí se aplicó.
+    const pos = sinComentarios("src/app/dashboard/pos/page.tsx");
+    expect(pos).toMatch(/const orderTotal = benefitTotal \?\? Number\(payFor\?\.order\?\.total \?\? 0\)/);
+  });
+
+  it("la consulta de beneficios es una lectura y el canje una escritura protegida", () => {
+    const consulta = sinComentarios("src/app/api/membego/benefits/route.ts");
+    expect(consulta).toMatch(/await requireTenant\(\)/);
+    expect(consulta).not.toMatch(/requireTenantWrite/);
+
+    const canje = sinComentarios("src/app/api/membego/redeem/route.ts");
+    expect(canje).toMatch(/assertSameOriginMutation\(req\)/);
+    expect(canje).toMatch(/await requireTenantWrite\(\)/);
+  });
+
+  it("el código de error de MembeGo llega a la pantalla en vez de convertirse en un 500", () => {
+    // El cajero tiene que distinguir «no te quedan usos» de «no hay conexión»:
+    // en el primer caso cobra completo, en el segundo espera un minuto.
+    const canje = sinComentarios("src/app/api/membego/redeem/route.ts");
+    expect(canje).toMatch(/err instanceof MembegoApiError/);
+    expect(canje).toMatch(/code: err\.code/);
+  });
+
+  it("los códigos de error son los del contrato publicado por MembeGo", () => {
+    // `code` es API y el satélite ramifica con él: renombrar uno rompe esto.
+    const dominio = read("src/lib/membego-benefits.ts");
+    for (const code of [
+      "BENEFIT_NOT_ELIGIBLE", "REDEMPTION_CONFLICT", "IDEMPOTENCY_KEY_REQUIRED",
+      "INSUFFICIENT_SCOPE", "COMPANY_NOT_ENTITLED", "API_KEY_NOT_SUPPORTED",
+      "TOKEN_EXPIRED", "INVALID_CLIENT", "QUOTA_EXCEEDED", "PLATFORM_API_UNCONFIGURED",
+    ]) {
+      expect(dominio, `falta el código ${code} del contrato`).toContain(`${code}:`);
+    }
+  });
+
+  it("una promoción no finge revertirse: se dice que hay que hacerlo a mano", () => {
+    // MembeGo revierte membresías y no tiene el equivalente para promociones.
+    // Callarlo dejaría al cliente con un uso gastado y al sistema diciendo
+    // «listo».
+    const dominio = sinComentarios("src/lib/membego-benefits.ts");
+    expect(dominio).toMatch(/if \(row\.benefit_type === "PROMOTION"\) return "promotion"/);
+    const servicio = sinComentarios("src/lib/membego-redemption-service.ts");
+    expect(servicio).toMatch(/action: "membego_reversal_manual"/);
+  });
+
+  it("un canje fallido queda anotado en vez de perderse", () => {
+    // Sin él, un «no me aplicó el descuento» no tiene dónde mirarse y el motivo
+    // real de MembeGo se pierde.
+    const servicio = sinComentarios("src/lib/membego-redemption-service.ts");
+    expect(servicio).toMatch(/await recordFailure\(companyId, ctx\.userId, \{/);
+    expect(servicio).toMatch(/status: "failed"/);
+  });
+
+  it("las credenciales de la API viven en el entorno y no en la base", () => {
+    // Una credencial por empresa sería poner secretos en la base para resolver
+    // algo que el contrato ya resuelve: la empresa viaja en cada llamada.
+    const cliente = sinComentarios("src/lib/membego-platform.ts");
+    expect(cliente).toMatch(/process\.env\.MEMBEGO_CLIENT_ID/);
+    expect(cliente).toMatch(/process\.env\.MEMBEGO_CLIENT_SECRET/);
+    const env = read(".env.example");
+    expect(env).toContain("MEMBEGO_CLIENT_ID=");
+    expect(env).toContain("MEMBEGO_CLIENT_SECRET=");
+    // Y no hay ninguna columna que las guarde.
+    const sql = read("supabase/migrations/0057_membego_redemptions.sql");
+    expect(sql).not.toMatch(/client_secret/);
+  });
+});
+
+describe("analítica: que una previsión no sea una corazonada con cara de cálculo", () => {
+  /**
+   * Una analítica equivocada es peor que ninguna, porque se toman decisiones
+   * con ella: confirmar el segundo autobús, soltar cupo, cancelar. Lo que se
+   * ata aquí son las tres formas concretas de que un número parezca sólido sin
+   * serlo.
+   */
+
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("la curva se aprende de salidas PASADAS, no de las que están a medio vender", () => {
+    // Meter las futuras haría creer que la venta se desploma cerca de la fecha.
+    const src = sinComentarios("src/lib/analytics-service.ts");
+    const at = src.indexOf("let departureQuery");
+    expect(at).toBeGreaterThan(-1);
+    const consulta = src.slice(at, src.indexOf("const { data: departures }", at));
+    expect(consulta).toMatch(/\.lt\("departure_at", now\.toISOString\(\)\)/);
+  });
+
+  it("las cohortes no cuentan reservas canceladas", () => {
+    // Inflarían la retención con clientes que pidieron y no llegaron a viajar.
+    const src = sinComentarios("src/lib/analytics-service.ts");
+    expect(src).toMatch(/\.in\("status", VALID_BOOKING\)/);
+    const validos = /const VALID_BOOKING = \[([\s\S]*?)\];/.exec(src)?.[1] ?? "";
+    expect(validos).not.toContain("cancelled");
+    expect(validos).not.toContain("refunded");
+    expect(validos).not.toContain("draft");
+  });
+
+  it("lo vendido incluye lo retenido: una plaza en retención ocupa el asiento", () => {
+    // Prever sin ella diría que hay sitio de sobra justo en la salida que está
+    // a punto de llenarse.
+    const src = sinComentarios("src/lib/analytics-service.ts");
+    expect(src).toMatch(/Number\(departure\.booked_pax \?\? 0\) \+ Number\(departure\.pending_pax \?\? 0\)/);
+  });
+
+  it("no se prevé dividiendo por una cuota minúscula", () => {
+    // A 80 días con el 2 % vendido, dividir entre 0,02 convierte dos plazas en
+    // cien.
+    const src = sinComentarios("src/lib/analytics.ts");
+    expect(src).toMatch(/if \(!\(share >= MIN_CURVE_SHARE\)\)/);
+  });
+
+  it("sin historia no se inventa una previsión", () => {
+    const src = sinComentarios("src/lib/analytics.ts");
+    expect(src).toMatch(/if \(input\.curve\.sample === 0 \|\| input\.curve\.share\.length === 0\)/);
+  });
+
+  it("una previsión sin confianza no dispara alerta de ocupación", () => {
+    const src = sinComentarios("src/lib/analytics.ts");
+    const at = src.indexOf("export function departureAlerts(");
+    const cuerpo = src.slice(at);
+    expect(cuerpo).toMatch(/if \(forecast\.confidence === "none"\) continue;/);
+    // Y lo que sí se avisa siempre es lo que no necesita previsión.
+    expect(cuerpo.indexOf('kind: "over_capacity"')).toBeLessThan(cuerpo.indexOf('if (forecast.confidence === "none") continue;'));
+    expect(cuerpo.indexOf('kind: "no_pickup"')).toBeLessThan(cuerpo.indexOf('if (forecast.confidence === "none") continue;'));
+  });
+
+  it("solo se avisa dentro del horizonte en el que se puede hacer algo", () => {
+    // Una salida a cuatro meses no admite ninguna decisión hoy, y el ruido hace
+    // que se dejen de mirar las alertas que sí importan.
+    const src = sinComentarios("src/lib/analytics.ts");
+    expect(src).toMatch(/if \(departure\.daysOut > thresholds\.horizonDays\) continue;/);
+  });
+
+  it("la pantalla enseña de cuántas salidas se aprendió la curva", () => {
+    // Sin ese número, una previsión de una operadora recién estrenada tendría
+    // el mismo aspecto que una con tres años de historia.
+    const api = sinComentarios("src/app/api/analytics/occupancy/route.ts");
+    expect(api).toMatch(/occupancyReport/);
+    const servicio = sinComentarios("src/lib/analytics-service.ts");
+    expect(servicio).toMatch(/curveSample: curve\.sample/);
+    const pantalla = read("src/app/dashboard/analitica/ocupacion/page.tsx");
+    expect(pantalla).toMatch(/curveSample/);
+  });
+
+  it("la analítica es una lectura y no la bloquea una suscripción vencida", () => {
+    for (const ruta of ["src/app/api/analytics/cohorts/route.ts", "src/app/api/analytics/occupancy/route.ts"]) {
+      const src = sinComentarios(ruta);
+      expect(src, ruta).toMatch(/await requireTenant\(\)/);
+      expect(src, ruta).not.toMatch(/requireTenantWrite/);
+      // Y con techo de peticiones: un informe pesado repetido en bucle tumba a
+      // la operadora que más datos tiene, que es la que más lo necesita.
+      expect(src, ruta).toMatch(/assertRateLimit/);
+    }
+  });
+
+  it("las consultas de analítica están acotadas", () => {
+    const src = sinComentarios("src/lib/analytics-service.ts");
+    expect(src).toMatch(/const MAX_ROWS = \d+/);
+    // Ninguna lectura sin `.limit(`: un barrido sin techo no se nota en la
+    // operadora de tres salidas y tumba a la de treinta al día.
+    const selects = [...src.matchAll(/\.from\("(\w+)"\)/g)].length;
+    const limites = [...src.matchAll(/\.limit\(/g)].length;
+    expect(limites, "hay consultas de analítica sin techo de filas").toBeGreaterThanOrEqual(selects);
+  });
+
+  it("las pantallas de analítica están en el menú", () => {
+    const nav = read("src/lib/nav.ts");
+    expect(nav).toContain('href: "/dashboard/analitica/cohortes"');
+    expect(nav).toContain('href: "/dashboard/analitica/ocupacion"');
+  });
+});
+
+describe("i18n: que el huésped que no habla español entienda lo que compró", () => {
+  /**
+   * ────────────────────────────────────────────────────────────────────────
+   * EL FALLO QUE ESTO ARREGLA
+   *
+   * El mecanismo de idiomas existía desde la ola 3 —`resolveTemplate` buscaba
+   * la plantilla del idioma del cliente— y NO HABÍA una sola plantilla que no
+   * fuera española. Buscaba el inglés, no lo encontraba y caía al español, así
+   * que el turista que reservaba en inglés recibía la confirmación, el
+   * recordatorio de la víspera y el recibo en un idioma que no lee.
+   *
+   * El recordatorio de la víspera es el que más importa: lleva la hora y el
+   * lugar de recogida. Un huésped que no lo entiende no es un huésped molesto,
+   * es un asiento vacío y una reclamación.
+   */
+
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("cada plantilla española tiene su equivalente en inglés", () => {
+    // Si falta una, no se rompe nada: cae al español. Por eso nadie se entera.
+    const src = read("src/lib/messaging/templates.ts");
+    const entradas = [...src.matchAll(/key: "(\w+)", channel: "(\w+)", language: "(\w+)"/g)]
+      .map((m) => ({ key: m[1], channel: m[2], language: m[3] }));
+    const es = entradas.filter((e) => e.language === "es");
+    const en = new Set(entradas.filter((e) => e.language === "en").map((e) => `${e.key}:${e.channel}`));
+    const faltan = es.filter((e) => !en.has(`${e.key}:${e.channel}`)).map((e) => `${e.key}/${e.channel}`);
+    expect(faltan, "plantillas sin versión en inglés").toEqual([]);
+    expect(es.length).toBeGreaterThan(0);
+  });
+
+  it("a los diccionarios no les falta ninguna clave", () => {
+    // Un botón en español en medio de una página en inglés: no rompe, solo
+    // queda mal, y por eso nadie lo reporta.
+    const src = read("src/lib/i18n.ts");
+    const bloque = (nombre: string) => {
+      const at = src.indexOf(`const ${nombre}: Dictionary = {`);
+      return src.slice(at, src.indexOf("\n};", at));
+    };
+    const claves = (nombre: string) => new Set([...bloque(nombre).matchAll(/^\s+"([^"]+)":/gm)].map((m) => m[1]));
+    for (const [a, b] of [["PUBLIC_ES", "PUBLIC_EN"], ["DOC_ES", "DOC_EN"]] as const) {
+      const faltan = [...claves(a)].filter((k) => !claves(b).has(k));
+      expect(faltan, `claves que le faltan a ${b}`).toEqual([]);
+      expect(claves(a).size).toBeGreaterThan(5);
+    }
+  });
+
+  it("el idioma se decide en el SERVIDOR, antes de pintar", () => {
+    // Detectarlo en el navegador enseñaría la página en español durante el
+    // primer pintado, que es justo el segundo en el que el cliente decide si
+    // se queda.
+    const page = sinComentarios("src/app/reservar/[slug]/page.tsx");
+    expect(page).toMatch(/pickLocale\(\{/);
+    expect(page).toMatch(/acceptLanguage: \(await headers\(\)\)\.get\("accept-language"\)/);
+    expect(page).toMatch(/locale=\{locale\}/);
+  });
+
+  it("la página pública no se cachea en un solo idioma", () => {
+    // Con `revalidate`, la primera visita fijaría el HTML para todos: a un
+    // inglés le tocaría la versión que pidió un español diez segundos antes.
+    const page = sinComentarios("src/app/reservar/[slug]/page.tsx");
+    expect(page).toMatch(/export const dynamic = "force-dynamic"/);
+    expect(page).not.toMatch(/export const revalidate/);
+  });
+
+  it("el idioma en el que reservó queda en su ficha", () => {
+    // Los avisos de la víspera salen cuando ya no hay navegador del que
+    // deducirlo.
+    const motor = sinComentarios("src/app/reservar/[slug]/_components/booking-engine.tsx");
+    expect(motor).toMatch(/language: locale,/);
+    const servicio = sinComentarios("src/lib/public-booking-service.ts");
+    expect(servicio).toMatch(/language: request\.language/);
+    // Y se refresca en la ficha que ya existía: quien reservó en español el año
+    // pasado y hoy reserva en inglés está diciendo en qué idioma quiere que le
+    // escriban AHORA.
+    expect(servicio).toMatch(/\.update\(\{ language: request\.language \}\)/);
+  });
+
+  it("el voucher sale en el idioma del huésped, no en el de la operadora", () => {
+    // Lo enseña ÉL en la puerta, a veces a alguien que no lo emitió.
+    const doc = sinComentarios("src/lib/pdf/documents.ts");
+    expect(doc).toMatch(/const locale = normalizeLocale\(data\.language\) \?\? DEFAULT_LOCALE/);
+    expect(doc).toMatch(/const t = translator\(DOC_DICTIONARY, locale\)/);
+    // Y la fecha también: un voucher que mezcla formatos se lee dos veces.
+    expect(doc).toMatch(/formatDateFor\(locale, data\.travel_date\)/);
+  });
+
+  it("los dos sitios que emiten el voucher le pasan el idioma", () => {
+    for (const ruta of ["src/app/api/bookings/[id]/voucher/route.ts", "src/lib/messaging/attachments.ts"]) {
+      expect(sinComentarios(ruta), ruta).toMatch(/language: \(row|language: \(booking/);
+    }
+    // Y la consulta lo TRAE: sin la columna, el idioma es siempre undefined y
+    // el voucher adjunto sale siempre en español.
+    expect(read("src/lib/messaging/attachments.ts"))
+      .toContain("customer:customer_id (first_name, last_name, language)");
+  });
+
+  it("el idioma que manda una OTA no se tira a la basura", () => {
+    // OCTO manda `locales` en el contacto: ahí es donde el revendedor dice en
+    // qué idioma habla su cliente.
+    const src = sinComentarios("src/lib/octo-service.ts");
+    expect(src).toMatch(/language: normalizeLocale\(input\.contact\?\.locales\?\.\[0\]\)/);
+  });
+
+  it("nunca se enseña la clave del diccionario", () => {
+    // Una pantalla que dice `engine.submit` parece rota; el español se entiende
+    // con el contexto mucho mejor que eso.
+    const src = sinComentarios("src/lib/i18n.ts");
+    expect(src).toMatch(/dictionaries\[locale\]\?\.\[key\] \?\? dictionaries\[DEFAULT_LOCALE\]\?\.\[key\] \?\? key/);
+  });
+
+  it("el panel de la operadora NO se traduce, y es una decisión escrita", () => {
+    // Traducir cuarenta pantallas de gestión para un equipo que trabaja en
+    // español es el trabajo que parece internacionalización y no sirve a nadie.
+    // La guarda existe para que nadie lo empiece «por completar».
+    const src = read("src/lib/i18n.ts");
+    expect(src).toMatch(/NO se traduce el panel de la operadora/);
+    const claves = [...src.matchAll(/^\s+"([^"]+)":/gm)].map((m) => m[1]);
+    const fuera = claves.filter((k) => !k.startsWith("engine.") && !k.startsWith("page.") && !k.startsWith("doc.") && !k.startsWith("lang."));
+    expect(fuera, "claves de i18n fuera de las superficies del huésped").toEqual([]);
   });
 });

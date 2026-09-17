@@ -78,6 +78,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       voucher_code: vouchers[0]?.code || booking.voucher_code,
       status: booking.status,
       customer_name: personName(booking.customer),
+      // El idioma del huésped: el voucher lo enseña ÉL en la puerta.
+      language: (booking.customer as { language?: string } | null)?.language ?? null,
       product_name: (product?.name as string) ?? null,
       modality_name: (modality?.name as string) ?? null,
       travel_date: booking.travel_date,

@@ -25,8 +25,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // decisión de gestión, no del cajero que se equivocó.
     requireAtLeast(ctx, "manager");
 
-    const body = await readJson<{ reason?: string }>(req);
-    const result = await voidInvoice(ctx, id, body.reason || "");
+    const body = await readJson<{ reason?: string; reason_code?: string }>(req);
+    const result = await voidInvoice(ctx, id, body.reason || "", body.reason_code);
     return ok({ credit_note: result.creditNote._id, ncf: result.ncf });
   } catch (err) {
     return fail(err);

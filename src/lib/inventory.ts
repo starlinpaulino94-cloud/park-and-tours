@@ -38,6 +38,16 @@ export interface MovementInput {
   to_warehouse?: string | null;
   order?: string | null;
   purchase_order?: string | null;
+  /**
+   * La LÍNEA de la orden de compra (0052).
+   *
+   * Con solo la orden no se puede saber cuánto se ha recibido de cada línea, y
+   * sin eso lo recibido vive únicamente en `quantity_received`, que se puede
+   * teclear a mano. Con la línea, lo recibido se cuenta sumando movimientos.
+   */
+  purchase_order_line?: string | null;
+  /** El extra vendido que comprometió o consumió estas unidades (0052). */
+  booking_extra?: string | null;
   work_order?: string | null;
   user?: string | null;
   moved_at?: string | null;
@@ -118,6 +128,8 @@ async function applyLeg(
     to_warehouse: input.to_warehouse || null,
     order: input.order || null,
     purchase_order: input.purchase_order || null,
+    purchase_order_line: input.purchase_order_line || null,
+    booking_extra: input.booking_extra || null,
     work_order: input.work_order || null,
     user: input.user || null,
   });

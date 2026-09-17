@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { requireTenant, tenantQuery } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import type { Departure } from "@/lib/types";
+import { refId } from "@/lib/types";
+import { assignmentBlock, certificationsToRenew, type CertificationLike } from "@/lib/hr";
 
 /**
  * GET /api/operations/dispatch?date=YYYY-MM-DD
@@ -15,6 +17,19 @@ export async function GET(req: NextRequest) {
     const day = dateParam ? new Date(`${dateParam}T00:00:00`) : new Date();
     const from = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, 0, 0);
     const to = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 23, 59, 59);
+
+    // 0051 — las acreditaciones del equipo, para el mismo día. El despacho es
+    // donde se decide quién sale: enseñar aquí la licencia vencida evita que se
+    // descubra en el muelle. La lista completa cabe de sobra en una consulta y
+    // ahorra una por cada guía asignado.
+    const certificaciones = await tenantQuery<CertificationLike>(ctx.companyId, "certification", { _limit: 2000 });
+    const certsPorPersona = new Map<string, CertificationLike[]>();
+    for (const c of certificaciones) {
+      const sid = refId(c.staff);
+      if (!sid) continue;
+      certsPorPersona.set(sid, [...(certsPorPersona.get(sid) || []), c]);
+    }
+    const hoy = from.toISOString().slice(0, 10);
 
     const departures = await tenantQuery<Departure>(ctx.companyId, "departure", {
       _filter: { departure_at: { gte: from.toISOString(), lte: to.toISOString() } },
@@ -44,7 +59,17 @@ export async function GET(req: NextRequest) {
       }
       const resources = (d.departure_resource || []) as any[];
       const vehicles = resources.filter((r) => r.vehicle).map((r) => r.vehicle);
-      const staff = resources.filter((r) => r.staff).map((r) => ({ ...r.staff, role: r.resource_role }));
+      const staff = resources.filter((r) => r.staff).map((r) => {
+        const misCerts = certsPorPersona.get(r.staff?._id) || [];
+        const bloqueo = assignmentBlock(misCerts, hoy);
+        return {
+          ...r.staff,
+          role: r.resource_role,
+          certification_blocked: Boolean(bloqueo),
+          certification_note: bloqueo?.reason ?? null,
+          certifications_to_renew: certificationsToRenew(misCerts, hoy).length,
+        };
+      });
       const guides = staff.filter((s) => s.role === "guide" || s.staff_type === "guide");
 
       const label = `${typeof d.product === "object" ? d.product?.name : "Salida"} ${new Date(d.departure_at || "").toISOString().slice(11, 16)}`;
@@ -74,6 +99,11 @@ export async function GET(req: NextRequest) {
             : []),
           ...(vehicles.length === 0 && pax > 0 ? ["Sin vehículo asignado"] : []),
           ...(guides.length === 0 && pax > 0 ? ["Sin guía asignado"] : []),
+          // La alerta nombra a la persona: «hay alguien con papeles vencidos»
+          // obliga a abrir cinco fichas para saber a quién sustituir.
+          ...staff
+            .filter((s) => s.certification_blocked)
+            .map((s) => `${s.full_name || "Personal"}: ${s.certification_note}`),
         ],
       };
     });

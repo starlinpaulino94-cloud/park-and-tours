@@ -19,6 +19,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { CHANNEL, DEPARTURE_STATUS, MODALITY_TYPE, PAYMENT_METHOD } from "@/lib/labels";
 import { formatDate, formatMoney, formatNumber, formatTime, toDateInput } from "@/lib/format";
 import { optionsFrom } from "@/components/tf/options";
+import { MembegoBenefits } from "./_components/membego-benefits";
 
 interface CatalogDeparture {
   _id: string; departure_at?: string; capacity: number; available_pax: number; status?: string;
@@ -111,6 +112,8 @@ export default function PosPage() {
 
   // payment right after the sale
   const [payFor, setPayFor] = useState<{ order: any; bookings: any[] } | null>(null);
+  /** El total después de aplicar un beneficio de MembeGo, si se aplicó alguno. */
+  const [benefitTotal, setBenefitTotal] = useState<number | null>(null);
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState("cash");
   const [payReceived, setPayReceived] = useState(""); // efectivo entregado, solo para calcular el cambio
@@ -269,6 +272,7 @@ export default function PosPage() {
       commissionsCreated > 0 ? ` · ${commissionsCreated} comisiones` : ""}`);
 
     setPayFor({ order, bookings });
+    setBenefitTotal(null);
     setPayAmount(String(order?.total ?? quote?.totals.total ?? ""));
     // Sin caja abierta el efectivo se rechaza en el servidor: arranca en tarjeta.
     setPayMethod(ctx?.cash_session ? "cash" : "card");
@@ -304,6 +308,7 @@ export default function PosPage() {
     }
     toast.success("Cobro registrado");
     setPayFor(null);
+    setBenefitTotal(null);
     setPayReceived("");
     setCustomerId("");
   };
@@ -327,7 +332,10 @@ export default function PosPage() {
 
   // Ayudas del cobro tras la venta.
   const canPayCash = Boolean(ctx?.cash_session);
-  const orderTotal = Number(payFor?.order?.total ?? 0);
+  // El beneficio de MembeGo rebaja la venta DESPUÉS de crearla, así que el
+  // importe a cobrar no puede quedarse con el total del momento de la venta: el
+  // cajero cobraría de más un descuento que sí se aplicó.
+  const orderTotal = benefitTotal ?? Number(payFor?.order?.total ?? 0);
   const payAmountNum = Number(payAmount) || 0;
   const receivedNum = Number(payReceived) || 0;
   const cashChange = payMethod === "cash" && receivedNum > payAmountNum ? receivedNum - payAmountNum : 0;
@@ -781,6 +789,27 @@ export default function PosPage() {
                 </li>
               ))}
             </ul>
+
+            {/* El canje va aquí y no en el carrito: un beneficio se consume
+                contra una venta que existe, no contra algo que puede
+                abandonarse — y ese uso no vuelve solo. */}
+            {payFor?.order?._id && customerId && (
+              <MembegoBenefits
+                orderId={String(payFor.order._id)}
+                customerId={customerId}
+                currency={String(payFor.order.currency || currency)}
+                lines={(payFor.bookings || []).map((b: any) => ({
+                  id: String(b._id),
+                  label: String(b.product?.name || b.booking_number || "Excursión"),
+                  total: Number(b.total_amount ?? 0),
+                }))}
+                onApplied={(nuevoTotal) => {
+                  setBenefitTotal(nuevoTotal);
+                  setPayAmount(String(nuevoTotal));
+                }}
+              />
+            )}
+
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">

@@ -48,6 +48,7 @@ function mapUser(user: any, membership: any) {
     phone: user.phone || user.user_metadata?.phone || null,
     role: membership.role,
     status: membership.status,
+    branch: membership.branch_id || null,
     // «pendiente» en la base es «invitado, sin aceptar» para quien lo lee.
     state: memberState(membership.status),
     company_id: membership.organization_id,
@@ -95,7 +96,14 @@ export async function POST(req: NextRequest) {
     // imposible de invitar otra vez porque el correo ya existe—.
     await assertWithinLimit(ctx, "max_users");
 
-    const body = await readJson<{ email?: string; name?: string; password?: string; role?: string; phone?: string | null }>(req);
+    const body = await readJson<{
+      email?: string; name?: string; password?: string; role?: string;
+      phone?: string | null; branch?: string | null;
+    }>(req);
+    // La sucursal la pedía el formulario desde el principio y la API la tiraba:
+    // el administrador la elegía, no pasaba nada, y creía que ya había separado
+    // sus puntos de venta.
+    const branchId = (body.branch || "").trim() || null;
     const email = (body.email || "").trim().toLowerCase();
     const name = (body.name || "").trim();
     const password = body.password || "";
@@ -124,7 +132,7 @@ export async function POST(req: NextRequest) {
         // Membresía inactiva previa → reactivar con el rol elegido.
         const { error: upErr } = await sb
           .from("organization_memberships")
-          .update({ role, status: "active" })
+          .update({ role, status: "active", branch_id: branchId })
           .eq("id", membership.id);
         if (upErr) throw upErr;
       } else {
@@ -142,6 +150,7 @@ export async function POST(req: NextRequest) {
           role,
           status: "active",
           is_primary: (count ?? 0) === 0,
+          branch_id: branchId,
         });
         if (memberError) throw memberError;
       }
@@ -173,6 +182,7 @@ export async function POST(req: NextRequest) {
       role,
       status: "active",
       is_primary: true,
+      branch_id: branchId,
     });
     if (memberError) throw memberError;
 
@@ -195,7 +205,10 @@ export async function PUT(req: NextRequest) {
     requireAtLeast(ctx, "admin");
     await assertRateLimit({ key: rateLimitKey(req, "team:update", ctx.userId), limit: 60, windowMs: 60_000 });
 
-    const body = await readJson<{ user_id?: string; role?: string; status?: string; phone?: string | null; name?: string }>(req);
+    const body = await readJson<{
+      user_id?: string; role?: string; status?: string; phone?: string | null;
+      name?: string; branch?: string | null;
+    }>(req);
     if (!body.user_id) throw new TenantError("Falta el identificador del usuario", 400);
     if (body.user_id === ctx.userId && body.role && body.role !== ctx.role) throw new TenantError("No puedes cambiar tu propio rol", 400);
     if (body.user_id === ctx.userId && body.status && body.status !== "active") throw new TenantError("No puedes desactivar tu propia cuenta", 400);
@@ -213,6 +226,9 @@ export async function PUT(req: NextRequest) {
     const patch: Record<string, unknown> = {};
     if (body.role) patch.role = assertRole(ctx, body.role);
     if (body.status) patch.status = body.status;
+    // `undefined` no toca la sucursal; `null` o cadena vacía la quitan, que es
+    // cómo se devuelve a alguien al alcance de toda la empresa.
+    if (body.branch !== undefined) patch.branch_id = (body.branch || "").trim() || null;
     if (Object.keys(patch).length > 0) {
       const { error } = await sb
         .from("organization_memberships")

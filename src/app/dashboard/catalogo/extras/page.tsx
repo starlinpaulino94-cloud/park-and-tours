@@ -41,6 +41,17 @@ export default function Page() {
         { name: "cost", label: "Coste", type: "number",
           help: "Lo que paga la empresa al proveedor. De aquí sale el margen real del extra." },
         { name: "currency", label: "Moneda", type: "select", defaultValue: "usd", options: CURRENCY_OPTIONS },
+        // 0052 — el extra que además es un artículo del almacén. Sin esto, vender
+        // cuarenta almuerzos no descontaba una sola unidad de nada.
+        { name: "consumes_stock", label: "¿Sale del almacén?", type: "select", defaultValue: "no", options: optionsFrom(YES_NO),
+          help: "Un almuerzo o una camiseta sí; una recogida en el hotel no sale de ningún estante." },
+        { name: "inventory_item", label: "Artículo", type: "reference", resource: "inventory_item",
+          optionLabel: (i: any) => i.name,
+          help: "Vender este extra aparta existencias de este artículo; el embarque las consume." },
+        { name: "warehouse", label: "Almacén", type: "reference", resource: "warehouse",
+          help: "De dónde salen. Sin artículo y almacén, el extra se vende pero no mueve nada." },
+        { name: "stock_per_unit", label: "Unidades por cada uno vendido", type: "number", defaultValue: 1,
+          help: "Un «almuerzo» es 1; un «pack de 3 cervezas» es 3." },
         { name: "is_required", label: "¿Obligatorio?", type: "select", defaultValue: "no", options: optionsFrom(YES_NO),
           help: "Una tasa que el cliente paga igual (entrada al parque, impuesto de muelle): se añade sola a cada reserva." },
         { name: "max_quantity", label: "Cantidad máxima", type: "number",

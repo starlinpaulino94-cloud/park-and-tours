@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Park & Tours">
+  <rect width="512" height="512" rx="96" fill="#0f766e"/>
+  <path d="M256 104c-57 0-104 45-104 101 0 76 104 203 104 203s104-127 104-203c0-56-47-101-104-101zm0 143a42 42 0 1 1 0-84 42 42 0 0 1 0 84z" fill="#fff"/>
+</svg>

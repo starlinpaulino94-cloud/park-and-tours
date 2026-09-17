@@ -165,6 +165,7 @@ export const COMPANY_EXPORT_AREAS: CompanyExportArea[] = [
       tax_profile: "perfiles-fiscales",
       ledger_account: "cuentas-contables",
       ledger_entry: "asientos-contables",
+      accounting_period: "periodos-contables",
     },
   },
   {
@@ -174,6 +175,8 @@ export const COMPANY_EXPORT_AREAS: CompanyExportArea[] = [
       shift: "turnos",
       attendance: "asistencia",
       certification: "certificaciones",
+      payroll_run: "nomina-corridas",
+      payroll_line: "nomina-lineas",
       document: "documentos",
       document_ack: "acuses-de-documento",
     },

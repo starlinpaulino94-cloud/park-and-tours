@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
     // elige quien la pide, y eso es un emisor de correo en manos de un usuario.
     await assertRateLimit({ key: rateLimitKey(req, "team:invite", ctx.userId), limit: 10, windowMs: 60_000 });
 
-    const body = await readJson<{ email?: string; name?: string; role?: string }>(req);
+    const body = await readJson<{ email?: string; name?: string; role?: string; branch?: string | null }>(req);
     const email = normalizeEmail(body.email);
     const name = (body.name || "").trim();
     if (!email || !isEmail(email)) throw new TenantError("Escribe un correo válido", 400);
@@ -93,6 +93,7 @@ export async function POST(req: NextRequest) {
       // Pendiente hasta que la persona acepte: una invitación no es un acceso.
       status: "pending",
       is_primary: true,
+      branch_id: (body.branch || "").trim() || null,
     });
     if (memberError) throw memberError;
 

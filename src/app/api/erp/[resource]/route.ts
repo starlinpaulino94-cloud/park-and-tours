@@ -8,6 +8,8 @@ import { assertModule, assertWithinLimit } from "@/lib/plan-service";
 import { notificationForCreate } from "@/lib/notify";
 import { notify } from "@/lib/notify-service";
 import { buildListFilter, buildListSort } from "@/lib/erp-query";
+import { branchStampFor } from "@/lib/branch-scope";
+import { assertPayloadAssignable } from "@/lib/hr-service";
 
 /** Generic tenant-scoped list endpoint: GET /api/erp/:resource */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ resource: string }> }) {
@@ -105,8 +107,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ res
     if (def.table === "product") await assertWithinLimit(ctx, "max_products");
 
     const body = await readJson(req);
-    const payload = sanitizePayload(def, body);
+    // La sucursal de quien crea se sella aquí, antes de limpiar el payload: así
+    // lo que registra el vendedor de un tour center nace en su tour center. Si
+    // eligió otra explícitamente, se respeta —un gerente puede registrar algo
+    // para otra sucursal, y pisarle el dato sería un error silencioso.
+    const payload = sanitizePayload(def, branchStampFor(def.table, ctx.branchId, body as Record<string, unknown>));
     if (Object.keys(payload).length === 0) throw new TenantError("No se enviaron datos válidos", 400);
+
+    // 0051 — asignar trabajo a quien tiene una certificación obligatoria
+    // vencida se para AQUÍ. La pantalla puede pintarlo en rojo; lo que impide
+    // que el guía suba al bote es esta línea, porque por aquí pasan el turno,
+    // el recurso de la salida y la ruta de recogida.
+    await assertPayloadAssignable(ctx.companyId, def.table, payload);
 
     const created = await tenantCreate(ctx.companyId, def.table, payload);
 

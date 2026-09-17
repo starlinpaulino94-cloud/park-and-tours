@@ -31,6 +31,16 @@ export interface SimpleColumn {
   currencyKey?: string;
   align?: "left" | "right" | "center";
   hideOn?: "sm" | "md" | "lg";
+  /**
+   * Escapatoria para la columna que no es un dato, sino una conclusión.
+   *
+   * El estado de una certificación no está en la fila: se DEDUCE de su fecha de
+   * vencimiento, y pintar lo que guardó la columna `status` es exactamente lo
+   * que hacía que una acreditación caducada siguiera en verde. Cuando una
+   * columna necesita el dominio, se le pasa aquí en vez de sacar la pantalla
+   * entera del CRUD genérico.
+   */
+  render?: (row: any) => React.ReactNode;
 }
 
 function cell(row: any, col: SimpleColumn) {
@@ -99,7 +109,7 @@ export function SimpleResource({
         header: col.header,
         align: col.align,
         hideOn: col.hideOn,
-        render: (row: any) => cell(row, col),
+        render: (row: any) => (col.render ? col.render(row) : cell(row, col)),
       }))}
     />
   );

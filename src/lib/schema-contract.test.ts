@@ -274,6 +274,39 @@ describe("el esquema cubre todo lo que la aplicación escribe", () => {
     expect(problems, "un payload escribe columnas que no existen").toEqual([]);
   });
 
+  it("todo campo editable de /api/company existe como columna", () => {
+    /**
+     * La guarda de arriba solo lee objetos LITERALES en las llamadas a
+     * `tenantCreate`/`tenantUpdate`. `/api/company` arma su payload en un bucle
+     * sobre una lista de nombres, así que se coló durante todo el proyecto:
+     * `whatsapp`, `address`, `city`, `logo_url`, `brand_color`, `group_name` y
+     * `notes` estaban en esa lista y NO existían en `organizations`.
+     *
+     * No era el fallo silencioso de siempre: PostgREST rechaza el UPDATE ENTERO
+     * cuando una sola columna del payload no existe, así que escribir un
+     * WhatsApp hacía perder también el nombre y el RNC del mismo formulario.
+     */
+    const route = readFileSync(path.join(ROOT, "src/app/api/company/route.ts"), "utf8");
+    const list = /const EDITABLE = \[([\s\S]*?)\];/.exec(route)?.[1];
+    expect(list, "no se pudo leer EDITABLE en /api/company").toBeTruthy();
+
+    const fields = [...(list ?? "").matchAll(/"(\w+)"/g)].map((m) => m[1]);
+    expect(fields.length).toBeGreaterThan(10);
+
+    // `base_currency` se traduce a `currency` en la propia ruta, y los alias del
+    // traductor cubren el resto.
+    const TRANSLATED = new Set(["base_currency"]);
+    const columns = SCHEMA.get("organizations");
+    expect(columns, "falta la tabla organizations en el esquema").toBeTruthy();
+
+    const missing = fields.filter((f) => {
+      if (TRANSLATED.has(f)) return false;
+      const column = TABLE_FIELD_ALIASES.organizations?.[f] ?? DEFAULT_FIELD_ALIASES[f] ?? f;
+      return !columns!.has(column);
+    });
+    expect(missing, "campos editables de la empresa que no existen en organizations").toEqual([]);
+  });
+
   it("ninguna columna booleana se compara contra \"yes\"/\"no\"", () => {
     // PostgREST devuelve los booleanos como true/false, así que `x === "yes"`
     // es siempre falso y el control que depende de él queda desactivado en

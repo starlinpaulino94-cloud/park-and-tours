@@ -2,8 +2,12 @@ import "server-only";
 import QRCode from "qrcode";
 import { PdfBuilder } from "@/lib/pdf/doc";
 import { formatDate, formatDateTime, formatMoney, formatNumber, formatTime, formatPercent } from "@/lib/format";
+import { DOC_DICTIONARY, normalizeLocale, translator, formatDateFor, formatTimeFor, DEFAULT_LOCALE } from "@/lib/i18n";
 import { formatTaxId } from "@/lib/invoicing";
 import { depositDue, optionBreakdown, lineGross } from "@/lib/quotes";
+import { documentBrand, type CompanyBranding, type DocumentKind } from "@/lib/branding";
+import { fetchLogo } from "@/lib/pdf/logo";
+import { APP_URL } from "@/lib/stripe";
 import type { ManifestRow, PickupStop, PaxSummary } from "@/lib/manifest";
 
 /**
@@ -17,14 +21,38 @@ import type { ManifestRow, PickupStop, PaxSummary } from "@/lib/manifest";
  * precio, la lista de quién viaja— y nada más.
  */
 
-interface CompanyInfo {
-  name?: string | null; email?: string | null; phone?: string | null;
-  whatsapp?: string | null; address?: string | null;
+/**
+ * Lo que un documento necesita saber de la empresa que lo emite.
+ *
+ * Antes eran cinco campos sueltos y el documento salía siempre del mismo verde.
+ * Ahora es la ficha de marca completa (0055): `documentBrand` la resuelve —el
+ * color validado, el logo incrustable, el RNC etiquetado, las condiciones que
+ * tocan a ESTE documento— y `PdfBuilder` la pinta.
+ */
+type CompanyInfo = CompanyBranding;
+
+/**
+ * La marca y el logo listos para el constructor.
+ *
+ * El logo se baja aquí y no en cada ruta: son seis documentos y seis llamantes,
+ * y bastaba con que uno se olvidara para que ESE documento saliera sin logo sin
+ * que nadie supiera por qué. `fetchLogo` nunca lanza — un almacenamiento lento
+ * o un enlace roto dejan el documento sin logo, no sin documento.
+ */
+async function brandFor(company: CompanyInfo | null, kind: DocumentKind) {
+  const brand = documentBrand(company, kind);
+  return { brand, logo: await fetchLogo(brand.logo, APP_URL) };
 }
 
 /* ------------------------------------------------------------------ voucher */
 
 export interface VoucherData {
+  /**
+   * El idioma del huésped. El voucher lo enseña ÉL en la puerta, a veces a
+   * alguien que no lo emitió: un documento con las etiquetas en un idioma que
+   * no lee no es un documento, es un papel.
+   */
+  language?: string | null;
   booking_number?: string | null;
   voucher_code?: string | null;
   status?: string | null;
@@ -66,14 +94,21 @@ export interface VoucherData {
  */
 export async function buildVoucherPdf(company: CompanyInfo | null, data: VoucherData): Promise<Uint8Array> {
   const currency = data.currency || "usd";
+  // El idioma sale de la ficha del cliente. Sin idioma, español: el respaldo
+  // nunca es una clave de diccionario en un documento impreso.
+  const locale = normalizeLocale(data.language) ?? DEFAULT_LOCALE;
+  const t = translator(DOC_DICTIONARY, locale);
+  const { brand, logo } = await brandFor(company, "voucher");
   const pdf = await PdfBuilder.create({
     kind: "VOUCHER",
     reference: data.booking_number,
     company,
     footer: company?.name || undefined,
+    brand,
+    logo,
   });
 
-  pdf.heading(data.product_name || "Reserva");
+  pdf.heading(data.product_name || t("doc.booking"));
   if (data.modality_name) pdf.paragraph(data.modality_name, 10);
   pdf.gap(4);
 
@@ -85,61 +120,68 @@ export async function buildVoucherPdf(company: CompanyInfo | null, data: Voucher
     pdf.gap(-100);
   }
 
-  pdf.row("Reserva", data.booking_number || "—", { strong: true });
-  if (data.voucher_code) pdf.row("Código del voucher", data.voucher_code);
-  pdf.row("Cliente", data.customer_name || "—");
-  pdf.row("Fecha", data.travel_date ? `${formatDate(data.travel_date)} · ${formatTime(data.travel_date)}` : "Por confirmar");
+  pdf.row(t("doc.booking"), data.booking_number || "—", { strong: true });
+  if (data.voucher_code) pdf.row(t("doc.voucherCode"), data.voucher_code);
+  pdf.row(t("doc.customer"), data.customer_name || "—");
+  pdf.row(t("doc.date"), data.travel_date ? `${formatDateFor(locale, data.travel_date)} · ${formatTimeFor(locale, data.travel_date)}` : t("doc.tbc"));
 
   const pax = [
-    data.adults ? `${data.adults} adulto${data.adults === 1 ? "" : "s"}` : "",
-    data.children ? `${data.children} niño${data.children === 1 ? "" : "s"}` : "",
-    data.infants ? `${data.infants} bebé${data.infants === 1 ? "" : "s"}` : "",
+    data.adults ? `${data.adults} ${t(data.adults === 1 ? "doc.adult" : "doc.adults")}` : "",
+    data.children ? `${data.children} ${t(data.children === 1 ? "doc.child" : "doc.children")}` : "",
+    data.infants ? `${data.infants} ${t(data.infants === 1 ? "doc.infant" : "doc.infants")}` : "",
   ].filter(Boolean).join(" · ") || `${formatNumber(data.pax_total ?? 0)} pax`;
-  pdf.row("Pasajeros", pax);
+  pdf.row(t("doc.pax"), pax);
   pdf.gap(6);
 
-  pdf.eyebrow("Recogida");
+  pdf.eyebrow(t("doc.pickup"));
   if (data.pickup_hotel || data.pickup_time) {
-    pdf.row("Hora", data.pickup_time || "Por confirmar");
-    pdf.row("Lugar", [data.pickup_hotel, data.room_number ? `hab. ${data.room_number}` : ""].filter(Boolean).join(" · ") || data.pickup_location || "—");
+    pdf.row(t("doc.time"), data.pickup_time || t("doc.tbc"));
+    pdf.row(t("doc.place"), [data.pickup_hotel, data.room_number ? `${t("doc.room")} ${data.room_number}` : ""].filter(Boolean).join(" · ") || data.pickup_location || "—");
   } else {
-    pdf.paragraph(data.meeting_point || data.pickup_location || "Presentarse en el punto de encuentro indicado por la empresa.");
+    pdf.paragraph(data.meeting_point || data.pickup_location || t("doc.meetingPointFallback"));
   }
   pdf.gap(8);
 
   if (data.extras?.length) {
-    pdf.eyebrow("Extras contratados");
+    pdf.eyebrow(t("doc.extras"));
     pdf.table(
-      [{ header: "Concepto", width: 4 }, { header: "Cant.", width: 0.8, align: "right" }, { header: "Importe", width: 1.2, align: "right" }],
+      [{ header: t("doc.concept"), width: 4 }, { header: t("doc.qty"), width: 0.8, align: "right" }, { header: t("doc.amount"), width: 1.2, align: "right" }],
       data.extras.map((e) => [e.description, formatNumber(e.quantity), formatMoney(e.amount, currency)])
     );
     pdf.gap(10);
   }
 
-  pdf.eyebrow("Importe");
-  pdf.row("Total", formatMoney(data.total_amount ?? 0, currency), { strong: true });
-  pdf.row("Pagado", formatMoney(data.paid_amount ?? 0, currency));
+  pdf.eyebrow(t("doc.amount"));
+  pdf.row(t("doc.total"), formatMoney(data.total_amount ?? 0, currency), { strong: true });
+  pdf.row(t("doc.paid"), formatMoney(data.paid_amount ?? 0, currency));
   const balance = data.balance_amount ?? 0;
-  pdf.row("Saldo pendiente", formatMoney(balance, currency));
+  pdf.row(t("doc.balance"), formatMoney(balance, currency));
   pdf.gap(6);
 
   if (balance > 0.009) {
     // Que el cliente lo sepa antes de subir al vehículo evita la discusión en la
     // puerta, que es donde peor se resuelve.
-    pdf.notice(`Queda un saldo de ${formatMoney(balance, currency)} por pagar. Puedes liquidarlo antes de la excursión o el mismo día al guía.`);
+    pdf.notice(t("doc.balanceNotice", { amount: formatMoney(balance, currency) }));
   } else {
-    pdf.notice("Presenta este voucher —impreso o en el móvil— el día de la excursión. Te recomendamos estar en el punto de recogida 10 minutos antes.");
+    pdf.notice(t("doc.showNotice"));
   }
 
-  pdf.block("Qué incluye", data.inclusions);
-  pdf.block("Qué no incluye", data.exclusions);
-  pdf.block("Qué llevar", data.recommendations);
-  pdf.block("Restricciones", data.restrictions);
-  pdf.block("Instrucciones", data.instructions);
-  pdf.block("Condiciones", data.conditions);
-  pdf.block("Política de cancelación", data.cancellation_policy);
-  pdf.block("Notas", data.notes);
-  if (data.sold_by) pdf.block("Vendido por", data.sold_by);
+  pdf.block(t("doc.includes"), data.inclusions);
+  pdf.block(t("doc.excludes"), data.exclusions);
+  pdf.block(t("doc.bring"), data.recommendations);
+  pdf.block(t("doc.restrictions"), data.restrictions);
+  pdf.block(t("doc.instructions"), data.instructions);
+  pdf.block(t("doc.terms"), data.conditions);
+  pdf.block(t("doc.cancellationPolicy"), data.cancellation_policy);
+  pdf.block(t("doc.notes"), data.notes);
+  if (data.sold_by) pdf.block(t("doc.soldBy"), data.sold_by);
+
+  // 0055 — las condiciones que la empresa configuró para SUS vouchers. Van al
+  // final y no en la cabecera: el cliente busca primero la fecha y el punto de
+  // encuentro, y estas son la letra que se lee cuando hay discusión en la
+  // puerta. Las de la reserva concreta (`data.conditions`) siguen mandando
+  // sobre estas: lo pactado en la venta gana a la plantilla.
+  if (brand.terms) pdf.block(t("doc.terms"), brand.terms);
 
   return pdf.finish();
 }
@@ -217,11 +259,14 @@ export async function buildQuotePdf(
   const currency = quote.currency || "usd";
   const money = (value: number | null | undefined) => formatMoney(value ?? 0, currency);
 
+  const { brand, logo } = await brandFor(company, "quote");
   const pdf = await PdfBuilder.create({
     kind: "COTIZACIÓN",
     reference: quote.code,
     company,
     footer: company?.name || undefined,
+    brand,
+    logo,
   });
 
   pdf.heading(quote.title || quote.code || "Propuesta");
@@ -374,11 +419,14 @@ export async function buildInvoicePdf(
   const money = (v: number | null | undefined) => formatMoney(v ?? 0, currency);
   const isCreditNote = invoice.invoice_type === "credit_note";
 
+  const { brand, logo } = await brandFor(company, "invoice");
   const pdf = await PdfBuilder.create({
     kind: isCreditNote ? "NOTA DE CRÉDITO" : "FACTURA",
     reference: invoice.ncf,
     company,
     footer: company?.name || undefined,
+    brand,
+    logo,
   });
 
   // El NCF va arriba y grande: es el dato por el que se busca el documento.
@@ -450,6 +498,12 @@ export async function buildInvoicePdf(
   }
 
   pdf.block("Notas", invoice.notes);
+  // 0055 — el texto legal del comprobante. En la República Dominicana cambia
+  // según el régimen de cada empresa, así que hasta ahora habría que pedirle a
+  // quien programa que lo añadiera al código.
+  // Con etiqueta y no en blanco: `block("")` dibujaría un rótulo vacío y dejaría
+  // una línea suelta encima del texto.
+  if (brand.terms) pdf.block("Nota legal", brand.terms);
   return pdf.finish();
 }
 
@@ -479,11 +533,14 @@ export async function buildManifestPdf(
   stops: PickupStop[],
   summary: PaxSummary
 ): Promise<Uint8Array> {
+  const { brand, logo } = await brandFor(company, "manifest");
   const pdf = await PdfBuilder.create({
     kind: "MANIFIESTO",
     reference: data.departure_at ? formatDate(data.departure_at) : undefined,
     company,
     footer: `Generado ${formatDateTime(new Date().toISOString())}`,
+    brand,
+    logo,
   });
 
   pdf.heading(data.product_name || "Salida");
@@ -625,11 +682,14 @@ export async function buildCashClosePdf(
   data: CashClosePdfData,
   currencies: CashClosePdfCurrency[]
 ): Promise<Uint8Array> {
+  const { brand, logo } = await brandFor(company, "cash");
   const pdf = await PdfBuilder.create({
     kind: "ARQUEO DE CAJA",
     reference: data.code,
     company,
     footer: `Generado ${formatDateTime(new Date().toISOString())}`,
+    brand,
+    logo,
   });
 
   pdf.heading(data.register || "Caja");
@@ -777,11 +837,14 @@ export async function buildSupplierStatementPdf(
   data: SupplierStatementPdfData,
   lines: SupplierStatementPdfLine[]
 ): Promise<Uint8Array> {
+  const { brand, logo } = await brandFor(company, "statement");
   const pdf = await PdfBuilder.create({
     kind: "ESTADO DE CUENTA",
     reference: data.code,
     company,
     footer: `Generado ${formatDateTime(new Date().toISOString())}`,
+    brand,
+    logo,
   });
 
   pdf.heading(data.supplier_name || "Proveedor");

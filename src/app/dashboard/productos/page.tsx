@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { ResourcePage } from "@/components/tf/resource-page";
-import { StatusBadge } from "@/components/tf/status-badge";
+import { StatusBadge, Pill } from "@/components/tf/status-badge";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/tf/icon";
 import { GENERIC_STATUS, PRODUCT_TYPE } from "@/lib/labels";
@@ -82,6 +82,12 @@ export default function ProductsPage() {
             );
           },
         },
+        // Publicado en la web: se ve de un vistazo desde el listado, que es
+        // donde alguien se pregunta «¿esto ya está en la página?».
+        { key: "published", header: "Web", align: "center", hideOn: "md",
+          render: (p: any) => (p.published
+            ? <Pill tone="success">En la web</Pill>
+            : <span className="text-xs text-muted-foreground">—</span>) },
         { key: "status", header: "Estado", render: (p: any) => <StatusBadge value={p.status} dict={GENERIC_STATUS} /> },
       ]}
       fields={[
@@ -121,6 +127,14 @@ export default function ProductsPage() {
         { name: "restrictions", label: "Restricciones", type: "textarea", span: 2 },
         { name: "status", label: "Estado", type: "select", defaultValue: "active",
           options: optionsFrom(GENERIC_STATUS, ["active", "inactive", "archived"]) },
+        // 0047 — el motor público. Apagado de fábrica: hay excursiones que solo
+        // se venden a agencias y otras a medio armar, y lo que se publica una
+        // vez ya no se despublica de internet.
+        { name: "published", label: "Publicar en la web", type: "select", defaultValue: "no",
+          options: [{ value: "yes", label: "Sí, se puede reservar en línea" }, { value: "no", label: "No" }],
+          help: "Aparece en tu página pública de reservas. Requiere tener la página activada en Configuración." },
+        { name: "public_price_from", label: "Precio «desde» para la web", type: "number",
+          help: "Lo que ve el cliente en la tarjeta cuando el precio real depende de modalidad o temporada. Vacío usa el precio base." },
       ]}
     />
   );

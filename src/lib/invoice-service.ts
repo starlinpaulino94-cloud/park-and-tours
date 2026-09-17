@@ -10,6 +10,7 @@ import {
   formatNcf, ncfTypeFor, normalizeTaxId, creditNoteTypeFor, invoiceTotals, lineAmounts,
   voidBlocker, VOID_BLOCK_MESSAGE, type NcfType, type InvoiceLineInput,
 } from "@/lib/invoicing";
+import { VOID_REASONS, DEFAULT_VOID_REASON } from "@/lib/dgii";
 
 /**
  * La emisión de un comprobante fiscal.
@@ -236,7 +237,15 @@ async function consumeNcf(companyId: string, ncfType: string): Promise<{ number:
 export async function voidInvoice(
   ctx: TenantContext & { companyId: string },
   invoiceId: string,
-  reason: string
+  reason: string,
+  /**
+   * El código de anulación del 608 (0053).
+   *
+   * La DGII exige uno de nueve, y rechaza el archivo entero si llega otro. El
+   * motivo escrito es para la inspección; este código es para la declaración, y
+   * son dos cosas distintas por más que se parezcan.
+   */
+  reasonCode?: string | null
 ): Promise<{ creditNote: Record<string, unknown>; ncf: string }> {
   const companyId = ctx.companyId;
   const invoice = await tenantFindOne<Record<string, unknown>>(companyId, "invoice", invoiceId);
@@ -309,6 +318,9 @@ export async function voidInvoice(
     status: "voided",
     voided_at: new Date().toISOString(),
     void_reason: reason.trim(),
+    // Lo que no esté en la lista del formato cae en «corrección de la
+    // información», que es lo que de verdad ocurre al anular desde el sistema.
+    void_reason_code: VOID_REASONS[String(reasonCode || "")] ? String(reasonCode) : DEFAULT_VOID_REASON,
     balance: 0,
   });
 

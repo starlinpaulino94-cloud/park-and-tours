@@ -1,6 +1,6 @@
 // src/app/layout.tsx
 import React from "react";
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Fraunces, Manrope, Space_Grotesk, Geist_Mono } from "next/font/google";
 import localFont from "next/font/local";
 import "./globals.css";
@@ -53,6 +53,20 @@ export const metadata: Metadata = {
   title: "TourFlow — Sistema integral de gestión turística",
   description:
     "ERP, OMS y motor de reservas para parques, excursiones, tour centers y agencias. Multiempresa, multicanal y multidivisa.",
+  // El manifiesto convierte esto en una aplicación que se instala en el
+  // teléfono del guía y abre directamente en el check-in. Sin él, el sistema
+  // solo existe dentro de un navegador con pestañas.
+  manifest: "/manifest.webmanifest",
+  appleWebApp: { capable: true, title: "Park&Tours", statusBarStyle: "default" },
+  icons: { icon: "/icono.svg", apple: "/icono.svg" },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0f766e",
+  // Se deja hacer zoom: quien trabaja al sol con un papel en la mano a veces
+  // necesita agrandar, y bloquearlo es una barrera de accesibilidad real.
+  initialScale: 1,
+  width: "device-width",
 };
 
 // SUPER IMPORTANT: NOT EDIT THE FOLLOWING 2 LINES TO FORCE NEXT.JS TO RENDER DYNAMICALLY

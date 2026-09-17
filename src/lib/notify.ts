@@ -85,6 +85,17 @@ export const NOTIFY_EVENTS = {
     link: () => "/dashboard/reservas",
   },
 
+  /** Una reserva cambia de día: el manifiesto de dos días deja de ser el mismo. */
+  booking_rescheduled: {
+    type: "booking",
+    audience: "operations",
+    title: (v) => `Reserva movida ${v.referencia ?? ""}`.trim(),
+    message: (v) =>
+      [v.fecha ? `Nueva fecha: ${v.fecha}` : null, v.motivo ? `· ${v.motivo}` : null]
+        .filter(Boolean).join(" ") || "Cambió de fecha.",
+    link: () => "/dashboard/reservas",
+  },
+
   /** Sale dinero. Un reembolso siempre se revisa; un cobro normal, no. */
   payment_refunded: {
     type: "payment",
@@ -156,6 +167,45 @@ export const NOTIFY_EVENTS = {
     title: (v) => `Cotización aceptada ${v.referencia ?? ""}`.trim(),
     message: (v) => `${v.cliente ?? "El cliente"} aceptó por ${money(v)}. Falta convertirla en venta.`,
     link: () => "/dashboard/ventas/cotizaciones",
+  },
+
+  /**
+   * Una certificación del equipo vence o ya venció.
+   *
+   * Avisa el barrido diario, una vez por certificación: la licencia del
+   * conductor caducada no se descubre el día que la pide un inspector.
+   */
+  certification_expiring: {
+    type: "alert",
+    audience: "manager",
+    title: (v) =>
+      v.estado === "expired"
+        ? `Certificación vencida: ${v.certificacion ?? "sin nombre"}`
+        : `Certificación por vencer: ${v.certificacion ?? "sin nombre"}`,
+    message: (v) =>
+      [
+        v.persona ? String(v.persona) : "Alguien del equipo",
+        v.estado === "expired"
+          ? `la tiene vencida desde el ${v.vence ?? "?"}`
+          : `la tiene hasta el ${v.vence ?? "?"}`,
+        v.bloquea ? "· bloquea la asignación a turnos y salidas" : null,
+      ].filter(Boolean).join(" "),
+    link: () => "/dashboard/equipo/certificaciones",
+  },
+
+  /**
+   * Un cupo garantizado se liberó: esas plazas vuelven a la venta libre.
+   *
+   * Es una oportunidad con fecha de caducidad —la salida es en días— y quien la
+   * puede aprovechar es el equipo comercial, hoy.
+   */
+  allotment_released: {
+    type: "operation",
+    audience: "manager",
+    title: (v) => `${v.plazas ?? 0} plazas liberadas de un cupo`,
+    message: (v) =>
+      `Un socio no las vendió y vuelven a estar disponibles${v.fecha ? ` para la salida del ${v.fecha}` : ""}.`,
+    link: () => "/dashboard/distribucion/allotments",
   },
 
   /** El plan se está acabando. Avisa ANTES de que un límite rechace una venta. */

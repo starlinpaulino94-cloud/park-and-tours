@@ -326,6 +326,65 @@ export async function notifyBookingCancelled(
   });
 }
 
+/* -------------------------------------------------------- reprogramación */
+
+export interface RescheduleNoticeInput {
+  departure: { departure_at?: string | null; meeting_point?: string | null };
+  reason: string;
+  userId?: string | null;
+}
+
+/**
+ * «Tu excursión cambió de fecha».
+ *
+ * Es el aviso que evita el peor momento posible de una reprogramación: el
+ * cliente en el lobby del hotel el día que ya no es. Dice la fecha nueva, la
+ * anterior —para que entienda de qué habla el mensaje— y que su voucher sigue
+ * valiendo, porque la primera reacción de quien recibe esto es pensar que su
+ * reserva se perdió.
+ *
+ * La clave de dedupe lleva la fecha nueva: mover la misma reserva dos veces son
+ * dos avisos, porque son dos cambios que el cliente tiene que conocer.
+ */
+export async function notifyBookingRescheduled(
+  company: Company | null,
+  companyId: string,
+  booking: Booking,
+  input: RescheduleNoticeInput
+): Promise<void> {
+  const customerId = refId(booking.customer);
+  const productId = refId(booking.product);
+  const [customers, products] = await Promise.all([
+    customerId
+      ? tenantQuery<Customer & ContactRow>(companyId, "customer", { _filter: { _id: customerId }, _limit: 1 })
+      : Promise.resolve([]),
+    productId
+      ? tenantQuery<Product>(companyId, "product", { _filter: { _id: productId }, _limit: 1 })
+      : Promise.resolve([]),
+  ]);
+  const customer = customers[0] ?? null;
+  const product = products[0] ?? null;
+  const nueva = input.departure.departure_at || null;
+
+  await fanOut(company, companyId, "booking_rescheduled", customer, {
+    vars: {
+      cliente: nameOf(customer) || "viajero",
+      reserva: booking.booking_number,
+      producto: product?.name,
+      // La fecha ANTERIOR sale de la reserva, que todavía no se ha releído: la
+      // ruta llama a esto con el registro de antes del cambio a propósito.
+      fecha_anterior: booking.travel_date ? formatDate(booking.travel_date) : null,
+      fecha: nueva ? formatDate(nueva) : null,
+      hora: nueva ? formatTime(nueva) : null,
+      motivo: input.reason,
+      punto_encuentro: input.departure.meeting_point || product?.meeting_point,
+    },
+    refs: { customer: customerId, booking: booking._id, order: refId(booking.order) },
+    userId: input.userId,
+    dedupeSeed: `${booking._id}:${String(nueva || "").slice(0, 10)}`,
+  });
+}
+
 /* ------------------------------------------------------- saldo pendiente */
 
 export interface BalanceDueInput {

@@ -22,6 +22,8 @@ export interface AppClaims {
   org_id?: string;
   app_role?: string;
   partner_id?: string | null;
+  /** Sucursal de la membresía activa; null = toda la empresa. */
+  branch_id?: string | null;
   status?: string;
   /** Nivel de garantía de la sesión: `aal2` = pasó el segundo factor. */
   aal?: string;
@@ -94,6 +96,7 @@ export function mapClaimsToContext(
     role,
     companyId: claims.org_id,
     partnerId: claims.partner_id || null,
+    branchId: claims.branch_id || null,
     company,
   };
 }
@@ -135,7 +138,7 @@ async function loadClaimsFromPrimaryMembership(userId: string): Promise<AppClaim
     const sb = supabaseService();
     const { data } = await sb
       .from("organization_memberships")
-      .select("role,status,organizations(id,kind,tenant_org_id)")
+      .select("role,status,branch_id,organizations(id,kind,tenant_org_id)")
       .eq("user_id", userId)
       .eq("status", "active")
       .order("is_primary", { ascending: false })
@@ -151,6 +154,7 @@ async function loadClaimsFromPrimaryMembership(userId: string): Promise<AppClaim
       app_role: data.role,
       status: data.status,
       partner_id: org.kind === "partner" ? org.id : null,
+      branch_id: data.branch_id ?? null,
     };
   } catch {
     return null;

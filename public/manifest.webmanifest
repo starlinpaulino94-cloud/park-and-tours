@@ -1,0 +1,16 @@
+{
+  "name": "Park & Tours",
+  "short_name": "Park&Tours",
+  "description": "Operación turística: reservas, salidas, check-in y caja.",
+  "start_url": "/dashboard/checkin",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#0f766e",
+  "lang": "es",
+  "icons": [
+    { "src": "/icono.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icono-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

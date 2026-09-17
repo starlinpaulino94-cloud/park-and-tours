@@ -27,6 +27,13 @@ export interface TenantContext {
   companyId: string | null;
   /** set for B2B portal users. */
   partnerId: string | null;
+  /**
+   * Sucursal de la persona, o null cuando trabaja para toda la empresa.
+   *
+   * Acota lo que ve y sella lo que crea (`branch-scope.ts`). Es organizativo:
+   * la muralla entre empresas sigue siendo la RLS por `organization_id`.
+   */
+  branchId?: string | null;
   company: Company | null;
   /** true while a superadmin is operating inside a tenant (always audited). */
   impersonating?: boolean;

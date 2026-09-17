@@ -13,6 +13,9 @@ import { formatDate } from "@/lib/format";
 import { ensureSchedule, refreshAllocation } from "@/lib/schedule-service";
 import { creditCheck, holdUntil } from "@/lib/collections";
 import { accrueBookingCosts, cancelBookingCosts } from "@/lib/supplier-settlement-service";
+import { reserveForSale, stockableOffers } from "@/lib/stock-commitment-service";
+import { assertAllotment, consumeAllotment } from "@/lib/allotment-service";
+import { allotmentState, type AllotmentRow } from "@/lib/allotments";
 import { priceExtras, unknownSelections, type ExtraOffer, type ExtraSelection } from "@/lib/extras";
 import type {
   Booking, Channel, Currency, Departure, Order, Partner, Product, Seller,
@@ -203,6 +206,54 @@ export async function createOrderWithBookings(
     await assertCapacity(companyId, departureId, pax, input.capacity_override === true);
   }
 
+  // ---- el cupo del socio (0054) ------------------------------------------
+  //
+  // `allotment` existía desde 0010 y nadie la leía: se le prometían 10 plazas
+  // garantizadas a una agencia por contrato y el sistema le dejaba vender las
+  // 40 de la salida, o ninguna. El cupo se llevaba en un Excel.
+  //
+  // Va DESPUÉS de la capacidad y antes de escribir nada: la capacidad es un
+  // límite físico —no caben— y el cupo es un contrato. Si no caben, el motivo
+  // que hay que dar es ese, no el del contrato.
+  //
+  // Solo acota al SOCIO. El vendedor de la casa sigue vendiendo contra la
+  // capacidad: el cupo es un acuerdo con la agencia, no un límite del negocio.
+  const allotmentUse = new Map<string, { row: AllotmentRow | null; seats: number }>();
+  if (input.partner_id) {
+    // La fecha de viaje sale de la salida, no del ítem, y hace falta ANTES del
+    // bucle que la resuelve más abajo: el cupo puede tener temporada y días de
+    // la semana, y sin fecha se aplicaría un contrato de verano en diciembre.
+    // Una sola consulta para todas las salidas del carrito.
+    const departureIds = [...paxByDeparture.keys()];
+    const departureDates = new Map<string, string | null>();
+    if (departureIds.length > 0) {
+      const salidas = await tenantQuery<{ _id?: string; id?: string; departure_at?: string }>(
+        companyId, "departure", { _filter: { _id: { in: departureIds } }, _limit: 200 }
+      );
+      for (const d of salidas) departureDates.set(String(d._id || d.id), d.departure_at ?? null);
+    }
+
+    for (const item of input.items) {
+      const pax = toCount(item.adults) + toCount(item.children) + toCount(item.infants);
+      if (pax <= 0) continue;
+      const resolved = await assertAllotment(
+        companyId,
+        {
+          partnerId: input.partner_id,
+          productId: item.product_id,
+          departureId: item.departure_id || null,
+          travelDate: item.departure_id ? departureDates.get(item.departure_id) ?? null : null,
+        },
+        pax
+      );
+      const key = String(resolved.row?._id || resolved.row?.id || "");
+      if (!key) continue;
+      const acc = allotmentUse.get(key) || { row: resolved.row, seats: 0 };
+      acc.seats += pax;
+      allotmentUse.set(key, acc);
+    }
+  }
+
   // ---- order shell --------------------------------------------------------
   // AUD-F34: keep this multi-write flow as a saga until the domain has a DB transaction/RPC.
   // order starts as `draft`; only after every child (bookings, vouchers,
@@ -254,11 +305,16 @@ export async function createOrderWithBookings(
   const order = await tenantCreate<Order>(companyId, "order", {
     order_number: await uniqueCode(companyId, "order", "order_number", newOrderNumber),
     customer: input.customer_id,
-    branch: input.branch_id || undefined,
+    // La sucursal de quien vende, salvo que la venta diga otra. Sin esto, la
+    // venta del tour center nacía sin sucursal y el corte por punto de venta
+    // dejaba fuera justo lo que se quería separar.
+    branch: input.branch_id || ctx.branchId || undefined,
     seller: input.seller_id || undefined,
     partner: input.partner_id || undefined,
     promotion: input.promotion_id || undefined,
-    created_by: ctx.userId,
+    // Vacío en una reserva del motor público: no la creó nadie del equipo, y
+    // meter una cadena vacía en una columna de identificador la rompe.
+    created_by: ctx.userId || undefined,
     channel,
     status: "draft",
     order_date: new Date().toISOString(),
@@ -409,11 +465,25 @@ export async function createOrderWithBookings(
       product: item.product_id,
       departure: item.departure_id || undefined,
       modality: item.modality_id || undefined,
-      branch: input.branch_id || undefined,
+      branch: input.branch_id || ctx.branchId || undefined,
       seller: input.seller_id || undefined,
       partner: input.partner_id || undefined,
+      // 0054 — de qué cupo salieron estas plazas, para poder devolverlas a SU
+      // cupo al cancelar. Si el contrato cambia de temporada entre la venta y
+      // la cancelación, devolverlas al cupo vigente le regalaría plazas a la
+      // temporada nueva.
+      ...(() => {
+        if (!input.partner_id) return {};
+        const used = [...allotmentUse.entries()].find(([, v]) => v.row && refId(v.row.product) === item.product_id)
+          ?? [...allotmentUse.entries()][0];
+        if (!used) return {};
+        const pax = toCount(item.adults) + toCount(item.children) + toCount(item.infants);
+        return allotmentState(used[1].row).holds
+          ? { allotment: used[0], allotment_seats: pax }
+          : {};
+      })(),
       pickup_hotel: item.pickup_hotel_id || undefined,
-      created_by: ctx.userId,
+      created_by: ctx.userId || undefined,
       channel,
       status: "pending_payment",
       booking_date: new Date().toISOString(),
@@ -453,8 +523,9 @@ export async function createOrderWithBookings(
     // El nombre y el precio se COPIAN: si el extra se renombra o sube de precio,
     // el voucher de esta reserva tiene que seguir diciendo qué se compró y por
     // cuánto.
+    const extraRows: { bookingExtraId: string; extraId: string; units: number }[] = [];
     for (const line of extras.lines) {
-      await tenantCreate(companyId, "booking_extra", {
+      const row = await tenantCreate<{ _id: string }>(companyId, "booking_extra", {
         booking: booking._id,
         extra: line.extra_id,
         name: line.name,
@@ -466,6 +537,31 @@ export async function createOrderWithBookings(
         cost_amount: line.cost_amount,
         currency: line.currency,
       });
+      extraRows.push({ bookingExtraId: row._id, extraId: line.extra_id, units: line.quantity });
+    }
+
+    // ---- apartar las existencias de lo vendido (0052) ---------------------
+    // Un almuerzo vendido para el jueves sigue en el almacén, pero ya no se le
+    // puede vender a otro. Se sube `reserved` —una columna que existía desde
+    // 0013 y que nunca escribió nadie— sin escribir movimiento: la mercancía no
+    // ha salido.
+    //
+    // Fuera de la saga a propósito: un extra mal configurado en el catálogo no
+    // puede tumbar la venta de un cliente que ya está delante del mostrador.
+    if (extraRows.length > 0) {
+      try {
+        const ofertas = await stockableOffers(companyId, extraRows.map((e) => e.extraId));
+        const avisos = await reserveForSale(
+          companyId,
+          extraRows
+            .map((e) => ({ bookingExtraId: e.bookingExtraId, offer: ofertas.get(e.extraId), soldUnits: e.units }))
+            .filter((e): e is { bookingExtraId: string; offer: NonNullable<typeof e.offer>; soldUnits: number } =>
+              Boolean(e.offer))
+        );
+        for (const aviso of avisos) console.warn(`[stock] ${booking.booking_number}: ${aviso}`);
+      } catch (err) {
+        console.error("[stock] no se pudieron apartar los extras de la reserva:", err);
+      }
     }
 
     // ---- devengo del costo por proveedor (0040) ---------------------------
@@ -652,6 +748,18 @@ export async function createOrderWithBookings(
         pax: booking.pax_total,
       },
     });
+  }
+
+  // ---- apuntar el consumo en el cupo del socio (0054) --------------------
+  //
+  // Va al FINAL, cuando la venta ya existe: apuntarlo antes y que la saga se
+  // compensara dejaría el cupo del socio consumido por una venta que no llegó a
+  // haber, y el comercial buscando plazas que nadie compró.
+  //
+  // Fuera de la saga a propósito: un contador mal puesto no puede tumbar una
+  // venta que ya está hecha; la diferencia se ve en la matriz al día siguiente.
+  for (const [, use] of allotmentUse) {
+    await consumeAllotment(companyId, use.row, use.seats);
   }
 
   console.log(`[booking-service] orden ${order.order_number} creada · ${bookings.length} reservas · total ${totals.total} ${currency}`);

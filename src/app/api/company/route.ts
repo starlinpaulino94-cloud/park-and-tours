@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import type { Company } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
+import { normalizeColor } from "@/lib/branding";
 
 /** Fields the tenant owner/admin may edit about their own company. */
 const EDITABLE = [
@@ -12,6 +13,17 @@ const EDITABLE = [
   // 0039 — cuántas horas se guarda la plaza de una reserva sin cobrar. Nulo o
   // cero: nada expira.
   "hold_hours",
+  // 0047 — el motor de reservas público. Es un interruptor de la EMPRESA y por
+  // eso se edita aquí: activarlo pone su catálogo publicado a la vista de
+  // cualquiera, así que la decisión es de quien administra la cuenta y queda en
+  // la bitácora como el resto de este formulario.
+  "public_booking_enabled", "public_intro", "public_terms",
+  // 0055 — la marca. Hasta esta migración `whatsapp`, `address`, `city`,
+  // `logo_url`, `brand_color`, `group_name` y `notes` estaban en esta lista sin
+  // existir como columnas: PostgREST rechaza el UPDATE ENTERO cuando una sola
+  // no existe, así que escribir un WhatsApp hacía perder también el nombre y el
+  // RNC del formulario.
+  "document_footer", "voucher_terms", "invoice_terms",
 ];
 
 /** GET /api/company — the signed-in tenant's own company profile. */
@@ -39,6 +51,18 @@ export async function PUT(req: NextRequest) {
     if (Object.keys(patch).length === 0) throw new TenantError("No se enviaron datos válidos", 400);
 
     const dbPatch = { ...patch };
+
+    // El color se normaliza a `#rrggbb` antes de guardarlo: la base tiene un
+    // check que rechaza cualquier otra cosa, y dejar que llegue un "azul" del
+    // formulario convertiría un error de tecleo en un 500 sin explicación.
+    if ("brand_color" in dbPatch && dbPatch.brand_color !== null) {
+      const normalized = normalizeColor(dbPatch.brand_color);
+      if (!normalized) {
+        throw new TenantError("El color de marca tiene que ser un hexadecimal, por ejemplo #0b5fff.", 400);
+      }
+      dbPatch.brand_color = normalized;
+    }
+
     if ("base_currency" in dbPatch) {
       dbPatch.currency = dbPatch.base_currency;
       delete dbPatch.base_currency;

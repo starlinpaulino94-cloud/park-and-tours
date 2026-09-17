@@ -4,6 +4,7 @@ import { countDecidableFor } from "@/lib/approvals";
 import { OPEN_TASK_STATUSES } from "@/lib/my-day";
 import { inboxFilter } from "@/lib/notify";
 import { AppShell, type NavBadges, type ShellUser } from "@/components/tf/app-shell";
+import { ServiceWorkerRegistrar } from "@/components/tf/service-worker";
 
 /**
  * Contadores del sidebar. Solo tres, y solo accionables: algo que alguien tiene
@@ -88,5 +89,13 @@ export default async function DashboardLayout({ children }: { children: React.Re
     console.warn(`[shell] DashboardLayout tardó ${elapsed}ms`);
   }
 
-  return <AppShell user={user} badges={badges}>{children}</AppShell>;
+  return (
+    <AppShell user={user} badges={badges}>
+      {/* Lo que permite que el check-in siga en pie sin señal. Va aquí y no en
+          la raíz: la página pública y el login sin red no pueden hacer nada
+          útil de todas formas. */}
+      <ServiceWorkerRegistrar />
+      {children}
+    </AppShell>
+  );
 }

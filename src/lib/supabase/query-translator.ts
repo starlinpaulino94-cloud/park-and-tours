@@ -43,6 +43,7 @@ export interface PostgrestLike {
  */
 export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   _id: "id",
+  allotment: "allotment_id",
   createdAt: "created_at",
   updatedAt: "updated_at",
   company: "organization_id",
@@ -51,6 +52,7 @@ export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   assigned_to: "assigned_to_id",
   attraction: "attraction_id",
   booking: "booking_id",
+  booking_extra: "booking_extra_id",
   branch: "branch_id",
   cancellation_policy: "cancellation_policy_id",
   cash_register: "cash_register_id",
@@ -88,6 +90,7 @@ export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   partner: "partner_id",
   payable: "payable_id",
   payment: "payment_id",
+  payroll_run: "payroll_run_id",
   performed_by: "performed_by",
   pickup_hotel: "hotel_id",
   plan: "plan_id",
@@ -96,6 +99,7 @@ export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   product_category: "product_category_id",
   product_modality: "product_modality_id",
   purchase_order: "purchase_order_id",
+  purchase_order_line: "purchase_order_line_id",
   quote: "quote_id",
   receivable: "receivable_id",
   reported_by: "reported_by",
