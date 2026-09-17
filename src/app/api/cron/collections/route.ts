@@ -5,6 +5,7 @@ import { TenantError } from "@/lib/tenant";
 import { serviceStore } from "@/lib/messaging/service-store";
 import { notifyBalanceDue } from "@/lib/messaging/events";
 import { releaseExpiredHolds } from "@/lib/booking-service";
+import { markExpiredOctoHolds } from "@/lib/octo-service";
 import { statusFor, collectionStatus, agingBucketFor, dayOf, daysBetween } from "@/lib/collections";
 import { notify } from "@/lib/notify-service";
 import type { Booking, Company } from "@/lib/types";
@@ -282,6 +283,24 @@ async function releaseHolds(now: Date): Promise<{ released: number }> {
   let released = 0;
   for (const companyId of new Set((data ?? []).map((r) => r.organization_id as string))) {
     try {
+      /**
+       * Las retenciones de OTA se MARCAN vencidas antes de soltarlas.
+       *
+       * El orden importa: `releaseExpiredHolds` cancela la reserva, y si se
+       * cancela primero, el revendedor lee CANCELLED —una incidencia que
+       * atender, con reembolso que decidir— en vez de EXPIRED, que es suya por
+       * no haber pagado a tiempo.
+       *
+       * Va aquí y no en un cron propio porque el plan Hobby de Vercel solo
+       * admite trabajos diarios. Y da igual: lo que de verdad libera a tiempo
+       * la plaza de una OTA es el barrido al consultar disponibilidad, porque
+       * una plaza bloqueada de más solo hace daño cuando alguien intenta
+       * comprarla — y ese intento es lo que lo dispara. Este repaso diario deja
+       * al día los contadores que se miran sin que nadie esté comprando.
+       */
+      const vencidas = await markExpiredOctoHolds(companyId, now);
+      if (vencidas > 0) console.log(`[cron/collections] ${vencidas} retención(es) de OTA marcadas como vencidas`);
+
       const result = await releaseExpiredHolds(companyId, now);
       released += result.released;
     } catch (err) {

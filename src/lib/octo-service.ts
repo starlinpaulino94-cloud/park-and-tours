@@ -813,32 +813,16 @@ export async function cancelBooking(
 /* ══════════════════════════════════════════════════════ retenciones ══ */
 
 /**
- * BARRER LAS RETENCIONES VENCIDAS DE OTA.
+ * MARCAR COMO VENCIDAS LAS RETENCIONES DE OTA QUE YA PASARON.
  *
- * ────────────────────────────────────────────────────────────────────────────
- * POR QUÉ NO BASTA CON EL CRON QUE YA EXISTE
+ * Solo marca. No cancela nada.
  *
- * El barrido de retenciones (`releaseExpiredHolds`, dentro del cron de cobros)
- * corre UNA VEZ AL DÍA, y está bien para lo que se pensó: una venta de
- * mostrador que se paga por transferencia y se retiene 24 horas.
- *
- * Una retención de OTA dura TREINTA MINUTOS. Esperar al barrido diario
- * significa que la plaza de un carrito abandonado a las nueve de la mañana
- * sigue bloqueada a las siete de la tarde: la salida dice «completo» con
- * asientos que nadie compró, y el revendedor que sí tenía un cliente recibe
- * SOLD_OUT.
- *
- * Por eso esto se llama TAMBIÉN desde las consultas de disponibilidad y desde
- * la propia reserva. Quien pregunta por plazas es exactamente quien necesita
- * que estén al día, y el coste habitual es una consulta indexada que no
- * devuelve nada.
- *
- * El orden importa: primero se MARCA `EXPIRED` y después se cancela. Al revés,
- * la cancelación dejaría la reserva en un estado terminal y el revendedor
- * leería CANCELLED —una incidencia que atender— en vez de EXPIRED, que es suya
- * por no haber pagado a tiempo.
+ * Existe separado de la liberación porque el ORDEN importa: si se cancela
+ * primero, la reserva queda en un estado terminal y el revendedor lee CANCELLED
+ * —una incidencia que atender, con reembolso que decidir— en vez de EXPIRED,
+ * que es suya por no haber pagado a tiempo.
  */
-export async function sweepExpiredOctoHolds(companyId: string, now: Date = new Date()): Promise<number> {
+export async function markExpiredOctoHolds(companyId: string, now: Date = new Date()): Promise<number> {
   const sb = supabaseService();
 
   // Las ventas con la retención pasada. Es la consulta barata y la que casi
@@ -864,10 +848,42 @@ export async function sweepExpiredOctoHolds(companyId: string, now: Date = new D
     .limit(200);
 
   const ids = (data ?? []).map((row) => String(row.id));
-  if (ids.length > 0) {
-    await sb.from("booking").update({ octo_status: "EXPIRED" })
-      .eq("organization_id", companyId).in("id", ids);
-  }
+  if (ids.length === 0) return 0;
+
+  await sb.from("booking").update({ octo_status: "EXPIRED" })
+    .eq("organization_id", companyId).in("id", ids);
+  return ids.length;
+}
+
+/**
+ * BARRER LAS RETENCIONES VENCIDAS DE OTA: marcarlas Y soltar la plaza.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ ESTO NO VIVE EN UN CRON PROPIO
+ *
+ * Primero se intentó así, con un cron cada hora, y **no despliega**: el plan
+ * Hobby de Vercel solo admite trabajos programados diarios. La lección no es
+ * «hace falta el plan Pro»: es que la frecuencia del cron nunca era lo que
+ * sostenía esto.
+ *
+ * Lo que de verdad lo sostiene es que el barrido corre **al consultar
+ * disponibilidad y al reservar**. Y esa es la cobertura que importa, porque una
+ * plaza bloqueada de más solo hace daño cuando alguien intenta comprarla — y
+ * ese intento es exactamente lo que dispara el barrido. Un cron horario habría
+ * sido una red de seguridad para el caso en el que nadie pregunta, que es el
+ * caso en el que la plaza bloqueada no le quita la venta a nadie.
+ *
+ * El repaso diario sigue existiendo, dentro del cron de cobros: deja los
+ * contadores de la salida al día para las pantallas de la operadora, que sí se
+ * miran sin que nadie esté comprando.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * PRIMERO MARCAR, DESPUÉS CANCELAR
+ *
+ * Al revés, el revendedor leería CANCELLED en vez de EXPIRED.
+ */
+export async function sweepExpiredOctoHolds(companyId: string, now: Date = new Date()): Promise<number> {
+  const marked = await markExpiredOctoHolds(companyId, now);
 
   // Y ahora sí se suelta la plaza de verdad, con el mismo camino de siempre:
   // compensa la venta, libera el cupo de la salida y devuelve el del socio.
@@ -878,7 +894,7 @@ export async function sweepExpiredOctoHolds(companyId: string, now: Date = new D
     // disponibilidad: la marca de vencida ya quedó puesta.
     console.error("[octo] no se pudieron liberar las retenciones vencidas:", err);
   }
-  return ids.length;
+  return marked;
 }
 
 /* ════════════════════════════════════════════════════ para la pantalla ══ */

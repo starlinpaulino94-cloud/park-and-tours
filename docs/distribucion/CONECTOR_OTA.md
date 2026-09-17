@@ -132,17 +132,26 @@ una conversación.
 
 ### Soltar la plaza a tiempo
 
-Una retención de OTA dura minutos. El barrido general de retenciones corre una
-vez al día, y esperar a él dejaría la plaza de un carrito abandonado a las nueve
-de la mañana bloqueada hasta la noche: la salida diría «completo» con asientos
-que nadie compró.
+Una retención de OTA dura minutos, y el barrido general de retenciones corre una
+vez al día. La primera versión de esto añadía un cron horario propio, y **no
+desplegaba**: el plan Hobby de Vercel solo admite trabajos programados diarios.
 
-Por eso se sueltan en dos sitios:
+La lección no fue «hace falta el plan Pro». Fue que **la frecuencia del cron
+nunca era lo que sostenía esto**:
 
-- **Al preguntar por disponibilidad**, de forma oportunista. Quien pregunta por
-  plazas es exactamente quien necesita que estén al día.
-- **Cada hora**, con el cron `/api/cron/octo-holds`, que cubre a la operadora
-  que no tuvo tráfico esa mañana.
+- **Lo que de verdad libera la plaza a tiempo es el barrido al consultar
+  disponibilidad y al reservar.** Y esa es la cobertura que importa, porque una
+  plaza bloqueada de más solo hace daño cuando alguien intenta comprarla — y ese
+  intento es exactamente lo que dispara el barrido. El caso que un cron horario
+  habría cubierto es aquel en el que nadie pregunta, que es el caso en el que la
+  plaza bloqueada no le quita la venta a nadie.
+- **El repaso diario vive dentro del cron de cobros**, justo antes del barrido
+  general, y deja al día los contadores de la salida para las pantallas de la
+  operadora, que sí se miran sin que nadie esté comprando.
+
+El orden importa y está atado con una prueba: primero se **marca** vencida y
+después se cancela. Al revés, el revendedor leería `CANCELLED` —una incidencia
+que atender, con reembolso que decidir— en vez de `EXPIRED`, que es suya.
 
 ### Cancelar
 
@@ -263,7 +272,7 @@ Sale de `organizations.timezone`. Si está vacía se usa `America/Santo_Domingo`
 | La base y el motor de ventas | `src/lib/octo-service.ts` |
 | Autenticación y traducción de errores | `src/lib/octo-http.ts` |
 | Los endpoints | `src/app/api/octo/v1/**` |
-| El barrido de retenciones | `src/app/api/cron/octo-holds/route.ts` |
+| El repaso diario de retenciones | `src/app/api/cron/collections/route.ts` |
 | La pantalla | `src/app/dashboard/distribucion/canales/page.tsx` |
 | El esquema | `supabase/migrations/0056_octo_connector.sql` |
 | La cancelación compartida con el mostrador | `src/lib/booking-cancel-service.ts` |

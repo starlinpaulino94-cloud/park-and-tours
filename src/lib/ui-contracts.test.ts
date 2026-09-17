@@ -3286,16 +3286,33 @@ describe("conector OCTO: que una OTA venda sin romper nada por dentro", () => {
     expect(src).not.toMatch(/requireTenantWrite/);
   });
 
-  it("el barrido rápido de retenciones está programado y protegido por un secreto", () => {
-    const cron = sinComentarios("src/app/api/cron/octo-holds/route.ts");
+  it("las retenciones vencidas se marcan ANTES de cancelarse, también en el repaso diario", () => {
+    /**
+     * Esta guarda nació pidiendo un cron horario propio y la realidad la
+     * corrigió: el plan Hobby de Vercel solo admite trabajos diarios, así que
+     * ese cron NO DESPLEGABA. La lección no fue «hace falta el plan Pro», sino
+     * que la frecuencia del cron nunca era lo que sostenía esto.
+     *
+     * Lo que lo sostiene es el barrido al consultar disponibilidad y al
+     * reservar —ya atado en la guarda de arriba—, porque una plaza bloqueada de
+     * más solo hace daño cuando alguien intenta comprarla, y ese intento es lo
+     * que dispara el barrido.
+     *
+     * Lo que se ata aquí es el repaso diario y, sobre todo, su ORDEN.
+     */
+    const cron = sinComentarios("src/app/api/cron/collections/route.ts");
+    expect(cron).toMatch(/await markExpiredOctoHolds\(companyId, now\)/);
+    // Marcar ANTES de cancelar: al revés, el revendedor lee CANCELLED —una
+    // incidencia con reembolso que decidir— en vez de EXPIRED, que es suya.
+    expect(cron.indexOf("await markExpiredOctoHolds("))
+      .toBeLessThan(cron.indexOf("await releaseExpiredHolds("));
     expect(cron).toMatch(/process\.env\.CRON_SECRET/);
-    expect(cron).toMatch(/await sweepExpiredOctoHolds\(companyId, now\)/);
+
+    // Y ningún trabajo programado puede ser más frecuente que diario: el plan
+    // no lo admite y el despliegue entero falla, no solo ese cron.
     const vercel = JSON.parse(read("vercel.json")) as { crons: { path: string; schedule: string }[] };
-    const entrada = vercel.crons.find((c) => c.path === "/api/cron/octo-holds");
-    expect(entrada, "el barrido de retenciones OCTO no está programado").toBeTruthy();
-    // Cada hora como mucho: una retención de OTA dura treinta minutos y un cron
-    // diario sería no tener ninguno.
-    expect(entrada!.schedule).toMatch(/^0 \*(\/[1-6])? \* \* \*$/);
+    const subDiarios = vercel.crons.filter((c) => !/^\S+ \d+ \* \* \*$/.test(c.schedule));
+    expect(subDiarios.map((c) => `${c.path} (${c.schedule})`), "crons más frecuentes que diarios").toEqual([]);
   });
 
   it("solo se anuncian las capacidades que se cumplen", () => {

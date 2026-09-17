@@ -23,10 +23,6 @@
     {
       "path": "/api/cron/allotments",
       "schedule": "0 3 * * *"
-    },
-    {
-      "path": "/api/cron/octo-holds",
-      "schedule": "0 * * * *"
     }
   ]
 }
