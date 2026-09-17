@@ -458,7 +458,9 @@ describe("Panel ejecutivo", () => {
     for (const file of [
       "src/lib/booking-service.ts",
       "src/app/api/payments/route.ts",
-      "src/app/api/bookings/[id]/cancel/route.ts",
+      // La cancelación dejó de vivir en su ruta: ahora hay más de un origen
+      // (mostrador y conector OCTO) y todos pasan por el mismo servicio.
+      "src/lib/booking-cancel-service.ts",
       "src/app/api/quotes/[id]/send/route.ts",
     ]) {
       const src = read(file);
@@ -925,7 +927,7 @@ describe("Panel ejecutivo", () => {
   it("Proveedores — una reserva cancelada no le debe nada a nadie", () => {
     // Dejar el devengo vivo se lo pagaría al transportista en la liquidación
     // del viernes por un viaje que no salió.
-    expect(read("src/app/api/bookings/[id]/cancel/route.ts")).toContain("cancelBookingCosts");
+    expect(read("src/lib/booking-cancel-service.ts")).toContain("cancelBookingCosts");
     expect(read("src/lib/booking-service.ts")).toContain("cancelBookingCosts");
     // Y un servicio ya pagado no se toca: ese dinero salió.
     const service = read("src/lib/supplier-settlement-service.ts");
@@ -1411,6 +1413,11 @@ describe("blindaje CSRF de las rutas mutantes", () => {
     // justo lo que el CSRF protege. Lo que la protege es la llave, su alcance,
     // su límite por llave y la idempotencia obligatoria.
     /^src\/app\/api\/v1\//,
+    // El conector OCTO es lo mismo con otro nombre: un servidor de una OTA
+    // llamando con una llave en la cabecera, sin navegador y sin cookies. La
+    // exención es de la FORMA; hay guarda propia que exige que TODA ruta que
+    // escribe autentique la llave con alcance de escritura.
+    /^src\/app\/api\/octo\/v1\//,
   ];
 
   it("toda ruta mutante verifica el origen de la solicitud", () => {
@@ -1581,6 +1588,10 @@ describe("el plan se aplica en la API, no solo en el menú", () => {
     // teléfono con la marca puesta y sin factores, es decir, fuera de su
     // cuenta por no pagar.
     /^src\/app\/api\/account\/mfa\//,
+    // El conector OCTO tampoco tiene sesión: el inquilino sale de la llave. El
+    // plan SÍ se comprueba, con `assertCanSell` sobre la empresa de esa llave,
+    // y hay guarda propia que lo exige en cada ruta que vende.
+    /^src\/app\/api\/octo\/v1\//,
   ];
 
   it("toda ruta que escribe exige una suscripción que permita escribir", () => {
@@ -2263,7 +2274,7 @@ describe("reprogramar una reserva", () => {
   it("cancelar también suelta su recogida", () => {
     // Era un fallo anterior: el conductor pasaba igual por el hotel a buscar a
     // alguien que había cancelado.
-    const cancel = read("src/app/api/bookings/[id]/cancel/route.ts");
+    const cancel = read("src/lib/booking-cancel-service.ts");
     expect(cancel).toMatch(/status: "cancelled", route: null/);
   });
 
@@ -2372,7 +2383,7 @@ describe("las notificaciones internas", () => {
    */
   const HOOKS: [string, string][] = [
     ["booking_created", "src/lib/booking-service.ts"],
-    ["booking_cancelled", "src/app/api/bookings/[id]/cancel/route.ts"],
+    ["booking_cancelled", "src/lib/booking-cancel-service.ts"],
     ["booking_rescheduled", "src/app/api/bookings/[id]/reschedule/route.ts"],
     ["payment_refunded", "src/app/api/payments/route.ts"],
     ["cash_close_mismatch", "src/app/api/cash/sessions/[id]/close/route.ts"],
@@ -2841,7 +2852,7 @@ describe("inventario: que comprar y vender muevan el almacén", () => {
     const embarque = read("src/app/api/bookings/[id]/checkin/route.ts");
     expect(embarque).toMatch(/settleBookingStock\(ctx\.companyId, id, "consume"/);
 
-    const cancelacion = read("src/app/api/bookings/[id]/cancel/route.ts");
+    const cancelacion = read("src/lib/booking-cancel-service.ts");
     expect(cancelacion).toMatch(/settleBookingStock\(ctx\.companyId, id, "release"/);
   });
 
@@ -2851,7 +2862,7 @@ describe("inventario: que comprar y vender muevan el almacén", () => {
     for (const [file, llamada] of [
       ["src/lib/booking-service.ts", "reserveForSale("],
       ["src/app/api/bookings/[id]/checkin/route.ts", "settleBookingStock("],
-      ["src/app/api/bookings/[id]/cancel/route.ts", "settleBookingStock("],
+      ["src/lib/booking-cancel-service.ts", "settleBookingStock("],
     ] as const) {
       const src = read(file);
       const at = src.indexOf(llamada);
@@ -3008,7 +3019,7 @@ describe("distribución: el cupo del socio acota de verdad", () => {
   });
 
   it("cancelar devuelve las plazas a SU cupo", () => {
-    const src = read("src/app/api/bookings/[id]/cancel/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const src = read("src/lib/booking-cancel-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
     expect(src).toMatch(/await releaseBookingAllotment\(/);
     // Por las plazas que la reserva GUARDÓ, no por las que diga el cupo hoy.
     expect(src).toMatch(/allotment_seats/);
@@ -3125,5 +3136,178 @@ describe("la marca: que los documentos sean de la empresa, no nuestros", () => {
     const src = read("src/lib/pdf/documents.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
     expect(src).toMatch(/pdf\.block\("Condiciones", brand\.terms\)/);
     expect(src).toMatch(/pdf\.block\("Nota legal", brand\.terms\)/);
+  });
+});
+
+describe("conector OCTO: que una OTA venda sin romper nada por dentro", () => {
+  /**
+   * ────────────────────────────────────────────────────────────────────────
+   * QUÉ PROTEGEN ESTAS GUARDAS
+   *
+   * El riesgo de un conector no es que no funcione: es que funcione a medias y
+   * nadie se entere. Una reserva de OTA que se escribe directamente contra la
+   * tabla «se ve bien» —aparece en la lista, tiene número, tiene importe— y no
+   * comprueba el cupo, no consume el contrato del socio, no devenga la
+   * comisión, no aparta el almuerzo, no genera voucher y no sale en el
+   * manifiesto. Se descubre en el punto de encuentro.
+   *
+   * Por eso lo que se ata aquí es que las reservas de OTA pasen por EL MISMO
+   * camino que las del mostrador, y que las exenciones de CSRF y de plan estén
+   * compensadas por comprobaciones equivalentes.
+   */
+
+  const octoRoutes = () =>
+    walk(path.join(ROOT, "src/app/api/octo/v1"))
+      .map((file) => path.relative(ROOT, file).replace(/\\/g, "/"));
+
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("toda ruta del conector autentica con llave, y la que escribe con alcance de escritura", () => {
+    // Esto es lo que EARNA la exención del blindaje CSRF: no hay cookies que
+    // proteger porque no hay sesión, pero sí hay una llave que comprobar. Una
+    // ruta del conector sin `octoRequest` sería pública de verdad.
+    const sinLlave: string[] = [];
+    const escrituraSinAlcance: string[] = [];
+    for (const rel of octoRoutes()) {
+      const src = sinComentarios(rel);
+      if (!/await octoRequest\(req, "(read|write)"\)/.test(src)) sinLlave.push(rel);
+      const muta = /export async function (POST|PUT|PATCH|DELETE)\(/.test(src);
+      if (muta && !/await octoRequest\(req, "write"\)/.test(src)) escrituraSinAlcance.push(rel);
+    }
+    expect(sinLlave, "rutas OCTO sin autenticar").toEqual([]);
+    // La disponibilidad es POST por el estándar y es una LECTURA: se exceptúa
+    // por nombre, no por descuido.
+    expect(
+      escrituraSinAlcance.filter((rel) => !rel.includes("/availability/")),
+      "rutas OCTO que mutan con llave de solo lectura"
+    ).toEqual([]);
+  });
+
+  it("vender por el conector exige que la suscripción lo permita", () => {
+    // Esto es lo que EARNA la exención del contrato del plan. Sin ella, una
+    // operadora con la cuenta vencida seguiría recibiendo reservas de OTA que
+    // después no podría operar.
+    for (const rel of ["src/app/api/octo/v1/bookings/route.ts",
+                       "src/app/api/octo/v1/bookings/[uuid]/confirm/route.ts"]) {
+      expect(sinComentarios(rel), rel).toMatch(/assertCanSell\(ctx\)/);
+    }
+  });
+
+  it("la reserva de una OTA pasa por el motor de ventas, no por un atajo", () => {
+    // Un insert a mano en `booking` es diez líneas y deja media operación
+    // mintiendo: sin cupo comprobado, sin comisión, sin voucher, sin manifiesto.
+    const src = sinComentarios("src/lib/octo-service.ts");
+    expect(src).toMatch(/await createOrderWithBookings\(saleCtx, \{/);
+    // Y no hay ninguna creación directa de la reserva por fuera del motor.
+    expect(src).not.toMatch(/from\("booking"\)\s*\.insert/);
+    expect(src).not.toMatch(/tenantCreate\([^,]+,\s*"booking"/);
+  });
+
+  it("cancelar desde una OTA hace exactamente lo mismo que cancelar de mostrador", () => {
+    const src = sinComentarios("src/lib/octo-service.ts");
+    expect(src).toMatch(/await cancelBookingFully\(cancelCtx, booking\[0\] as never, \{/);
+  });
+
+  it("el `force` del estándar no decide el reembolso", () => {
+    // OCTO admite que el revendedor pida saltarse el corte de cancelación.
+    // Obedecerlo sería dejar que decida desde su servidor cuánto se le
+    // devuelve, que es el acuerdo comercial de la operadora.
+    const src = sinComentarios("src/app/api/octo/v1/bookings/[uuid]/cancel/route.ts");
+    expect(src).not.toMatch(/body\.force/);
+    const servicio = sinComentarios("src/lib/octo-service.ts");
+    expect(servicio).not.toMatch(/refundOverride/);
+  });
+
+  it("un revendedor no puede leer las reservas de otro", () => {
+    // Sin el filtro por socio bastaría con adivinar un uuid para ver el nombre
+    // y el teléfono del cliente de la competencia.
+    const src = sinComentarios("src/lib/octo-service.ts");
+    const inicio = src.indexOf("async function loadRow(");
+    expect(inicio).toBeGreaterThan(-1);
+    const cuerpo = src.slice(inicio, src.indexOf("}", src.indexOf('.eq("octo_uuid", uuid)')) + 1);
+    expect(cuerpo).toMatch(/if \(ctx\.partnerId\) query = query\.eq\("partner_id", ctx\.partnerId\)/);
+    // Y el listado tiene el mismo filtro: sin él, la búsqueda por referencia
+    // sería la puerta de atrás del mismo dato.
+    const listado = src.slice(src.indexOf("export async function listBookings("));
+    expect(listado.slice(0, listado.indexOf("const { data }")))
+      .toMatch(/if \(ctx\.partnerId\) query = query\.eq\("partner_id", ctx\.partnerId\)/);
+  });
+
+  it("antes de contar plazas se sueltan las retenciones vencidas", () => {
+    // Una retención de OTA dura minutos y el barrido general corre una vez al
+    // día: sin esto se contesta SOLD_OUT por un carrito abandonado por la
+    // mañana, y la venta se pierde.
+    const src = sinComentarios("src/lib/octo-service.ts");
+    for (const fn of ["octoAvailability", "octoCalendar", "reserve"]) {
+      const at = src.indexOf(`export async function ${fn}(`);
+      expect(at, fn).toBeGreaterThan(-1);
+      const cabeza = src.slice(at, at + 600);
+      expect(cabeza, `${fn} no barre las retenciones vencidas`)
+        .toMatch(/await sweepExpiredOctoHolds\(ctx\.companyId\)/);
+    }
+    // Y se MARCA vencida antes de cancelarla: al revés, el revendedor leería
+    // CANCELLED —una incidencia que atender— en vez de EXPIRED, que es suya.
+    const barrido = src.slice(src.indexOf("export async function sweepExpiredOctoHolds("));
+    expect(barrido.indexOf('octo_status: "EXPIRED"'))
+      .toBeLessThan(barrido.indexOf("await releaseExpiredHolds("));
+  });
+
+  it("el precio y la moneda no vienen del revendedor", () => {
+    // Una llave de API es una contraseña que vende en nombre de la operadora;
+    // si además dejara poner el precio, sería una que regala su margen.
+    const dominio = sinComentarios("src/lib/octo.ts");
+    const lectura = dominio.slice(dominio.indexOf("export function readReservation("));
+    const cuerpo = lectura.slice(0, lectura.indexOf("\n}\n"));
+    expect(cuerpo).not.toMatch(/body\.pricing/);
+    expect(cuerpo).not.toMatch(/body\.currency/);
+    expect(cuerpo).not.toMatch(/body\.unitPrice/);
+  });
+
+  it("los estados del estándar son los mismos en el dominio y en la base", () => {
+    // Escribir un estado que OCTO no define sería inventarse una palabra que el
+    // revendedor no sabe interpretar, y se descubriría en producción.
+    const dominio = read("src/lib/octo.ts");
+    const union = /export type OctoBookingStatus =([\s\S]*?);/.exec(dominio)?.[1] ?? "";
+    const enDominio = [...union.matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]).sort();
+    const sql = read("supabase/migrations/0056_octo_connector.sql");
+    const check = /octo_status in \(([\s\S]*?)\)/.exec(sql)?.[1] ?? "";
+    const enBase = [...check.matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]).sort();
+    expect(enBase, "los estados de la migración no coinciden con los del dominio").toEqual(enDominio);
+  });
+
+  it("la pantalla de canales es una lectura y no la bloquea una suscripción vencida", () => {
+    // Mirar lo que ya se vendió tiene que seguir funcionando justo cuando la
+    // cuenta está vencida, que es cuando más falta hace.
+    const src = sinComentarios("src/app/api/octo/channels/route.ts");
+    expect(src).toMatch(/await requireTenant\(\)/);
+    expect(src).not.toMatch(/requireTenantWrite/);
+  });
+
+  it("el barrido rápido de retenciones está programado y protegido por un secreto", () => {
+    const cron = sinComentarios("src/app/api/cron/octo-holds/route.ts");
+    expect(cron).toMatch(/process\.env\.CRON_SECRET/);
+    expect(cron).toMatch(/await sweepExpiredOctoHolds\(companyId, now\)/);
+    const vercel = JSON.parse(read("vercel.json")) as { crons: { path: string; schedule: string }[] };
+    const entrada = vercel.crons.find((c) => c.path === "/api/cron/octo-holds");
+    expect(entrada, "el barrido de retenciones OCTO no está programado").toBeTruthy();
+    // Cada hora como mucho: una retención de OTA dura treinta minutos y un cron
+    // diario sería no tener ninguno.
+    expect(entrada!.schedule).toMatch(/^0 \*(\/[1-6])? \* \* \*$/);
+  });
+
+  it("solo se anuncian las capacidades que se cumplen", () => {
+    // Anunciar una que no se cumple hace que el revendedor deje de mandar los
+    // campos que compensaban su ausencia, y todo falla más tarde y peor.
+    const dominio = read("src/lib/octo.ts");
+    const lista = /export const SUPPORTED_CAPABILITIES: OctoCapability\[\] = \[([\s\S]*?)\];/.exec(dominio)?.[1] ?? "";
+    const anunciadas = [...lista.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(anunciadas.length).toBeGreaterThan(0);
+    // Cada una tiene que estar REALMENTE consultada en el código, no solo
+    // declarada.
+    const usadas = read("src/lib/octo.ts") + read("src/lib/octo-service.ts");
+    for (const cap of anunciadas) {
+      expect(usadas, `se anuncia ${cap} y no se usa en ninguna parte`).toContain(`"${cap}"`);
+    }
   });
 });
