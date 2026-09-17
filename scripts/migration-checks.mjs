@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0032-0057 tienen que haber creado.
+ * El inventario de lo que las migraciones 0021-0062 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -15,6 +15,61 @@
  * del enum es aceptable (22P02 cuando no), y `rpc` que la función está publicada.
  */
 export const MIGRATION_CHECKS = [
+  /**
+   * 0021 y 0030 — LAS COLUMNAS DE EJECUCIÓN.
+   *
+   * Este inventario empezaba en 0032, y esas dos migraciones se quedaron fuera
+   * justamente por ser las más antiguas. Fue un punto ciego real: la búsqueda
+   * sin acentos (0062) falló en producción con «column email does not exist»
+   * porque `seller.email` —que añade 0030— no estaba, y nadie lo había
+   * comprobado nunca.
+   *
+   * Y no era solo la búsqueda: sin esas columnas, PostgREST rechaza el UPDATE
+   * ENTERO al guardar un vendedor, así que escribir su teléfono perdía también
+   * el nombre. Es el mismo fallo que ya apareció con 0042 y 0044, en una
+   * migración que nadie miraba.
+   */
+  {
+    migration: "0021 — columnas de ejecución (primera ronda)",
+    columns: [
+      ["booking", ["booking_date"]],
+      ["product", ["sort_order"]],
+      ["product_modality", ["sort_order"]],
+    ],
+  },
+  {
+    migration: "0030 — columnas de ejecución (segunda ronda)",
+    columns: [
+      ["booking", ["unit_price", "hotel_id", "pickup_time", "pickup_location", "room_number",
+                   "voucher_code", "checked_in_at", "checked_in_pax", "override_reason",
+                   "notes", "internal_notes"]],
+      ["participant", ["full_name", "age", "nationality", "special_requirements", "notes"]],
+      ["voucher", ["issued_at", "notes"]],
+      ["departure", ["branch_id", "departure_time", "available_pax", "waitlist_pax",
+                     "meeting_point", "notes"]],
+      ["sales_order", ["promotion_id"]],
+      ["customer", ["hotel_id", "assigned_seller_id", "whatsapp", "language", "room",
+                    "address", "preferences"]],
+      // Las que tumbaron 0062 en producción.
+      ["seller", ["branch_id", "email", "phone", "whatsapp", "seller_role", "monthly_goal",
+                  "currency", "photo_url", "hire_date", "notes"]],
+      ["product", ["category_id", "short_description", "cover_image_url", "video_url",
+                   "location", "meeting_point", "duration_hours", "languages", "min_age",
+                   "default_capacity", "restrictions", "recommendations", "inclusions",
+                   "exclusions", "terms", "instructions", "base_cost", "featured"]],
+      ["product_modality", ["cost", "age_from", "age_to", "capacity_weight"]],
+      ["price_rule", ["time_from", "time_to"]],
+      ["zone", ["zone_type", "max_capacity", "current_occupancy", "requires_wristband"]],
+      ["cash_register", ["branch_id", "terminal"]],
+      ["cash_session", ["branch_id", "code", "difference", "card_total", "transfer_total",
+                        "expenses_total", "withdrawals_total", "notes"]],
+      ["commission", ["beneficiary_name", "generated_at", "notes"]],
+      ["commission_rule", ["category_id", "description"]],
+      ["settlement", ["sales_total", "cancellations_total", "notes"]],
+      ["receivable", ["notes"]],
+      ["payable", ["supplier_id", "concept", "paid_at", "notes"]],
+    ],
+  },
   {
     migration: "0032 — profundidad de la cotización",
     tables: ["quote_option"],
@@ -245,6 +300,75 @@ export const MIGRATION_CHECKS = [
                               "benefit_type", "benefit_id", "redemption_id", "uses_left",
                               "effect_kind", "amount_discounted", "status", "idempotency_key"]],
       ["booking", ["membego_benefit", "membego_discount"]],
+    ],
+  },
+  {
+    migration: "0058 — atribución comercial",
+    tables: ["seller_type", "seller_link", "seller_attribution"],
+    columns: [
+      ["seller_link", ["seller_id", "slug", "name", "channel", "product_id", "campaign", "status"]],
+      ["seller_attribution", ["seller_id", "link_id", "customer_id", "visitor_id",
+                              "stage", "channel", "landing", "campaign",
+                              "order_id", "booking_id"]],
+      ["seller", ["seller_type_id"]],
+      // Sin estas dos, la venta no puede decir POR QUÉ le tocó a ese vendedor.
+      ["sales_order", ["attribution_id", "attribution_policy"]],
+      ["organizations", ["attribution_policy", "attribution_window_days"]],
+    ],
+  },
+  {
+    migration: "0059 — profundidad de las comisiones",
+    tables: ["commission_adjustment"],
+    columns: [
+      ["commission_adjustment", ["commission_id", "amount", "currency", "reason",
+                                 "reason_code", "booking_id", "settlement_id", "created_by"]],
+      // Sin `breakdown` la comisión no se puede explicar, y sin `net_amount` la
+      // liquidación no sabe cuánto queda por pagar de verdad.
+      ["commission", ["breakdown", "pax_adults", "pax_children",
+                      "adjustment_total", "net_amount"]],
+      ["commission_rule", ["tier_basis", "effective_from", "effective_to"]],
+    ],
+    // Los tres tipos de cálculo por pasajero: sin ellos, una regla guardada con
+    // uno de ellos rompería el INSERT entero.
+    enums: [["commission_rule", "calc_type", "per_adult"]],
+  },
+  {
+    migration: "0060 — metas comerciales y bonos",
+    tables: ["seller_goal", "seller_bonus"],
+    columns: [
+      ["seller_goal", ["seller_id", "seller_type_id", "branch_id", "product_id", "category_id",
+                       "period", "period_from", "period_to",
+                       "target_signups", "target_bookings", "target_sales",
+                       "target_pax", "target_revenue", "currency", "reward", "status"]],
+      ["seller_bonus", ["seller_id", "goal_id", "description", "condition", "amount",
+                        "currency", "payout_kind", "status", "settlement_id",
+                        "awarded_at", "paid_at", "approved_by"]],
+      // Sin estas dos, la liquidación no puede separar lo que se transfiere de
+      // lo que ya se entregó, y la operadora transfiere de más.
+      ["settlement", ["bonus_total", "in_kind_total"]],
+    ],
+  },
+  {
+    migration: "0061 — combos y paquetes",
+    tables: ["product_bundle_item"],
+    columns: [
+      ["product_bundle_item", ["bundle_id", "product_id", "modality_id", "day_offset",
+                               "sort_order", "fixed_time", "allow_overlap", "is_optional"]],
+      ["product", ["is_bundle", "bundle_buffer_minutes"]],
+      // Sin estas dos, cancelar un paquete no encuentra sus actividades y
+      // quedan plazas bloqueadas en salidas sin ninguna reserva que las explique.
+      ["booking", ["bundle_booking_id", "bundle_item_id"]],
+    ],
+  },
+  {
+    migration: "0062 — búsqueda sin acentos",
+    columns: [
+      // Sin la columna, la búsqueda de personas vuelve a fallar con «jose
+      // perez» — y no da error: devuelve cero, que parece «no existe».
+      ["customer", ["search_text"]],
+      ["seller", ["search_text"]],
+      ["product", ["search_text"]],
+      ["supplier", ["search_text"]],
     ],
   },
 ];

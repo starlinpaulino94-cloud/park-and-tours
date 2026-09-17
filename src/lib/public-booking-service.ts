@@ -2,6 +2,7 @@ import "server-only";
 import { supabaseService } from "@/lib/supabase/service";
 import { createOrderWithBookings } from "@/lib/booking-service";
 import { subscriptionState } from "@/lib/plan";
+import { linkVisitorToCustomer, recordTouch, resolveLinkBySlug } from "@/lib/attribution-service";
 import {
   publicPageState, isPublishable, toPublicCard, splitName,
   type PublicProductRow, type PublicProductCard, type PublicRequest,
@@ -169,8 +170,17 @@ export async function loadPublicDepartures(
 
 /* ------------------------------------------------------- crear la reserva */
 
-/** La ficha del cliente: se reutiliza la que ya existe por correo o teléfono. */
-async function findOrCreateCustomer(orgId: string, request: PublicRequest): Promise<string> {
+/**
+ * La ficha del cliente: se reutiliza la que ya existe por correo o teléfono.
+ *
+ * Devuelve también si la ficha ACABA de nacer, porque el embudo lo necesita:
+ * «cliente captado» es la primera vez, no cada vez que el mismo señor vuelve a
+ * reservar. Contar las vueltas como captaciones premiaría al vendedor cuyos
+ * clientes repiten como si trajera clientes nuevos.
+ */
+async function findOrCreateCustomer(
+  orgId: string, request: PublicRequest
+): Promise<{ id: string; created: boolean }> {
   const sb = supabaseService();
   if (request.email || request.phone) {
     const query = sb.from("customer").select("id").eq("organization_id", orgId).limit(1);
@@ -191,7 +201,7 @@ async function findOrCreateCustomer(orgId: string, request: PublicRequest): Prom
         await sb.from("customer").update({ language: request.language })
           .eq("organization_id", orgId).eq("id", id);
       }
-      return id;
+      return { id, created: false };
     }
   }
 
@@ -212,7 +222,7 @@ async function findOrCreateCustomer(orgId: string, request: PublicRequest): Prom
     .select("id")
     .single();
   if (error) throw new Error(error.message);
-  return data.id as string;
+  return { id: data.id as string, created: true };
 }
 
 export interface PublicBookingResult {
@@ -225,15 +235,59 @@ export interface PublicBookingResult {
   travelDate: string | null;
 }
 
+/**
+ * Lo que el navegador trae del QR que trajo al cliente (0058).
+ *
+ * Las dos cosas vienen de cookies, o sea del cliente, así que ninguna se cree
+ * a ciegas: el slug se vuelve a resolver contra la base —un enlace borrado o de
+ * otra empresa no atribuye nada— y el visitante solo sirve para buscar hechos
+ * que ya están escritos.
+ */
+export interface VisitorTrace {
+  visitorId?: string | null;
+  referralSlug?: string | null;
+}
+
 export async function createPublicBooking(
   page: PublicPage,
   request: PublicRequest,
-  company: Company | null
+  company: Company | null,
+  trace: VisitorTrace = {}
 ): Promise<PublicBookingResult> {
   if (!page.org) throw Object.assign(new Error("La página no está disponible"), { status: 404 });
   const orgId = page.org.id;
 
-  const customerId = await findOrCreateCustomer(orgId, request);
+  const { id: customerId, created } = await findOrCreateCustomer(orgId, request);
+
+  /**
+   * Las visitas anónimas de este navegador pasan a ser de esta ficha.
+   *
+   * Sin esto, el conserje que trajo al cliente pierde la atribución justo en el
+   * momento en que ese visitante se convierte en cliente — que es el momento en
+   * que empieza a valer dinero.
+   */
+  await linkVisitorToCustomer(orgId, trace.visitorId, customerId);
+
+  /**
+   * El enlace se resuelve otra vez contra la base, aunque la cookie diga quién
+   * es. La cookie la escribe el cliente: creerle sería dejar que cualquiera se
+   * atribuyera las ventas de la operadora entera editando una cadena.
+   */
+  const link = trace.referralSlug ? await resolveLinkBySlug(trace.referralSlug) : null;
+  const sameCompany = link && link.companyId === orgId ? link : null;
+
+  if (sameCompany && created) {
+    await recordTouch({
+      companyId: orgId,
+      sellerId: sameCompany.sellerId,
+      linkId: sameCompany.linkId,
+      stage: "signup",
+      customerId,
+      visitorId: trace.visitorId,
+      channel: sameCompany.channel,
+      campaign: sameCompany.campaign,
+    });
+  }
 
   /**
    * El contexto de una venta SIN usuario.
@@ -256,6 +310,9 @@ export async function createPublicBooking(
   const result = await createOrderWithBookings(ctx, {
     customer_id: customerId,
     channel: "web",
+    // La cookie del visitante viaja hasta el motor de ventas: es lo único que
+    // encuentra al conserje que trajo a alguien que todavía no tenía ficha.
+    visitor_id: trace.visitorId || null,
     items: [
       {
         product_id: request.productId,

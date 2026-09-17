@@ -46,7 +46,9 @@ const dayLabel = (iso: string) =>
 const timeLabel = (iso: string) =>
   new Date(iso).toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit" });
 
-export function BookingEngine({ slug, page, locale: initial }: { slug: string; page: PublicPage; locale: Locale }) {
+export function BookingEngine({
+  slug, page, locale: initial, preselect = null,
+}: { slug: string; page: PublicPage; locale: Locale; preselect?: string | null }) {
   const org = page.org!;
   /**
    * El idioma se decide en el SERVIDOR y aquí solo se puede cambiar a mano.
@@ -97,6 +99,21 @@ export function BookingEngine({ slug, page, locale: initial }: { slug: string; p
   useEffect(() => {
     if (selected) window.scrollTo({ top: 0, behavior: "smooth" });
   }, [selected, done]);
+
+  /**
+   * El enlace del vendedor traía un producto: se abre solo, una vez.
+   *
+   * La guarda `!selected` importa más de lo que parece: sin ella, volver al
+   * catálogo desde la ficha reabriría el mismo producto al instante y no se
+   * podría salir de él.
+   */
+  useEffect(() => {
+    if (!preselect || selected || done) return;
+    const product = page.products.find((p) => p.id === preselect);
+    if (product) void openProduct(product);
+    // Solo al montar: reaccionar a `selected` volvería a abrirlo al cerrarlo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();

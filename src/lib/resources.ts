@@ -79,11 +79,97 @@ export const RESOURCES: Record<string, ResourceDef> = {
     writable: [
       "user", "partner", "branch", "code", "first_name", "last_name", "email", "phone", "whatsapp",
       "seller_role", "commission_pct", "monthly_goal", "max_discount_pct", "currency", "photo_url",
-      "hire_date", "status", "notes", "supervisor",
+      "hire_date", "status", "notes", "supervisor", "seller_type",
     ],
     numeric: ["commission_pct", "monthly_goal", "max_discount_pct"],
     dates: ["hire_date"],
     writeRole: "manager",
+  },
+  /**
+   * Los ajustes de comisión (0059): se LEEN aquí y se escriben SOLO por
+   * `/api/commissions/adjust`.
+   *
+   * `writable` vacío no es un descuido. Crear un ajuste por el CRUD genérico
+   * escribiría la fila y dejaría `net_amount` de la comisión sin recalcular —
+   * y un neto desfasado lo suma la liquidación del mes siguiente sin que nada
+   * avise. La ruta dedicada escribe el ajuste, sincroniza el neto y deja
+   * rastro, en ese orden.
+   */
+  commission_adjustment: {
+    table: "commission_adjustment",
+    search: ["reason"],
+    expand: { commission: true, booking: true },
+    sort: { created_at: "desc" },
+    writable: [],
+    writeRole: "manager",
+  },
+  product_bundle_item: {
+    table: "product_bundle_item",
+    search: [],
+    expand: { bundle: true, product: true, modality: true },
+    sort: { day_offset: "asc" },
+    writable: [
+      "bundle", "product", "modality", "day_offset", "sort_order",
+      "fixed_time", "allow_overlap", "is_optional",
+    ],
+    numeric: ["day_offset", "sort_order"],
+    booleans: ["allow_overlap", "is_optional"],
+    writeRole: "manager",
+  },
+  seller_goal: {
+    table: "seller_goal",
+    search: ["name", "reward"],
+    expand: { seller: true, seller_type: true, branch: true, product: true, category: true },
+    sort: { created_at: "desc" },
+    writable: [
+      "name", "seller", "seller_type", "branch", "product", "category",
+      "period", "period_from", "period_to",
+      "target_signups", "target_bookings", "target_sales", "target_pax", "target_revenue",
+      "currency", "reward", "status",
+    ],
+    numeric: ["target_signups", "target_bookings", "target_sales", "target_pax", "target_revenue"],
+    dates: ["period_from", "period_to"],
+    writeRole: "manager",
+  },
+  seller_bonus: {
+    table: "seller_bonus",
+    search: ["description", "notes"],
+    expand: { seller: true, goal: true, settlement: true },
+    sort: { awarded_at: "desc" },
+    writable: [
+      "seller", "goal", "description", "amount", "currency",
+      "payout_kind", "status", "notes",
+    ],
+    numeric: ["amount"],
+    writeRole: "manager",
+  },
+  seller_type: {
+    table: "seller_type",
+    search: ["name"],
+    sort: { name: "asc" },
+    writable: ["name", "description", "status"],
+    writeRole: "manager",
+  },
+  seller_link: {
+    table: "seller_link",
+    search: ["slug", "name", "campaign"],
+    expand: { seller: true, product: true },
+    sort: { created_at: "desc" },
+    writable: ["seller", "slug", "name", "channel", "product", "campaign", "status"],
+    writeRole: "manager",
+  },
+  /**
+   * El embudo se LEE y no se escribe: es un histórico, y la base lo sostiene
+   * con un disparador (0058). `writable` vacío no es un descuido — es lo que
+   * impide que el CRUD genérico abra una puerta que el esquema cierra.
+   */
+  seller_attribution: {
+    table: "seller_attribution",
+    search: ["visitor_id", "campaign"],
+    expand: { seller: true, customer: true, seller_link: true },
+    sort: { created_at: "desc" },
+    writable: [],
+    writeRole: "admin",
   },
   zone: {
     table: "zone",
@@ -133,6 +219,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     sort: { sort_order: "asc" },
     writable: [
       "category", "cancellation_policy", "name", "code", "product_type", "short_description", "description",
+      "is_bundle", "bundle_buffer_minutes",
       "cover_image_url", "video_url", "location", "meeting_point", "duration_hours", "languages",
       "min_age", "default_capacity", "restrictions", "recommendations", "inclusions", "exclusions",
       "terms", "instructions", "base_price", "base_cost", "currency", "featured", "sort_order", "status",
@@ -150,7 +237,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
       "duration_hours", "min_age", "default_capacity", "base_price", "base_cost", "sort_order",
       "deposit_percent", "deposit_amount", "balance_due_days", "public_price_from",
     ],
-    booleans: ["featured", "published"],
+    booleans: ["is_bundle", "featured", "published"],
     writeRole: "manager",
   },
   product_modality: {

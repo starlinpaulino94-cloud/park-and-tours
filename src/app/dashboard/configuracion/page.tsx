@@ -19,6 +19,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CHANNEL, COMPANY_TYPE, GENERIC_STATUS, MODALITY_TYPE, MODULE_LABEL } from "@/lib/labels";
 import { formatDate, formatMoney, formatNumber, formatPercent } from "@/lib/format";
 import { CURRENCY_OPTIONS, optionsFrom } from "@/components/tf/options";
+import { ATTRIBUTION_POLICIES, POLICY_LABEL } from "@/lib/attribution";
 import { passwordIssue, memberState, MEMBER_STATE_LABEL, type MemberState } from "@/lib/team";
 import {
   brandColor, readableOn, hasReadableContrast, contrastRatio, brandingGaps,
@@ -121,6 +122,51 @@ function CompanyForm() {
         <div className="space-y-1.5 sm:col-span-2">
           <Label>Dirección</Label>
           <Textarea rows={2} value={company.address || ""} onChange={(e) => set("address", e.target.value)} />
+        </div>
+
+        {/* --------------------------------- quién trajo al cliente (0058) */}
+        <div className="space-y-3 rounded-xl border border-border p-4 sm:col-span-2">
+          <div className="min-w-0">
+            <p className="font-medium">A quién se le paga cuando el cliente vino por un QR</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              El conserje de un hotel pega tu QR en su mostrador y el cliente entra por ahí. Tres días
+              después la venta la cierra tu mostrador. Esto decide de quién es esa venta.
+              Se aplica <strong>al vender</strong>: cambiarlo no reescribe las ventas ya atribuidas.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>Política</Label>
+              <Select
+                value={company.attribution_policy || "first"}
+                onValueChange={(v) => set("attribution_policy", v)}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {ATTRIBUTION_POLICIES.map((p) => (
+                    <SelectItem key={p} value={p}>{POLICY_LABEL[p]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                «Primer contacto» premia traer clientes nuevos. «Último» premia cerrar.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="attr-window">Caduca a los (días)</Label>
+              <Input
+                id="attr-window" type="number" min="0" max="3650"
+                value={company.attribution_window_days ?? ""}
+                onChange={(e) => set("attribution_window_days",
+                  e.target.value === "" ? null : Number(e.target.value))}
+                placeholder="30"
+              />
+              <p className="text-xs text-muted-foreground">
+                Un QR escaneado hace ocho meses no trajo la venta de hoy. Pon <strong>0</strong> si tu
+                acuerdo con el hotel no caduca.
+              </p>
+            </div>
+          </div>
         </div>
 
         {/* ------------------------------------------------- la marca (0055) */}

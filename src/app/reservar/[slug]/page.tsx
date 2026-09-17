@@ -81,5 +81,16 @@ export default async function Page({
     acceptLanguage: (await headers()).get("accept-language"),
   });
 
-  return <BookingEngine slug={slug} page={page} locale={locale} />;
+  /**
+   * El producto que traía el enlace del vendedor (0058).
+   *
+   * Un QR que dice «Saona» tiene que abrir Saona, no el catálogo entero: el
+   * cliente ya eligió al escanear, y hacerle buscar otra vez lo que acaba de
+   * pedir es la forma más barata de perderlo. Se comprueba contra el catálogo
+   * publicado, así que un id inventado en la URL no abre nada.
+   */
+  const wanted = Array.isArray(query.p) ? query.p[0] : query.p;
+  const preselect = page.products.some((product) => product.id === wanted) ? String(wanted) : null;
+
+  return <BookingEngine slug={slug} page={page} locale={locale} preselect={preselect} />;
 }

@@ -6,6 +6,7 @@ import { settleBookingStock } from "@/lib/stock-commitment-service";
 import { releaseBookingAllotment } from "@/lib/allotment-service";
 import { reverseForOrder } from "@/lib/membego-redemption-service";
 import { syncOrderTotals } from "@/lib/booking-service";
+import { settleCommissionsOnCancel } from "@/lib/commission-adjust-service";
 import { postPayment } from "@/lib/ledger-events";
 import { writeAudit } from "@/lib/audit";
 import { notifyBookingCancelled } from "@/lib/messaging/events";
@@ -56,6 +57,13 @@ export interface CancelResult {
   refundPct: number;
   policyName: string;
   commissionsVoided: number;
+  /**
+   * Comisiones YA PAGADAS cuya venta se cayó (0059): no se anulan, se ajustan.
+   * `commissionClawback` es lo que hay que recuperar en la próxima liquidación
+   * — quien cancela tiene que verlo, no enterarse un mes después.
+   */
+  commissionsAdjusted: number;
+  commissionClawback: number;
   pickupsCancelled: number;
   supplierCostsCancelled: number;
 }
@@ -125,16 +133,51 @@ export async function cancelBookingFully(
     await tenantUpdate(ctx.companyId, "pickup", pickup._id, { status: "cancelled", route: null });
   }
 
-  // ---- void commissions --------------------------------------------------
-  const commissions = await tenantQuery<{ _id: string; status?: string }>(ctx.companyId, "commission", {
-    _filter: { booking: id, status: { in: ["pending", "approved"] } }, _limit: 50,
+  /**
+   * CANCELAR UN PAQUETE CANCELA SUS ACTIVIDADES (0061).
+   *
+   * Sin esto, cancelar la cabecera dejaría tres reservas vivas ocupando plazas
+   * en tres salidas, con importe cero y sin nadie que las reclame: el
+   * manifiesto del autobús llevaría a cuatro personas que no van a subir.
+   *
+   * Se hace ANTES de tocar la cabecera para que cada componente libere su cupo
+   * por el mismo camino que cualquier otra reserva — el que ya sabe devolver
+   * plazas a su cupo de socio y soltar sus existencias.
+   */
+  const components = await tenantQuery<Booking>(ctx.companyId, "booking", {
+    _filter: { bundle_booking: id }, _limit: 50,
   });
-  for (const c of commissions) {
-    await tenantUpdate(ctx.companyId, "commission", c._id, {
-      status: "cancelled",
-      notes: "Anulada por cancelación de la reserva",
+  for (const component of components) {
+    if (TERMINAL_STATES.includes(component.status || "")) continue;
+    /**
+     * Sin `refundOverride`, y no por descuido.
+     *
+     * Un componente vale cero, así que el prorrateo de los pagos le asigna cero
+     * cobrado y la política le calcula un reembolso de cero por su cuenta.
+     * Forzarlo a cero a mano tendría además un efecto que no se ve: la ruta
+     * exige rango de gerencia para cualquier reembolso forzado, y un vendedor
+     * cancelando su propio paquete se encontraría con un «no tienes permiso»
+     * que no viene de ninguna decisión suya.
+     */
+    await cancelBookingFully(ctx, component, {
+      ...options,
+      reason: `Paquete ${booking.booking_number ?? id} cancelado`,
     });
   }
+
+  // ---- las comisiones (0059) --------------------------------------------
+  //
+  // Antes esto anulaba las `pending` y `approved` y NO TOCABA las `settled` ni
+  // las `paid`. O sea: el dinero había salido, la venta se caía, y no quedaba
+  // ni rastro de que hubiera que recuperarlo — la liquidación del mes siguiente
+  // cuadraba con una venta que ya no existe.
+  //
+  // Ahora una comisión cuyo dinero salió se AJUSTA en negativo y conserva su
+  // estado: sigue diciendo que se pagó, porque se pagó, y el ajuste dice que se
+  // descontó. Las dos cifras a la vista.
+  const commissionOutcome = await settleCommissionsOnCancel(
+    ctx, id, String(booking.booking_number ?? id)
+  );
 
   // ---- cancelar el devengo del proveedor (0040) --------------------------
   // Una reserva cancelada no le debe nada al transportista ni al restaurante.
@@ -284,7 +327,9 @@ export async function cancelBookingFully(
     refund,
     refundPct,
     policyName,
-    commissionsVoided: commissions.length,
+    commissionsVoided: commissionOutcome.voided,
+    commissionsAdjusted: commissionOutcome.adjusted,
+    commissionClawback: commissionOutcome.clawback,
     pickupsCancelled: pickupsToCancel.length,
     supplierCostsCancelled: cancelledCosts,
   };

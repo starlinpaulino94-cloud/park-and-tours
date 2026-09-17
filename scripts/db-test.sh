@@ -25,9 +25,18 @@ trap cleanup EXIT
 # Postgres no corre como root: si somos root, delegamos en el usuario postgres.
 RUN=(); if [ "$(id -u)" = "0" ]; then RUN=(runuser -u postgres --); chown -R postgres:postgres "$WORK"; fi
 
-"${RUN[@]}" initdb -D "$PGDATA" -A trust >/dev/null
+# UTF-8 EXPLÍCITO, y no el que salga del entorno.
+#
+# Sin esto, `initdb` hereda la configuración regional del contenedor —que suele
+# ser C— y crea la base en SQL_ASCII. En SQL_ASCII, Postgres trata cada carácter
+# multibyte como bytes sueltos: `translate('José', 'é', 'e')` devuelve basura, y
+# la columna de búsqueda normalizada de 0062 dejaría de encontrar acentos.
+#
+# Producción es UTF-8. Una prueba que corre con otra codificación comprueba otra
+# base, y justo el día que importa dice que todo está bien.
+"${RUN[@]}" initdb -D "$PGDATA" -A trust --encoding=UTF8 --no-locale >/dev/null
 "${RUN[@]}" pg_ctl -D "$PGDATA" -o "-p $PGPORT -k $PGHOST -c listen_addresses=''" -w start >/dev/null
-"${RUN[@]}" createdb -h "$PGHOST" -p "$PGPORT" appdb
+"${RUN[@]}" createdb -h "$PGHOST" -p "$PGPORT" -E UTF8 appdb
 
 psql_run() { "${RUN[@]}" psql -h "$PGHOST" -p "$PGPORT" -d appdb -v ON_ERROR_STOP=1 -q "$@"; }
 

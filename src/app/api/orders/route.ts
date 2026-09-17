@@ -26,6 +26,12 @@ export async function POST(req: NextRequest) {
       delete item.unit_price_override;
       delete item.cost_override;
       delete item.quote_id;
+      // 0061 — las marcas de componente de paquete las pone la expansión del
+      // servidor. Poder declararse uno a mano sería poder regalarse cualquier
+      // excursión: un componente se cobra a cero.
+      delete item.bundle_component;
+      delete item.bundle_item_id;
+      delete item.bundle_group;
     }
 
     // Capacity override is a privileged action.

@@ -61,6 +61,12 @@ export const RELATION_RESOURCE: Record<string, string> = {
   parent: "ledger_account",
   revision_of: "quote",
   selected_option: "quote_option",
+  seller_link: "seller_link",
+  goal: "seller_goal",
+  bundle: "product",
+  bundle_booking: "booking",
+  bundle_item: "product_bundle_item",
+  seller_type: "seller_type",
   parent_partner: "partner",
   pickup_hotel: "hotel",
   product_modality: "product_modality",
@@ -80,6 +86,7 @@ export const RELATION_RESOURCE: Record<string, string> = {
 export const TABLE_RELATION_RESOURCE: Record<string, Record<string, string>> = {
   product: { category: "product_category" },
   commission_rule: { category: "product_category" },
+  seller_goal: { category: "product_category" },
   expense: { category: "expense_category" },
 };
 

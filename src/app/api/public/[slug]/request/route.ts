@@ -6,6 +6,7 @@ import { readPublicRequest, confirmationNote, REQUEST_PROBLEM_MESSAGE } from "@/
 import { writeAudit } from "@/lib/audit";
 import { notify } from "@/lib/notify-service";
 import { flushOutboxAfterResponse } from "@/lib/messaging/flush";
+import { VISITOR_COOKIE, REFERRAL_COOKIE } from "@/lib/attribution";
 import type { Company } from "@/lib/types";
 
 /**
@@ -80,7 +81,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     }
 
     const company = { _id: page.org.id, name: page.org.name, base_currency: page.org.currency } as Company;
-    const result = await createPublicBooking(page, request, company);
+    /**
+     * El rastro del QR que trajo al cliente (0058).
+     *
+     * Son cookies, o sea datos del cliente, y por eso no se cree ninguna de las
+     * dos: el slug se vuelve a resolver contra la base y el visitante solo sirve
+     * para buscar hechos ya escritos. Lo peor que puede hacer una cookie
+     * inventada es no atribuir nada.
+     */
+    const result = await createPublicBooking(page, request, company, {
+      visitorId: req.cookies.get(VISITOR_COOKIE)?.value ?? null,
+      referralSlug: req.cookies.get(REFERRAL_COOKIE)?.value ?? null,
+    });
 
     await writeAudit({
       companyId: page.org.id,

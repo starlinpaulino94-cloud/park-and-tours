@@ -17,6 +17,8 @@ import { reserveForSale, stockableOffers } from "@/lib/stock-commitment-service"
 import { assertAllotment, consumeAllotment } from "@/lib/allotment-service";
 import { allotmentState, type AllotmentRow } from "@/lib/allotments";
 import { priceExtras, unknownSelections, type ExtraOffer, type ExtraSelection } from "@/lib/extras";
+import { resolveOrderAttribution, recordTouch, recordPurchaseOnce } from "@/lib/attribution-service";
+import { planBundle, loadBundle } from "@/lib/bundle-service";
 import type {
   Booking, Channel, Currency, Departure, Order, Partner, Product, Seller,
 } from "@/lib/types";
@@ -41,6 +43,26 @@ export interface BookingItemInput {
   infants?: number;
   discount_pct?: number;
   tax_pct?: number;
+  /**
+   * Vender un PAQUETE (0061).
+   *
+   * El navegador manda solo esto: qué paquete y en qué día empieza. El servidor
+   * resuelve el itinerario, elige las salidas reales y expande la línea en la
+   * cabecera más sus componentes. Aceptar del cliente las salidas y sus precios
+   * sería un formulario de «pon tú qué te cobro».
+   */
+  bundle_start_day?: string | null;
+  /**
+   * Marcas que pone la EXPANSIÓN del servidor, nunca el cliente.
+   *
+   * La ruta las borra del cuerpo antes de llegar aquí, igual que hace con
+   * `unit_price_override`: un componente de paquete se cobra a cero, así que
+   * poder declararse uno a mano sería poder regalarse cualquier excursión.
+   */
+  bundle_component?: boolean;
+  bundle_item_id?: string | null;
+  /** Índice de la cabecera a la que pertenece este componente. */
+  bundle_group?: number | null;
   pickup_hotel_id?: string | null;
   pickup_time?: string | null;
   pickup_location?: string | null;
@@ -93,6 +115,15 @@ export interface CreateOrderInput {
    * siempre auditada: la ruta HTTP exige rango de manager.
    */
   allow_over_credit?: boolean;
+  /**
+   * La cookie del visitante (0058).
+   *
+   * Solo llega de la web pública. Sirve para encontrar al conserje que trajo a
+   * un cliente que TODAVÍA no tenía ficha cuando escaneó el QR: sin ella, esa
+   * atribución solo existiría para quien ya era cliente, que es justo el caso
+   * en el que no hace falta.
+   */
+  visitor_id?: string | null;
   terms?: {
     deposit_type?: string | null;
     deposit_percent?: number | null;
@@ -120,6 +151,103 @@ function toCount(value: unknown): number {
 }
 
 /**
+ * EXPANDE LOS PAQUETES ANTES DE VENDER (0061).
+ *
+ * Una línea de paquete se convierte en N+1: la CABECERA con el precio del
+ * paquete —sin salida, porque el paquete no sale ningún día: salen sus
+ * actividades— y un COMPONENTE por actividad, con su salida real, sus
+ * pasajeros y su importe a CERO.
+ *
+ * Se hace aquí, en el servidor, y no en el navegador: el cliente dice qué
+ * paquete y qué día, y nada más. Si mandara las salidas, mandaría también
+ * cuáles tienen sitio; si mandara los componentes, se cobraría a sí mismo cero
+ * por una excursión suelta.
+ *
+ * Si el itinerario no se puede armar, la venta se rechaza AQUÍ, antes de
+ * escribir nada. Vender medio paquete y descubrirlo después deja plazas
+ * bloqueadas y a un cliente con la mitad de lo que compró.
+ */
+async function expandBundles(
+  ctx: TenantContext & { companyId: string },
+  items: BookingItemInput[]
+): Promise<BookingItemInput[]> {
+  const out: BookingItemInput[] = [];
+
+  for (const item of items) {
+    // Las marcas internas nunca llegan del cliente: la ruta las borra. Si
+    // alguna llegara igual, se ignora — una línea suelta no es un componente.
+    const clean: BookingItemInput = { ...item };
+    delete clean.bundle_component;
+    delete clean.bundle_item_id;
+    delete clean.bundle_group;
+
+    const [product] = await tenantQuery<Product & { is_bundle?: boolean }>(
+      ctx.companyId, "product", { _filter: { _id: item.product_id }, _limit: 1 }
+    );
+    if (!product?.is_bundle) {
+      out.push(clean);
+      continue;
+    }
+
+    const adults = toCount(item.adults);
+    const children = toCount(item.children);
+    const infants = toCount(item.infants);
+    const pax = Math.max(1, adults + children + infants);
+
+    const startDay = (item.bundle_start_day || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDay)) {
+      throw Object.assign(
+        new Error(`Falta el día en que empieza el paquete «${product.name}».`),
+        { status: 400 }
+      );
+    }
+
+    const definition = await loadBundle(ctx.companyId, String(item.product_id));
+    if (!definition || definition.items.length === 0) {
+      throw Object.assign(
+        new Error(`El paquete «${product.name}» no tiene ninguna actividad configurada.`),
+        { status: 400 }
+      );
+    }
+
+    const plan = await planBundle(ctx, { bundleId: String(item.product_id), startDay, pax });
+    if (!plan || plan.blocker) {
+      throw Object.assign(
+        new Error(plan?.blocker || `No se pudo armar el itinerario de «${product.name}».`),
+        { status: 409 }
+      );
+    }
+
+    // La cabecera guarda el precio y la fecha de viaje del paquete: la de su
+    // primera actividad, que es cuando el cliente tiene que estar en el lobby.
+    const headerIndex = out.length;
+    out.push({ ...clean, bundle_start_day: startDay });
+
+    for (const block of plan.blocks) {
+      out.push({
+        product_id: block.productId,
+        departure_id: block.departureId,
+        modality_id: definition.items.find((i) => i.id === block.itemId)?.modalityId ?? null,
+        // Los mismos pasajeros en cada actividad: el paquete lo compra el grupo
+        // entero. Si alguien no fuera a una de ellas, sería otro producto.
+        adults, children, infants,
+        bundle_component: true,
+        bundle_item_id: block.itemId,
+        bundle_group: headerIndex,
+        // Cero, y por el camino del precio pactado: así el snapshot dice que
+        // fue una decisión y no un producto que vale cero en el catálogo.
+        unit_price_override: 0,
+        pickup_hotel_id: item.pickup_hotel_id,
+        pickup_location: item.pickup_location,
+        room_number: item.room_number,
+      });
+    }
+  }
+
+  return out;
+}
+
+/**
  * Estimación del total de una venta antes de construirla.
  *
  * Solo la usa el control de crédito. Resuelve el precio de cada línea con el
@@ -131,7 +259,15 @@ async function estimateOrderTotal(
   companyId: string,
   input: CreateOrderInput,
   currency: Currency,
-  exchangeRate: number
+  exchangeRate: number,
+  /**
+   * El vendedor que se llevará la venta, ya resuelto por el histórico (0058).
+   *
+   * Va como parámetro y no se lee de `input` porque una regla de precio por
+   * vendedor cambia el importe: estimar con uno y cobrar con otro le enseñaría
+   * al control de crédito una cifra que no es la que se va a facturar.
+   */
+  sellerId: string | null
 ): Promise<number> {
   let total = 0;
   for (const item of input.items) {
@@ -148,7 +284,7 @@ async function estimateOrderTotal(
       productId: item.product_id,
       modalityId: item.modality_id,
       partnerId: input.partner_id,
-      sellerId: input.seller_id,
+      sellerId,
       channel: (input.channel || "direct") as Channel,
       quantity: billable,
       travelDate: departure?.departure_at ?? null,
@@ -183,6 +319,16 @@ export async function createOrderWithBookings(
   if (!input.items?.length) throw new Error("La orden debe incluir al menos un producto");
 
   const companyId = ctx.companyId;
+
+  /**
+   * Los paquetes se expanden ANTES de nada (0061).
+   *
+   * A partir de aquí no hay paquetes: hay una cabecera con el precio y N
+   * componentes con su salida. Todo lo que viene después —el cupo, el cupo del
+   * socio, el precio, las comisiones, el plan de cobro— funciona igual que
+   * siempre porque ya no tiene nada raro delante.
+   */
+  input = { ...input, items: await expandBundles(ctx, input.items) };
   const currency = (input.currency || ctx.company?.base_currency || "usd") as Currency;
   // AUD-F30: resolve the base-currency rate on the server from `currency_rate`,
   // never trusting the client's `exchange_rate` (which defaulted to 1 and made
@@ -191,6 +337,39 @@ export async function createOrderWithBookings(
   const exchangeRate = await resolveExchangeRate(companyId, currency, baseCurrency);
   const holdHours = Number((ctx.company as { hold_hours?: number } | null)?.hold_hours ?? 0) || 0;
   const channel = (input.channel || "direct") as Channel;
+
+  /**
+   * QUIÉN SE LLEVA ESTA VENTA (0058).
+   *
+   * Solo se pregunta cuando nadie lo ha dicho ya. Un vendedor escogido a mano
+   * en el punto de venta es una decisión de una persona que está delante del
+   * cliente: pisarla con el histórico sería discutirle a quien vendió quién
+   * vendió.
+   *
+   * Cuando no lo ha dicho nadie —la web, la API, una reserva que entra sola—
+   * el histórico decide con la política de la empresa. Si no hay nadie vivo,
+   * `null`: la venta es directa de la empresa, que es la verdad, y no un hueco
+   * que haya que rellenar con el último vendedor que pasó por ahí.
+   */
+  let attributedSeller = input.seller_id || null;
+  let attributionId: string | null = null;
+  let attributionPolicy: string | null = null;
+  if (!attributedSeller) {
+    const attribution = await resolveOrderAttribution(
+      companyId,
+      { customerId: input.customer_id, visitorId: input.visitor_id },
+      ctx.company as { attribution_policy?: string | null; attribution_window_days?: number | null } | null
+    );
+    if (attribution) {
+      attributedSeller = attribution.sellerId;
+      attributionId = attribution.attributionId;
+      attributionPolicy = attribution.policy;
+      console.log(
+        `[booking-service] venta atribuida por histórico (${attribution.policy}) al vendedor ${attribution.sellerId}`
+      );
+    }
+  }
+
 
   // ---- validate capacity before writing anything --------------------------
   // AUD-B01: aggregate requested pax PER DEPARTURE across all items. Previously
@@ -285,7 +464,7 @@ export async function createOrderWithBookings(
       // Se estima con el precio de catálogo antes de armar las reservas: es
       // aproximado a propósito, porque la alternativa es construir la venta
       // entera para descubrir al final que no cabía.
-      const estimate = await estimateOrderTotal(companyId, input, currency, exchangeRate);
+      const estimate = await estimateOrderTotal(companyId, input, currency, exchangeRate, attributedSeller);
       const verdict = creditCheck(creditTerms, outstanding, estimate);
       if (!verdict.allowed && input.allow_over_credit !== true) {
         throw Object.assign(new Error(verdict.reason || "Supera el límite de crédito"), { status: 409 });
@@ -309,7 +488,12 @@ export async function createOrderWithBookings(
     // venta del tour center nacía sin sucursal y el corte por punto de venta
     // dejaba fuera justo lo que se quería separar.
     branch: input.branch_id || ctx.branchId || undefined,
-    seller: input.seller_id || undefined,
+    seller: attributedSeller || undefined,
+    // Se congela el hecho concreto que ganó. Sin esto, una comisión discutida
+    // seis semanas después solo se podría defender repitiendo el cálculo con
+    // las reglas de hoy, que son justo las que pueden haber cambiado.
+    attribution: attributionId || undefined,
+    attribution_policy: attributionPolicy || undefined,
     partner: input.partner_id || undefined,
     promotion: input.promotion_id || undefined,
     // Vacío en una reserva del motor público: no la creó nadie del equipo, y
@@ -386,7 +570,7 @@ export async function createOrderWithBookings(
       productId: item.product_id,
       modalityId: item.modality_id,
       partnerId: input.partner_id,
-      sellerId: input.seller_id,
+      sellerId: attributedSeller,
       channel,
       quantity: billable,
       travelDate,
@@ -466,7 +650,7 @@ export async function createOrderWithBookings(
       departure: item.departure_id || undefined,
       modality: item.modality_id || undefined,
       branch: input.branch_id || ctx.branchId || undefined,
-      seller: input.seller_id || undefined,
+      seller: attributedSeller || undefined,
       partner: input.partner_id || undefined,
       // 0054 — de qué cupo salieron estas plazas, para poder devolverlas a SU
       // cupo al cancelar. Si el contrato cambia de temporada entre la venta y
@@ -707,12 +891,56 @@ export async function createOrderWithBookings(
     });
   }
 
+  /**
+   * Cada componente apunta a su cabecera (0061).
+   *
+   * Se hace después de crear todas las reservas porque la cabecera no tiene id
+   * hasta entonces. `bookings[i]` corresponde a `input.items[i]`: el bucle de
+   * arriba escribe una reserva por línea, en orden.
+   *
+   * Sin este enlace, cancelar el paquete no encontraría sus actividades y
+   * quedarían plazas bloqueadas en tres salidas sin ninguna reserva que las
+   * explicara.
+   */
+  for (let i = 0; i < input.items.length; i++) {
+    const item = input.items[i];
+    if (!item.bundle_component || item.bundle_group == null) continue;
+    const header = bookings[item.bundle_group];
+    const component = bookings[i];
+    if (!header?._id || !component?._id) continue;
+    await tenantUpdate(companyId, "booking", component._id, {
+      bundle_booking: header._id,
+      bundle_item: item.bundle_item_id || undefined,
+    });
+  }
+
   await writeAudit({
     companyId, userId: ctx.userId,
     action: "order_created",
     entityType: "order", entityId: order._id,
     description: `Orden ${order.order_number} creada con ${bookings.length} reserva(s) por ${totals.total} ${currency}`,
   });
+
+  /**
+   * El paso «reserva» del embudo (0058).
+   *
+   * Fuera de la saga y a prueba de fallos, como los avisos: que no se anote
+   * quién trajo al cliente es un problema del informe de mañana; que no se
+   * pueda vender lo es de hoy. Sin vendedor no se anota nada, porque una
+   * reserva directa de la empresa no es del embudo de nadie.
+   */
+  if (attributedSeller) {
+    await recordTouch({
+      companyId,
+      sellerId: attributedSeller,
+      stage: "booking",
+      customerId: input.customer_id,
+      visitorId: input.visitor_id,
+      channel,
+      orderId: order._id,
+      bookingId: bookings[0]?._id ?? null,
+    });
+  }
 
   // ---- calendario de cobro (0039) ---------------------------------------
   // Fuera de la saga y tolerante a fallos, igual que los avisos: una venta ya
@@ -991,6 +1219,11 @@ export async function generateCommissionsForBooking(
       supervisorId: supervisor?._id ?? null,
       channel: booking.channel ?? null,
       travelDate: meta.travelDate,
+      // La venta es de hoy: es lo que decide si una campaña de comisiones
+      // vigente «para lo que se venda en octubre» aplica a esta.
+      saleDate: new Date().toISOString(),
+      adults: booking.adults ?? 0,
+      children: booking.children ?? 0,
     },
     beneficiaries
   );
@@ -1012,6 +1245,16 @@ export async function generateCommissionsForBooking(
       status: "pending",
       generated_at: new Date().toISOString(),
       snapshot: JSON.stringify(c.snapshot),
+      // 0059 — la frase que se imprime en la liquidación, y los pasajeros
+      // congelados: recalcular un «por adulto» de hace tres meses tendría que
+      // volver a la reserva, que puede haberse reprogramado con otra gente.
+      breakdown: c.breakdown,
+      pax_adults: c.pax_adults,
+      pax_children: c.pax_children,
+      // Sin ajustes, el neto ES el importe. Nacer en nulo haría que la
+      // liquidación leyera cero para todo lo recién generado.
+      adjustment_total: 0,
+      net_amount: c.amount,
     });
   }
   return resolved.length;
@@ -1050,6 +1293,27 @@ export async function syncOrderTotals(companyId: string, orderId: string): Promi
   await tenantUpdate(companyId, "order", orderId, {
     total, paid_total: paid, balance, status,
   });
+
+  /**
+   * El paso «compra» del embudo (0058): una venta cobrada del todo.
+   *
+   * Se anota aquí y no al crear la orden porque una reserva que nadie paga no
+   * es una compra, y contarla como tal inflaría el cierre de quien deja
+   * reservas colgadas por encima del que cobra. `recordPurchaseOnce` se encarga
+   * de que cobrar en tres plazos no deje tres compras.
+   */
+  if (status === "paid") {
+    const order = (await tenantQuery<Order>(companyId, "order", {
+      _filter: { _id: orderId }, _limit: 1,
+    }))[0];
+    const sellerId = refId(order?.seller);
+    if (sellerId) {
+      await recordPurchaseOnce(companyId, orderId, sellerId, {
+        customerId: refId(order?.customer),
+        channel: (order?.channel as string) ?? null,
+      });
+    }
+  }
 
   // Propagate the payment state down to the bookings.
   for (const b of bookings) {

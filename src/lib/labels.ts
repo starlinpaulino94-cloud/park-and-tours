@@ -264,6 +264,24 @@ export const SELLER_ROLE: Record<string, LabelDef> = {
   agent: def("Agente", "neutral"),
 };
 
+/** Los canales de un enlace del vendedor (0058). */
+export const LINK_CHANNEL: Record<string, LabelDef> = {
+  qr: def("QR impreso", "violet"),
+  link: def("Enlace"),
+  whatsapp: def("WhatsApp", "success"),
+  social: def("Redes sociales", "info"),
+  email: def("Correo", "accent"),
+  print: def("Material impreso", "neutral"),
+};
+
+/** Las etapas del embudo de captación (0058). */
+export const FUNNEL_STAGE: Record<string, LabelDef> = {
+  visit: def("Visita"),
+  signup: def("Cliente captado", "info"),
+  booking: def("Reserva", "accent"),
+  purchase: def("Compra", "success"),
+};
+
 export const STAFF_TYPE: Record<string, LabelDef> = {
   guide: def("Guía", "success"),
   driver: def("Conductor", "info"),
@@ -329,8 +347,53 @@ export const CALC_TYPE: Record<string, LabelDef> = {
   fixed: def("Monto fijo", "accent"),
   tiered: def("Escalonado", "violet"),
   volume: def("Por volumen", "warning"),
-  net_rate: def("Tarifa neta", "success"),
-  markup: def("Markup", "warning"),
+  // La tarifa neta y el markup NO son porcentajes sobre la venta, y hasta 0059
+  // se calculaban como si lo fueran. La etiqueta lo dice para que quien elige
+  // sepa qué está eligiendo.
+  net_rate: def("Tarifa neta por pasajero", "success"),
+  markup: def("Markup incluido en el precio", "warning"),
+  per_pax: def("Fijo por pasajero", "info"),
+  per_adult: def("Fijo por adulto", "info"),
+  per_child: def("Fijo por niño", "info"),
+};
+
+/** Los estados de un bono (0060). */
+export const BONUS_STATUS: Record<string, LabelDef> = {
+  pending: def("Pendiente de aprobar", "warning"),
+  approved: def("Aprobado", "info"),
+  settled: def("En liquidación", "accent"),
+  paid: def("Pagado", "success"),
+  cancelled: def("Anulado", "neutral"),
+};
+
+/**
+ * Cómo se paga un bono (0060).
+ *
+ * La distinción decide dinero: un premio en especie tiene valor para el
+ * expediente pero NO se transfiere. Sumarlo al total a pagar haría que la
+ * operadora transfiriera dinero por un pase que ya regaló.
+ */
+export const PAYOUT_KIND: Record<string, LabelDef> = {
+  cash: def("En efectivo", "success"),
+  in_kind: def("En especie", "violet"),
+};
+
+/** Los periodos de una meta comercial (0060). */
+export const GOAL_PERIOD: Record<string, LabelDef> = {
+  daily: def("Diaria"),
+  weekly: def("Semanal", "info"),
+  monthly: def("Mensual", "accent"),
+  range: def("Entre dos fechas", "violet"),
+};
+
+/** Los motivos de un ajuste de comisión (0059). */
+export const ADJUSTMENT_REASON: Record<string, LabelDef> = {
+  cancellation: def("Venta cancelada", "danger"),
+  refund: def("Reembolso al cliente", "warning"),
+  correction: def("Corrección", "info"),
+  bonus: def("Premio pactado", "success"),
+  clawback: def("Devolución de lo pagado de más", "danger"),
+  other: def("Otro", "neutral"),
 };
 
 export const ACTIVITY_TYPE: Record<string, LabelDef> = {

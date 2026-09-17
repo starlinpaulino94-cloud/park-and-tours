@@ -3710,3 +3710,264 @@ describe("i18n: que el huésped que no habla español entienda lo que compró", 
     expect(fuera, "claves de i18n fuera de las superficies del huésped").toEqual([]);
   });
 });
+
+describe("Quién trajo al cliente (0058)", () => {
+  /** El fuente sin comentarios: lo que se comprueba es el código, no la prosa. */
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("la cookie nunca dice quién es el vendedor: se vuelve a resolver contra la base", () => {
+    /**
+     * La cookie la escribe el cliente. Si guardara el id del vendedor —o el de
+     * la empresa—, cualquiera podría editarla y atribuirse las ventas de la
+     * operadora entera. Guarda el SLUG, y el slug se resuelve siempre.
+     */
+    const ruta = read("src/app/e/[slug]/route.ts");
+    expect(ruta).toContain("resolveLinkBySlug");
+    expect(ruta).toContain("REFERRAL_COOKIE, link.slug");
+    // Lo que NO puede aparecer: escribir el vendedor o la empresa en la cookie.
+    expect(ruta).not.toMatch(/cookies\.set\([^)]*link\.(sellerId|companyId)/);
+
+    // Y del lado de la venta, lo mismo: se resuelve, no se cree.
+    const servicio = read("src/lib/public-booking-service.ts");
+    expect(servicio).toContain("await resolveLinkBySlug(trace.referralSlug)");
+    // El enlace de OTRA empresa no atribuye nada en esta.
+    expect(servicio).toContain("link.companyId === orgId");
+  });
+
+  it("el embudo es de solo lectura desde el CRUD genérico", () => {
+    // La base lo sostiene con un disparador; esto impide que el recurso abra
+    // una puerta que el esquema cierra.
+    const recursos = read("src/lib/resources.ts");
+    const bloque = /seller_attribution:\s*\{([\s\S]*?)\n  \},/.exec(recursos)?.[1] ?? "";
+    expect(bloque, "no se encontró el recurso seller_attribution").not.toBe("");
+    expect(bloque).toMatch(/writable:\s*\[\s*\]/);
+  });
+
+  it("un vendedor escogido a mano no lo pisa el histórico", () => {
+    // Pisar la elección de quien está delante del cliente sería discutirle a
+    // quien vendió quién vendió.
+    const src = sinComentarios("src/lib/booking-service.ts");
+    expect(src).toMatch(/let attributedSeller = input\.seller_id \|\| null;/);
+    expect(src).toMatch(/if \(!attributedSeller\) \{\s*const attribution = await resolveOrderAttribution/);
+  });
+
+  it("la compra se anota una sola vez aunque se cobre a plazos", () => {
+    // Sin esto, quien cobra en tres plazos parecería el triple de bueno que
+    // quien cobra de una vez.
+    const src = read("src/lib/attribution-service.ts");
+    expect(src).toContain("recordPurchaseOnce");
+    expect(src).toMatch(/\.eq\("stage", "purchase"\)/);
+    const venta = sinComentarios("src/lib/booking-service.ts");
+    expect(venta).toMatch(/if \(status === "paid"\)/);
+  });
+
+  it("la pantalla dice «—» y no «0 %» cuando no hubo visitas", () => {
+    // Cero por ciento significa que vinieron y no compraron, que es un problema
+    // distinto y se arregla de otra manera.
+    const page = read("src/app/dashboard/vendedores/atribucion/page.tsx");
+    expect(page).toMatch(/value === null \? "—"/);
+    expect(page).toContain("Todavía no ha entrado nadie por un enlace");
+    // El QR se descarga del servidor, que es quien conoce el dominio real.
+    expect(page).toContain("/api/attribution/links/${l._id}/qr");
+  });
+});
+
+describe("Comisiones: explicarlas y corregirlas (0059)", () => {
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("cada tipo de cálculo del enum tiene su caso, ninguno cae al genérico", () => {
+    /**
+     * Esta es la guarda que faltaba. `net_rate` y `markup` se ofrecían en la
+     * pantalla y caían al `return` final, así que se pagaban como porcentaje —
+     * durante dos años, sin que nada avisara, porque una comisión mal calculada
+     * no da error: da una cifra.
+     */
+    const engine = read("src/lib/commission-engine.ts");
+    const labels = read("src/lib/labels.ts");
+    const tipos = /export const CALC_TYPE[\s\S]*?\n\};/.exec(labels)?.[0] ?? "";
+    expect(tipos, "no se pudo leer CALC_TYPE").not.toBe("");
+
+    const ofrecidos = [...tipos.matchAll(/^\s{2}(\w+):\s*def\(/gm)].map((m) => m[1]);
+    expect(ofrecidos.length).toBeGreaterThan(5);
+
+    const sinCaso = ofrecidos.filter((t) => !engine.includes(`case "${t}":`));
+    expect(sinCaso, "tipos de cálculo que la pantalla ofrece y el motor no implementa").toEqual([]);
+  });
+
+  it("un tipo desconocido paga cero pero lo dice en el desglose", () => {
+    // Callarse es exactamente lo que hizo el código anterior. Ese texto acaba
+    // impreso en la liquidación del vendedor, que es quien lo va a leer.
+    const engine = read("src/lib/commission-engine.ts");
+    expect(engine).toContain("no reconocido: comisión en cero");
+    expect(engine).toContain("revisa la regla");
+  });
+
+  it("una comisión ya pagada se ajusta, nunca se anula", () => {
+    // Bajar el importe a cero dejaría el histórico diciendo que siempre fue
+    // cero. El ajuste deja las dos cifras a la vista.
+    const dominio = sinComentarios("src/lib/commission-adjustments.ts");
+    expect(dominio).toMatch(/MONEY_IS_OUT = new Set<CommissionState>\(\["settled", "paid"\]\)/);
+
+    const servicio = sinComentarios("src/lib/commission-adjust-service.ts");
+    // Al ajustar NO se toca el estado: sigue pagada, porque se pagó.
+    const bloqueAjuste = /if \(effect\.action === "adjust"\) \{[\s\S]*?\n    \}/.exec(servicio)?.[0] ?? "";
+    expect(bloqueAjuste, "no se encontró el bloque de ajuste").not.toBe("");
+    expect(bloqueAjuste).not.toMatch(/status:\s*"cancelled"/);
+  });
+
+  it("la cancelación de una reserva ya no deja las comisiones pagadas sin tocar", () => {
+    // Antes anulaba `pending` y `approved` y NO MIRABA las `paid`: el dinero
+    // había salido y no quedaba rastro de que hubiera que recuperarlo.
+    const cancel = sinComentarios("src/lib/booking-cancel-service.ts");
+    expect(cancel).toContain("settleCommissionsOnCancel");
+    expect(cancel).not.toMatch(/status:\s*\{\s*in:\s*\["pending",\s*"approved"\]\s*\}/);
+  });
+
+  it("un ajuste no se crea por el CRUD genérico, que dejaría el neto desfasado", () => {
+    const recursos = read("src/lib/resources.ts");
+    const bloque = /commission_adjustment:\s*\{([\s\S]*?)\n  \},/.exec(recursos)?.[1] ?? "";
+    expect(bloque, "no se encontró el recurso commission_adjustment").not.toBe("");
+    expect(bloque).toMatch(/writable:\s*\[\s*\]/);
+
+    // Y la ruta dedicada sí sincroniza el neto.
+    const servicio = read("src/lib/commission-adjust-service.ts");
+    expect(servicio).toContain("syncCommissionNet");
+  });
+
+  it("la pantalla enseña el importe Y el ajuste, no uno en lugar del otro", () => {
+    const page = read("src/app/dashboard/comisiones/page.tsx");
+    expect(page).toContain("en ajustes");
+    expect(page).toContain('header: "A pagar"');
+    expect(page).toContain("/api/commissions/adjust");
+  });
+});
+
+describe("Metas y bonos (0060)", () => {
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("un premio en especie NO se transfiere: la liquidación lo separa", () => {
+    /**
+     * Es el fallo que esto evita: sumar un pase regalado al total a pagar hace
+     * que la operadora transfiera dinero por algo que ya entregó — y el
+     * vendedor no va a ser quien lo reporte.
+     */
+    const dominio = sinComentarios("src/lib/seller-goals.ts");
+    expect(dominio).toMatch(/if \(normalizePayoutKind\(bonus\.payout_kind\) === "in_kind"\) inKind \+= amount;/);
+    expect(dominio).toMatch(/return Math\.round\(\(num\(commissionNet\) \+ totals\.cash\) \* 100\) \/ 100;/);
+
+    // Y quien genera la liquidación transfiere solo lo que es dinero.
+    const generate = sinComentarios("src/app/api/settlements/generate/route.ts");
+    expect(generate).toMatch(/pending_total: round2\(commissionTotal \+ bonusTotals\.cash\)/);
+    expect(generate).toMatch(/in_kind_total: bonusTotals\.inKind/);
+    // Lo que se debe de verdad es lo mismo que se transfiere.
+    expect(generate).toMatch(/balance: round2\(commissionTotal \+ bonusTotals\.cash\)/);
+  });
+
+  it("la liquidación paga el NETO de la comisión, no lo que decía al nacer", () => {
+    // Una comisión con ajustes vale su neto (0059). Sumar `amount` pagaría otra
+    // vez lo que ya se descontó, y el descuadre aparecería en el banco.
+    const generate = sinComentarios("src/app/api/settlements/generate/route.ts");
+    expect(generate).toMatch(/commissionTotal \+= fresh\.net_amount \?\? fresh\.amount \?\? 0;/);
+  });
+
+  it("el progreso se mide, no se guarda en un contador", () => {
+    // Un contador denormalizado sería un segundo sitio donde se decide si
+    // alguien cobra su premio, y nadie mira un contador: solo la barra.
+    const servicio = sinComentarios("src/lib/seller-goals-service.ts");
+    expect(servicio).toContain('.from("seller_attribution")');
+    expect(servicio).toContain('.from("booking")');
+    // Y una reserva en borrador o cancelada no cuenta como venta.
+    expect(servicio).toMatch(/COUNTED_BOOKING = \[\s*"confirmed", "partially_paid", "paid", "checked_in", "completed",/);
+  });
+
+  it("una meta se cumple cuando se cumplen TODAS sus dimensiones", () => {
+    // «40 ventas y 150 pasajeros» es UNA meta con dos condiciones: dar por
+    // buena la primera y pagar el premio sería regalarlo a medias.
+    const dominio = sinComentarios("src/lib/seller-goals.ts");
+    expect(dominio).toMatch(/return lines\.length > 0 && lines\.every\(\(l\) => l\.met\);/);
+  });
+
+  it("el bono lo otorga una persona, no el sistema", () => {
+    // Un premio automático sobre una meta que alguien bajó el día 30 se pagaría
+    // sin que nadie lo mirara.
+    const servicio = sinComentarios("src/lib/seller-goals-service.ts");
+    expect(servicio).toContain("awardGoalBonus");
+    // Y no se otorga dos veces por dos clics o un reintento.
+    expect(servicio).toContain("ya tiene el bono de esta meta");
+    // Con la condición congelada dentro.
+    expect(servicio).toContain("achievementSnapshot");
+  });
+
+  it("la pantalla solo pinta lo que la meta pide", () => {
+    const page = read("src/app/dashboard/vendedores/metas/page.tsx");
+    expect(page).toContain("row.lines.map");
+    expect(page).toContain("Faltan ");
+    // Y avisa de que lo que está en especie no se transfiere.
+    expect(page).toContain("no se transfiere");
+  });
+});
+
+describe("Paquetes (0061)", () => {
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("el navegador dice QUÉ paquete y QUÉ día, y nada más", () => {
+    /**
+     * Si mandara las salidas, mandaría también cuáles tienen sitio. Si mandara
+     * los componentes, se cobraría a sí mismo cero por una excursión suelta —
+     * un componente de paquete vale cero por diseño.
+     */
+    const ruta = sinComentarios("src/app/api/orders/route.ts");
+    expect(ruta).toContain("delete item.bundle_component");
+    expect(ruta).toContain("delete item.bundle_item_id");
+    expect(ruta).toContain("delete item.bundle_group");
+
+    // Y la expansión las vuelve a borrar antes de decidir nada.
+    const servicio = sinComentarios("src/lib/booking-service.ts");
+    expect(servicio).toMatch(/delete clean\.bundle_component;/);
+  });
+
+  it("el itinerario se resuelve en el servidor, al vender", () => {
+    // Entre que se pintó la pantalla y se pulsó el botón, una salida puede
+    // haberse llenado. Confiar en un itinerario de hace tres minutos es vender
+    // una plaza que ya no existe.
+    const servicio = sinComentarios("src/lib/booking-service.ts");
+    expect(servicio).toContain("expandBundles");
+    expect(servicio).toMatch(/input = \{ \.\.\.input, items: await expandBundles\(ctx, input\.items\) \}/);
+    // Y si no se puede armar, la venta se rechaza antes de escribir nada.
+    expect(servicio).toMatch(/if \(!plan \|\| plan\.blocker\)/);
+  });
+
+  it("cancelar el paquete cancela sus actividades", () => {
+    // Sin esto quedarían tres reservas vivas ocupando plazas, con importe cero
+    // y sin nadie que las reclame: el manifiesto llevaría gente que no sube.
+    const cancel = sinComentarios("src/lib/booking-cancel-service.ts");
+    expect(cancel).toMatch(/_filter: \{ bundle_booking: id \}/);
+    expect(cancel).toContain("cancelBookingFully(ctx, component");
+  });
+
+  it("el motor no inventa salidas: solo usa las que están programadas y abiertas", () => {
+    const servicio = sinComentarios("src/lib/bundle-service.ts");
+    expect(servicio).toContain('.from("departure")');
+    // Una salida cerrada, llena o cancelada no sirve para armar nada.
+    expect(servicio).toMatch(/\.in\("status", \["available", "almost_full"\]\)/);
+  });
+
+  it("el día es el de la operadora, no el de UTC", () => {
+    // Una salida a las 21:00 de Santo Domingo es del día 10 allí y del 11 en
+    // UTC: resolver en UTC pondría un combo de un día en dos días distintos.
+    const servicio = sinComentarios("src/lib/bundle-service.ts");
+    expect(servicio).toContain("ctx.company as { timezone?: string }");
+    expect(servicio).toContain("dayOf(at, timeZone)");
+  });
+
+  it("la pantalla explica qué choca, no solo que no se puede", () => {
+    const page = read("src/app/dashboard/catalogo/paquetes/page.tsx");
+    expect(page).toContain("{plan.blocker}");
+    expect(page).toContain("plan.conflicts.map");
+    expect(page).toContain("la actividad más ajustada");
+  });
+});
