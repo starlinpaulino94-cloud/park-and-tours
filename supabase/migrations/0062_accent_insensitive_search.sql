@@ -63,6 +63,33 @@ as $$
   ));
 $$;
 
+-- ── las columnas de las que esto depende ───────────────────────────────────
+--
+-- ESTO NO ESTABA, Y POR ESO ESTA MIGRACIÓN FALLÓ EN PRODUCCIÓN.
+--
+-- La primera versión daba por hecho que existían las columnas que sus
+-- expresiones leen. En una base donde 0030 no se había aplicado del todo,
+-- `seller.email` no existía y Postgres rechazaba la migración entera — y con
+-- ella las cuatro anteriores, porque el editor de SQL revierte todo el lote.
+--
+-- Una columna generada es la ÚNICA clase de columna que no puede tolerar que le
+-- falte una de sus fuentes: su expresión se evalúa al crearla. Así que esta
+-- migración garantiza sus propias precondiciones en vez de suponerlas.
+--
+-- Las tres son columnas que el esquema ya promete desde 0030: esto es una
+-- reparación, no una invención. Donde ya están, no hace nada.
+--
+-- Que faltaran importa más allá de la búsqueda: sin ellas, PostgREST rechaza el
+-- UPDATE ENTERO al guardar un vendedor, así que escribir su teléfono perdía
+-- también su nombre. `scripts/migration-checks.mjs` cubre desde ahora 0021 y
+-- 0030, que eran el punto ciego que dejó pasar esto.
+alter table seller
+  add column if not exists email citext,
+  add column if not exists phone text;
+
+alter table product
+  add column if not exists location text;
+
 -- ── clientes ───────────────────────────────────────────────────────────────
 --
 -- Nombre, apellido, correo, teléfono y documento en UNA cadena: así «pérez

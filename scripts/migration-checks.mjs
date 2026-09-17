@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0032-0062 tienen que haber creado.
+ * El inventario de lo que las migraciones 0021-0062 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -15,6 +15,61 @@
  * del enum es aceptable (22P02 cuando no), y `rpc` que la función está publicada.
  */
 export const MIGRATION_CHECKS = [
+  /**
+   * 0021 y 0030 — LAS COLUMNAS DE EJECUCIÓN.
+   *
+   * Este inventario empezaba en 0032, y esas dos migraciones se quedaron fuera
+   * justamente por ser las más antiguas. Fue un punto ciego real: la búsqueda
+   * sin acentos (0062) falló en producción con «column email does not exist»
+   * porque `seller.email` —que añade 0030— no estaba, y nadie lo había
+   * comprobado nunca.
+   *
+   * Y no era solo la búsqueda: sin esas columnas, PostgREST rechaza el UPDATE
+   * ENTERO al guardar un vendedor, así que escribir su teléfono perdía también
+   * el nombre. Es el mismo fallo que ya apareció con 0042 y 0044, en una
+   * migración que nadie miraba.
+   */
+  {
+    migration: "0021 — columnas de ejecución (primera ronda)",
+    columns: [
+      ["booking", ["booking_date"]],
+      ["product", ["sort_order"]],
+      ["product_modality", ["sort_order"]],
+    ],
+  },
+  {
+    migration: "0030 — columnas de ejecución (segunda ronda)",
+    columns: [
+      ["booking", ["unit_price", "hotel_id", "pickup_time", "pickup_location", "room_number",
+                   "voucher_code", "checked_in_at", "checked_in_pax", "override_reason",
+                   "notes", "internal_notes"]],
+      ["participant", ["full_name", "age", "nationality", "special_requirements", "notes"]],
+      ["voucher", ["issued_at", "notes"]],
+      ["departure", ["branch_id", "departure_time", "available_pax", "waitlist_pax",
+                     "meeting_point", "notes"]],
+      ["sales_order", ["promotion_id"]],
+      ["customer", ["hotel_id", "assigned_seller_id", "whatsapp", "language", "room",
+                    "address", "preferences"]],
+      // Las que tumbaron 0062 en producción.
+      ["seller", ["branch_id", "email", "phone", "whatsapp", "seller_role", "monthly_goal",
+                  "currency", "photo_url", "hire_date", "notes"]],
+      ["product", ["category_id", "short_description", "cover_image_url", "video_url",
+                   "location", "meeting_point", "duration_hours", "languages", "min_age",
+                   "default_capacity", "restrictions", "recommendations", "inclusions",
+                   "exclusions", "terms", "instructions", "base_cost", "featured"]],
+      ["product_modality", ["cost", "age_from", "age_to", "capacity_weight"]],
+      ["price_rule", ["time_from", "time_to"]],
+      ["zone", ["zone_type", "max_capacity", "current_occupancy", "requires_wristband"]],
+      ["cash_register", ["branch_id", "terminal"]],
+      ["cash_session", ["branch_id", "code", "difference", "card_total", "transfer_total",
+                        "expenses_total", "withdrawals_total", "notes"]],
+      ["commission", ["beneficiary_name", "generated_at", "notes"]],
+      ["commission_rule", ["category_id", "description"]],
+      ["settlement", ["sales_total", "cancellations_total", "notes"]],
+      ["receivable", ["notes"]],
+      ["payable", ["supplier_id", "concept", "paid_at", "notes"]],
+    ],
+  },
   {
     migration: "0032 — profundidad de la cotización",
     tables: ["quote_option"],
