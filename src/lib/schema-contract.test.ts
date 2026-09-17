@@ -479,6 +479,53 @@ describe("el esquema cubre todo lo que la aplicación escribe", () => {
     expect(problems, "el verificador busca cosas que ninguna migración crea").toEqual([]);
   });
 
+  it("el verificador no se queda atrás cuando llega una migración nueva", async () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * LA GUARDA DE ARRIBA COMPRUEBA UNA DIRECCIÓN; ESTA COMPRUEBA LA OTRA
+     *
+     * Aquella verifica que el inventario no pida cosas inventadas. Esta, que no
+     * le FALTE nada — y es la que hacía falta, porque el inventario se quedó
+     * declarando «0032-0041» mientras llegaban dieciséis migraciones más.
+     *
+     * El fallo de un inventario incompleto es peor que el de uno equivocado:
+     * `npm run verify:migrations` responde «todo en verde» sin haber mirado las
+     * tablas nuevas, y ese verde es exactamente lo que alguien usa para decidir
+     * que puede desplegar.
+     *
+     * Se acota a las migraciones desde la 0032 porque ahí empieza el inventario;
+     * cubrir el esquema entero hacia atrás sería otra tarea.
+     */
+    const { MIGRATION_CHECKS } = await import("../../scripts/migration-checks.mjs");
+    const inventariadas = new Set<string>();
+    for (const group of MIGRATION_CHECKS as {
+      migration: string;
+      tables?: string[];
+      columns?: [string, string[]][];
+      enums?: [string, string, string][];
+      rpc?: string[];
+    }[]) {
+      for (const table of group.tables ?? []) inventariadas.add(table);
+      for (const [table] of group.columns ?? []) inventariadas.add(table);
+    }
+
+    const sinInventariar: string[] = [];
+    for (const file of readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort()) {
+      if (Number(file.slice(0, 4)) < 32) continue;
+      const sql = readFileSync(path.join(MIGRATIONS, file), "utf8");
+      for (const match of sql.matchAll(/create table if not exists ([a-z_][a-z_0-9.]*)/g)) {
+        const table = match[1];
+        // Las tablas de otros esquemas (`app.*`) no las expone PostgREST, así
+        // que el verificador no puede preguntarle por ellas a la base: pedirlas
+        // reportaría un fallo permanente sobre una base correcta.
+        if (table.includes(".")) continue;
+        if (!inventariadas.has(table)) sinInventariar.push(`${file}: ${table}`);
+      }
+    }
+
+    expect(sinInventariar, "tablas nuevas que el verificador de migraciones no comprueba").toEqual([]);
+  });
+
   it("cada relación declarada en resources.ts se puede resolver", () => {
     // Un `expand` que no corresponde a ninguna referencia real no fallaba
     // mientras las expansiones se ignoraban: ahora dispara una consulta que la

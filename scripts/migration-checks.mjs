@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0032-0041 tienen que haber creado.
+ * El inventario de lo que las migraciones 0032-0057 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -112,6 +112,139 @@ export const MIGRATION_CHECKS = [
                             "membership_id", "membership_paid", "membership_valid_until",
                             "visits", "purchases"]],
       ["membego_event", ["event_id", "tipo", "payload", "status", "error", "received_at"]],
+    ],
+  },
+  {
+    migration: "0042 — el plan como contrato aplicable",
+    columns: [["organizations", ["trial_ends_at", "next_billing_at", "storage_used_mb"]]],
+  },
+  /**
+   * 0043 — límite de peticiones. NO se comprueba aquí a propósito.
+   *
+   * `app.rate_limit_bucket` vive en el esquema `app`, que PostgREST no expone.
+   * `sb.from("app.rate_limit_bucket")` no la encontraría nunca y este script
+   * reportaría un fallo permanente sobre una base correcta — que es justo lo
+   * que no puede hacer. Lo que sí la comprueba es `scripts/db-test.sh`.
+   */
+  {
+    migration: "0044 — avisos internos",
+    columns: [["notification", ["audience_role", "event_key", "entity_type", "entity_id", "dedupe_key"]]],
+  },
+  {
+    migration: "0045 — reprogramar sin cancelar",
+    columns: [["booking", ["previous_departure_id", "rescheduled_at", "reschedule_reason", "reschedule_count"]]],
+  },
+  {
+    migration: "0046 — ámbito de sucursal",
+    columns: [["organization_memberships", ["branch_id"]]],
+  },
+  {
+    migration: "0047 — motor de reservas público",
+    columns: [
+      ["organizations", ["public_booking_enabled", "public_intro", "public_terms"]],
+      ["product", ["published", "public_price_from"]],
+      ["booking", ["public_request"]],
+    ],
+  },
+  {
+    migration: "0048 — embarque sin conexión",
+    columns: [["booking", ["checkin_key"]]],
+  },
+  {
+    migration: "0049 — declaración 606",
+    columns: [
+      ["expense", ["ncf", "ncf_type", "ncf_modified", "supplier_rnc", "itbis_amount",
+                   "itbis_withheld", "isr_withheld", "selective_tax", "other_taxes",
+                   "legal_tip", "goods_service_type", "paid_date"]],
+    ],
+  },
+  {
+    migration: "0050 — llaves de API",
+    tables: ["api_key"],
+    columns: [
+      ["api_key", ["prefix", "secret_hash", "scope", "partner_id", "revoked_at", "last_used_at"]],
+      ["sales_order", ["idempotency_key"]],
+    ],
+  },
+  {
+    migration: "0051 — RR. HH.",
+    tables: ["payroll_run", "payroll_line"],
+    columns: [
+      ["staff", ["payroll_code", "salary_type", "base_salary", "hourly_rate",
+                 "social_security_id", "bank_account", "bank_name",
+                 "applies_social_security", "termination_date"]],
+      ["certification", ["reminder_sent_at", "checked_at"]],
+      ["shift", ["published_at", "published_by"]],
+      ["attendance", ["break_min", "regular_hours", "approved_at", "payroll_run_id"]],
+      // Los porcentajes se CONGELAN en la corrida: una nómina de marzo no puede
+      // recalcularse con los tipos de junio.
+      ["payroll_run", ["period_start", "period_end", "period_type", "status",
+                       "sfs_employee_pct", "afp_employee_pct", "sfs_employer_pct",
+                       "afp_employer_pct", "risk_employer_pct", "employer_cost"]],
+      ["payroll_line", ["staff_id", "days_worked", "regular_hours", "overtime_hours",
+                        "extra_overtime_hours", "gross_amount", "sfs_employee",
+                        "afp_employee", "isr_amount", "net_amount"]],
+    ],
+  },
+  {
+    migration: "0052 — recepción de compra y existencias apartadas",
+    columns: [
+      ["stock_movement", ["purchase_order_line_id", "booking_extra_id"]],
+      ["product_extra", ["inventory_item_id", "warehouse_id", "consumes_stock", "stock_per_unit"]],
+      ["booking_extra", ["inventory_item_id", "warehouse_id", "stock_quantity", "stock_state"]],
+      ["purchase_order", ["receipt_count", "last_received_by"]],
+    ],
+  },
+  {
+    migration: "0053 — cierre contable",
+    tables: ["accounting_period"],
+    columns: [
+      ["accounting_period", ["period", "status", "closed_at", "closed_by", "locked_at", "reopened_at"]],
+      ["ledger_entry", ["is_closing", "closes_year"]],
+      // El 608 necesita el motivo de anulación; sin él la declaración no se arma.
+      ["invoice", ["void_reason_code"]],
+    ],
+  },
+  {
+    migration: "0054 — motor de cupos",
+    columns: [
+      // Cancelar devuelve las plazas a SU cupo: sin estas dos, no se sabe a cuál.
+      ["booking", ["allotment_id", "allotment_seats"]],
+      ["allotment", ["released_at", "release_runs", "closed_at", "closed_by"]],
+    ],
+  },
+  {
+    migration: "0055 — la marca en los documentos",
+    columns: [
+      /**
+       * Estas son las que más importan de toda la lista.
+       *
+       * Faltaban en producción mientras la pantalla de Configuración las pedía,
+       * y PostgREST rechaza el UPDATE ENTERO cuando una sola columna no existe:
+       * escribir un WhatsApp perdía también el nombre y el RNC del formulario.
+       */
+      ["organizations", ["whatsapp", "address", "city", "group_name", "notes",
+                         "logo_url", "brand_color", "document_footer",
+                         "voucher_terms", "invoice_terms"]],
+    ],
+  },
+  {
+    migration: "0056 — conector OTA (OCTO)",
+    columns: [
+      ["booking", ["octo_uuid", "octo_option_id", "octo_status", "octo_reseller_reference",
+                   "octo_unit_items", "octo_contact", "octo_test_mode",
+                   "octo_confirmed_at", "octo_api_key_id"]],
+      ["organizations", ["octo_max_hold_minutes"]],
+    ],
+  },
+  {
+    migration: "0057 — canje de beneficios MembeGo",
+    tables: ["membego_redemption"],
+    columns: [
+      ["membego_redemption", ["order_id", "booking_id", "customer_id", "membego_cliente_id",
+                              "benefit_type", "benefit_id", "redemption_id", "uses_left",
+                              "effect_kind", "amount_discounted", "status", "idempotency_key"]],
+      ["booking", ["membego_benefit", "membego_discount"]],
     ],
   },
 ];

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Comprueba que la base REAL tiene lo que el código espera (migraciones 0032-0040).
+ * Comprueba que la base REAL tiene lo que el código espera (migraciones 0032-0057).
  *
  * `schema-contract.test.ts` verifica el código contra los ARCHIVOS de migración.
  * Esto es lo otro: pregunta a la base de datos de verdad. Se ejecuta después de
@@ -9,6 +9,18 @@
  *
  * Solo lee. No escribe nada, no consume un NCF, no toca una fila. Salida segura:
  * nombres de tablas y columnas, nunca datos.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * EL VERDE DE AQUÍ TIENE QUE SIGNIFICAR ALGO
+ *
+ * Este inventario se quedó declarando «0032-0040» mientras llegaban dieciséis
+ * migraciones más, así que respondía «todo en verde» sin haber mirado las
+ * tablas nuevas — y ese verde es exactamente lo que alguien usa para decidir
+ * que puede desplegar.
+ *
+ * Ahora hay dos guardas en `schema-contract.test.ts` que lo impiden: una
+ * comprueba que el inventario no pida cosas que ninguna migración crea, y otra
+ * que no le FALTE ninguna tabla nueva.
  *
  * Uso:  node scripts/verify-migrations.mjs
  */
