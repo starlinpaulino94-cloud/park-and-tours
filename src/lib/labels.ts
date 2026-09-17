@@ -347,8 +347,24 @@ export const CALC_TYPE: Record<string, LabelDef> = {
   fixed: def("Monto fijo", "accent"),
   tiered: def("Escalonado", "violet"),
   volume: def("Por volumen", "warning"),
-  net_rate: def("Tarifa neta", "success"),
-  markup: def("Markup", "warning"),
+  // La tarifa neta y el markup NO son porcentajes sobre la venta, y hasta 0059
+  // se calculaban como si lo fueran. La etiqueta lo dice para que quien elige
+  // sepa qué está eligiendo.
+  net_rate: def("Tarifa neta por pasajero", "success"),
+  markup: def("Markup incluido en el precio", "warning"),
+  per_pax: def("Fijo por pasajero", "info"),
+  per_adult: def("Fijo por adulto", "info"),
+  per_child: def("Fijo por niño", "info"),
+};
+
+/** Los motivos de un ajuste de comisión (0059). */
+export const ADJUSTMENT_REASON: Record<string, LabelDef> = {
+  cancellation: def("Venta cancelada", "danger"),
+  refund: def("Reembolso al cliente", "warning"),
+  correction: def("Corrección", "info"),
+  bonus: def("Premio pactado", "success"),
+  clawback: def("Devolución de lo pagado de más", "danger"),
+  other: def("Otro", "neutral"),
 };
 
 export const ACTIVITY_TYPE: Record<string, LabelDef> = {

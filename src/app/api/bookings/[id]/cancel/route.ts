@@ -56,6 +56,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       refund_pct: result.refundPct,
       policy: result.policyName,
       commissions_voided: result.commissionsVoided,
+      // 0059 — las que YA SE PAGARON no se anulan: se ajustan en negativo, y
+      // quien cancela tiene que ver cuánto hay que recuperar. Enterarse un mes
+      // después, en la liquidación, es enterarse tarde.
+      commissions_adjusted: result.commissionsAdjusted,
+      commission_clawback: result.commissionClawback,
       pickups_cancelled: result.pickupsCancelled,
     });
   } catch (err) {

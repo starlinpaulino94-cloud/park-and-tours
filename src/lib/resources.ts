@@ -85,6 +85,24 @@ export const RESOURCES: Record<string, ResourceDef> = {
     dates: ["hire_date"],
     writeRole: "manager",
   },
+  /**
+   * Los ajustes de comisión (0059): se LEEN aquí y se escriben SOLO por
+   * `/api/commissions/adjust`.
+   *
+   * `writable` vacío no es un descuido. Crear un ajuste por el CRUD genérico
+   * escribiría la fila y dejaría `net_amount` de la comisión sin recalcular —
+   * y un neto desfasado lo suma la liquidación del mes siguiente sin que nada
+   * avise. La ruta dedicada escribe el ajuste, sincroniza el neto y deja
+   * rastro, en ese orden.
+   */
+  commission_adjustment: {
+    table: "commission_adjustment",
+    search: ["reason"],
+    expand: { commission: true, booking: true },
+    sort: { created_at: "desc" },
+    writable: [],
+    writeRole: "manager",
+  },
   seller_type: {
     table: "seller_type",
     search: ["name"],

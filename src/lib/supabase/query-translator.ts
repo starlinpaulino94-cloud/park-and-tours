@@ -59,6 +59,7 @@ export const DEFAULT_FIELD_ALIASES: Record<string, string> = {
   cash_register: "cash_register_id",
   cash_session: "cash_session_id",
   credit_note_of: "credit_note_of_id",
+  commission: "commission_id",
   customer: "customer_id",
   departure: "departure_id",
   driver: "driver_id",

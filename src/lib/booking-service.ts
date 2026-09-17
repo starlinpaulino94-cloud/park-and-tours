@@ -1068,6 +1068,11 @@ export async function generateCommissionsForBooking(
       supervisorId: supervisor?._id ?? null,
       channel: booking.channel ?? null,
       travelDate: meta.travelDate,
+      // La venta es de hoy: es lo que decide si una campaña de comisiones
+      // vigente «para lo que se venda en octubre» aplica a esta.
+      saleDate: new Date().toISOString(),
+      adults: booking.adults ?? 0,
+      children: booking.children ?? 0,
     },
     beneficiaries
   );
@@ -1089,6 +1094,16 @@ export async function generateCommissionsForBooking(
       status: "pending",
       generated_at: new Date().toISOString(),
       snapshot: JSON.stringify(c.snapshot),
+      // 0059 — la frase que se imprime en la liquidación, y los pasajeros
+      // congelados: recalcular un «por adulto» de hace tres meses tendría que
+      // volver a la reserva, que puede haberse reprogramado con otra gente.
+      breakdown: c.breakdown,
+      pax_adults: c.pax_adults,
+      pax_children: c.pax_children,
+      // Sin ajustes, el neto ES el importe. Nacer en nulo haría que la
+      // liquidación leyera cero para todo lo recién generado.
+      adjustment_total: 0,
+      net_amount: c.amount,
     });
   }
   return resolved.length;

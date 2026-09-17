@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0032-0058 tienen que haber creado.
+ * El inventario de lo que las migraciones 0032-0059 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -260,5 +260,21 @@ export const MIGRATION_CHECKS = [
       ["sales_order", ["attribution_id", "attribution_policy"]],
       ["organizations", ["attribution_policy", "attribution_window_days"]],
     ],
+  },
+  {
+    migration: "0059 — profundidad de las comisiones",
+    tables: ["commission_adjustment"],
+    columns: [
+      ["commission_adjustment", ["commission_id", "amount", "currency", "reason",
+                                 "reason_code", "booking_id", "settlement_id", "created_by"]],
+      // Sin `breakdown` la comisión no se puede explicar, y sin `net_amount` la
+      // liquidación no sabe cuánto queda por pagar de verdad.
+      ["commission", ["breakdown", "pax_adults", "pax_children",
+                      "adjustment_total", "net_amount"]],
+      ["commission_rule", ["tier_basis", "effective_from", "effective_to"]],
+    ],
+    // Los tres tipos de cálculo por pasajero: sin ellos, una regla guardada con
+    // uno de ellos rompería el INSERT entero.
+    enums: [["commission_rule", "calc_type", "per_adult"]],
   },
 ];

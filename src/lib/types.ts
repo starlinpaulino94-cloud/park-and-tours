@@ -378,7 +378,17 @@ export interface Voucher extends BaseRecord {
 // Commissions
 // ---------------------------------------------------------------------------
 export type BeneficiaryType = "seller" | "supervisor" | "partner" | "guide" | "supplier";
-export type CalcType = "percentage" | "fixed" | "tiered" | "volume";
+/**
+ * Los tipos de cálculo que la base admite (enum `calc_type`).
+ *
+ * Estaba declarado con CUATRO mientras el enum tenía seis y la pantalla ofrecía
+ * los seis: `net_rate` y `markup` se podían elegir, se guardaban, y el motor los
+ * calculaba como porcentaje sin decir nada. Declararlos aquí es lo que obliga a
+ * `computeAmount` a tener un caso para cada uno.
+ */
+export type CalcType =
+  | "percentage" | "fixed" | "tiered" | "volume" | "net_rate" | "markup"
+  | "per_pax" | "per_adult" | "per_child";
 
 export interface CommissionTier {
   from: number;
@@ -394,6 +404,10 @@ export interface CommissionRule extends BaseRecord {
   product?: Ref<Product>; category?: Ref<ProductCategory>;
   partner?: Ref<Partner>; seller?: Ref<Seller>; channel?: Channel;
   season_from?: string; season_to?: string;
+  /** 0059 — vigencia por fecha de VENTA, que no es la temporada de viaje. */
+  effective_from?: string; effective_to?: string;
+  /** 0059 — contra qué se miden los escalones: el importe o los pasajeros. */
+  tier_basis?: "amount" | "pax";
   min_sales?: number; max_sales?: number; currency?: Currency;
   status?: "active" | "inactive"; description?: string;
 }
@@ -412,6 +426,11 @@ export interface CommissionSnapshot {
   currency: Currency;
   matched_on: string[];
   captured_at: string;
+  /** 0059 — la frase que explica la cifra sin abrir el código. */
+  breakdown?: string;
+  /** 0059 — los pasajeros que se comisionaron, congelados. */
+  pax_adults?: number;
+  pax_children?: number;
 }
 
 export interface Commission extends BaseRecord {
@@ -423,6 +442,9 @@ export interface Commission extends BaseRecord {
   percentage?: number; amount?: number; currency?: Currency;
   status?: CommissionStatus; generated_at?: string; approved_at?: string;
   snapshot?: CommissionSnapshot | string; notes?: string;
+  /** 0059 — el desglose legible, los pax congelados y el neto tras ajustes. */
+  breakdown?: string; pax_adults?: number; pax_children?: number;
+  adjustment_total?: number; net_amount?: number;
 }
 
 export interface Settlement extends BaseRecord {

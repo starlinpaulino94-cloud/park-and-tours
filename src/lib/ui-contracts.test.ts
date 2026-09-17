@@ -3772,3 +3772,74 @@ describe("Quién trajo al cliente (0058)", () => {
     expect(page).toContain("/api/attribution/links/${l._id}/qr");
   });
 });
+
+describe("Comisiones: explicarlas y corregirlas (0059)", () => {
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("cada tipo de cálculo del enum tiene su caso, ninguno cae al genérico", () => {
+    /**
+     * Esta es la guarda que faltaba. `net_rate` y `markup` se ofrecían en la
+     * pantalla y caían al `return` final, así que se pagaban como porcentaje —
+     * durante dos años, sin que nada avisara, porque una comisión mal calculada
+     * no da error: da una cifra.
+     */
+    const engine = read("src/lib/commission-engine.ts");
+    const labels = read("src/lib/labels.ts");
+    const tipos = /export const CALC_TYPE[\s\S]*?\n\};/.exec(labels)?.[0] ?? "";
+    expect(tipos, "no se pudo leer CALC_TYPE").not.toBe("");
+
+    const ofrecidos = [...tipos.matchAll(/^\s{2}(\w+):\s*def\(/gm)].map((m) => m[1]);
+    expect(ofrecidos.length).toBeGreaterThan(5);
+
+    const sinCaso = ofrecidos.filter((t) => !engine.includes(`case "${t}":`));
+    expect(sinCaso, "tipos de cálculo que la pantalla ofrece y el motor no implementa").toEqual([]);
+  });
+
+  it("un tipo desconocido paga cero pero lo dice en el desglose", () => {
+    // Callarse es exactamente lo que hizo el código anterior. Ese texto acaba
+    // impreso en la liquidación del vendedor, que es quien lo va a leer.
+    const engine = read("src/lib/commission-engine.ts");
+    expect(engine).toContain("no reconocido: comisión en cero");
+    expect(engine).toContain("revisa la regla");
+  });
+
+  it("una comisión ya pagada se ajusta, nunca se anula", () => {
+    // Bajar el importe a cero dejaría el histórico diciendo que siempre fue
+    // cero. El ajuste deja las dos cifras a la vista.
+    const dominio = sinComentarios("src/lib/commission-adjustments.ts");
+    expect(dominio).toMatch(/MONEY_IS_OUT = new Set<CommissionState>\(\["settled", "paid"\]\)/);
+
+    const servicio = sinComentarios("src/lib/commission-adjust-service.ts");
+    // Al ajustar NO se toca el estado: sigue pagada, porque se pagó.
+    const bloqueAjuste = /if \(effect\.action === "adjust"\) \{[\s\S]*?\n    \}/.exec(servicio)?.[0] ?? "";
+    expect(bloqueAjuste, "no se encontró el bloque de ajuste").not.toBe("");
+    expect(bloqueAjuste).not.toMatch(/status:\s*"cancelled"/);
+  });
+
+  it("la cancelación de una reserva ya no deja las comisiones pagadas sin tocar", () => {
+    // Antes anulaba `pending` y `approved` y NO MIRABA las `paid`: el dinero
+    // había salido y no quedaba rastro de que hubiera que recuperarlo.
+    const cancel = sinComentarios("src/lib/booking-cancel-service.ts");
+    expect(cancel).toContain("settleCommissionsOnCancel");
+    expect(cancel).not.toMatch(/status:\s*\{\s*in:\s*\["pending",\s*"approved"\]\s*\}/);
+  });
+
+  it("un ajuste no se crea por el CRUD genérico, que dejaría el neto desfasado", () => {
+    const recursos = read("src/lib/resources.ts");
+    const bloque = /commission_adjustment:\s*\{([\s\S]*?)\n  \},/.exec(recursos)?.[1] ?? "";
+    expect(bloque, "no se encontró el recurso commission_adjustment").not.toBe("");
+    expect(bloque).toMatch(/writable:\s*\[\s*\]/);
+
+    // Y la ruta dedicada sí sincroniza el neto.
+    const servicio = read("src/lib/commission-adjust-service.ts");
+    expect(servicio).toContain("syncCommissionNet");
+  });
+
+  it("la pantalla enseña el importe Y el ajuste, no uno en lugar del otro", () => {
+    const page = read("src/app/dashboard/comisiones/page.tsx");
+    expect(page).toContain("en ajustes");
+    expect(page).toContain('header: "A pagar"');
+    expect(page).toContain("/api/commissions/adjust");
+  });
+});

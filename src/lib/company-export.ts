@@ -92,6 +92,7 @@ export const COMPANY_EXPORT_AREAS: CompanyExportArea[] = [
       allotment: "allotments",
       commission_rule: "reglas-de-comision",
       commission: "comisiones",
+      commission_adjustment: "ajustes-de-comision",
       settlement: "liquidaciones-de-partner",
     },
   },

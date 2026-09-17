@@ -10,6 +10,10 @@ import { StatusBadge, Pill } from "@/components/tf/status-badge";
 import { Icon } from "@/components/tf/icon";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ResourcePage } from "@/components/tf/resource-page";
@@ -17,7 +21,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { BENEFICIARY_TYPE, COMMISSION_BENEFICIARIES, CALC_TYPE, COMMISSION_STATUS, GENERIC_STATUS, CHANNEL } from "@/lib/labels";
+import { ADJUSTMENT_REASON, BENEFICIARY_TYPE, COMMISSION_BENEFICIARIES, CALC_TYPE, COMMISSION_STATUS, GENERIC_STATUS, CHANNEL } from "@/lib/labels";
 import { formatDate, formatMoney, formatNumber, formatPercent } from "@/lib/format";
 import { CURRENCY_OPTIONS, optionsFrom } from "@/components/tf/options";
 
@@ -26,6 +30,8 @@ interface Commission {
   base_amount?: number; amount?: number; percentage?: number; currency?: string;
   status?: string; generated_at?: string; approved_at?: string; notes?: string;
   booking?: any; seller?: any; partner?: any; rule?: any;
+  // 0059 — el desglose legible y el neto tras los ajustes firmados.
+  breakdown?: string; adjustment_total?: number; net_amount?: number;
 }
 
 const BULK_ACTIONS = [
@@ -43,6 +49,17 @@ function CommissionList() {
   const [statusFilter, setStatusFilter] = useState("__all");
   const [typeFilter, setTypeFilter] = useState("__all");
   const [confirm, setConfirm] = useState<{ status: string; label: string } | null>(null);
+  /**
+   * La comisión que se está ajustando (0059).
+   *
+   * Una comisión PAGADA no se anula —el dinero salió— y hasta aquí eso dejaba
+   * a quien la gestiona sin ninguna acción posible: la veía, sabía que estaba
+   * mal, y lo único que podía hacer era llamar por teléfono.
+   */
+  const [adjusting, setAdjusting] = useState<Commission | null>(null);
+  const [adjustAmount, setAdjustAmount] = useState("");
+  const [adjustReason, setAdjustReason] = useState("");
+  const [adjustCode, setAdjustCode] = useState("correction");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -79,6 +96,28 @@ function CommissionList() {
     }
     const { updated = 0, skipped = 0 } = res.data || {};
     toast.success(`${updated} comisión${updated === 1 ? "" : "es"} actualizada${updated === 1 ? "" : "s"}${skipped > 0 ? ` · ${skipped} omitidas por estar liquidadas` : ""}`);
+    load();
+  };
+
+  const saveAdjustment = async () => {
+    if (!adjusting) return;
+    setBusy(true);
+    const res = await api.post("/api/commissions/adjust", {
+      commission_id: adjusting._id,
+      amount: Number(adjustAmount),
+      reason: adjustReason,
+      reason_code: adjustCode,
+    });
+    setBusy(false);
+    if (!res.ok) {
+      toast.error(res.error?.message || "No se pudo guardar el ajuste");
+      return;
+    }
+    toast.success("Ajuste guardado. La comisión conserva su importe y su historia.");
+    setAdjusting(null);
+    setAdjustAmount("");
+    setAdjustReason("");
+    setAdjustCode("correction");
     load();
   };
 
@@ -198,9 +237,42 @@ function CommissionList() {
           { key: "base", header: "Base", align: "right", hideOn: "lg", render: (c: Commission) => formatMoney(c.base_amount ?? 0, c.currency) },
           { key: "pct", header: "%", align: "right", hideOn: "sm", render: (c: Commission) => formatPercent(c.percentage ?? 0) },
           { key: "amount", header: "Comisión", align: "right",
-            render: (c: Commission) => <span className="font-semibold">{formatMoney(c.amount ?? 0, c.currency)}</span> },
+            render: (c: Commission) => (
+              <div>
+                <span className="font-semibold">{formatMoney(c.amount ?? 0, c.currency)}</span>
+                {/* El ajuste se enseña AL LADO del importe, no en su lugar: las
+                    dos cifras juntas son justamente lo que hace defendible una
+                    liquidación de hace seis semanas. */}
+                {!!c.adjustment_total && (
+                  <p className="text-xs text-coral">
+                    {c.adjustment_total > 0 ? "+" : ""}{formatMoney(c.adjustment_total, c.currency)} en ajustes
+                  </p>
+                )}
+              </div>
+            ) },
+          { key: "net", header: "A pagar", align: "right", hideOn: "sm",
+            render: (c: Commission) => (
+              <span className={c.adjustment_total ? "font-semibold text-primary" : ""}>
+                {formatMoney(c.net_amount ?? c.amount ?? 0, c.currency)}
+              </span>
+            ) },
+          { key: "breakdown", header: "Por qué", hideOn: "lg",
+            render: (c: Commission) => (
+              // La frase que cierra la discusión por WhatsApp. Sin desglose es
+              // una comisión de antes de 0059, y se dice en vez de dejar vacío.
+              <span className="text-xs text-muted-foreground">{c.breakdown || "Sin desglose"}</span>
+            ) },
           { key: "date", header: "Generada", align: "right", hideOn: "lg", render: (c: Commission) => <span className="text-xs">{formatDate(c.generated_at)}</span> },
           { key: "status", header: "Estado", render: (c: Commission) => <StatusBadge value={c.status} dict={COMMISSION_STATUS} /> },
+          {
+            key: "__adjust", header: "", align: "right",
+            render: (c: Commission) => (
+              <Button size="sm" variant="ghost" title="Ajustar con signo"
+                onClick={(e) => { e.stopPropagation(); setAdjusting(c); }}>
+                <Icon name="Scale" className="size-4" />
+              </Button>
+            ),
+          },
         ]}
         footer={
           <div className="flex items-center justify-between gap-3">
@@ -215,6 +287,62 @@ function CommissionList() {
           </div>
         }
       />
+
+      {/* ------------------------------------------- el ajuste firmado (0059) */}
+      <Dialog open={!!adjusting} onOpenChange={(v) => !v && setAdjusting(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Ajustar la comisión de {adjusting?.beneficiary_name || "este beneficiario"}</DialogTitle>
+            <DialogDescription>
+              El importe original no se toca. Un ajuste es un movimiento con signo que se suma al lado:
+              así quedan las dos cifras a la vista y la liquidación de hace seis semanas se puede defender.
+              Corregir un ajuste se hace con otro ajuste.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-lg bg-muted/60 px-3 py-2 text-sm">
+              Comisión: <strong>{formatMoney(adjusting?.amount ?? 0, adjusting?.currency)}</strong>
+              {!!adjusting?.adjustment_total && (
+                <> · ajustes: <strong>{formatMoney(adjusting.adjustment_total, adjusting.currency)}</strong></>
+              )}
+              {" · "}a pagar hoy:{" "}
+              <strong>{formatMoney(adjusting?.net_amount ?? adjusting?.amount ?? 0, adjusting?.currency)}</strong>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="adj-amount">Importe del ajuste</Label>
+              <Input id="adj-amount" type="number" step="0.01" value={adjustAmount}
+                onChange={(e) => setAdjustAmount(e.target.value)} placeholder="-30.00" />
+              <p className="text-xs text-muted-foreground">
+                En negativo descuenta, en positivo añade. Un ajuste de cero no ajusta nada.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Motivo</Label>
+              <Select value={adjustCode} onValueChange={setAdjustCode}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {optionsFrom(ADJUSTMENT_REASON).map((o) => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="adj-reason">Explicación</Label>
+              <Textarea id="adj-reason" rows={2} value={adjustReason}
+                onChange={(e) => setAdjustReason(e.target.value)}
+                placeholder="El grupo canceló el 14 y la comisión ya se había pagado en la liquidación de septiembre." />
+              <p className="text-xs text-muted-foreground">
+                Dentro de un mes, un movimiento sin motivo es un descuadre que nadie sabe explicar.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAdjusting(null)}>Cancelar</Button>
+            <Button onClick={saveAdjustment} disabled={busy}>{busy ? "Guardando…" : "Guardar el ajuste"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={!!confirm} onOpenChange={(v) => !v && setConfirm(null)}>
         <AlertDialogContent>
