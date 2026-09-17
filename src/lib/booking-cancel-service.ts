@@ -4,6 +4,7 @@ import { recalculateDeparture } from "@/lib/availability";
 import { cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { settleBookingStock } from "@/lib/stock-commitment-service";
 import { releaseBookingAllotment } from "@/lib/allotment-service";
+import { reverseForOrder } from "@/lib/membego-redemption-service";
 import { syncOrderTotals } from "@/lib/booking-service";
 import { postPayment } from "@/lib/ledger-events";
 import { writeAudit } from "@/lib/audit";
@@ -156,6 +157,28 @@ export async function cancelBookingFully(
     for (const problema of almacen.problems) console.warn(`[cancel] almacén: ${problema}`);
   } catch (err) {
     console.error("[cancel] no se pudieron liberar las existencias apartadas:", err);
+  }
+
+  // ---- devolver el beneficio de MembeGo (0057) --------------------------
+  // Si esta venta llevaba un beneficio canjeado, el cliente tiene que
+  // recuperarlo: perdió un uso por una venta que no llegó a existir.
+  //
+  // Nunca tumba la cancelación. Que MembeGo no conteste no puede dejar la
+  // reserva a medio cancelar —con la plaza ocupada y el cliente avisado de
+  // nada—, así que el fallo queda en la auditoría para resolverlo a mano.
+  const ordenDeLaReserva = refId(booking.order);
+  if (ordenDeLaReserva) {
+    try {
+      const devoluciones = await reverseForOrder(
+        ctx.companyId, ordenDeLaReserva,
+        options.reason || "Reserva cancelada", ctx.userId
+      );
+      for (const devolucion of devoluciones) {
+        if (!devolucion.reversed) console.warn(`[cancel] beneficio MembeGo: ${devolucion.message}`);
+      }
+    } catch (err) {
+      console.error("[cancel] no se pudo devolver el beneficio de MembeGo:", err);
+    }
   }
 
   // ---- devolver las plazas al cupo del socio (0054) ---------------------

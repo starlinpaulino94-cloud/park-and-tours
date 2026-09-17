@@ -3311,3 +3311,155 @@ describe("conector OCTO: que una OTA venda sin romper nada por dentro", () => {
     }
   });
 });
+
+describe("canje de beneficios MembeGo: que el descuento lo respalde alguien", () => {
+  /**
+   * ────────────────────────────────────────────────────────────────────────
+   * LA REGLA QUE ESTAS GUARDAS SOSTIENEN
+   *
+   * La migración 0041 dejó escrito, hace dos olas, por qué la elegibilidad no
+   * se copia: «decide dinero y una copia desfasada regala un beneficio ya
+   * consumido». El canje es justo el punto donde esa regla se rompe sola si
+   * alguien busca un atajo — una tabla local de «beneficios del cliente», una
+   * caché de cinco minutos, rebajar primero y consumir después.
+   *
+   * Lo que se ata aquí es el orden y la ausencia de caché, que son las dos
+   * formas concretas de regalar dinero.
+   */
+
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("primero se consume en MembeGo y DESPUÉS se rebaja la venta", () => {
+    // Al revés, un beneficio gastado hace diez minutos en otra sucursal dejaría
+    // la venta rebajada sin nada que la respalde.
+    const src = sinComentarios("src/lib/membego-redemption-service.ts");
+    const canje = src.indexOf("await redeemMembership(");
+    const rebaja = src.indexOf('await tenantUpdate(companyId, "booking", chosen.id, {');
+    expect(canje, "no se consume en MembeGo").toBeGreaterThan(-1);
+    expect(rebaja, "no se rebaja la línea").toBeGreaterThan(-1);
+    expect(canje, "la venta se rebaja antes de consumir el beneficio").toBeLessThan(rebaja);
+  });
+
+  it("la elegibilidad no se guarda en ninguna parte", () => {
+    // Ni en la base ni en memoria. Lo único que se cachea es el token, que no
+    // es un dato de negocio.
+    const servicio = sinComentarios("src/lib/membego-redemption-service.ts");
+    expect(servicio).not.toMatch(/from\("membego_customer"\)[\s\S]{0,200}eligib/i);
+    const cliente = sinComentarios("src/lib/membego-platform.ts");
+    // El único cacheo del cliente es el token.
+    const cacheos = [...cliente.matchAll(/cached\s*=/g)].length;
+    expect(cacheos, "hay más de una cosa cacheada además del token").toBeLessThanOrEqual(2);
+    expect(cliente).toMatch(/interface CachedToken/);
+  });
+
+  it("cada canje viaja con una clave de idempotencia derivada, no aleatoria", () => {
+    // El doble clic del cajero tiene que encontrarse con el primer canje, no
+    // consumir un segundo uso.
+    const dominio = sinComentarios("src/lib/membego-benefits.ts");
+    expect(dominio).toMatch(/return `pt:\$\{orderId\}:\$\{benefitId\}`/);
+    const cliente = sinComentarios("src/lib/membego-platform.ts");
+    expect(cliente).toMatch(/"Idempotency-Key": options\.idempotencyKey/);
+    const servicio = sinComentarios("src/lib/membego-redemption-service.ts");
+    expect(servicio).toMatch(/idempotencyKeyFor\(input\.orderId, input\.benefit\.id\)/);
+  });
+
+  it("se piden los dos permisos al emitir el token", () => {
+    const cliente = sinComentarios("src/lib/membego-platform.ts");
+    expect(cliente).toMatch(/scope: REQUIRED_SCOPES\.join\(" "\)/);
+  });
+
+  it("cancelar una reserva devuelve el beneficio, y no tumba la cancelación si falla", () => {
+    // El cliente perdió un uso por una venta que no llegó a existir. Y que
+    // MembeGo no conteste no puede dejar la reserva a medio cancelar.
+    const src = sinComentarios("src/lib/booking-cancel-service.ts");
+    expect(src).toMatch(/await reverseForOrder\(/);
+    const at = src.indexOf("await reverseForOrder(");
+    expect(src.slice(Math.max(0, at - 300), at), "la reversa no está protegida").toMatch(/try \{/);
+  });
+
+  it("la venta rebajada recalcula su total en vez de quedarse con el de antes", () => {
+    // Sin esto, la línea baja y la orden sigue cobrando el importe original.
+    const src = sinComentarios("src/lib/membego-redemption-service.ts");
+    const rebaja = src.indexOf('await tenantUpdate(companyId, "booking", chosen.id, {');
+    const sync = src.indexOf("await syncOrderTotals(companyId, input.orderId)");
+    expect(sync).toBeGreaterThan(rebaja);
+  });
+
+  it("el canje se ofrece sobre una venta creada, no sobre el carrito", () => {
+    // Un uso consumido contra un carrito abandonado es un uso que el cliente
+    // perdió sin recibir nada.
+    const pos = read("src/app/dashboard/pos/page.tsx");
+    const at = pos.indexOf("<MembegoBenefits");
+    expect(at, "el canje no está montado en el punto de venta").toBeGreaterThan(-1);
+    expect(pos.slice(Math.max(0, at - 200), at)).toMatch(/payFor\?\.order\?\._id/);
+  });
+
+  it("el importe a cobrar sigue al descuento en vez de quedarse con el total viejo", () => {
+    // Si no, el cajero cobra de más un descuento que sí se aplicó.
+    const pos = sinComentarios("src/app/dashboard/pos/page.tsx");
+    expect(pos).toMatch(/const orderTotal = benefitTotal \?\? Number\(payFor\?\.order\?\.total \?\? 0\)/);
+  });
+
+  it("la consulta de beneficios es una lectura y el canje una escritura protegida", () => {
+    const consulta = sinComentarios("src/app/api/membego/benefits/route.ts");
+    expect(consulta).toMatch(/await requireTenant\(\)/);
+    expect(consulta).not.toMatch(/requireTenantWrite/);
+
+    const canje = sinComentarios("src/app/api/membego/redeem/route.ts");
+    expect(canje).toMatch(/assertSameOriginMutation\(req\)/);
+    expect(canje).toMatch(/await requireTenantWrite\(\)/);
+  });
+
+  it("el código de error de MembeGo llega a la pantalla en vez de convertirse en un 500", () => {
+    // El cajero tiene que distinguir «no te quedan usos» de «no hay conexión»:
+    // en el primer caso cobra completo, en el segundo espera un minuto.
+    const canje = sinComentarios("src/app/api/membego/redeem/route.ts");
+    expect(canje).toMatch(/err instanceof MembegoApiError/);
+    expect(canje).toMatch(/code: err\.code/);
+  });
+
+  it("los códigos de error son los del contrato publicado por MembeGo", () => {
+    // `code` es API y el satélite ramifica con él: renombrar uno rompe esto.
+    const dominio = read("src/lib/membego-benefits.ts");
+    for (const code of [
+      "BENEFIT_NOT_ELIGIBLE", "REDEMPTION_CONFLICT", "IDEMPOTENCY_KEY_REQUIRED",
+      "INSUFFICIENT_SCOPE", "COMPANY_NOT_ENTITLED", "API_KEY_NOT_SUPPORTED",
+      "TOKEN_EXPIRED", "INVALID_CLIENT", "QUOTA_EXCEEDED", "PLATFORM_API_UNCONFIGURED",
+    ]) {
+      expect(dominio, `falta el código ${code} del contrato`).toContain(`${code}:`);
+    }
+  });
+
+  it("una promoción no finge revertirse: se dice que hay que hacerlo a mano", () => {
+    // MembeGo revierte membresías y no tiene el equivalente para promociones.
+    // Callarlo dejaría al cliente con un uso gastado y al sistema diciendo
+    // «listo».
+    const dominio = sinComentarios("src/lib/membego-benefits.ts");
+    expect(dominio).toMatch(/if \(row\.benefit_type === "PROMOTION"\) return "promotion"/);
+    const servicio = sinComentarios("src/lib/membego-redemption-service.ts");
+    expect(servicio).toMatch(/action: "membego_reversal_manual"/);
+  });
+
+  it("un canje fallido queda anotado en vez de perderse", () => {
+    // Sin él, un «no me aplicó el descuento» no tiene dónde mirarse y el motivo
+    // real de MembeGo se pierde.
+    const servicio = sinComentarios("src/lib/membego-redemption-service.ts");
+    expect(servicio).toMatch(/await recordFailure\(companyId, ctx\.userId, \{/);
+    expect(servicio).toMatch(/status: "failed"/);
+  });
+
+  it("las credenciales de la API viven en el entorno y no en la base", () => {
+    // Una credencial por empresa sería poner secretos en la base para resolver
+    // algo que el contrato ya resuelve: la empresa viaja en cada llamada.
+    const cliente = sinComentarios("src/lib/membego-platform.ts");
+    expect(cliente).toMatch(/process\.env\.MEMBEGO_CLIENT_ID/);
+    expect(cliente).toMatch(/process\.env\.MEMBEGO_CLIENT_SECRET/);
+    const env = read(".env.example");
+    expect(env).toContain("MEMBEGO_CLIENT_ID=");
+    expect(env).toContain("MEMBEGO_CLIENT_SECRET=");
+    // Y no hay ninguna columna que las guarde.
+    const sql = read("supabase/migrations/0057_membego_redemptions.sql");
+    expect(sql).not.toMatch(/client_secret/);
+  });
+});
