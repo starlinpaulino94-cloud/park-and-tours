@@ -56,6 +56,31 @@ jobs:
           SUPABASE_USE_RLS: ${{ secrets.SUPABASE_USE_RLS }}
           NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
 
+      # QUÉ HABÍA EN LA PANTALLA CUANDO FALLÓ.
+      #
+      # Un E2E de login en rojo deja en el registro «waitForURL: Timeout 60000ms»
+      # y nada más. Eso no distingue las tres causas posibles —el formulario
+      # mostró un error, la sesión no se creó, o /dashboard tardó más de un
+      # minuto en responder— y cada una se arregla en un sitio distinto. El
+      # `error-context.md` que Playwright escribe al fallar es el árbol de
+      # accesibilidad de la página en ese instante: si hay un mensaje de error en
+      # el formulario, sale ahí con su texto.
+      #
+      # SOLO ESE FICHERO, Y NO EL TRACE. El trace (`trace.zip`) graba las
+      # peticiones con su cuerpo: dentro va el POST de inicio de sesión con
+      # E2E_PASSWORD en claro y el token de acceso que devuelve. Subirlo como
+      # artefacto convertiría un secreto del repositorio en un fichero
+      # descargable, y el token viajaría vivo. El árbol de accesibilidad no lleva
+      # red: es texto de la pantalla.
+      - name: Qué se veía al fallar el E2E
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-error-context
+          path: test-results/**/error-context.md
+          retention-days: 7
+          if-no-files-found: ignore
+
       # Las pruebas de esquema (dominios, cascadas, aislamiento entre inquilinos)
       # se escribieron contra Postgres de verdad y hasta ahora solo corrían si
       # alguien se acordaba de lanzarlas a mano. Un `check` que no se ejecuta no
