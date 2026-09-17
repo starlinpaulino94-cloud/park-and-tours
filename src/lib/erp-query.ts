@@ -3,6 +3,7 @@ import type { ResourceDef } from "@/lib/resources";
 import { allowedFilterFields, partnerScopeFor } from "@/lib/resources";
 import { decidableFilter } from "@/lib/approvals";
 import { branchFilterFor } from "@/lib/branch-scope";
+import { searchFilterFor } from "@/lib/search";
 import { TenantError, type TenantContext } from "@/lib/tenant";
 
 /**
@@ -63,13 +64,20 @@ export function buildListFilter(
     Object.assign(filter, decidable);
   }
 
-  const q = sp.get("q")?.trim();
-  if (q && def.search.length > 0) {
-    // Se escapan los metacaracteres: un `q` malicioso podría causar retroceso
-    // catastrófico o coincidir con registros que no debía.
-    const safeQ = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    filter._or = def.search.map((field) => ({ [field]: { regex: safeQ, options: "i" } }));
-  }
+  /**
+   * La búsqueda (0062).
+   *
+   * En las tablas donde se buscan PERSONAS va contra una columna normalizada
+   * que la base mantiene sola: minúsculas, sin acentos y con todos los campos
+   * buscables juntos. Eso es lo que hace que «jose perez» encuentre a «José
+   * Pérez» y que «pérez josé» lo encuentre también.
+   *
+   * En las demás sigue el camino de siempre, campo por campo. Añadirle una
+   * columna generada a las ochenta tablas sería una migración enorme para
+   * arreglar un problema que solo duele donde hay nombres propios.
+   */
+  const searchFilter = searchFilterFor(def.table, def.search, sp.get("q"));
+  if (searchFilter) Object.assign(filter, searchFilter);
 
   // Un usuario del portal B2B solo ve lo de su partner. Denegar por defecto:
   // una tabla que no sea suya ni compartida es 403.

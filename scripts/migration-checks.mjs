@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0032-0061 tienen que haber creado.
+ * El inventario de lo que las migraciones 0032-0062 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -303,6 +303,17 @@ export const MIGRATION_CHECKS = [
       // Sin estas dos, cancelar un paquete no encuentra sus actividades y
       // quedan plazas bloqueadas en salidas sin ninguna reserva que las explique.
       ["booking", ["bundle_booking_id", "bundle_item_id"]],
+    ],
+  },
+  {
+    migration: "0062 — búsqueda sin acentos",
+    columns: [
+      // Sin la columna, la búsqueda de personas vuelve a fallar con «jose
+      // perez» — y no da error: devuelve cero, que parece «no existe».
+      ["customer", ["search_text"]],
+      ["seller", ["search_text"]],
+      ["product", ["search_text"]],
+      ["supplier", ["search_text"]],
     ],
   },
 ];
