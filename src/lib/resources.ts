@@ -79,11 +79,39 @@ export const RESOURCES: Record<string, ResourceDef> = {
     writable: [
       "user", "partner", "branch", "code", "first_name", "last_name", "email", "phone", "whatsapp",
       "seller_role", "commission_pct", "monthly_goal", "max_discount_pct", "currency", "photo_url",
-      "hire_date", "status", "notes", "supervisor",
+      "hire_date", "status", "notes", "supervisor", "seller_type",
     ],
     numeric: ["commission_pct", "monthly_goal", "max_discount_pct"],
     dates: ["hire_date"],
     writeRole: "manager",
+  },
+  seller_type: {
+    table: "seller_type",
+    search: ["name"],
+    sort: { name: "asc" },
+    writable: ["name", "description", "status"],
+    writeRole: "manager",
+  },
+  seller_link: {
+    table: "seller_link",
+    search: ["slug", "name", "campaign"],
+    expand: { seller: true, product: true },
+    sort: { created_at: "desc" },
+    writable: ["seller", "slug", "name", "channel", "product", "campaign", "status"],
+    writeRole: "manager",
+  },
+  /**
+   * El embudo se LEE y no se escribe: es un histórico, y la base lo sostiene
+   * con un disparador (0058). `writable` vacío no es un descuido — es lo que
+   * impide que el CRUD genérico abra una puerta que el esquema cierra.
+   */
+  seller_attribution: {
+    table: "seller_attribution",
+    search: ["visitor_id", "campaign"],
+    expand: { seller: true, customer: true, seller_link: true },
+    sort: { created_at: "desc" },
+    writable: [],
+    writeRole: "admin",
   },
   zone: {
     table: "zone",

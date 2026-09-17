@@ -3710,3 +3710,65 @@ describe("i18n: que el huésped que no habla español entienda lo que compró", 
     expect(fuera, "claves de i18n fuera de las superficies del huésped").toEqual([]);
   });
 });
+
+describe("Quién trajo al cliente (0058)", () => {
+  /** El fuente sin comentarios: lo que se comprueba es el código, no la prosa. */
+  const sinComentarios = (file: string) =>
+    read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+  it("la cookie nunca dice quién es el vendedor: se vuelve a resolver contra la base", () => {
+    /**
+     * La cookie la escribe el cliente. Si guardara el id del vendedor —o el de
+     * la empresa—, cualquiera podría editarla y atribuirse las ventas de la
+     * operadora entera. Guarda el SLUG, y el slug se resuelve siempre.
+     */
+    const ruta = read("src/app/e/[slug]/route.ts");
+    expect(ruta).toContain("resolveLinkBySlug");
+    expect(ruta).toContain("REFERRAL_COOKIE, link.slug");
+    // Lo que NO puede aparecer: escribir el vendedor o la empresa en la cookie.
+    expect(ruta).not.toMatch(/cookies\.set\([^)]*link\.(sellerId|companyId)/);
+
+    // Y del lado de la venta, lo mismo: se resuelve, no se cree.
+    const servicio = read("src/lib/public-booking-service.ts");
+    expect(servicio).toContain("await resolveLinkBySlug(trace.referralSlug)");
+    // El enlace de OTRA empresa no atribuye nada en esta.
+    expect(servicio).toContain("link.companyId === orgId");
+  });
+
+  it("el embudo es de solo lectura desde el CRUD genérico", () => {
+    // La base lo sostiene con un disparador; esto impide que el recurso abra
+    // una puerta que el esquema cierra.
+    const recursos = read("src/lib/resources.ts");
+    const bloque = /seller_attribution:\s*\{([\s\S]*?)\n  \},/.exec(recursos)?.[1] ?? "";
+    expect(bloque, "no se encontró el recurso seller_attribution").not.toBe("");
+    expect(bloque).toMatch(/writable:\s*\[\s*\]/);
+  });
+
+  it("un vendedor escogido a mano no lo pisa el histórico", () => {
+    // Pisar la elección de quien está delante del cliente sería discutirle a
+    // quien vendió quién vendió.
+    const src = sinComentarios("src/lib/booking-service.ts");
+    expect(src).toMatch(/let attributedSeller = input\.seller_id \|\| null;/);
+    expect(src).toMatch(/if \(!attributedSeller\) \{\s*const attribution = await resolveOrderAttribution/);
+  });
+
+  it("la compra se anota una sola vez aunque se cobre a plazos", () => {
+    // Sin esto, quien cobra en tres plazos parecería el triple de bueno que
+    // quien cobra de una vez.
+    const src = read("src/lib/attribution-service.ts");
+    expect(src).toContain("recordPurchaseOnce");
+    expect(src).toMatch(/\.eq\("stage", "purchase"\)/);
+    const venta = sinComentarios("src/lib/booking-service.ts");
+    expect(venta).toMatch(/if \(status === "paid"\)/);
+  });
+
+  it("la pantalla dice «—» y no «0 %» cuando no hubo visitas", () => {
+    // Cero por ciento significa que vinieron y no compraron, que es un problema
+    // distinto y se arregla de otra manera.
+    const page = read("src/app/dashboard/vendedores/atribucion/page.tsx");
+    expect(page).toMatch(/value === null \? "—"/);
+    expect(page).toContain("Todavía no ha entrado nadie por un enlace");
+    // El QR se descarga del servidor, que es quien conoce el dominio real.
+    expect(page).toContain("/api/attribution/links/${l._id}/qr");
+  });
+});

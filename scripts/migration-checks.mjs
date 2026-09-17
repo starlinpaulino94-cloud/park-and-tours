@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0032-0057 tienen que haber creado.
+ * El inventario de lo que las migraciones 0032-0058 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -245,6 +245,20 @@ export const MIGRATION_CHECKS = [
                               "benefit_type", "benefit_id", "redemption_id", "uses_left",
                               "effect_kind", "amount_discounted", "status", "idempotency_key"]],
       ["booking", ["membego_benefit", "membego_discount"]],
+    ],
+  },
+  {
+    migration: "0058 — atribución comercial",
+    tables: ["seller_type", "seller_link", "seller_attribution"],
+    columns: [
+      ["seller_link", ["seller_id", "slug", "name", "channel", "product_id", "campaign", "status"]],
+      ["seller_attribution", ["seller_id", "link_id", "customer_id", "visitor_id",
+                              "stage", "channel", "landing", "campaign",
+                              "order_id", "booking_id"]],
+      ["seller", ["seller_type_id"]],
+      // Sin estas dos, la venta no puede decir POR QUÉ le tocó a ese vendedor.
+      ["sales_order", ["attribution_id", "attribution_policy"]],
+      ["organizations", ["attribution_policy", "attribution_window_days"]],
     ],
   },
 ];

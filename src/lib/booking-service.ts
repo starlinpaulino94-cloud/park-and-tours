@@ -17,6 +17,7 @@ import { reserveForSale, stockableOffers } from "@/lib/stock-commitment-service"
 import { assertAllotment, consumeAllotment } from "@/lib/allotment-service";
 import { allotmentState, type AllotmentRow } from "@/lib/allotments";
 import { priceExtras, unknownSelections, type ExtraOffer, type ExtraSelection } from "@/lib/extras";
+import { resolveOrderAttribution, recordTouch, recordPurchaseOnce } from "@/lib/attribution-service";
 import type {
   Booking, Channel, Currency, Departure, Order, Partner, Product, Seller,
 } from "@/lib/types";
@@ -93,6 +94,15 @@ export interface CreateOrderInput {
    * siempre auditada: la ruta HTTP exige rango de manager.
    */
   allow_over_credit?: boolean;
+  /**
+   * La cookie del visitante (0058).
+   *
+   * Solo llega de la web pública. Sirve para encontrar al conserje que trajo a
+   * un cliente que TODAVÍA no tenía ficha cuando escaneó el QR: sin ella, esa
+   * atribución solo existiría para quien ya era cliente, que es justo el caso
+   * en el que no hace falta.
+   */
+  visitor_id?: string | null;
   terms?: {
     deposit_type?: string | null;
     deposit_percent?: number | null;
@@ -131,7 +141,15 @@ async function estimateOrderTotal(
   companyId: string,
   input: CreateOrderInput,
   currency: Currency,
-  exchangeRate: number
+  exchangeRate: number,
+  /**
+   * El vendedor que se llevará la venta, ya resuelto por el histórico (0058).
+   *
+   * Va como parámetro y no se lee de `input` porque una regla de precio por
+   * vendedor cambia el importe: estimar con uno y cobrar con otro le enseñaría
+   * al control de crédito una cifra que no es la que se va a facturar.
+   */
+  sellerId: string | null
 ): Promise<number> {
   let total = 0;
   for (const item of input.items) {
@@ -148,7 +166,7 @@ async function estimateOrderTotal(
       productId: item.product_id,
       modalityId: item.modality_id,
       partnerId: input.partner_id,
-      sellerId: input.seller_id,
+      sellerId,
       channel: (input.channel || "direct") as Channel,
       quantity: billable,
       travelDate: departure?.departure_at ?? null,
@@ -191,6 +209,39 @@ export async function createOrderWithBookings(
   const exchangeRate = await resolveExchangeRate(companyId, currency, baseCurrency);
   const holdHours = Number((ctx.company as { hold_hours?: number } | null)?.hold_hours ?? 0) || 0;
   const channel = (input.channel || "direct") as Channel;
+
+  /**
+   * QUIÉN SE LLEVA ESTA VENTA (0058).
+   *
+   * Solo se pregunta cuando nadie lo ha dicho ya. Un vendedor escogido a mano
+   * en el punto de venta es una decisión de una persona que está delante del
+   * cliente: pisarla con el histórico sería discutirle a quien vendió quién
+   * vendió.
+   *
+   * Cuando no lo ha dicho nadie —la web, la API, una reserva que entra sola—
+   * el histórico decide con la política de la empresa. Si no hay nadie vivo,
+   * `null`: la venta es directa de la empresa, que es la verdad, y no un hueco
+   * que haya que rellenar con el último vendedor que pasó por ahí.
+   */
+  let attributedSeller = input.seller_id || null;
+  let attributionId: string | null = null;
+  let attributionPolicy: string | null = null;
+  if (!attributedSeller) {
+    const attribution = await resolveOrderAttribution(
+      companyId,
+      { customerId: input.customer_id, visitorId: input.visitor_id },
+      ctx.company as { attribution_policy?: string | null; attribution_window_days?: number | null } | null
+    );
+    if (attribution) {
+      attributedSeller = attribution.sellerId;
+      attributionId = attribution.attributionId;
+      attributionPolicy = attribution.policy;
+      console.log(
+        `[booking-service] venta atribuida por histórico (${attribution.policy}) al vendedor ${attribution.sellerId}`
+      );
+    }
+  }
+
 
   // ---- validate capacity before writing anything --------------------------
   // AUD-B01: aggregate requested pax PER DEPARTURE across all items. Previously
@@ -285,7 +336,7 @@ export async function createOrderWithBookings(
       // Se estima con el precio de catálogo antes de armar las reservas: es
       // aproximado a propósito, porque la alternativa es construir la venta
       // entera para descubrir al final que no cabía.
-      const estimate = await estimateOrderTotal(companyId, input, currency, exchangeRate);
+      const estimate = await estimateOrderTotal(companyId, input, currency, exchangeRate, attributedSeller);
       const verdict = creditCheck(creditTerms, outstanding, estimate);
       if (!verdict.allowed && input.allow_over_credit !== true) {
         throw Object.assign(new Error(verdict.reason || "Supera el límite de crédito"), { status: 409 });
@@ -309,7 +360,12 @@ export async function createOrderWithBookings(
     // venta del tour center nacía sin sucursal y el corte por punto de venta
     // dejaba fuera justo lo que se quería separar.
     branch: input.branch_id || ctx.branchId || undefined,
-    seller: input.seller_id || undefined,
+    seller: attributedSeller || undefined,
+    // Se congela el hecho concreto que ganó. Sin esto, una comisión discutida
+    // seis semanas después solo se podría defender repitiendo el cálculo con
+    // las reglas de hoy, que son justo las que pueden haber cambiado.
+    attribution: attributionId || undefined,
+    attribution_policy: attributionPolicy || undefined,
     partner: input.partner_id || undefined,
     promotion: input.promotion_id || undefined,
     // Vacío en una reserva del motor público: no la creó nadie del equipo, y
@@ -386,7 +442,7 @@ export async function createOrderWithBookings(
       productId: item.product_id,
       modalityId: item.modality_id,
       partnerId: input.partner_id,
-      sellerId: input.seller_id,
+      sellerId: attributedSeller,
       channel,
       quantity: billable,
       travelDate,
@@ -466,7 +522,7 @@ export async function createOrderWithBookings(
       departure: item.departure_id || undefined,
       modality: item.modality_id || undefined,
       branch: input.branch_id || ctx.branchId || undefined,
-      seller: input.seller_id || undefined,
+      seller: attributedSeller || undefined,
       partner: input.partner_id || undefined,
       // 0054 — de qué cupo salieron estas plazas, para poder devolverlas a SU
       // cupo al cancelar. Si el contrato cambia de temporada entre la venta y
@@ -713,6 +769,27 @@ export async function createOrderWithBookings(
     entityType: "order", entityId: order._id,
     description: `Orden ${order.order_number} creada con ${bookings.length} reserva(s) por ${totals.total} ${currency}`,
   });
+
+  /**
+   * El paso «reserva» del embudo (0058).
+   *
+   * Fuera de la saga y a prueba de fallos, como los avisos: que no se anote
+   * quién trajo al cliente es un problema del informe de mañana; que no se
+   * pueda vender lo es de hoy. Sin vendedor no se anota nada, porque una
+   * reserva directa de la empresa no es del embudo de nadie.
+   */
+  if (attributedSeller) {
+    await recordTouch({
+      companyId,
+      sellerId: attributedSeller,
+      stage: "booking",
+      customerId: input.customer_id,
+      visitorId: input.visitor_id,
+      channel,
+      orderId: order._id,
+      bookingId: bookings[0]?._id ?? null,
+    });
+  }
 
   // ---- calendario de cobro (0039) ---------------------------------------
   // Fuera de la saga y tolerante a fallos, igual que los avisos: una venta ya
@@ -1050,6 +1127,27 @@ export async function syncOrderTotals(companyId: string, orderId: string): Promi
   await tenantUpdate(companyId, "order", orderId, {
     total, paid_total: paid, balance, status,
   });
+
+  /**
+   * El paso «compra» del embudo (0058): una venta cobrada del todo.
+   *
+   * Se anota aquí y no al crear la orden porque una reserva que nadie paga no
+   * es una compra, y contarla como tal inflaría el cierre de quien deja
+   * reservas colgadas por encima del que cobra. `recordPurchaseOnce` se encarga
+   * de que cobrar en tres plazos no deje tres compras.
+   */
+  if (status === "paid") {
+    const order = (await tenantQuery<Order>(companyId, "order", {
+      _filter: { _id: orderId }, _limit: 1,
+    }))[0];
+    const sellerId = refId(order?.seller);
+    if (sellerId) {
+      await recordPurchaseOnce(companyId, orderId, sellerId, {
+        customerId: refId(order?.customer),
+        channel: (order?.channel as string) ?? null,
+      });
+    }
+  }
 
   // Propagate the payment state down to the bookings.
   for (const b of bookings) {

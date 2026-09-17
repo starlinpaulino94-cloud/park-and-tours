@@ -61,6 +61,8 @@ export const RELATION_RESOURCE: Record<string, string> = {
   parent: "ledger_account",
   revision_of: "quote",
   selected_option: "quote_option",
+  seller_link: "seller_link",
+  seller_type: "seller_type",
   parent_partner: "partner",
   pickup_hotel: "hotel",
   product_modality: "product_modality",

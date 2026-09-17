@@ -264,6 +264,24 @@ export const SELLER_ROLE: Record<string, LabelDef> = {
   agent: def("Agente", "neutral"),
 };
 
+/** Los canales de un enlace del vendedor (0058). */
+export const LINK_CHANNEL: Record<string, LabelDef> = {
+  qr: def("QR impreso", "violet"),
+  link: def("Enlace"),
+  whatsapp: def("WhatsApp", "success"),
+  social: def("Redes sociales", "info"),
+  email: def("Correo", "accent"),
+  print: def("Material impreso", "neutral"),
+};
+
+/** Las etapas del embudo de captación (0058). */
+export const FUNNEL_STAGE: Record<string, LabelDef> = {
+  visit: def("Visita"),
+  signup: def("Cliente captado", "info"),
+  booking: def("Reserva", "accent"),
+  purchase: def("Compra", "success"),
+};
+
 export const STAFF_TYPE: Record<string, LabelDef> = {
   guide: def("Guía", "success"),
   driver: def("Conductor", "info"),

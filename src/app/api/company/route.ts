@@ -24,6 +24,10 @@ const EDITABLE = [
   // no existe, así que escribir un WhatsApp hacía perder también el nombre y el
   // RNC del formulario.
   "document_footer", "voucher_terms", "invoice_terms",
+  // 0058 — a quién se le paga cuando el cliente vino por el QR de un conserje y
+  // la venta la cerró el mostrador. Es una decisión de negocio de la empresa, y
+  // se aplica AL VENDER: cambiarla no reescribe las ventas ya atribuidas.
+  "attribution_policy", "attribution_window_days",
 ];
 
 /** GET /api/company — the signed-in tenant's own company profile. */

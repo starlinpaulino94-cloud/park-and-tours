@@ -84,6 +84,11 @@ export const COMPANY_EXPORT_AREAS: CompanyExportArea[] = [
       cancellation_policy: "politicas-de-cancelacion",
       partner: "partners",
       seller: "vendedores",
+      seller_type: "tipos-de-vendedor",
+      seller_link: "enlaces-de-vendedor",
+      // El embudo se lleva entero: es la prueba de quién trajo a cada cliente,
+      // y sin él las comisiones del histórico no se pueden defender.
+      seller_attribution: "atribuciones",
       allotment: "allotments",
       commission_rule: "reglas-de-comision",
       commission: "comisiones",
