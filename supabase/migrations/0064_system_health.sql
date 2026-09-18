@@ -77,6 +77,30 @@ create table if not exists job_run (
   created_at timestamptz not null default now()
 );
 
+-- ── por si esta migración ya se aplicó en una versión anterior ─────────────
+--
+-- `trigger` se añadió a esta migración DESPUÉS de que existiera, y va dentro del
+-- `create table if not exists`. En una base donde la tabla ya se creó, esa
+-- instrucción no hace nada y la columna no llegaría nunca: el sembrador y los
+-- crons fallarían al escribirla, y el mensaje no diría por qué.
+--
+-- Es exactamente lo que le pasó a 0062 en producción. Una migración garantiza
+-- sus propias precondiciones en vez de suponerlas; donde ya está, esto no hace
+-- nada.
+alter table job_run
+  add column if not exists trigger text not null default 'cron';
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'job_run'::regclass and conname = 'job_run_trigger_check'
+  ) then
+    alter table job_run
+      add constraint job_run_trigger_check check (trigger in ('cron', 'manual', 'webhook'));
+  end if;
+end $$;
+
 -- La pregunta que se le hace a esta tabla es siempre la misma: «¿cuándo corrió
 -- esto por última vez?». El índice es ese orden.
 create index if not exists job_run_job_idx on job_run (job, started_at desc);
