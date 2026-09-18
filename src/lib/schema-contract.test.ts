@@ -692,3 +692,171 @@ describe("el enganche del token no pierde security definer", () => {
     ).toEqual([]);
   });
 });
+
+/**
+ * EL SEMBRADOR DE DEMOSTRACIÓN ESCRIBE COLUMNAS QUE EXISTEN.
+ *
+ * `scripts/seed-demo-presentation.mjs` es el código que se ejecuta minutos antes
+ * de enseñarle el sistema a un cliente, y hasta ahora era el menos protegido del
+ * repositorio: las guardas de esquema solo miraban `src/`, así que una columna
+ * mal escrita aquí no la veía nadie.
+ *
+ * Y no falla suave. PostgREST rechaza el INSERT ENTERO cuando una sola columna
+ * del payload no existe, así que un nombre de más no siembra de menos: no siembra
+ * NADA de esa tabla. Descubrirlo con el cliente delante es el peor momento
+ * posible, y es exactamente cuando se descubriría.
+ */
+describe("el sembrador de demostración escribe columnas que existen", () => {
+  const SEEDER = path.join(ROOT, "scripts/seed-demo-presentation.mjs");
+
+  /**
+   * Un extractor PROPIO, y no los ayudantes de arriba.
+   *
+   * `balanced` y `splitTopLevel` están afinados para SQL: cuentan paréntesis.
+   * Usarlos sobre un objeto de JavaScript hizo que la primera versión de esta
+   * guarda denunciara `organizations.purpose` y `cancellation_policy.refund_pct`
+   * —dos claves que viven ANIDADAS, una dentro de `metadata` y otra dentro del
+   * array `tiers`— como columnas inventadas. El sembrador estaba bien; la guarda,
+   * no.
+   *
+   * Una guarda que denuncia código correcto es peor que no tenerla: manda a
+   * «arreglar» lo que funciona, y a la tercera vez se desactiva.
+   */
+  function objectBody(text: string, from: number): { body: string; end: number } {
+    let depth = 1, i = from, quote = "";
+    while (i < text.length && depth > 0) {
+      const ch = text[i];
+      if (quote) {
+        if (ch === "\\") i++;
+        else if (ch === quote) quote = "";
+      } else if (ch === '"' || ch === "'" || ch === "`") {
+        quote = ch;
+      } else if ("{[(".includes(ch)) depth++;
+      else if ("}])".includes(ch)) depth--;
+      i++;
+    }
+    return { body: text.slice(from, i - 1), end: i };
+  }
+
+  /** Las claves de PRIMER nivel: lo anidado es de otro objeto, no de esta fila. */
+  function topLevelKeys(body: string): string[] {
+    const keys: string[] = [];
+    let depth = 0, cur = "", quote = "";
+    const flush = () => {
+      const line = cur.trim();
+      cur = "";
+      // `...algo` esparce un objeto cuyas claves no se pueden leer aquí.
+      if (!line || line.startsWith("...")) return;
+      const key = /^(?:"(\w+)"|'(\w+)'|(\w+))\s*:/.exec(line);
+      if (key) keys.push(key[1] ?? key[2] ?? key[3]);
+    };
+
+    for (let i = 0; i < body.length; i++) {
+      const ch = body[i];
+      if (quote) {
+        cur += ch;
+        if (ch === "\\") { cur += body[++i] ?? ""; }
+        else if (ch === quote) quote = "";
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") { quote = ch; cur += ch; continue; }
+      if ("{[(".includes(ch)) depth++;
+      else if ("}])".includes(ch)) depth--;
+      if (ch === "," && depth === 0) flush();
+      else cur += ch;
+    }
+    flush();
+    return keys;
+  }
+
+  function payloadsOf(source: string): { table: string; keys: string[] }[] {
+    const out: { table: string; keys: string[] }[] = [];
+    const patterns = [
+      /\binsert\(\s*"(\w+)"\s*,\s*\{/g,
+      /\.from\(\s*"(\w+)"\s*\)\s*\.\s*(?:insert|upsert)\(\s*\{/g,
+    ];
+    for (const re of patterns) {
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(source))) {
+        const { body, end } = objectBody(source, re.lastIndex);
+        re.lastIndex = end;
+        const keys = topLevelKeys(body);
+        if (keys.length) out.push({ table: m[1], keys });
+      }
+    }
+    return out;
+  }
+
+  /** El sembrador y sus módulos, que escriben contra las mismas tablas. */
+  function seederSources(): string {
+    let all = readFileSync(SEEDER, "utf8");
+    const dir = path.join(ROOT, "scripts/demo");
+    for (const f of readdirSync(dir).filter((x) => x.endsWith(".mjs") && x !== "tables.mjs")) {
+      all += "\n" + readFileSync(path.join(dir, f), "utf8");
+    }
+    return all;
+  }
+
+  it("ninguna columna inventada llega a la base", () => {
+    const source = seederSources();
+    const payloads = payloadsOf(source);
+
+    // Si el extractor deja de encontrar nada —porque el script cambie de forma—
+    // esta prueba pasaría en verde sin comprobar nada, que es el peor fallo
+    // posible en una guarda.
+    expect(payloads.length, "no se encontró ni un payload: la guarda no mira nada").toBeGreaterThan(10);
+
+    const broken: string[] = [];
+    for (const { table, keys } of payloads) {
+      const columns = SCHEMA.get(table);
+      if (!columns) { broken.push(`tabla desconocida: ${table}`); continue; }
+      for (const key of keys) {
+        if (!columns.has(key)) broken.push(`${table}.${key} no existe en el esquema`);
+      }
+    }
+
+    expect(
+      [...new Set(broken)],
+      "PostgREST rechaza el INSERT entero por una sola columna que no existe"
+    ).toEqual([]);
+  });
+
+  it("y el extractor no se cuela con lo anidado", () => {
+    // La regresión concreta que tuvo esta guarda: `metadata: { purpose: … }` y
+    // `tiers: [{ refund_pct: … }]` son UNA clave cada uno, no tres.
+    const keys = payloadsOf(`insert("organizations", { name: "X", metadata: { demo: true, purpose: "p" }, tiers: [{ refund_pct: 100 }], slug: "s" });`);
+    expect(keys[0].keys).toEqual(["name", "metadata", "tiers", "slug"]);
+  });
+
+  it("toda tabla que se siembra está en la lista de borrado", async () => {
+    /**
+     * `organization_id` referencia a `organizations` con `on delete restrict`:
+     * borrar la empresa demo NO arrastra sus filas, la base lo impide mientras
+     * quede una.
+     *
+     * Así que una tabla sembrada y no apuntada en `scripts/demo/tables.mjs`
+     * sobrevive al borrado, y la siguiente siembra corre sobre restos de la
+     * anterior. Peor aún: el borrado parece funcionar y la empresa demo se queda
+     * medio llena, que es lo que se descubre delante del cliente.
+     */
+    const { SEED_TABLES } = await import("../../scripts/demo/tables.mjs");
+    const declaradas = new Set(SEED_TABLES as string[]);
+
+    // `organizations` y `organization_memberships` se tratan aparte en el
+    // sembrador: son la empresa misma y sus accesos, no su contenido.
+    const aparte = new Set(["organizations", "organization_memberships", "organization_relationships"]);
+
+    const escritas = new Set(payloadsOf(seederSources()).map((p) => p.table));
+    const huerfanas = [...escritas].filter((t) => !declaradas.has(t) && !aparte.has(t));
+
+    expect(
+      huerfanas.sort(),
+      "se siembran tablas que el borrado no vacía: la demo quedaría medio llena"
+    ).toEqual([]);
+  });
+
+  it("una coma dentro de un texto no parte la fila", () => {
+    const keys = payloadsOf(`insert("customer", { first_name: "Ana, la de recepción", last_name: "Pérez" });`);
+    expect(keys[0].keys).toEqual(["first_name", "last_name"]);
+  });
+});

@@ -49,6 +49,13 @@ create table if not exists job_run (
   -- El nombre del trabajo tal cual se invoca: 'collections', 'dispatch-messages'…
   job text not null,
 
+  -- DE DÓNDE VINO. El mismo endpoint lo llama el programador de tareas y lo
+  -- llama una persona a mano cuando algo no salió. Sin distinguirlos, «corrió a
+  -- las 03:00» no dice si corrió solo o si alguien lo empujó — y esa diferencia
+  -- es justo la que importa cuando se investiga por qué algo no se envió.
+  trigger text not null default 'cron'
+    check (trigger in ('cron', 'manual', 'webhook')),
+
   started_at  timestamptz not null default now(),
   finished_at timestamptz,
 
@@ -172,3 +179,71 @@ begin
     perform app.enable_tenant_rls('public.system_incident');
   end if;
 end $$;
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- LA SONDA: PREGUNTARLE A LA BASE SI LO QUE NO SE VE ESTÁ BIEN
+--
+-- Hay cosas que solo se pueden comprobar desde dentro de Postgres, y son justo
+-- las que se rompen en silencio. La de hoy es el ejemplo: el enganche que emite
+-- la sesión perdió `security definer` y nadie podía entrar — y desde fuera de la
+-- base no hay forma de mirar ese atributo.
+--
+-- PostgREST solo publica el esquema `public`, así que la función vive aquí
+-- aunque todo lo demás de fontanería viva en `app`.
+--
+-- Es SECURITY DEFINER porque lee catálogos del sistema, y por eso mismo se le
+-- quita el permiso a todo el mundo salvo al servicio en la línea siguiente: 0017
+-- comprueba que ninguna función definer sea ejecutable por `anon`, y tiene razón.
+-- El revoke va pegado a la definición y no en otra migración: entre una y otra
+-- habría una ventana en la que cualquiera puede invocarla.
+-- ═══════════════════════════════════════════════════════════════════════════
+create or replace function public.health_probe()
+returns jsonb
+language plpgsql
+stable
+security definer
+-- El mismo atributo que se perdió en 0046. Aquí también hace falta: sin
+-- search_path fijo, lo que resuelva cada nombre depende de quién llame.
+set search_path = public, app, pg_catalog
+as $$
+declare
+  hook_definer boolean;
+  hook_config  text[];
+  sin_rls      integer;
+begin
+  select p.prosecdef, p.proconfig into hook_definer, hook_config
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'app' and p.proname = 'custom_access_token_hook';
+
+  -- Una tabla de negocio sin RLS es una fuga entre empresas esperando a que
+  -- alguien consulte por el camino equivocado. Se cuenta, no se listan: el
+  -- número basta para encender la luz, y la lista se mira ya en la base.
+  select count(*) into sin_rls
+    from pg_tables t
+   where t.schemaname = 'public'
+     and t.tablename not in ('schema_migrations')
+     and not exists (
+       select 1 from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+       where n.nspname = 'public' and c.relname = t.tablename and c.relrowsecurity
+     );
+
+  return jsonb_build_object(
+    'auth_hook', jsonb_build_object(
+      'exists', hook_definer is not null,
+      -- Sin esto, GoTrue responde 500 a toda emisión de sesión: nadie entra.
+      'security_definer', coalesce(hook_definer, false),
+      'has_search_path', coalesce(
+        exists (select 1 from unnest(coalesce(hook_config, '{}'::text[])) c where c like 'search\_path=%'),
+        false
+      )
+    ),
+    'tables_without_rls', sin_rls,
+    'checked_at', now()
+  );
+end;
+$$;
+
+revoke all on function public.health_probe() from public, anon, authenticated;
+grant execute on function public.health_probe() to service_role;

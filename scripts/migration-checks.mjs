@@ -377,7 +377,9 @@ export const MIGRATION_CHECKS = [
     columns: [
       // Sin `status`, un trabajo colgado no se distingue de uno que terminó, y
       // la pantalla de estado diría que todo va bien mientras nada corre.
-      ["job_run", ["organization_id", "job", "started_at", "finished_at", "status", "summary", "error"]],
+      // `trigger` distingue «corrió solo» de «lo empujó alguien», que es la
+      // diferencia que importa cuando se investiga por qué algo no se envió.
+      ["job_run", ["organization_id", "job", "trigger", "started_at", "finished_at", "status", "summary", "error"]],
       // `fingerprint` y `occurrences` son la agrupación entera: sin ellas, mil
       // ocurrencias del mismo fallo son mil filas y la pantalla es ilegible
       // justo el día que hay que leerla.
@@ -386,5 +388,12 @@ export const MIGRATION_CHECKS = [
         "occurrences", "first_seen_at", "last_seen_at", "status", "context",
       ]],
     ],
+    // `public.health_probe()` NO se comprueba aquí, y está dicho por qué: se le
+    // revoca el permiso a todo el mundo salvo al servicio, así que el
+    // verificador —que pregunta con la llave pública— recibiría un «permiso
+    // denegado» y lo reportaría como fallo sobre una base correcta. Un
+    // verificador que da falsas alarmas se deja de mirar. La cubre
+    // supabase/tests/system_health.test.sql, que además comprueba que detecta el
+    // enganche roto.
   },
 ];

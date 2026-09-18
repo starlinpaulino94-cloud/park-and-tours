@@ -2,9 +2,34 @@
 import fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 
-const DEMO_EMAIL = "demopresentaciones@havelgo.com";
-const DEMO_SLUG = "havelgo-demo-presentaciones";
+import { SEED_TABLES, TEARDOWN_TABLES } from "./demo/tables.mjs";
+
+/**
+ * A QUIÉN SE LE SIEMBRA, Y DÓNDE.
+ *
+ * El correo identifica a una persona; lo que se siembra es una EMPRESA. Los
+ * datos de este sistema están alcanzados por `organization_id`, no por usuario,
+ * así que sembrar la empresa alcanza a todas las cuentas que pertenecen a ella
+ * — que es exactamente lo que se quiere para una demostración.
+ *
+ * Y NO se siembra la empresa real. Se crea una empresa hermana de demostración
+ * y se le da membresía a las mismas personas. Meter clientes inventados,
+ * reservas que nadie hizo y comisiones que nadie cobró dentro de la operación de
+ * verdad contamina arqueos, cobros y contabilidad mientras estén ahí, y eso no
+ * se deshace tirando de un hilo.
+ *
+ * La membresía nueva nace con `is_primary: false` a propósito: al entrar, cada
+ * quien sigue aterrizando en su empresa real. Para presentar se cambia de
+ * empresa en el selector, y al salir no queda nadie con la demo por defecto.
+ */
+const OWNER_EMAIL =
+  process.argv.find((a) => a.startsWith("--email="))?.slice(8) ||
+  process.env.DEMO_OWNER_EMAIL ||
+  "starlinpaulino94@gmail.com";
+
 const RESET = process.argv.includes("--reset");
+/** Borra la empresa de demostración entera y no siembra nada. */
+const ONLY_REMOVE = process.argv.includes("--remove");
 
 for (const file of [".env", `.env.${process.env.NODE_ENV || "development"}`, ".env.local"]) {
   if (!fs.existsSync(file)) continue;
@@ -55,24 +80,116 @@ async function ensureRuntimeColumns() {
   }
 }
 
+/**
+ * El Admin API no tiene «buscar por correo», así que se pagina.
+ *
+ * Miraba SOLO la primera página. Con más usuarios de los que caben en ella,
+ * devolvía «no existe» sobre una cuenta que sí existe — y el script paraba
+ * diciendo que hay que crear un usuario que ya está.
+ */
 async function findUserByEmail(email) {
-  const { data, error } = await sb.auth.admin.listUsers({ page: 1, perPage: 1000 });
-  if (error) throw new Error(`auth.users: ${error.message}`);
-  return data.users.find((u) => u.email?.toLowerCase() === email.toLowerCase()) ?? null;
+  const wanted = email.toLowerCase();
+  for (let page = 1; ; page++) {
+    const { data, error } = await sb.auth.admin.listUsers({ page, perPage: 200 });
+    if (error) throw new Error(`auth.users: ${error.message}`);
+    const users = data?.users ?? [];
+    const found = users.find((u) => u.email?.toLowerCase() === wanted);
+    if (found) return found;
+    if (users.length < 200) return null;
+  }
 }
 
-async function ensureDemoOrg() {
-  const { data: existing, error } = await sb.from("organizations").select("id").eq("slug", DEMO_SLUG).maybeSingle();
+/** La empresa real de esa persona: la raíz del inquilino, no la sucursal. */
+async function realOrgOf(userId) {
+  const { data, error } = await sb
+    .from("organization_memberships")
+    .select("organization_id, is_primary, created_at, organizations(id, name, tenant_org_id)")
+    .eq("user_id", userId)
+    .eq("status", "active")
+    .order("is_primary", { ascending: false })
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(`membresías: ${error.message}`);
+  const first = (data ?? [])[0];
+  if (!first) return null;
+  const org = first.organizations;
+  return { id: org.tenant_org_id || org.id, name: org.name };
+}
+
+/** Todas las personas de esa empresa: la demo es de la empresa, no de una cuenta. */
+async function membersOf(orgId) {
+  const { data, error } = await sb
+    .from("organization_memberships")
+    .select("user_id, role")
+    .eq("organization_id", orgId)
+    .eq("status", "active");
+  if (error) throw new Error(`miembros: ${error.message}`);
+  return data ?? [];
+}
+
+/**
+ * Cada persona de la empresa real entra también en la de demostración.
+ *
+ * `is_primary: false` SIEMPRE, incluso al actualizar una membresía que ya
+ * existiera: si se pusiera a true, al entrar aterrizarían en la demo en vez de
+ * en su operación, y esa clase de sorpresa se descubre con un cliente esperando.
+ */
+async function ensureMemberships(demoOrgId, members) {
+  for (const m of members) {
+    const { data: existing, error } = await sb
+      .from("organization_memberships")
+      .select("id")
+      .eq("user_id", m.user_id)
+      .eq("organization_id", demoOrgId)
+      .maybeSingle();
+    if (error) throw new Error(`membresía demo: ${error.message}`);
+
+    const row = { role: m.role === "partner" ? "staff" : m.role, status: "active", is_primary: false };
+    if (existing?.id) {
+      const { error: upErr } = await sb.from("organization_memberships").update(row).eq("id", existing.id);
+      if (upErr) throw new Error(`membresía demo: ${upErr.message}`);
+    } else {
+      const { error: insErr } = await sb
+        .from("organization_memberships")
+        .insert({ user_id: m.user_id, organization_id: demoOrgId, ...row });
+      if (insErr) throw new Error(`membresía demo: ${insErr.message}`);
+    }
+  }
+}
+
+/** Un identificador de URL estable a partir del nombre de la empresa real. */
+function slugify(text) {
+  return String(text || "empresa")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
+    .slice(0, 40) || "empresa";
+}
+
+/**
+ * La empresa hermana de demostración.
+ *
+ * Se busca por `slug`, que es determinista a partir del nombre de la real:
+ * volver a ejecutar el sembrador encuentra la misma y no crea una segunda.
+ *
+ * `parent_org_id` la cuelga de la real —así se sabe de quién es—, pero
+ * `tenant_org_id` apunta a SÍ MISMA: es la raíz de su propio inquilino, y eso es
+ * lo que mantiene su información separada de la operación de verdad. Si apuntara
+ * a la empresa real, la RLS dejaría ver una dentro de la otra, que es
+ * exactamente lo que esta separación viene a evitar.
+ */
+async function ensureDemoOrg(realOrg) {
+  const slug = `${slugify(realOrg.name)}-demo`;
+  const { data: existing, error } = await sb.from("organizations").select("id").eq("slug", slug).maybeSingle();
   if (error) throw new Error(`organizations: ${error.message}`);
   if (existing?.id) return existing.id;
 
   const orgId = await insert("organizations", {
     kind: "tenant",
-    name: "Havelgo Demo Tours",
-    slug: DEMO_SLUG,
-    legal_name: "Havelgo Demo Tours SRL",
+    name: `${realOrg.name} (Demostración)`,
+    slug,
+    legal_name: `${realOrg.name} (Demostración)`,
     company_type: "mixed_operator",
-    email: DEMO_EMAIL,
+    parent_org_id: realOrg.id,
+    email: OWNER_EMAIL,
     phone: "+1 809 555 2026",
     country: "República Dominicana",
     timezone: "America/Santo_Domingo",
@@ -87,22 +204,38 @@ async function ensureDemoOrg() {
   return orgId;
 }
 
+/**
+ * Vacía la empresa de demostración.
+ *
+ * El orden sale de `scripts/demo/tables.mjs` al revés: los hijos antes que los
+ * padres. Antes era una lista escrita a mano AQUÍ, que es como se desincroniza —
+ * se siembra una tabla nueva, nadie se acuerda de apuntarla en el borrado, y sus
+ * filas sobreviven. Con `organization_id ... on delete restrict`, eso además
+ * impide borrar la organización: la base lo rechaza mientras quede una fila.
+ */
 async function resetDemoData(orgId) {
   await sb.from("organization_relationships").delete().eq("from_org_id", orgId);
   await sb.from("organization_relationships").delete().eq("to_org_id", orgId);
-  const tables = [
-    "cash_movement", "payment", "commission", "receivable", "payable", "settlement",
-    "voucher", "participant", "pickup", "booking", "sales_order", "departure_resource", "pickup_route",
-    "departure", "price_rule", "product_modality", "product_cost", "product", "product_category",
-    "lead", "crm_activity", "promotion", "approval_request", "notification", "task", "cash_session",
-    "cash_register", "seller", "customer", "hotel", "staff", "supplier", "branch", "zone",
-  ];
-  for (const table of tables) {
+
+  for (const table of TEARDOWN_TABLES) {
     const { error } = await sb.from(table).delete().eq("organization_id", orgId);
-    if (error && !/relation .* does not exist|Could not find the table/i.test(error.message)) throw new Error(`reset ${table}: ${error.message}`);
+    // Una tabla que aún no existe en esta base no es un fallo del borrado.
+    if (error && !/relation .* does not exist|Could not find the table|column .* does not exist/i.test(error.message)) {
+      throw new Error(`reset ${table}: ${error.message}`);
+    }
   }
+
   const { error: partnerError } = await sb.from("organizations").delete().eq("parent_org_id", orgId).eq("metadata->>demo", "true");
   if (partnerError) throw new Error(`reset demo partners: ${partnerError.message}`);
+}
+
+/** Borra la empresa de demostración entera, incluida la organización. */
+async function removeDemoOrg(orgId) {
+  await resetDemoData(orgId);
+  const { error: memErr } = await sb.from("organization_memberships").delete().eq("organization_id", orgId);
+  if (memErr) throw new Error(`borrar membresías: ${memErr.message}`);
+  const { error } = await sb.from("organizations").delete().eq("id", orgId);
+  if (error) throw new Error(`borrar la empresa demo: ${error.message}`);
 }
 
 async function main() {
@@ -111,16 +244,31 @@ async function main() {
   }
   await ensureRuntimeColumns();
 
-  const user = await findUserByEmail(DEMO_EMAIL);
-  if (!user) throw new Error(`No existe el usuario Auth ${DEMO_EMAIL}. Créalo en Supabase Auth primero.`);
+  const user = await findUserByEmail(OWNER_EMAIL);
+  if (!user) throw new Error(`No existe el usuario ${OWNER_EMAIL} en Supabase Auth. Créalo primero.`);
 
-  const orgId = await ensureDemoOrg();
+  const realOrg = await realOrgOf(user.id);
+  if (!realOrg) throw new Error(`${OWNER_EMAIL} no pertenece a ninguna empresa activa: no hay de qué derivar la demostración.`);
+
+  const demoOrgId = await ensureDemoOrg(realOrg);
+
+  if (ONLY_REMOVE) {
+    await removeDemoOrg(demoOrgId);
+    console.log(`Empresa de demostración eliminada. «${realOrg.name}» queda como estaba.`);
+    return;
+  }
+
+  const members = await membersOf(realOrg.id);
+  await ensureMemberships(demoOrgId, members);
+  console.log(`Empresa real: «${realOrg.name}» — ${members.length} persona(s) con acceso a la demostración.`);
+
+  const orgId = demoOrgId;
   if (RESET) await resetDemoData(orgId);
 
   const existingProducts = await maybeCount("product", { organization_id: orgId });
   if (existingProducts > 0 && !RESET) {
     console.log("✅ La demo ya tiene datos. Usa npm run seed:demo-presentation -- --reset para regenerarla.");
-    console.log(`• Tenant demo: ${DEMO_SLUG}`);
+    console.log(`• Empresa demo de «${realOrg.name}»`);
     console.log(`• Productos existentes: ${existingProducts}`);
     return;
   }
@@ -237,14 +385,24 @@ async function main() {
   await insert("approval_request", { organization_id: orgId, code: "AP-DEMO-003", action_type: "refund", status: "pending", requested_at: at(-10, 9, 0), expires_at: at(-3), amount: 340, currency: "usd", reason: "Reembolso solicitado fuera de plazo.", payload: {}, requires_two: false, requested_by: null });
   await insert("notification", { organization_id: orgId, user_id: user.id, title: "Bienvenido a la demo", message: "Este tenant contiene datos preparados para presentar Havelgo a clientes.", notification_type: "info", link: "/dashboard", read_status: false });
 
-  console.log("✅ Demo de presentación creada");
-  console.log(`• Usuario: ${DEMO_EMAIL}`);
-  console.log(`• Tenant: ${DEMO_SLUG}`);
-  console.log("• Rol: owner");
-  console.log("• Productos: 4");
-  console.log("• Reservas: 12");
-  console.log("• Clientes: 6");
-  console.log("• Tareas: 5");
+  /**
+   * El resumen se CUENTA, no se recita.
+   *
+   * Antes decía «Productos: 4, Reservas: 12» escrito a mano. En cuanto el
+   * sembrador cambia, ese resumen miente — y lo peor de un resumen que miente es
+   * que se usa para decidir que la demostración está lista.
+   */
+  console.log(`\n✅ Demostración lista para «${realOrg.name}»\n`);
+  const resumen = [];
+  for (const table of SEED_TABLES) {
+    const n = await maybeCount(table, { organization_id: orgId }).catch(() => 0);
+    if (n > 0) resumen.push([table, n]);
+  }
+  const ancho = Math.max(...resumen.map(([t]) => t.length), 10);
+  for (const [table, n] of resumen) console.log(`  ${table.padEnd(ancho)}  ${n}`);
+  console.log(`\n  ${resumen.length} de ${SEED_TABLES.length} módulos con datos.`);
+  console.log(`\n  Entra con ${OWNER_EMAIL} y cambia a «${realOrg.name} (Demostración)» en el selector de empresa.`);
+  console.log("  Tu empresa real no se ha tocado. Para borrar la demo: npm run seed:demo-presentation -- --remove\n");
 }
 
 main().catch((error) => {
