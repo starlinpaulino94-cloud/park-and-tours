@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { supabaseService } from "@/lib/supabase/service";
 import { ok, fail } from "@/lib/api-response";
+import { startJobRun, finishJobRun, reportIncident } from "@/lib/system-health-service";
 import { TenantError } from "@/lib/tenant";
 import { serviceStore } from "@/lib/messaging/service-store";
 import { notifyBalanceDue } from "@/lib/messaging/events";
@@ -312,6 +313,7 @@ async function releaseHolds(now: Date): Promise<{ released: number }> {
 }
 
 export async function GET(req: NextRequest) {
+  let runId: string | null = null;
   try {
     const secret = process.env.CRON_SECRET;
     if (!secret) throw new TenantError("CRON_SECRET no está configurado en el entorno", 503);
@@ -319,6 +321,8 @@ export async function GET(req: NextRequest) {
       console.warn("[cron/collections] intento de ejecución sin credencial válida");
       throw new TenantError("No autorizado", 401);
     }
+
+    runId = await startJobRun("collections");
 
     const now = new Date();
     // Cada paso va por separado: que la antigüedad falle no puede dejar sin
@@ -352,9 +356,13 @@ export async function GET(req: NextRequest) {
       `${report.aging?.updated ?? 0} cuentas al día · ${report.holds?.released ?? 0} retenciones liberadas`
     );
 
+    await finishJobRun(runId, { status: "ok", summary: report as Record<string, unknown> });
+
     return ok(report);
   } catch (err) {
     console.error("[cron/collections] error:", err);
+    await finishJobRun(runId, { status: "failed", error: String(err) });
+    await reportIncident({ source: "cron:collections", error: err });
     return fail(err);
   }
 }

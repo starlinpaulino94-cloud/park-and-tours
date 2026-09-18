@@ -247,3 +247,57 @@ $$;
 
 revoke all on function public.health_probe() from public, anon, authenticated;
 grant execute on function public.health_probe() to service_role;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- APUNTAR UN INCIDENTE SIN PERDER LA CUENTA
+--
+-- La agrupación vive en un índice ÚNICO POR EXPRESIÓN —`coalesce(organization_id,
+-- …), fingerprint`—, y PostgREST no sabe apuntar a uno de esos: su `upsert` pide
+-- nombres de columna. Hacerlo desde el cliente obligaría a leer, decidir y
+-- escribir en tres viajes, y entre el primero y el tercero cabe otra petición:
+-- dos ocurrencias simultáneas del mismo fallo se contarían como una, o chocarían
+-- contra el índice.
+--
+-- Y justo cuando un fallo se repite en avalancha es cuando el contador importa:
+-- es el número que distingue una anécdota de una caída.
+--
+-- Aquí es una sola instrucción, y el `on conflict` puede nombrar la expresión.
+-- ═══════════════════════════════════════════════════════════════════════════
+create or replace function public.report_incident(
+  p_organization_id uuid,
+  p_fingerprint     text,
+  p_source          text,
+  p_message         text,
+  p_level           text default 'error',
+  p_context         jsonb default '{}'::jsonb
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, app, pg_catalog
+as $$
+declare
+  incidente uuid;
+begin
+  insert into system_incident (organization_id, fingerprint, source, message, level, context)
+  values (p_organization_id, p_fingerprint, p_source, p_message, coalesce(p_level, 'error'), coalesce(p_context, '{}'::jsonb))
+  on conflict (coalesce(organization_id, '00000000-0000-0000-0000-000000000000'::uuid), fingerprint)
+  do update set
+    occurrences  = system_incident.occurrences + 1,
+    last_seen_at = now(),
+    -- El último mensaje y contexto ganan: al investigar se mira la ocurrencia
+    -- más reciente, no la primera.
+    message      = excluded.message,
+    context      = excluded.context,
+    -- REABRIR LO RESUELTO. Un fallo que vuelve después de darse por arreglado es
+    -- una noticia, no una repetición: si se quedara en 'resolved' desaparecería
+    -- de la pantalla justo cuando hay que volver a mirarlo.
+    status       = case when system_incident.status = 'resolved' then 'open' else system_incident.status end
+  returning id into incidente;
+
+  return incidente;
+end;
+$$;
+
+revoke all on function public.report_incident(uuid, text, text, text, text, jsonb) from public, anon, authenticated;
+grant execute on function public.report_incident(uuid, text, text, text, text, jsonb) to service_role;
