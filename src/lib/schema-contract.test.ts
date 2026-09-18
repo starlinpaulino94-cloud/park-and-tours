@@ -787,8 +787,18 @@ describe("el sembrador de demostración escribe columnas que existen", () => {
     return out;
   }
 
+  /** El sembrador y sus módulos, que escriben contra las mismas tablas. */
+  function seederSources(): string {
+    let all = readFileSync(SEEDER, "utf8");
+    const dir = path.join(ROOT, "scripts/demo");
+    for (const f of readdirSync(dir).filter((x) => x.endsWith(".mjs") && x !== "tables.mjs")) {
+      all += "\n" + readFileSync(path.join(dir, f), "utf8");
+    }
+    return all;
+  }
+
   it("ninguna columna inventada llega a la base", () => {
-    const source = readFileSync(SEEDER, "utf8");
+    const source = seederSources();
     const payloads = payloadsOf(source);
 
     // Si el extractor deja de encontrar nada —porque el script cambie de forma—
@@ -816,6 +826,33 @@ describe("el sembrador de demostración escribe columnas que existen", () => {
     // `tiers: [{ refund_pct: … }]` son UNA clave cada uno, no tres.
     const keys = payloadsOf(`insert("organizations", { name: "X", metadata: { demo: true, purpose: "p" }, tiers: [{ refund_pct: 100 }], slug: "s" });`);
     expect(keys[0].keys).toEqual(["name", "metadata", "tiers", "slug"]);
+  });
+
+  it("toda tabla que se siembra está en la lista de borrado", async () => {
+    /**
+     * `organization_id` referencia a `organizations` con `on delete restrict`:
+     * borrar la empresa demo NO arrastra sus filas, la base lo impide mientras
+     * quede una.
+     *
+     * Así que una tabla sembrada y no apuntada en `scripts/demo/tables.mjs`
+     * sobrevive al borrado, y la siguiente siembra corre sobre restos de la
+     * anterior. Peor aún: el borrado parece funcionar y la empresa demo se queda
+     * medio llena, que es lo que se descubre delante del cliente.
+     */
+    const { SEED_TABLES } = await import("../../scripts/demo/tables.mjs");
+    const declaradas = new Set(SEED_TABLES as string[]);
+
+    // `organizations` y `organization_memberships` se tratan aparte en el
+    // sembrador: son la empresa misma y sus accesos, no su contenido.
+    const aparte = new Set(["organizations", "organization_memberships", "organization_relationships"]);
+
+    const escritas = new Set(payloadsOf(seederSources()).map((p) => p.table));
+    const huerfanas = [...escritas].filter((t) => !declaradas.has(t) && !aparte.has(t));
+
+    expect(
+      huerfanas.sort(),
+      "se siembran tablas que el borrado no vacía: la demo quedaría medio llena"
+    ).toEqual([]);
   });
 
   it("una coma dentro de un texto no parte la fila", () => {
