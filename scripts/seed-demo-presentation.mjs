@@ -321,8 +321,11 @@ async function main() {
    * nada más.
    */
 
-  const zoneBavaro = await insert("zone", { organization_id: orgId, name: "Bávaro", color: "#0E7C86", status: "active" });
-  const zoneRomana = await insert("zone", { organization_id: orgId, name: "La Romana", color: "#F97316", status: "active" });
+  // El margen de la zona es el que heredan los hoteles que no tienen el suyo, y
+  // de ahí sale la hora a la que pasa el transporte. La Romana está más lejos de
+  // Punta Cana, así que se recoge antes.
+  const zoneBavaro = await insert("zone", { organization_id: orgId, name: "Bávaro", color: "#0E7C86", pickup_offset_min: 75, status: "active" });
+  const zoneRomana = await insert("zone", { organization_id: orgId, name: "La Romana", color: "#F97316", pickup_offset_min: 110, status: "active" });
   const branchId = await insert("branch", { organization_id: orgId, name: "Oficina Punta Cana", code: "PUJ", branch_type: "office", city: "Punta Cana", status: "active" });
   const cashRegisterId = await insert("cash_register", { organization_id: orgId, name: "Caja Recepción", code: "CJ-01", currency: "usd", status: "active" });
   const cashSessionId = await insert("cash_session", { organization_id: orgId, cash_register_id: cashRegisterId, user_id: user.id, opening_amount: 250, expected_cash: 1840, sales_total: 1590, status: "open" });
@@ -338,7 +341,15 @@ async function main() {
 
   const hotelIds = [];
   for (const [i, h] of ["Barceló Bávaro Palace", "Meliá Punta Cana Beach", "Casa de Campo Resort", "Dreams Macao Beach"].entries()) {
-    hotelIds.push(await insert("hotel", { organization_id: orgId, zone_id: i === 2 ? zoneRomana : zoneBavaro, name: h, address: "República Dominicana", category: "5_star", pickup_point: "Lobby principal", pickup_offset_min: 20 + i * 5, status: "active" }));
+    hotelIds.push(await insert("hotel", {
+      organization_id: orgId, zone_id: i === 2 ? zoneRomana : zoneBavaro, name: h,
+      address: "República Dominicana", category: "5_star", pickup_point: "Lobby principal",
+      // El último se queda A PROPÓSITO sin margen propio: es el caso que enseña
+      // que hereda el de su zona, que es lo que hace el campo utilizable cuando
+      // hay doscientos hoteles cargados.
+      pickup_offset_min: i === 3 ? null : 60 + i * 15,
+      status: "active",
+    }));
   }
 
   const policyId = await insert("cancellation_policy", { organization_id: orgId, name: "Flexible demo", description: "Cancelación gratis hasta 24 horas antes.", tiers: [{ hours_before: 24, refund_pct: 100 }, { hours_before: 6, refund_pct: 50 }], no_show_refund_pct: 0, status: "active" });
@@ -387,8 +398,27 @@ async function main() {
     const paid = i % 5 === 0 ? Math.round(total * 0.5 * 100) / 100 : total;
     const sellerId = i % 2 ? sellerB : sellerA;
     const orderId = await insert("sales_order", { organization_id: orgId, order_number: code("ORD", i + 1), customer_id: customerId, seller_id: sellerId, partner_id: i % 3 === 0 ? partnerId : null, created_by: user.id, channel: i % 3 === 0 ? "b2b_portal" : "direct", status: paid >= total ? "paid" : "partially_paid", currency: "usd", subtotal: total, discount_total: 0, tax_total: 0, total, paid_total: paid, balance: total - paid, order_date: at(-i, 11, 0), notes: "Orden demo." });
-    const bookingId = await insert("booking", { organization_id: orgId, booking_number: code("RSV", i + 1), order_id: orderId, customer_id: customerId, product_id: dep.productId, departure_id: dep.id, modality_id: dep.modalityId, seller_id: sellerId, partner_id: i % 3 === 0 ? partnerId : null, created_by: user.id, travel_date: at(i - 3, 8, 0), booking_date: at(-i, 10, 0), adults: pax, children: 0, infants: 0, pax_total: pax, gross_amount: total, discount_amount: 0, tax_amount: 0, total_amount: total, paid_amount: paid, balance_amount: total - paid, cost_amount: cost, margin_amount: total - cost, currency: "usd", channel: i % 3 === 0 ? "b2b_portal" : "direct", status: paid >= total ? "paid" : "partially_paid", checkin_status: i < 3 ? "done" : "pending" });
+    const bookingId = await insert("booking", { organization_id: orgId, booking_number: code("RSV", i + 1), order_id: orderId, customer_id: customerId, product_id: dep.productId, departure_id: dep.id, modality_id: dep.modalityId, seller_id: sellerId, partner_id: i % 3 === 0 ? partnerId : null, created_by: user.id, travel_date: at(i - 3, 8, 0), booking_date: at(-i, 10, 0), adults: pax, children: 0, infants: 0, pax_total: pax, gross_amount: total, discount_amount: 0, tax_amount: 0, total_amount: total, paid_amount: paid, balance_amount: total - paid, cost_amount: cost, margin_amount: total - cost, currency: "usd", channel: i % 3 === 0 ? "b2b_portal" : "direct", status: paid >= total ? "paid" : "partially_paid", checkin_status: i < 3 ? "done" : "pending", hotel_id: hotelIds[i % hotelIds.length] });
     await insert("participant", { organization_id: orgId, booking_id: bookingId, first_name: customers[i % customers.length][0], last_name: customers[i % customers.length][1], category: "adult", checkin_status: i < 3 ? "done" : "pending" });
+
+    // La recogida, con su hotel. Sin esto el despacho no tiene nada que agrupar
+    // y «Armar rutas del día» no enseña nada.
+    //
+    // `pickup_time` es lo PROMETIDO al cliente y va vacío casi siempre a
+    // propósito: así el motor lo calcula y lo rellena, que es el caso normal.
+    // A uno se le pone una hora distinta de la que saldrá, para que en la demo
+    // se vea el aviso de desajuste —el cliente con un voucher que dice otra
+    // cosa— que es justo lo que el sistema no debe pisar en silencio.
+    await insert("pickup", {
+      organization_id: orgId,
+      booking_id: bookingId,
+      hotel_id: hotelIds[i % hotelIds.length],
+      pickup_time: i === 4 ? "06:45" : null,
+      location: "Lobby principal",
+      room: `${2 + (i % 6)}${String(10 + i).padStart(2, "0")}`,
+      pax,
+      status: i < 3 ? "confirmed" : "pending",
+    });
     await insert("voucher", { organization_id: orgId, booking_id: bookingId, order_id: orderId, code: code("VCH", i + 1), qr_data: code("VCH", i + 1), status: "valid", expires_at: at(30) });
     await insert("payment", { organization_id: orgId, order_id: orderId, booking_id: bookingId, customer_id: customerId, partner_id: i % 3 === 0 ? partnerId : null, cash_session_id: cashSessionId, user_id: user.id, reference: code("PAY", i + 1), payment_type: "payment", method: i % 4 === 0 ? "card" : "cash", status: "completed", amount: paid, currency: "usd", exchange_rate: 1, base_amount: paid, paid_at: at(-i, 12, 0), notes: "Pago demo." });
     const commissionAmount = Math.round(total * 0.06 * 100) / 100;
