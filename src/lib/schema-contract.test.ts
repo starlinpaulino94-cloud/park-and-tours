@@ -821,6 +821,37 @@ describe("el sembrador de demostración escribe columnas que existen", () => {
     ).toEqual([]);
   });
 
+  it("NUNCA toca la empresa por defecto ni la cuenta real", () => {
+    /**
+     * El sembrador tenía dos líneas que salían de la empresa de demostración y
+     * entraban en la operación de verdad:
+     *
+     *   update({ is_primary: false }).eq("user_id", user.id)   ← todas, la real incluida
+     *   ... is_primary: true                                    ← y la demo pasaba a ser la principal
+     *   updateUserById(user.id, { app_metadata: { demo: true } })
+     *
+     * O sea que sembrar la demostración cambiaba dónde aterrizaba esa persona al
+     * entrar, y marcaba su cuenta como de demostración. Una cuenta no es de la
+     * empresa demo: es de la persona.
+     *
+     * La membresía de la demo nace `is_primary: false` SIEMPRE. Esta prueba
+     * existe porque el fallo no da error: siembra bien, y la sorpresa llega al
+     * siguiente inicio de sesión.
+     */
+    // SIN LOS COMENTARIOS. La primera versión de esta comprobación falló contra
+    // el código ya arreglado, porque los comentarios que explican el fallo citan
+    // `updateUserById` y `is_primary` para contar qué pasaba. Una guarda que lee
+    // la explicación en vez del código denuncia justo al que documentó el
+    // arreglo.
+    const codigo = seederSources()
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/^[ \t]*\/\/.*$/gm, " ")
+      .replace(/^[ \t]*\*.*$/gm, " ");
+
+    expect(codigo, "el sembrador marca la demo como empresa principal").not.toMatch(/is_primary:\s*true/);
+    expect(codigo, "el sembrador reescribe la cuenta de Auth de una persona real").not.toMatch(/updateUserById/);
+  });
+
   it("y el extractor no se cuela con lo anidado", () => {
     // La regresión concreta que tuvo esta guarda: `metadata: { purpose: … }` y
     // `tiers: [{ refund_pct: … }]` son UNA clave cada uno, no tres.

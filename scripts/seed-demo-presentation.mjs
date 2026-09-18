@@ -292,28 +292,34 @@ async function main() {
 
   const existingProducts = await maybeCount("product", { organization_id: orgId });
   if (existingProducts > 0 && !RESET) {
-    console.log("✅ La demo ya tiene datos. Usa npm run seed:demo-presentation -- --reset para regenerarla.");
-    console.log(`• Empresa demo de «${realOrg.name}»`);
-    console.log(`• Productos existentes: ${existingProducts}`);
+    // Ya hay catálogo: no se repite el cuerpo antiguo. Pero los módulos SÍ se
+    // ejecutan, porque cada uno mira su propia tabla y siembra solo si está
+    // vacía. Antes se salía aquí con un `return`, y eso hacía que una segunda
+    // ejecución no llenara ninguno de los módulos nuevos — en silencio.
+    console.log(`La empresa demo de «${realOrg.name}» ya tiene catálogo; se completan los módulos que falten.`);
+    console.log("Para regenerarla entera: npm run seed:demo-presentation -- --reset\n");
+    await correrModulos(sb, orgId, realOrg);
+    await resumen(sb, orgId, realOrg);
     return;
   }
 
-  await sb.from("organization_memberships").update({ is_primary: false }).eq("user_id", user.id);
-  const { data: existingMembership, error: memLoadError } = await sb
-    .from("organization_memberships")
-    .select("id")
-    .eq("user_id", user.id)
-    .eq("organization_id", orgId)
-    .maybeSingle();
-  if (memLoadError) throw new Error(`organization_memberships: ${memLoadError.message}`);
-  if (existingMembership?.id) {
-    const { error } = await sb.from("organization_memberships").update({ role: "owner", status: "active", is_primary: true }).eq("id", existingMembership.id);
-    if (error) throw new Error(`update membership: ${error.message}`);
-  } else {
-    const { error } = await sb.from("organization_memberships").insert({ user_id: user.id, organization_id: orgId, role: "owner", status: "active", is_primary: true });
-    if (error) throw new Error(`insert membership: ${error.message}`);
-  }
-  await sb.auth.admin.updateUserById(user.id, { app_metadata: { app_role: "owner", demo: true } });
+  /*
+   * AQUÍ HABÍA DOS COSAS QUE NO DEBÍAN ESTAR, Y LAS DOS TOCABAN LA OPERACIÓN REAL.
+   *
+   * 1. `update({ is_primary: false }).eq("user_id", user.id)` sin más filtro:
+   *    quitaba la marca de principal a TODAS las membresías de esa persona —su
+   *    empresa de verdad incluida— y acto seguido se la ponía a la de
+   *    demostración. Al entrar, se aterrizaba en la demo en vez de en la
+   *    operación, y eso se descubre con un cliente delante.
+   *
+   * 2. `updateUserById(user.id, { app_metadata: { app_role: "owner", demo: true } })`
+   *    marcaba la CUENTA REAL como de demostración y le reescribía el rol. Una
+   *    cuenta no es de la empresa demo: es de la persona.
+   *
+   * Las membresías ya las resuelve `ensureMemberships` más arriba, para TODAS las
+   * personas de la empresa y con `is_primary: false` siempre. Aquí no hace falta
+   * nada más.
+   */
 
   const zoneBavaro = await insert("zone", { organization_id: orgId, name: "Bávaro", color: "#0E7C86", status: "active" });
   const zoneRomana = await insert("zone", { organization_id: orgId, name: "La Romana", color: "#F97316", status: "active" });
@@ -410,7 +416,20 @@ async function main() {
   await insert("approval_request", { organization_id: orgId, code: "AP-DEMO-003", action_type: "refund", status: "pending", requested_at: at(-10, 9, 0), expires_at: at(-3), amount: 340, currency: "usd", reason: "Reembolso solicitado fuera de plazo.", payload: {}, requires_two: false, requested_by: null });
   await insert("notification", { organization_id: orgId, user_id: user.id, title: "Bienvenido a la demo", message: "Este tenant contiene datos preparados para presentar Havelgo a clientes.", notification_type: "info", link: "/dashboard", read_status: false });
 
-  // ── los módulos que llenan el resto del sistema ──────────────────────────
+  await correrModulos(sb, orgId, realOrg);
+
+  await resumen(sb, orgId, realOrg);
+}
+
+/**
+ * Ejecuta los módulos de siembra.
+ *
+ * Vive fuera de `main` porque se usa en los DOS caminos: la primera siembra y la
+ * de una empresa que ya tenía catálogo. Antes solo estaba en el primero, y
+ * volver a ejecutar el sembrador dejaba los módulos nuevos sin tocar, sin decir
+ * nada.
+ */
+async function correrModulos(sb, orgId, realOrg) {
   const h = helpers(sb, orgId);
   for (const [nombre, seed] of MODULOS) {
     try {
@@ -418,29 +437,34 @@ async function main() {
       const puestas = Object.entries(hecho).filter(([, n]) => n > 0);
       console.log(`  · ${nombre}: ${puestas.map(([t, n]) => `${t} ${n}`).join(", ") || "ya tenía datos"}`);
     } catch (err) {
-      // Un módulo que falla no puede llevarse por delante a los demás: es
-      // preferible una demostración con ocho módulos llenos y uno vacío que una
-      // que se cae a mitad y deja la empresa en un estado que nadie entiende.
+      // Un módulo que falla no puede llevarse por delante a los demás: vale más
+      // una demostración con cinco módulos llenos y uno vacío que una que se cae
+      // a mitad y deja la empresa en un estado que nadie sabe interpretar.
       console.error(`  ✗ ${nombre}: ${err.message}`);
     }
   }
+}
 
-  /**
-   * El resumen se CUENTA, no se recita.
-   *
-   * Antes decía «Productos: 4, Reservas: 12» escrito a mano. En cuanto el
-   * sembrador cambia, ese resumen miente — y lo peor de un resumen que miente es
-   * que se usa para decidir que la demostración está lista.
-   */
+/**
+ * El resumen se CUENTA, no se recita.
+ *
+ * Antes decía «Productos: 4, Reservas: 12» escrito a mano. En cuanto el
+ * sembrador cambia, ese resumen miente — y lo peor de un resumen que miente es
+ * que se usa para decidir que la demostración está lista.
+ */
+async function resumen(sb, orgId, realOrg) {
   console.log(`\n✅ Demostración lista para «${realOrg.name}»\n`);
-  const resumen = [];
+  const filas = [];
   for (const table of SEED_TABLES) {
-    const n = await maybeCount(table, { organization_id: orgId }).catch(() => 0);
-    if (n > 0) resumen.push([table, n]);
+    const { count, error } = await sb
+      .from(table)
+      .select("*", { count: "exact", head: true })
+      .eq("organization_id", orgId);
+    if (!error && (count ?? 0) > 0) filas.push([table, count]);
   }
-  const ancho = Math.max(...resumen.map(([t]) => t.length), 10);
-  for (const [table, n] of resumen) console.log(`  ${table.padEnd(ancho)}  ${n}`);
-  console.log(`\n  ${resumen.length} de ${SEED_TABLES.length} módulos con datos.`);
+  const ancho = Math.max(...filas.map(([t]) => t.length), 10);
+  for (const [table, n] of filas) console.log(`  ${table.padEnd(ancho)}  ${n}`);
+  console.log(`\n  ${filas.length} de ${SEED_TABLES.length} tablas con datos.`);
   console.log(`\n  Entra con ${OWNER_EMAIL} y cambia a «${realOrg.name} (Demostración)» en el selector de empresa.`);
   console.log("  Tu empresa real no se ha tocado. Para borrar la demo: npm run seed:demo-presentation -- --remove\n");
 }
