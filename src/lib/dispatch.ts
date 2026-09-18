@@ -387,3 +387,292 @@ export function pickupDiscrepancy(
   if (!p || !c || p === c) return null;
   return `El cliente tiene prometidas las ${p} y al transporte le tocaría pasar a las ${c}.`;
 }
+
+/* ═══════════════════════════════════════════ 5 · armar las rutas del día ══ */
+
+export interface PickupLike {
+  _id?: string | null;
+  id?: string | null;
+  booking?: unknown;
+  hotel?: unknown;
+  room?: string | null;
+  pax?: number | null;
+  location?: string | null;
+  pickup_time?: string | null;
+  planned_time?: string | null;
+  sequence?: number | null;
+  status?: string | null;
+  route?: unknown;
+}
+
+export interface PlannedStop {
+  pickupId: string;
+  hotelId: string | null;
+  hotelName: string;
+  /** Dónde espera el cliente: el punto del hotel, o lo que se escribió a mano. */
+  location: string;
+  room: string | null;
+  pax: number;
+  /** La hora que calcula el motor, `null` si falta el desfase. */
+  plannedTime: string | null;
+  /** La hora que ya se le prometió al cliente, si se le prometió alguna. */
+  promisedTime: string | null;
+  /** Qué decir cuando la prometida y la calculada no coinciden. */
+  discrepancy: string | null;
+  /** Número de parada, empezando en 1. */
+  sequence: number;
+}
+
+export interface PlannedRoute {
+  /** La huella que hace que rehacer el día actualice esta misma ruta. */
+  autoKey: string;
+  name: string;
+  zoneId: string | null;
+  zoneName: string;
+  /** El vehículo propuesto, o `null` si no quedan libres. */
+  vehicleId: string | null;
+  vehicleName: string | null;
+  /** Hora de la primera parada. */
+  startTime: string | null;
+  paxTotal: number;
+  stopsCount: number;
+  stops: PlannedStop[];
+  /** Lo que el despacho tiene que resolver antes de que salga. */
+  warnings: string[];
+}
+
+export interface BuildRoutesInput {
+  departure: DepartureLike;
+  /** Las recogidas a planificar. Quien llama excluye las que están a mano. */
+  pickups: PickupLike[];
+  hotels: HotelLike[];
+  zones: ZoneLike[];
+  /** La flota asignada a esta salida. */
+  vehicles: VehicleLike[];
+  timeZone: string;
+  /** Hoy, `YYYY-MM-DD`, para saber qué vehículo tiene los papeles al día. */
+  today: string;
+}
+
+export interface BuildRoutesResult {
+  routes: PlannedRoute[];
+  /** Lo que le pasa al día entero, no a una ruta concreta. */
+  warnings: string[];
+}
+
+/** Estados en los que una recogida ya no hay que ir a buscarla. */
+const DEAD_PICKUP = new Set(["cancelled", "no_show"]);
+
+const idOf = (value: unknown): string | null => {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+  if (typeof value === "object") {
+    const r = value as { _id?: unknown; id?: unknown };
+    return (r._id as string) ?? (r.id as string) ?? null;
+  }
+  return null;
+};
+
+const nameOf = (value: unknown, fallback: string): string => {
+  if (value && typeof value === "object") {
+    const n = (value as { name?: unknown }).name;
+    if (typeof n === "string" && n.trim()) return n.trim();
+  }
+  return fallback;
+};
+
+/**
+ * Agrupa las recogidas del día en rutas: por zona, en orden de recorrido y
+ * partidas cuando no caben en el vehículo.
+ *
+ * LAS TRES DECISIONES QUE LA GOBIERNAN
+ *
+ * **Se ordena por la hora, no por la distancia.** A quien se recoge con más
+ * antelación es a quien está más lejos, así que la hora ya lleva dentro el
+ * orden del recorrido. Optimizar con las coordenadas en línea recta daría
+ * recorridos peores que los del conductor que lleva diez años haciéndolos, y
+ * con pinta de calculados.
+ *
+ * **No inventa vehículos.** Se proponen los que la salida ya tiene asignados y
+ * pueden salir —los del seguro vencido no cuentan—, del más grande al más
+ * pequeño. Cuando se acaban, las paradas que sobran forman una ruta SIN
+ * vehículo y con el aviso de cuántas plazas faltan. Repartir a los turistas
+ * entre guaguas que no existen es la forma de que el problema aparezca en el
+ * lobby y no en la pantalla.
+ *
+ * **No pisa lo prometido.** La hora calculada va en `plannedTime`; si el
+ * cliente ya tiene otra en su voucher, las dos viajan juntas con el aviso al
+ * lado, y quien despacha decide.
+ */
+export function buildRoutes(input: BuildRoutesInput): BuildRoutesResult {
+  const { departure, pickups, hotels, zones, vehicles, timeZone, today } = input;
+
+  const hotelById = new Map(hotels.map((h) => [idOf(h) ?? "", h]));
+  const zoneById = new Map(zones.map((z) => [idOf(z) ?? "", z]));
+
+  const warnings: string[] = [];
+
+  /* ── las paradas, con su hora y su zona ─────────────────────────────────── */
+  interface Parada extends Omit<PlannedStop, "sequence"> {
+    zoneId: string | null;
+    zoneName: string;
+  }
+
+  const paradas: Parada[] = [];
+
+  for (const p of pickups) {
+    if (DEAD_PICKUP.has(String(p.status || "").toLowerCase())) continue;
+    const pickupId = idOf(p) ?? "";
+    if (!pickupId) continue;
+
+    const hotelId = idOf(p.hotel);
+    const hotel = (hotelId ? hotelById.get(hotelId) : null) ?? (p.hotel as HotelLike | null) ?? null;
+    const zoneId = idOf(hotel?.zone);
+    const zone = zoneId ? zoneById.get(zoneId) ?? null : null;
+
+    const offset = pickupOffsetMin(hotel, zone);
+    const plannedTime = plannedPickupTime(departure.departure_at, offset, timeZone);
+    const promisedTime = String(p.pickup_time || "").trim().slice(0, 5) || null;
+
+    const hotelName = nameOf(hotel, "Sin hotel");
+    if (!plannedTime) {
+      warnings.push(
+        `No se sabe a qué hora pasar por ${hotelName}: ni el hotel ni su zona tienen margen de recogida.`
+      );
+    }
+
+    paradas.push({
+      pickupId,
+      hotelId,
+      hotelName,
+      location: String(p.location || hotel?.pickup_point || "").trim() || hotelName,
+      room: String(p.room || "").trim() || null,
+      pax: Math.max(0, Number(p.pax ?? 0) || 0),
+      plannedTime,
+      promisedTime,
+      discrepancy: pickupDiscrepancy(promisedTime, plannedTime),
+      zoneId,
+      zoneName: nameOf(zone, "Sin zona"),
+    });
+  }
+
+  /* ── por zona, y dentro de la zona por hora ─────────────────────────────── */
+  const porZona = new Map<string, Parada[]>();
+  for (const parada of paradas) {
+    const clave = parada.zoneId ?? "";
+    porZona.set(clave, [...(porZona.get(clave) || []), parada]);
+  }
+
+  const ordenarPorHora = (a: Parada, b: Parada) => {
+    // Sin hora al final: si fueran primeras, el conductor arrancaría por la
+    // parada que justamente nadie sabe cuándo es.
+    if (!a.plannedTime && !b.plannedTime) return a.hotelName.localeCompare(b.hotelName, "es");
+    if (!a.plannedTime) return 1;
+    if (!b.plannedTime) return -1;
+    if (a.plannedTime !== b.plannedTime) return a.plannedTime < b.plannedTime ? -1 : 1;
+    return a.hotelName.localeCompare(b.hotelName, "es");
+  };
+
+  /* ── la flota que de verdad puede salir, de mayor a menor ───────────────── */
+  const flota = vehicles
+    .filter((v) => {
+      const bloqueo = vehicleBlock(v, today);
+      if (bloqueo) warnings.push(bloqueo.reason);
+      return !bloqueo;
+    })
+    .map((v) => ({ id: idOf(v) ?? "", name: vehicleLabel(v), capacity: Math.max(0, Number(v.capacity ?? 0) || 0) }))
+    .filter((v) => v.id)
+    .sort((a, b) => b.capacity - a.capacity);
+
+  let siguienteCoche = 0;
+
+  /* ── armar ──────────────────────────────────────────────────────────────── */
+  const routes: PlannedRoute[] = [];
+
+  const zonasOrdenadas = [...porZona.entries()].sort(([, a], [, b]) => {
+    const pa = [...a].sort(ordenarPorHora)[0]?.plannedTime ?? "99:99";
+    const pb = [...b].sort(ordenarPorHora)[0]?.plannedTime ?? "99:99";
+    if (pa !== pb) return pa < pb ? -1 : 1;
+    return (a[0]?.zoneName ?? "").localeCompare(b[0]?.zoneName ?? "", "es");
+  });
+
+  for (const [zoneId, grupo] of zonasOrdenadas) {
+    const ordenadas = [...grupo].sort(ordenarPorHora);
+    const zoneName = ordenadas[0]?.zoneName ?? "Sin zona";
+
+    let coche = 0;
+    let pendientes = ordenadas;
+
+    while (pendientes.length > 0) {
+      coche += 1;
+      const vehiculo = flota[siguienteCoche] ?? null;
+      // Sin vehículo, o con uno sin capacidad declarada, no se parte: partir por
+      // un límite inventado repartiría a la gente por un número que nadie puso.
+      const limite = vehiculo && vehiculo.capacity > 0 ? vehiculo.capacity : Infinity;
+
+      const dentro: Parada[] = [];
+      const fuera: Parada[] = [];
+      let llevados = 0;
+      const avisosRuta: string[] = [];
+
+      for (const parada of pendientes) {
+        if (parada.pax > limite) {
+          // Una reserva sola que no cabe en ninguna guagua no se parte en dos:
+          // partirla separaría a una familia entre dos vehículos.
+          avisosRuta.push(
+            `${parada.hotelName} lleva ${parada.pax} pax y no cabe en ${vehiculo?.name ?? "el vehículo"} (${limite} plazas).`
+          );
+          dentro.push(parada);
+          llevados += parada.pax;
+          continue;
+        }
+        if (llevados + parada.pax > limite) { fuera.push(parada); continue; }
+        dentro.push(parada);
+        llevados += parada.pax;
+      }
+
+      if (dentro.length === 0) break;   // nada cabe: se evita el bucle infinito
+
+      if (vehiculo) siguienteCoche += 1;
+      else avisosRuta.push(`Sin vehículo disponible para ${llevados} pax en ${zoneName}.`);
+
+      const stops: PlannedStop[] = dentro.map((parada, i) => ({
+        pickupId: parada.pickupId,
+        hotelId: parada.hotelId,
+        hotelName: parada.hotelName,
+        location: parada.location,
+        room: parada.room,
+        pax: parada.pax,
+        plannedTime: parada.plannedTime,
+        promisedTime: parada.promisedTime,
+        discrepancy: parada.discrepancy,
+        sequence: i + 1,
+      }));
+
+      for (const s of stops) if (s.discrepancy) avisosRuta.push(s.discrepancy);
+
+      routes.push({
+        autoKey: `z:${zoneId || "sin-zona"}:${coche}`,
+        name: `${zoneName} · coche ${coche}`,
+        zoneId: zoneId || null,
+        zoneName,
+        vehicleId: vehiculo?.id ?? null,
+        vehicleName: vehiculo?.name ?? null,
+        startTime: stops.find((s) => s.plannedTime)?.plannedTime ?? null,
+        paxTotal: llevados,
+        stopsCount: stops.length,
+        stops,
+        warnings: avisosRuta,
+      });
+
+      pendientes = fuera;
+    }
+  }
+
+  const sinVehiculo = routes.filter((r) => !r.vehicleId).reduce((s, r) => s + r.paxTotal, 0);
+  if (sinVehiculo > 0) {
+    warnings.push(`Faltan plazas para ${sinVehiculo} pax: hay rutas sin vehículo asignado.`);
+  }
+
+  return { routes, warnings };
+}

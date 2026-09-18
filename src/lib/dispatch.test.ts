@@ -305,3 +305,257 @@ describe("lo prometido al cliente y lo que calcula el motor", () => {
     expect(pickupDiscrepancy("07:15:00", "07:15")).toBeNull();
   });
 });
+
+/* ────────────────────────────────────────────────────────────────────────── */
+
+import { buildRoutes } from "@/lib/dispatch";
+
+/**
+ * Armar el día es la tarea que hoy se hace a mano en una libreta, y donde se
+ * cometen los errores caros: el cliente al que nadie pasó a buscar, la guagua
+ * con más gente de la que cabe, la familia repartida en dos vehículos.
+ */
+const SALIDA = { _id: "saona", departure_at: local(HOY, "08:00"), product: { duration_hours: 8 } };
+
+const hotel = (id: string, zona: string | null, offset?: number) => ({
+  _id: id, name: `Hotel ${id}`, pickup_point: `Lobby ${id}`,
+  zone: zona ? { _id: zona, name: `Zona ${zona}` } : null,
+  ...(offset === undefined ? {} : { pickup_offset_min: offset }),
+});
+
+const recogida = (id: string, hotelId: string, pax: number, extra: Record<string, unknown> = {}) => ({
+  _id: id, hotel: { _id: hotelId }, pax, ...extra,
+});
+
+const armar = (over: Partial<Parameters<typeof buildRoutes>[0]> = {}) =>
+  buildRoutes({
+    departure: SALIDA,
+    pickups: [],
+    hotels: [],
+    zones: [],
+    vehicles: [],
+    timeZone: TZ,
+    today: HOY,
+    ...over,
+  });
+
+describe("armar las rutas del día", () => {
+  const hoteles = [hotel("lejos", "este", 90), hotel("cerca", "este", 30), hotel("otra", "oeste", 60)];
+  const zonas = [{ _id: "este", name: "Zona este" }, { _id: "oeste", name: "Zona oeste" }];
+
+  it("agrupa por zona: una ruta por zona", () => {
+    const { routes } = armar({
+      hotels: hoteles, zones: zonas,
+      pickups: [recogida("p1", "lejos", 2), recogida("p2", "otra", 2)],
+    });
+    expect(routes).toHaveLength(2);
+    expect(routes.map((r) => r.zoneName).sort()).toEqual(["Zona este", "Zona oeste"]);
+  });
+
+  it("dentro de la zona ordena por hora: el más lejano es la primera parada", () => {
+    const { routes } = armar({
+      hotels: hoteles, zones: zonas,
+      pickups: [recogida("cercano", "cerca", 2), recogida("lejano", "lejos", 2)],
+    });
+    const ruta = routes.find((r) => r.zoneId === "este")!;
+    expect(ruta.stops.map((s) => s.pickupId)).toEqual(["lejano", "cercano"]);
+    expect(ruta.stops.map((s) => s.sequence)).toEqual([1, 2]);
+    expect(ruta.stops[0].plannedTime).toBe("06:30");  // 08:00 − 90 min
+    expect(ruta.stops[1].plannedTime).toBe("07:30");  // 08:00 − 30 min
+  });
+
+  it("la hora de la ruta es la de su primera parada", () => {
+    const { routes } = armar({
+      hotels: hoteles, zones: zonas, pickups: [recogida("p1", "lejos", 2)],
+    });
+    expect(routes[0].startTime).toBe("06:30");
+  });
+
+  it("los contadores de la ruta se derivan, no se teclean", () => {
+    const { routes } = armar({
+      hotels: hoteles, zones: zonas,
+      pickups: [recogida("p1", "lejos", 3), recogida("p2", "cerca", 4)],
+    });
+    const ruta = routes.find((r) => r.zoneId === "este")!;
+    expect(ruta.paxTotal).toBe(7);
+    expect(ruta.stopsCount).toBe(2);
+  });
+
+  it("una recogida cancelada o no presentada no se va a buscar", () => {
+    const { routes } = armar({
+      hotels: hoteles, zones: zonas,
+      pickups: [
+        recogida("viva", "lejos", 2),
+        recogida("cancelada", "cerca", 2, { status: "cancelled" }),
+        recogida("ausente", "cerca", 2, { status: "no_show" }),
+      ],
+    });
+    expect(routes.flatMap((r) => r.stops.map((s) => s.pickupId))).toEqual(["viva"]);
+  });
+
+  it("un hotel sin zona no se pierde: va a «Sin zona»", () => {
+    // Perderlo sería dejar al cliente esperando en el lobby sin que nadie lo
+    // sepa, que es exactamente el error que esta pantalla existe para evitar.
+    const { routes } = armar({
+      hotels: [hotel("huerfano", null, 45)], zones: [],
+      pickups: [recogida("p1", "huerfano", 2)],
+    });
+    expect(routes).toHaveLength(1);
+    expect(routes[0].zoneName).toBe("Sin zona");
+    expect(routes[0].stops[0].plannedTime).toBe("07:15");
+  });
+
+  it("el hotel sin margen avisa y su parada queda la última", () => {
+    const { routes, warnings } = armar({
+      hotels: [hotel("sinmargen", "este"), hotel("lejos", "este", 90)],
+      zones: zonas,
+      pickups: [recogida("sin", "sinmargen", 2), recogida("con", "lejos", 2)],
+    });
+    expect(warnings.join(" ")).toContain("No se sabe a qué hora pasar por Hotel sinmargen");
+    expect(routes[0].stops.map((s) => s.pickupId)).toEqual(["con", "sin"]);
+  });
+});
+
+describe("armar las rutas respetando los vehículos que hay", () => {
+  const hoteles = [hotel("a", "este", 90), hotel("b", "este", 60), hotel("c", "este", 30)];
+  const zonas = [{ _id: "este", name: "Zona este" }];
+  const bus = (id: string, capacity: number, extra: Record<string, unknown> = {}) =>
+    ({ _id: id, name: id, capacity, status: "available", ...extra });
+
+  it("parte la zona cuando no cabe en el vehículo", () => {
+    const { routes } = armar({
+      hotels: hoteles, zones: zonas, vehicles: [bus("mini", 4)],
+      pickups: [recogida("p1", "a", 3), recogida("p2", "b", 3)],
+    });
+    expect(routes).toHaveLength(2);
+    expect(routes[0].paxTotal).toBe(3);
+    expect(routes[1].paxTotal).toBe(3);
+    expect(routes.map((r) => r.autoKey)).toEqual(["z:este:1", "z:este:2"]);
+  });
+
+  it("usa primero el vehículo más grande", () => {
+    const { routes } = armar({
+      hotels: hoteles, zones: zonas, vehicles: [bus("mini", 4), bus("grande", 40)],
+      pickups: [recogida("p1", "a", 3), recogida("p2", "b", 3)],
+    });
+    expect(routes).toHaveLength(1);
+    expect(routes[0].vehicleName).toBe("grande");
+  });
+
+  it("el vehículo con el seguro vencido no se propone, y se dice por qué", () => {
+    const { routes, warnings } = armar({
+      hotels: hoteles, zones: zonas,
+      vehicles: [bus("vencido", 40, { insurance_expiry: "2026-01-01", plate: "A1" })],
+      pickups: [recogida("p1", "a", 3)],
+    });
+    expect(routes[0].vehicleId).toBeNull();
+    expect(warnings.join(" ")).toContain("seguro vencido");
+  });
+
+  it("sin vehículos suficientes NO reparte a la gente en guaguas que no existen", () => {
+    // Lo contrario —repartir igual— haría que el problema apareciera en el
+    // lobby a las siete de la mañana en vez de en la pantalla la tarde antes.
+    const { routes, warnings } = armar({
+      hotels: hoteles, zones: zonas, vehicles: [bus("unico", 4)],
+      pickups: [recogida("p1", "a", 3), recogida("p2", "b", 3)],
+    });
+    expect(routes[0].vehicleId).toBe("unico");
+    expect(routes[1].vehicleId).toBeNull();
+    expect(routes[1].warnings.join(" ")).toContain("Sin vehículo disponible");
+    expect(warnings.join(" ")).toContain("Faltan plazas para 3 pax");
+  });
+
+  it("una reserva que no cabe en ninguna guagua no se parte en dos", () => {
+    // Partirla repartiría a una familia entre dos vehículos.
+    const { routes } = armar({
+      hotels: hoteles, zones: zonas, vehicles: [bus("mini", 4)],
+      pickups: [recogida("familia", "a", 9)],
+    });
+    expect(routes).toHaveLength(1);
+    expect(routes[0].stops).toHaveLength(1);
+    expect(routes[0].paxTotal).toBe(9);
+    expect(routes[0].warnings.join(" ")).toContain("no cabe");
+  });
+
+  it("sin vehículos no se parte por un límite inventado", () => {
+    // Paradas pequeñas a propósito: con paradas grandes, cualquier límite
+    // inventado lo absorbería la rama de «esta sola no cabe» y la prueba daría
+    // verde con el corte puesto. Quince y quince caben en casi cualquier
+    // límite fabricado, así que si se parte es porque hay uno.
+    const { routes } = armar({
+      hotels: hoteles, zones: zonas, vehicles: [],
+      pickups: [recogida("p1", "a", 15), recogida("p2", "b", 15)],
+    });
+    expect(routes).toHaveLength(1);
+    expect(routes[0].paxTotal).toBe(30);
+  });
+
+  it("un vehículo sin capacidad declarada tampoco parte la ruta", () => {
+    const { routes } = armar({
+      hotels: hoteles, zones: zonas, vehicles: [bus("sincapacidad", 0)],
+      pickups: [recogida("p1", "a", 15), recogida("p2", "b", 15)],
+    });
+    expect(routes).toHaveLength(1);
+  });
+
+  it("dos zonas consumen vehículos distintos", () => {
+    const { routes } = armar({
+      hotels: [hotel("a", "este", 90), hotel("z", "oeste", 60)],
+      zones: [{ _id: "este", name: "Zona este" }, { _id: "oeste", name: "Zona oeste" }],
+      vehicles: [bus("uno", 40), bus("dos", 30)],
+      pickups: [recogida("p1", "a", 3), recogida("p2", "z", 3)],
+    });
+    expect(routes).toHaveLength(2);
+    expect(new Set(routes.map((r) => r.vehicleId)).size).toBe(2);
+  });
+});
+
+describe("armar no pisa lo que el cliente ya tiene prometido", () => {
+  it("la hora prometida sobrevive y la diferencia se avisa", () => {
+    const { routes } = armar({
+      hotels: [hotel("a", "este", 90)], zones: [{ _id: "este", name: "Zona este" }],
+      pickups: [recogida("p1", "a", 2, { pickup_time: "06:45" })],
+    });
+    const parada = routes[0].stops[0];
+    expect(parada.promisedTime).toBe("06:45");
+    expect(parada.plannedTime).toBe("06:30");
+    expect(parada.discrepancy).toContain("06:45");
+    expect(routes[0].warnings.join(" ")).toContain("06:30");
+  });
+
+  it("cuando coinciden no dice nada", () => {
+    const { routes } = armar({
+      hotels: [hotel("a", "este", 90)], zones: [{ _id: "este", name: "Zona este" }],
+      pickups: [recogida("p1", "a", 2, { pickup_time: "06:30" })],
+    });
+    expect(routes[0].stops[0].discrepancy).toBeNull();
+    // Sin aviso de horas. El de «sin vehículo» sí sale, y debe salir: esta
+    // salida no tiene flota asignada.
+    expect(routes[0].warnings.filter((w) => w.includes("prometidas"))).toEqual([]);
+  });
+});
+
+describe("armar el día es repetible", () => {
+  it("dos veces seguidas produce exactamente lo mismo", () => {
+    // Es lo que permite rehacer el día a media mañana cuando entran reservas
+    // nuevas, sin duplicar rutas ni mover a quien ya estaba colocado.
+    const entrada = {
+      hotels: [hotel("a", "este", 90), hotel("b", "este", 60)],
+      zones: [{ _id: "este", name: "Zona este" }],
+      vehicles: [{ _id: "bus", name: "bus", capacity: 40, status: "available" }],
+      pickups: [recogida("p1", "a", 3), recogida("p2", "b", 3)],
+    };
+    expect(armar(entrada)).toEqual(armar(entrada));
+  });
+
+  it("la huella de la ruta no depende del orden en que lleguen las recogidas", () => {
+    const base = {
+      hotels: [hotel("a", "este", 90), hotel("b", "este", 60)],
+      zones: [{ _id: "este", name: "Zona este" }],
+    };
+    const ida = armar({ ...base, pickups: [recogida("p1", "a", 3), recogida("p2", "b", 3)] });
+    const vuelta = armar({ ...base, pickups: [recogida("p2", "b", 3), recogida("p1", "a", 3)] });
+    expect(ida.routes.map((r) => r.autoKey)).toEqual(vuelta.routes.map((r) => r.autoKey));
+    expect(ida.routes[0].stops.map((s) => s.pickupId)).toEqual(vuelta.routes[0].stops.map((s) => s.pickupId));
+  });
+});
