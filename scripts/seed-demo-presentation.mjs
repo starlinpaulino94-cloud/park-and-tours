@@ -6,6 +6,10 @@ import { SEED_TABLES, TEARDOWN_TABLES } from "./demo/tables.mjs";
 import { helpers } from "./demo/lib.mjs";
 import { seed as seedCatalogo } from "./demo/catalogo.mjs";
 import { seed as seedComercial } from "./demo/comercial.mjs";
+import { seed as seedOperacion } from "./demo/operacion.mjs";
+import { seed as seedAlmacen } from "./demo/almacen.mjs";
+import { seed as seedFinanzas } from "./demo/finanzas.mjs";
+import { seed as seedPlataforma } from "./demo/plataforma.mjs";
 
 /**
  * Los módulos que llenan lo que el sembrador original no tocaba.
@@ -19,6 +23,10 @@ import { seed as seedComercial } from "./demo/comercial.mjs";
 const MODULOS = [
   ["catálogo", seedCatalogo],
   ["comercial", seedComercial],
+  ["operación", seedOperacion],
+  ["almacén", seedAlmacen],
+  ["finanzas", seedFinanzas],
+  ["plataforma", seedPlataforma],
 ];
 
 /**
