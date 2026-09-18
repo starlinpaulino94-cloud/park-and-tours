@@ -526,6 +526,54 @@ describe("el esquema cubre todo lo que la aplicación escribe", () => {
     expect(sinInventariar, "tablas nuevas que el verificador de migraciones no comprueba").toEqual([]);
   });
 
+  it("tampoco se queda atrás cuando una migración solo añade columnas", async () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * EL HUECO QUE DEJABA LA GUARDA DE ARRIBA
+     *
+     * Aquella solo mira TABLAS nuevas. Una migración que únicamente añade
+     * columnas —0065 es exactamente eso— pasaba sin que nadie la inventariara,
+     * y `npm run verify:migrations` respondía «todo en verde» sin haber
+     * preguntado por ninguna de ellas. Ese verde es el que alguien usa para
+     * decidir que puede desplegar.
+     *
+     * Se exige que cada `alter table ... add column` de una migración desde la
+     * 0032 esté en el inventario. No se pide la columna exacta —hay columnas de
+     * relleno que no cambian nada— sino que la PAREJA tabla+columna aparezca,
+     * que es lo que el verificador puede preguntarle a la base.
+     */
+    const { MIGRATION_CHECKS } = await import("../../scripts/migration-checks.mjs");
+    const inventariadas = new Set<string>();
+    for (const group of MIGRATION_CHECKS as {
+      migration: string;
+      tables?: string[];
+      columns?: [string, string[]][];
+      enums?: [string, string, string][];
+      rpc?: string[];
+    }[]) {
+      for (const [table, columns] of group.columns ?? []) {
+        for (const column of columns) inventariadas.add(`${table}.${column}`);
+      }
+    }
+
+    const sinInventariar: string[] = [];
+    for (const file of readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort()) {
+      if (Number(file.slice(0, 4)) < 65) continue;   // desde 0065, que es cuando empieza esta regla
+      const sql = readFileSync(path.join(MIGRATIONS, file), "utf8");
+      for (const match of sql.matchAll(
+        /alter table (?:if exists )?([a-z_][a-z_0-9]*)([\s\S]*?);/g
+      )) {
+        const table = match[1];
+        for (const col of match[2].matchAll(/add column (?:if not exists )?([a-z_][a-z_0-9]*)/g)) {
+          const par = `${table}.${col[1]}`;
+          if (!inventariadas.has(par)) sinInventariar.push(`${file}: ${par}`);
+        }
+      }
+    }
+
+    expect(sinInventariar, "columnas nuevas que el verificador de migraciones no comprueba").toEqual([]);
+  });
+
   it("cada relación declarada en resources.ts se puede resolver", () => {
     // Un `expand` que no corresponde a ninguna referencia real no fallaba
     // mientras las expansiones se ignoraban: ahora dispara una consulta que la
