@@ -13,6 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import { optionsFrom } from "@/components/tf/options";
 import { MESSAGE_CHANNEL, MESSAGE_STATUS, MESSAGE_TEMPLATE_KEY } from "@/lib/labels-modules";
 import { formatDateTime, formatNumber } from "@/lib/format";
@@ -45,6 +47,45 @@ export default function CommunicationsPage() {
   const [total, setTotal] = useState(0);
   const [channels, setChannels] = useState<Channels | null>(null);
   const [loading, setLoading] = useState(true);
+
+  /**
+   * ENVIAR UN MENSAJE SUELTO.
+   *
+   * La pantalla listaba la cola de mensajes y no ofrecía forma de poner uno.
+   * Todo lo que había salía de un disparador —confirmar una reserva, recordar un
+   * saldo— o del cron nocturno, así que escribirle a un cliente por una razón que
+   * el sistema no prevé era imposible desde aquí.
+   */
+  const [composing, setComposing] = useState(false);
+  const [draft, setDraft] = useState({ key: "booking_confirmation", channel: "email", to: "", to_name: "" });
+  const [sending, setSending] = useState(false);
+
+  const send = async () => {
+    const destino = draft.to.trim();
+    if (!destino) { toast.error("Falta a quién enviarlo"); return; }
+    setSending(true);
+    const res = await api.post("/api/messages", {
+      key: draft.key,
+      channel: draft.channel,
+      // El contacto viaja en la clave del canal elegido: el servidor decide por
+      // dónde sale según lo que reciba, no según lo que diga el formulario.
+      to: draft.channel === "email" ? { email: destino }
+        : draft.channel === "whatsapp" ? { whatsapp: destino }
+        : { phone: destino },
+      to_name: draft.to_name.trim() || undefined,
+      deliver_now: true,
+    });
+    setSending(false);
+    if (!res.ok) {
+      console.error("[comunicaciones] no se pudo encolar el mensaje:", res.error);
+      toast.error(res.error?.message || "No se pudo enviar el mensaje");
+      return;
+    }
+    toast.success("Mensaje encolado");
+    setComposing(false);
+    setDraft({ key: "booking_confirmation", channel: "email", to: "", to_name: "" });
+    void load();
+  };
   const [busy, setBusy] = useState(false);
   const [statusFilter, setStatusFilter] = useState("__all");
   const [channelFilter, setChannelFilter] = useState("__all");
@@ -108,12 +149,74 @@ export default function CommunicationsPage() {
 
   return (
     <div className="space-y-6">
+
+      <Dialog open={composing} onOpenChange={setComposing}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Nuevo mensaje</DialogTitle>
+            <DialogDescription>
+              Sale con una plantilla de la empresa, igual que los automáticos.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div className="grid gap-1.5">
+              <Label htmlFor="msg-key">Plantilla</Label>
+              <Select value={draft.key} onValueChange={(v) => setDraft((d) => ({ ...d, key: v }))}>
+                <SelectTrigger id="msg-key"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {optionsFrom(MESSAGE_TEMPLATE_KEY).map((o) => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="msg-channel">Canal</Label>
+              <Select value={draft.channel} onValueChange={(v) => setDraft((d) => ({ ...d, channel: v }))}>
+                <SelectTrigger id="msg-channel"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {optionsFrom(MESSAGE_CHANNEL).map((o) => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="msg-to">
+                {draft.channel === "email" ? "Correo" : draft.channel === "whatsapp" ? "WhatsApp" : "Teléfono"}
+              </Label>
+              <Input
+                id="msg-to"
+                value={draft.to}
+                onChange={(e) => setDraft((d) => ({ ...d, to: e.target.value }))}
+                placeholder={draft.channel === "email" ? "cliente@correo.com" : "+1 809 555 0101"}
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="msg-name">A nombre de</Label>
+              <Input
+                id="msg-name"
+                value={draft.to_name}
+                onChange={(e) => setDraft((d) => ({ ...d, to_name: e.target.value }))}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setComposing(false)}>Cancelar</Button>
+            <Button onClick={send} disabled={sending}>{sending ? "Enviando…" : "Enviar"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <PageHeader
         title="Comunicaciones"
         actions={
           <>
             <Button variant="outline" size="icon" onClick={load} aria-label="Actualizar">
               <Icon name="RefreshCw" className="size-4" />
+            </Button>
+            <Button className="gap-1.5" onClick={() => setComposing(true)}>
+              <Icon name="Plus" className="size-4" /> Nuevo mensaje
             </Button>
             <Link href="/dashboard/clientes/comunicaciones/plantillas">
               <Button variant="outline" className="gap-1.5">

@@ -4030,3 +4030,159 @@ describe("alta de salidas y de reservas", () => {
     expect(reservas).toContain('href="/dashboard/pos"');
   });
 });
+
+/**
+ * UNA PANTALLA QUE ENSEÑA ALGO NO PUEDE CALLARSE CÓMO SE CREA.
+ *
+ * El fallo que esto vigila no da error ni deja rastro: la pantalla carga, se ve
+ * bien, está vacía, y no hay botón. Quien la abre concluye que el módulo «no
+ * funciona» y deja de usarlo. Es lo que pasaba con «Mi día», que enseñaba tareas
+ * que solo podían llegar desde una incidencia o un cron.
+ *
+ * LO QUE ESTA GUARDA PRUEBA, Y LO QUE NO
+ *
+ * Prueba que la pantalla OFRECE un camino de alta. No prueba que funcione: una
+ * pantalla con un botón «Nuevo…» que no guardara nada pasaría igual. Eso es un
+ * límite de leer el código en vez de ejecutarlo, y se acepta a sabiendas —lo que
+ * esto persigue es la pantalla que no ofrece NADA, que es el fallo que de verdad
+ * se da—. Que el alta escriba columnas que existen lo cubre la guarda de esquema;
+ * que la acción haga su trabajo, las pruebas de su API.
+ *
+ * NO toda pantalla necesita un alta, y por eso la lista de abajo existe con un
+ * motivo escrito en cada línea. Un asiento contable tecleado a mano rompe el
+ * cuadre; un nivel de existencias sale de los movimientos, no del teclado. Ahí
+ * añadir un botón no sería una mejora: sería un fallo.
+ */
+describe("cada pantalla dice cómo se crea lo que enseña", () => {
+  const DASHBOARD = path.join(ROOT, "src/app/dashboard");
+
+  /**
+   * Las pantallas SIN alta a propósito, y por qué.
+   *
+   * Que esté aquí es una decisión, no un pendiente. Si alguien quita una línea
+   * porque «le falta el botón», el motivo está al lado para discutirlo antes.
+   */
+  const DERIVADAS: Record<string, string> = {
+    "/dashboard/finanzas/diario": "asientos contables: los genera cada operación; teclearlos a mano rompe el cuadre",
+    "/dashboard/finanzas/estados": "estados financieros: se calculan del mayor",
+    "/dashboard/finanzas/declaraciones": "606/607/608: se derivan de las ventas del periodo",
+    "/dashboard/finanzas/vencimientos": "cobros pendientes: nacen de la venta, no se inventan",
+    "/dashboard/comercio/existencias": "niveles de stock: salen de los movimientos; escribirlos hace que el almacén mienta",
+    "/dashboard/equipo/acuses": "acuses de lectura: los firma quien lee",
+    "/dashboard/analitica/ocupacion": "previsión: se calcula de las salidas",
+    "/dashboard/analitica/reportes": "informes: se calculan",
+    "/dashboard/analitica/cohortes": "cohortes: se calculan",
+    "/dashboard/rentabilidad": "márgenes: se calculan de ventas y costes",
+    "/dashboard/distribucion/matriz": "vista cruzada de disponibilidad ya existente",
+    "/dashboard/distribucion/canales": "un canal no se crea, se conecta: aparece cuando un revendedor reserva por OCTO; se habilita en Integraciones",
+    "/dashboard/inicio/notificaciones": "avisos: los emite el sistema",
+    "/dashboard/administracion/aprobaciones": "solicitudes: nacen del flujo que las necesita",
+    "/dashboard/administracion/exportar": "herramienta de salida de datos",
+    "/dashboard/administracion/importar": "herramienta de entrada de datos",
+    "/dashboard/administracion/plan": "plan contratado: se cambia desde la suscripción",
+    "/dashboard/checkin": "embarque: actúa sobre reservas que ya existen",
+    "/dashboard/operaciones/despacho": "despacho: actúa sobre salidas que ya existen",
+    "/dashboard/salidas/[id]/manifiesto": "manifiesto: se deriva de las reservas de la salida",
+    "/dashboard/clientes/vouchers": "vouchers: los emite la venta",
+  };
+
+  /**
+   * El texto de la pantalla, sus componentes y SUS FICHEROS HERMANOS.
+   *
+   * Lo de los hermanos importa: la primera versión de esta comprobación solo
+   * leía `page.tsx` y `_components/`, y por eso dio por incompleta la pantalla de
+   * Tareas — cuyo `create-task-dialog.tsx` vive al lado de `page.tsx`. Una
+   * comprobación que denuncia lo que ya está resuelto se desactiva a la tercera.
+   */
+  function screenSource(pageFile: string): string {
+    let src = "";
+    const dir = path.dirname(pageFile);
+    const stack = [dir];
+    while (stack.length) {
+      const d = stack.pop()!;
+      for (const entry of readdirSync(d)) {
+        const f = path.join(d, entry);
+        if (statSync(f).isDirectory()) {
+          // Solo los componentes propios: una subruta es OTRA pantalla y tiene
+          // que responder por sí misma.
+          if (entry.startsWith("_")) stack.push(f);
+        } else if (/\.tsx$/.test(entry)) {
+          src += "\n" + readFileSync(f, "utf8");
+        }
+      }
+    }
+    return src;
+  }
+
+  /** ¿Hay algún POST a una URL sin identificador incrustado? */
+  function postsToCollection(src: string): boolean {
+    for (const m of src.matchAll(/api\.post[^(]*\(\s*[`"']([^`"']+)/g)) {
+      if (!m[1].includes("${")) return true;
+    }
+    return /method:\s*"POST"/.test(src);
+  }
+
+  function dashboardPages(dir: string, out: string[] = []): string[] {
+    for (const entry of readdirSync(dir)) {
+      const f = path.join(dir, entry);
+      if (statSync(f).isDirectory()) dashboardPages(f, out);
+      else if (entry === "page.tsx") out.push(f);
+    }
+    return out;
+  }
+
+  it("ninguna enseña registros sin ofrecer cómo crearlos", () => {
+    const mudas: string[] = [];
+
+    for (const file of dashboardPages(DASHBOARD)) {
+      const route = "/" + path.relative(path.join(ROOT, "src/app"), file).replace(/\/page\.tsx$/, "");
+      if (route in DERIVADAS) continue;
+
+      const src = screenSource(file);
+      const enseñaRegistros = /<ResourcePage|<SimpleResource|<DataTable|\.map\(\(?\w+\)? =>/.test(src);
+      if (!enseñaRegistros) continue;
+
+      const ofreceAlta =
+        /fields=\{\[/.test(src) ||
+        /<DialogTrigger|setOpen\(true\)|setCreating\(|showCreate|<Create\w+Dialog/.test(src) ||
+        // CREAR es postear a una COLECCIÓN, no a un identificador.
+        //
+        // Buscar `api.post` a secas no vale: casi toda pantalla postea algo
+        // —canjear un ticket, anular, cerrar una caja— y eso no es un alta. Con
+        // esa regla, la pantalla de tickets pasaba por completa mientras solo
+        // sabía canjear y anular tickets que nada creaba.
+        //
+        // Una URL con `${…}` lleva dentro el identificador de una fila que ya
+        // existe: es una acción sobre ella. Una sin él apunta a la colección, y
+        // eso sí trae algo al mundo.
+        postsToCollection(src) ||
+        /href="\/dashboard\/(pos|reservar)/.test(src) ||
+        />\s*(Nuev[ao]|Crear|Generar|Añadir|Registrar|Emitir)\b/.test(src);
+
+      if (!ofreceAlta) mudas.push(route);
+    }
+
+    expect(
+      mudas.sort(),
+      "pantallas que enseñan registros y no dicen cómo crearlos (si es a propósito, apúntala en DERIVADAS con su motivo)"
+    ).toEqual([]);
+  });
+
+  it("la lista de excepciones no esconde pantallas que ya no existen", () => {
+    // Una excepción sobre una ruta borrada es una exención que nadie revisa y
+    // que taparía la pantalla que ocupe ese sitio mañana.
+    const rutas = new Set(
+      dashboardPages(DASHBOARD).map(
+        (f) => "/" + path.relative(path.join(ROOT, "src/app"), f).replace(/\/page\.tsx$/, "")
+      )
+    );
+    const fantasmas = Object.keys(DERIVADAS).filter((r) => !rutas.has(r));
+    expect(fantasmas, "excepciones sobre pantallas inexistentes").toEqual([]);
+  });
+
+  it("cada excepción explica por qué", () => {
+    for (const [route, motivo] of Object.entries(DERIVADAS)) {
+      expect(motivo.length, `${route} sin motivo`).toBeGreaterThan(20);
+    }
+  });
+});

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/tf/page-header";
@@ -138,6 +139,19 @@ export default function CanalesPage() {
                 <SelectItem value="365">Último año</SelectItem>
               </SelectContent>
             </Select>
+            {/*
+              Esta pantalla no tiene alta, y no le falta: un canal no se crea, se
+              CONECTA. Aparece aquí solo cuando un revendedor empieza a reservar
+              contra el conector OCTO, porque lo que se lista son sus reservas
+              agrupadas por socio.
+              Lo que sí hacía falta era decir dónde se habilita, porque quien
+              abre esta pantalla vacía no tiene forma de adivinarlo.
+            */}
+            <Link href="/dashboard/administracion/integraciones">
+              <Button variant="outline" className="gap-1.5">
+                <Icon name="Plug" className="size-4" /> Conectar un canal
+              </Button>
+            </Link>
             <Button variant="outline" onClick={() => void cargar()} disabled={loading}>
               <Icon name="RefreshCw" className="mr-2 h-4 w-4" />
               Actualizar
