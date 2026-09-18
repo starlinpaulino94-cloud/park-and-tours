@@ -92,11 +92,24 @@ describe("encabezado de Mi día", () => {
   });
 
   it("no queda ningún saludo en el módulo", () => {
+    /**
+     * Esta comprobación prohibía `ctx.name` en CUALQUIER parte del módulo.
+     * Cumplía su propósito —quitar el «Hola, Fulano» del encabezado— pero por
+     * exceso: también prohibía pasar el nombre como propiedad a un diálogo, que
+     * no es un saludo ni sale en el encabezado.
+     *
+     * Se acota a lo que de verdad defiende: que el nombre no se PINTE como texto
+     * de la pantalla. Sigue siendo una prohibición, y más exacta: antes bastaba
+     * con escribir el nombre de otra forma para esquivarla.
+     */
     const files = walk(path.join(ROOT, "src/app/dashboard/inicio/mi-dia"));
     for (const file of files) {
       const source = readFileSync(file, "utf8");
-      expect(source).not.toMatch(/Hola,/);
-      expect(source).not.toMatch(/ctx\.name/);
+      expect(source, `${file}: saludo`).not.toMatch(/Hola,|Bienvenid/);
+      // El nombre renderizado como texto visible, en cualquiera de sus formas.
+      expect(source, `${file}: el nombre no se pinta en la pantalla`).not.toMatch(
+        />\s*\{\s*(ctx|user)\.name\s*\}|\{\s*(ctx|user)\.name\s*\}\s*</
+      );
     }
   });
 });
@@ -3971,3 +3984,4 @@ describe("Paquetes (0061)", () => {
     expect(page).toContain("la actividad más ajustada");
   });
 });
+
