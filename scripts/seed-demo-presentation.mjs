@@ -3,6 +3,23 @@ import fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 
 import { SEED_TABLES, TEARDOWN_TABLES } from "./demo/tables.mjs";
+import { helpers } from "./demo/lib.mjs";
+import { seed as seedCatalogo } from "./demo/catalogo.mjs";
+import { seed as seedComercial } from "./demo/comercial.mjs";
+
+/**
+ * Los módulos que llenan lo que el sembrador original no tocaba.
+ *
+ * Van EN ORDEN: el comercial cuelga de productos, clientes y vendedores que
+ * siembra el cuerpo de este archivo, y las cotizaciones y pases cuelgan de los
+ * catálogos del primero. Cada uno busca en la base lo que necesita en vez de
+ * recibirlo, así que si algo falta simplemente siembra menos en lugar de
+ * reventar a mitad y dejar la demostración a medias.
+ */
+const MODULOS = [
+  ["catálogo", seedCatalogo],
+  ["comercial", seedComercial],
+];
 
 /**
  * A QUIÉN SE LE SIEMBRA, Y DÓNDE.
@@ -384,6 +401,21 @@ async function main() {
   // Expirada: no debe contarse como pendiente ni aparecer como aprobable.
   await insert("approval_request", { organization_id: orgId, code: "AP-DEMO-003", action_type: "refund", status: "pending", requested_at: at(-10, 9, 0), expires_at: at(-3), amount: 340, currency: "usd", reason: "Reembolso solicitado fuera de plazo.", payload: {}, requires_two: false, requested_by: null });
   await insert("notification", { organization_id: orgId, user_id: user.id, title: "Bienvenido a la demo", message: "Este tenant contiene datos preparados para presentar Havelgo a clientes.", notification_type: "info", link: "/dashboard", read_status: false });
+
+  // ── los módulos que llenan el resto del sistema ──────────────────────────
+  const h = helpers(sb, orgId);
+  for (const [nombre, seed] of MODULOS) {
+    try {
+      const hecho = await seed(h);
+      const puestas = Object.entries(hecho).filter(([, n]) => n > 0);
+      console.log(`  · ${nombre}: ${puestas.map(([t, n]) => `${t} ${n}`).join(", ") || "ya tenía datos"}`);
+    } catch (err) {
+      // Un módulo que falla no puede llevarse por delante a los demás: es
+      // preferible una demostración con ocho módulos llenos y uno vacío que una
+      // que se cae a mitad y deja la empresa en un estado que nadie entiende.
+      console.error(`  ✗ ${nombre}: ${err.message}`);
+    }
+  }
 
   /**
    * El resumen se CUENTA, no se recita.
