@@ -5,6 +5,7 @@ import Link from "next/link";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/tf/page-header";
+import { ResourceForm } from "@/components/tf/resource-form";
 import { KpiCard } from "@/components/tf/kpi-card";
 import { DataTable } from "@/components/tf/data-table";
 import { StatusBadge, Pill } from "@/components/tf/status-badge";
@@ -97,6 +98,7 @@ export default function DeparturesPage() {
   const [exporting, setExporting] = useState(false);
 
   const [genOpen, setGenOpen] = useState(false);
+  const [newOpen, setNewOpen] = useState(false);
   const [gen, setGen] = useState({
     product_id: "", from: toDateInput(new Date()), to: toDateInput(new Date(Date.now() + 29 * 86_400_000)),
     times: "09:00", capacity: "", cutoff_hours: "12",
@@ -238,6 +240,16 @@ export default function DeparturesPage() {
             </Button>
             <Button variant="outline" className="gap-1.5" onClick={exportCsv} disabled={exporting || loading}>
               <Icon name="Download" className="size-4" /> Exportar
+            </Button>
+            {/*
+              El generador crea un CALENDARIO: un producto repetido por semanas.
+              Es lo que se usa para la temporada, pero no servía para lo de todos
+              los días — añadir la salida del jueves a las 6, el charter que pidió
+              un hotel, la extra de Navidad. Para eso había que generar un
+              calendario de una sola fecha, o no había forma.
+            */}
+            <Button variant="outline" className="gap-1.5" onClick={() => setNewOpen(true)}>
+              <Icon name="Plus" className="size-4" /> Nueva salida
             </Button>
             <Button className="gap-1.5" onClick={() => setGenOpen(true)}>
               <Icon name="CalendarPlus" className="size-4" /> Generar calendario
@@ -421,6 +433,40 @@ export default function DeparturesPage() {
       </Tabs>
 
       {/* ---- generator --------------------------------------------------- */}
+      {/*
+        `status` NO es un campo de este formulario, y no es un olvido: lo deriva
+        `recalculateDeparture` de las reservas vivas. Dejarlo escribir permitiría
+        reabrir a mano una salida llena y vender plazas que no existen. Por eso
+        `resources.ts` lo deja fuera de `writable`, y este formulario respeta esa
+        decisión en vez de rodearla.
+      */}
+      <ResourceForm
+        open={newOpen}
+        onOpenChange={setNewOpen}
+        resource="departure"
+        title="Nueva salida"
+        description="Una sola fecha. Para una temporada entera, usa «Generar salidas»."
+        fields={[
+          { name: "product", label: "Excursión", type: "reference", resource: "product",
+            optionLabel: (p: any) => p.name, required: true, span: 2 },
+          { name: "departure_at", label: "Fecha y hora de salida", type: "datetime", required: true },
+          { name: "branch", label: "Sucursal", type: "reference", resource: "branch",
+            optionLabel: (b: any) => b.name },
+          { name: "capacity", label: "Cupo", type: "number", required: true,
+            help: "Plazas a la venta. En cero, la salida nace sin nada que vender." },
+          { name: "cutoff_hours", label: "Cierre de ventas", type: "number", suffix: "h antes",
+            help: "Horas antes de salir en que deja de venderse." },
+          { name: "meeting_point", label: "Punto de encuentro", type: "text", span: 2 },
+          { name: "notes", label: "Notas", type: "textarea", span: 2 },
+        ]}
+        onSaved={() => {
+          setNewOpen(false);
+          // La lista vive en el estado de esta pantalla: sin recargar, la salida
+          // recién creada no aparecería y parecería que no se guardó.
+          void load();
+        }}
+      />
+
       <Dialog open={genOpen} onOpenChange={setGenOpen}>
         <DialogContent>
           <DialogHeader>

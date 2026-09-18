@@ -3985,3 +3985,48 @@ describe("Paquetes (0061)", () => {
   });
 });
 
+
+describe("alta de salidas y de reservas", () => {
+  /**
+   * Dos huecos distintos, y solo uno era una función que faltaba.
+   *
+   * SALIDAS tenía únicamente el generador de calendario —un producto repetido
+   * por semanas—, que sirve para la temporada y no para lo de todos los días:
+   * la salida del jueves a las 6, el charter que pidió un hotel, la extra de
+   * Navidad. Para una sola fecha había que generar un calendario de una fecha, o
+   * no había forma.
+   *
+   * RESERVAS sí tenía el botón, y hacía lo correcto. Se llamaba «Nueva venta»,
+   * así que en una pantalla llamada Reservas nadie lo encontraba. La función
+   * estaba; el nombre contaba el paso técnico en vez del resultado.
+   */
+  const salidas = read("src/app/dashboard/salidas/page.tsx");
+  const reservas = read("src/app/dashboard/reservas/page.tsx");
+
+  it("salidas ofrece crear UNA, además de generar el calendario", () => {
+    expect(salidas).toContain("Nueva salida");
+    expect(salidas).toContain('resource="departure"');
+    // Y el generador sigue estando: son dos trabajos distintos, no uno que
+    // sustituya al otro.
+    expect(salidas).toContain("Generar salidas");
+  });
+
+  it("el alta de salida NO deja tocar el estado", () => {
+    /**
+     * `status` lo deriva `recalculateDeparture` de las reservas vivas, y por eso
+     * `resources.ts` lo deja fuera de `writable`. Si este formulario lo ofreciera,
+     * se podría reabrir a mano una salida llena y vender plazas que no existen.
+     *
+     * Se comprueba aquí y no solo en `resources.ts` porque el riesgo es que
+     * alguien añada el campo al formulario sin mirar por qué no estaba.
+     */
+    const bloque = salidas.slice(salidas.indexOf('resource="departure"'));
+    const form = bloque.slice(0, bloque.indexOf("onSaved"));
+    expect(form).not.toMatch(/name:\s*"status"/);
+  });
+
+  it("reservas nombra el botón por lo que produce", () => {
+    expect(reservas).toContain("Nueva reserva");
+    expect(reservas).toContain('href="/dashboard/pos"');
+  });
+});
