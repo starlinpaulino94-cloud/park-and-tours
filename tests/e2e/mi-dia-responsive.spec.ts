@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { login } from "./login";
 
 const email = process.env.E2E_EMAIL;
 const password = process.env.E2E_PASSWORD;
@@ -8,16 +9,10 @@ test.skip(!email || !password, "Define E2E_EMAIL y E2E_PASSWORD para ejecutar la
 test("Mi día no genera desbordamiento horizontal", async ({ page }) => {
   test.setTimeout(90_000);
 
-  await page.goto("/login?redirect=/dashboard/inicio/mi-dia");
-  await page.getByLabel("Email").fill(email!);
-  await page.getByLabel("Contraseña").fill(password!);
-  await page.getByRole("button", { name: "Entrar" }).click();
-
-  // Se compara el pathname, no la URL completa: `/login?redirect=/dashboard/inicio/mi-dia`
-  // contiene la ruta destino en el query, así que un regex sobre la URL entera
-  // daría por buena la navegación aunque el login hubiera fallado y siguiéramos
-  // en /login. Con el pathname, un login fallido produce un timeout claro aquí.
-  await page.waitForURL((url) => url.pathname === "/dashboard/inicio/mi-dia", { timeout: 60_000 });
+  // `login` comprueba el pathname destino —no la URL entera, que lleva la ruta
+  // en el query— y, si no se entra, dice por qué: el mensaje de pantalla, el
+  // rechazo de la petición de sesión o el silencio de la ruta destino.
+  await login(page, { email: email!, password: password!, expectPath: "/dashboard/inicio/mi-dia" });
   await expect(page.getByRole("heading", { name: "Mi día" })).toBeVisible({ timeout: 30_000 });
 
   for (const width of [320, 768, 1280]) {
