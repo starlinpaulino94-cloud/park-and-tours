@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { login } from "./login";
 
 const email = process.env.E2E_EMAIL;
 const password = process.env.E2E_PASSWORD;
@@ -8,12 +9,7 @@ test.skip(!email || !password, "Define E2E_EMAIL y E2E_PASSWORD para ejecutar la
 test("Panel ejecutivo carga, expone filtros legibles y no desborda", async ({ page }) => {
   test.setTimeout(90_000);
 
-  await page.goto("/login?redirect=/dashboard");
-  await page.getByLabel("Email").fill(email!);
-  await page.getByLabel("Contraseña").fill(password!);
-  await page.getByRole("button", { name: "Entrar" }).click();
-
-  await page.waitForURL((url) => url.pathname === "/dashboard", { timeout: 60_000 });
+  await login(page, { email: email!, password: password!, expectPath: "/dashboard" });
   await expect(page.getByRole("heading", { name: "Panel ejecutivo" })).toBeVisible({ timeout: 30_000 });
 
   await page.getByRole("button", { name: /Filtros/ }).click();

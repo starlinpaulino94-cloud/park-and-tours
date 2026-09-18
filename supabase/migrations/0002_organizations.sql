@@ -97,7 +97,17 @@ create trigger org_rel_touch before update on organization_relationships
 -- An inactive/absent membership yields no org_id → RLS denies everything, which
 -- is how "deactivated user loses access immediately" (AUD-S02) is enforced.
 create or replace function app.custom_access_token_hook(event jsonb)
-  returns jsonb language plpgsql stable as $$
+  returns jsonb
+  language plpgsql
+  stable
+  -- `create or replace` NO conserva los atributos que no se repiten. Estos dos
+  -- tienen que estar en TODA definición del enganche: sin `definer` corre como
+  -- `supabase_auth_admin`, se le aplica la RLS de las tablas de abajo, su
+  -- política llama a `auth.uid()` —esquema al que ese rol no accede— y GoTrue
+  -- devuelve 500: nadie obtiene sesión. Ver 0063.
+  security definer
+  set search_path = public, app
+as $$
 declare
   claims  jsonb := coalesce(event->'claims', '{}'::jsonb);
   uid     uuid  := (event->>'user_id')::uuid;
@@ -124,6 +134,13 @@ begin
   return jsonb_set(event, '{claims}', claims);
 end;
 $$;
+
+-- Una función SECURITY DEFINER ejecutable por `anon` es una escalada de
+-- privilegios esperando ocurrir, y 0017 lo comprueba. El permiso va pegado a la
+-- definición, no en una migración posterior: entre una y otra habría una ventana
+-- en la que cualquiera puede invocarla.
+revoke all on function app.custom_access_token_hook(jsonb) from public, anon, authenticated;
+grant execute on function app.custom_access_token_hook(jsonb) to supabase_auth_admin, service_role;
 
 -- RLS on the tenancy tables themselves.
 alter table organizations enable row level security;

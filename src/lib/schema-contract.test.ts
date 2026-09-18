@@ -635,3 +635,60 @@ describe("el importador escribe columnas que existen", () => {
     expect(problems, "el importador declara campos que no se pueden escribir").toEqual([]);
   });
 });
+
+/**
+ * EL ENGANCHE QUE EMITE LA SESIÓN NO PUEDE PERDER SUS ATRIBUTOS.
+ *
+ * `create or replace function` de Postgres NO conserva lo que no se repite: los
+ * atributos omitidos vuelven a su valor por omisión, en silencio.
+ *
+ * Eso ya pasó una vez y costó el inicio de sesión entero. 0020 declaró
+ * `app.custom_access_token_hook` como `security definer` y con `set
+ * search_path`, y explicó por qué: tiene que leer las tablas de inquilinos con
+ * la RLS activa. 0046 lo reescribió para añadir `branch_id` al token, con un
+ * comentario que decía que «el resto queda exactamente igual» — el cuerpo sí, la
+ * cabecera no. Al no repetirlos, se perdieron.
+ *
+ * Sin `security definer` el enganche corre como `supabase_auth_admin`, la RLS se
+ * le aplica, la política `mem_read` llama a `auth.uid()` y el rol no tiene
+ * acceso al esquema `auth`: excepción, GoTrue responde 500 y NADIE obtiene una
+ * sesión nueva.
+ *
+ * `supabase/tests/auth_hook.test.sql` lo comprueba ejecutándolo de verdad. Esto
+ * lo comprueba LEYENDO, que es lo que corre en cada revisión sin levantar una
+ * base: la migración que cometa otra vez el error no llega a mezclarse.
+ */
+describe("el enganche del token no pierde security definer", () => {
+  const HOOK = "app.custom_access_token_hook";
+
+  it("toda migración que lo reescribe repite security definer y search_path", () => {
+    const problems: string[] = [];
+
+    for (const file of readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort()) {
+      const sql = readFileSync(path.join(MIGRATIONS, file), "utf8");
+
+      // Se parte por cada definición para no mezclar la cabecera de una con el
+      // cuerpo de otra, y se mira solo hasta el `as $$`: lo que hay después es
+      // el cuerpo, donde estas palabras no cuentan.
+      const definitions = sql.split(new RegExp(`create\\s+or\\s+replace\\s+function\\s+${HOOK.replace(".", "\\.")}`, "gi")).slice(1);
+
+      for (const rest of definitions) {
+        const header = rest.split(/\bas\s+\$\$/i)[0] ?? "";
+        // Una cabecera comentada entera no define nada: solo cuentan las líneas vivas.
+        const live = header.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n");
+
+        if (!/\bsecurity\s+definer\b/i.test(live)) {
+          problems.push(`${file}: reescribe ${HOOK} sin repetir «security definer»`);
+        }
+        if (!/\bset\s+search_path\s*=/i.test(live)) {
+          problems.push(`${file}: reescribe ${HOOK} sin repetir «set search_path»`);
+        }
+      }
+    }
+
+    expect(
+      problems,
+      "create or replace no conserva los atributos omitidos: hay que repetirlos"
+    ).toEqual([]);
+  });
+});
