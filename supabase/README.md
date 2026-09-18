@@ -45,6 +45,34 @@ En el dashboard de Supabase: Authentication → Hooks → Custom Access Token �
 seleccionar `app.custom_access_token_hook`. Sin esto, los claims `org_id`/`app_role`
 no se emiten y la RLS niega el acceso (comportamiento seguro por defecto).
 
+#### Si reescribes el hook, repite `security definer` y `set search_path`
+
+`create or replace function` **no conserva los atributos que no se repiten**: los
+omitidos vuelven a su valor por omisión, en silencio y sin aviso.
+
+Ya costó el inicio de sesión entero. 0046 reescribió el hook para añadir
+`branch_id` al token repitiendo el cuerpo pero no la cabecera, y el hook perdió
+`security definer`. Sin él corre como `supabase_auth_admin`, se le aplica la RLS
+de `organization_memberships`, cuya política `mem_read` llama a `auth.uid()` —un
+esquema al que ese rol no tiene acceso—, y GoTrue responde:
+
+```
+500 unexpected_failure · Error running hook URI: pg-functions://postgres/app/custom_access_token_hook
+```
+
+Que no es «credenciales incorrectas»: es que **nadie puede obtener una sesión
+nueva**. 0063 lo restauró. Dos guardas lo vigilan desde entonces:
+
+| Qué comprueba | Dónde |
+|---|---|
+| Que ninguna migración reescriba el hook sin repetir los dos atributos (se lee, no hace falta base) | `src/lib/schema-contract.test.ts` |
+| Que el hook, **ejecutado como `supabase_auth_admin`**, devuelva `org_id` | `supabase/tests/auth_hook.test.sql` |
+
+La segunda es la que importa. Ya existía una comprobación de que ese rol *puede*
+ejecutar la función, y decía que sí — porque era verdad. Lo que nadie comprobaba
+era qué pasa cuando la ejecuta. Es la diferencia entre tener la llave y que la
+puerta abra.
+
 ## Validación local realizada
 Estas migraciones se aplicaron contra Postgres 16 con stubs del esquema `auth`, y se
 verificó: (1) las 7 migraciones aplican sin error; (2) Org A no ve datos de Org B y el

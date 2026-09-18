@@ -41,7 +41,19 @@ create index if not exists memberships_branch_idx
 -- El resto de la función queda EXACTAMENTE igual que en 0002: se reescribe
 -- entera porque `create or replace` lo exige, no porque cambie nada más.
 create or replace function app.custom_access_token_hook(event jsonb)
-  returns jsonb language plpgsql stable as $$
+  returns jsonb
+  language plpgsql
+  stable
+  -- AQUÍ ESTUVO EL FALLO, Y POR ESO ESTAS DOS LÍNEAS NO SE TOCAN.
+  --
+  -- Esta migración se escribió repitiendo el cuerpo pero no la cabecera, y
+  -- `create or replace` devuelve a su valor por omisión todo atributo omitido.
+  -- El enganche perdió `security definer` sin que nada avisara, y el día que
+  -- esta migración llegó a una base de verdad dejó de poderse iniciar sesión.
+  -- Ver 0063 y supabase/tests/auth_hook.test.sql.
+  security definer
+  set search_path = public, app
+as $$
 declare
   claims  jsonb := coalesce(event->'claims', '{}'::jsonb);
   uid     uuid  := (event->>'user_id')::uuid;
