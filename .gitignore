@@ -56,7 +56,19 @@ CLAUDE.md
 # docs/audit/AI_TECHNICAL_DEBT.md (AID-007).
 
 # claude files
-.claude
+#
+# Lo personal de cada quien se ignora; lo que es CONFIGURACIÓN DEL PROYECTO, no.
+# Los skills de agente dicen cómo se trabaja en este repositorio —cómo se depura,
+# qué se prueba, qué hay que cross-examinar antes de darlo por bueno—, así que
+# valen para quien venga después o no valen para nada. Un skill que solo existe
+# en la máquina de uno no es una práctica del equipo: es una manía.
+#
+# `.claude/*` y no `.claude/`: Git no puede volver a incluir algo dentro de un
+# directorio excluido entero, así que se excluye su CONTENIDO y se rescatan las
+# dos carpetas que sí se comparten.
+.claude/*
+!.claude/skills/
+!.claude/references/
 claude-realtime.log
 
 .env
@@ -72,7 +84,6 @@ playwright-dev-server.log
 /page-*.png
 screenshots/
 # testing mode artifacts (auto-generated, temporary)
-.claude/
 /tmp/playwright-screenshots/
 /tmp/playwright-dev-server.log
 /*.png
