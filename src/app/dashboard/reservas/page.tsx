@@ -314,8 +314,14 @@ export default function BookingsPage() {
             <Button variant="outline" className="gap-1.5" onClick={exportCsv} disabled={exporting || loading}>
               <Icon name="Download" className="size-4" /> {exporting ? "Exportando…" : "Exportar"}
             </Button>
+            {/*
+              Decía «Nueva venta», y por eso nadie lo encontraba: en una pantalla
+              que se llama Reservas se busca «reserva». El botón existía y hacía
+              lo correcto — una reserva nace de una venta, con su precio y su
+              cobro— pero su nombre contaba el paso técnico en vez del resultado.
+            */}
             <Link href="/dashboard/pos">
-              <Button className="gap-1.5"><Icon name="Plus" className="size-4" /> Nueva venta</Button>
+              <Button className="gap-1.5"><Icon name="Plus" className="size-4" /> Nueva reserva</Button>
             </Link>
           </>
         }

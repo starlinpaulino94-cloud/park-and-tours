@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { supabaseService } from "@/lib/supabase/service";
 import { ok, fail } from "@/lib/api-response";
+import { startJobRun, finishJobRun, reportIncident } from "@/lib/system-health-service";
 import { writeAudit } from "@/lib/audit";
 import { TenantError } from "@/lib/tenant";
 
@@ -22,6 +23,7 @@ import { TenantError } from "@/lib/tenant";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
+  let runId: string | null = null;
   try {
     const secret = process.env.CRON_SECRET;
     if (!secret) {
@@ -31,6 +33,8 @@ export async function GET(req: NextRequest) {
       console.warn("[cron/expire-approvals] intento de ejecución sin credencial válida");
       throw new TenantError("No autorizado", 401);
     }
+
+    runId = await startJobRun("expire-approvals");
 
     const now = new Date().toISOString();
     const { data, error } = await supabaseService()
@@ -56,9 +60,13 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    await finishJobRun(runId, { status: "ok", summary: { expired } });
+
     return ok({ expired, ranAt: now });
   } catch (err) {
     console.error("[cron/expire-approvals] error:", err);
+    await finishJobRun(runId, { status: "failed", error: String(err) });
+    await reportIncident({ source: "cron:expire-approvals", error: err });
     return fail(err);
   }
 }

@@ -204,4 +204,54 @@ begin
   raise notice 'system_incident: TODAS LAS ASERCIONES PASARON';
 end $$;
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Apuntar un incidente: contar, no duplicar, y reabrir lo que vuelve
+-- ─────────────────────────────────────────────────────────────────────────────
+do $$
+declare
+  org uuid := '64640000-6464-6464-6464-646464646464';
+  a uuid; b uuid;
+begin
+  a := public.report_incident(org, 'huella|repetida', '/api/orders', 'primer intento');
+  b := public.report_incident(org, 'huella|repetida', '/api/orders', 'segundo intento');
+
+  if a <> b then
+    raise exception 'la misma huella creó dos incidentes en vez de contar';
+  end if;
+  if (select occurrences from system_incident where id = a) <> 2 then
+    raise exception 'el contador no subió: %', (select occurrences from system_incident where id = a);
+  end if;
+
+  -- Gana el mensaje MÁS RECIENTE: al investigar se mira la última ocurrencia.
+  if (select message from system_incident where id = a) <> 'segundo intento' then
+    raise exception 'se conservó el mensaje viejo';
+  end if;
+
+  -- REABRIR. Un fallo que vuelve después de darse por arreglado es una noticia.
+  update system_incident set status = 'resolved' where id = a;
+  perform public.report_incident(org, 'huella|repetida', '/api/orders', 'volvió');
+  if (select status from system_incident where id = a) <> 'open' then
+    raise exception 'un incidente resuelto que vuelve a ocurrir no se reabrió';
+  end if;
+  if (select occurrences from system_incident where id = a) <> 3 then
+    raise exception 'la reapertura perdió la cuenta';
+  end if;
+
+  -- Los de plataforma (sin empresa) también se agrupan, por el coalesce.
+  a := public.report_incident(null, 'arranque|sin conexion', 'arranque', 'x');
+  b := public.report_incident(null, 'arranque|sin conexion', 'arranque', 'y');
+  if a <> b then
+    raise exception 'los incidentes sin empresa se duplican';
+  end if;
+
+  raise notice 'report_incident: TODAS LAS ASERCIONES PASARON';
+end $$;
+
+do $$ begin
+  if has_function_privilege('anon', 'public.report_incident(uuid,text,text,text,text,jsonb)', 'EXECUTE') then
+    raise exception 'anon puede apuntar incidentes';
+  end if;
+  raise notice 'permisos de report_incident: TODAS LAS ASERCIONES PASARON';
+end $$;
+
 rollback;

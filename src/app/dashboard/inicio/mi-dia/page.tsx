@@ -7,6 +7,10 @@ import { EmptyState } from "@/components/tf/empty-state";
 import {
   ApprovalsSection, Counters, ListSkeleton, TasksSection, TilesSkeleton,
 } from "./_components/sections";
+// El mismo diálogo que usa la pantalla de Tareas. No se duplica: un segundo
+// formulario de alta para la misma tabla es la forma más rápida de que los dos
+// dejen de coincidir.
+import { CreateTaskDialog } from "../tareas/create-task-dialog";
 
 /**
  * Centro de trabajo operativo del usuario.
@@ -49,7 +53,10 @@ export default async function MyDayPage({
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Mi día" />
+      <PageHeader
+        title="Mi día"
+        actions={<CreateTaskDialog currentUserId={ctx.userId} currentUserName={ctx.name} />}
+      />
 
       <Suspense fallback={<TilesSkeleton />}>
         <Counters ctx={ctx} filter={filter} />

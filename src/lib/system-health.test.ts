@@ -120,6 +120,32 @@ describe("todos los trabajos programados están vigilados", () => {
     expect(fantasmas, "se vigilan trabajos que ya no están programados").toEqual([]);
   });
 
+  it("y CADA UNO deja rastro al correr", () => {
+    /**
+     * Declarar la expectativa no sirve de nada si el trabajo no se apunta: la
+     * pantalla diría «nunca se ha ejecutado» de algo que corre cada noche, y a
+     * la tercera falsa alarma nadie la mira.
+     *
+     * Las dos mitades tienen que ir juntas, y por eso se comprueban juntas.
+     */
+    const sinRastro = programados.filter((job) => {
+      const file = path.resolve(__dirname, `../app/api/cron/${job}/route.ts`);
+      const src = readFileSync(file, "utf8");
+      return !/startJobRun\(/.test(src) || !/finishJobRun\(/.test(src);
+    });
+    expect(sinRastro, "trabajos programados que corren sin dejar rastro").toEqual([]);
+  });
+
+  it("y apuntan el fallo cuando revientan", () => {
+    // Un cron que falla en silencio es el caso que esta ola vino a resolver: se
+    // sabe cuando un cliente dice que nunca le llegó su voucher.
+    const mudos = programados.filter((job) => {
+      const src = readFileSync(path.resolve(__dirname, `../app/api/cron/${job}/route.ts`), "utf8");
+      return !/reportIncident\(/.test(src);
+    });
+    expect(mudos, "trabajos que fallan sin apuntar el incidente").toEqual([]);
+  });
+
   it("cada uno dice qué se rompe si no corre", () => {
     for (const e of JOB_EXPECTATIONS) {
       expect(e.consequence.length, `${e.job} sin consecuencia`).toBeGreaterThan(20);

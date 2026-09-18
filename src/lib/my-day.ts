@@ -10,6 +10,23 @@ import { dayBounds, isOverdue, toValidDate } from "@/lib/time";
 
 /** Estados en los que una tarea sigue siendo trabajo pendiente. */
 export const OPEN_TASK_STATUSES = ["todo", "in_progress", "blocked", "waiting"] as const;
+
+/**
+ * Estados en los que una tarea ya NO es trabajo: está cerrada.
+ *
+ * Existen porque marcar algo como hecho hacía que desapareciera del sistema
+ * entero. Los cinco filtros que había se apoyaban todos en `OPEN_TASK_STATUSES`,
+ * y esta pantalla y la de Tareas comparten `listFilter`, así que una tarea
+ * completada no se podía ver en ningún sitio. Completar no la movía a ninguna
+ * parte: la borraba de la vista.
+ *
+ * Se incluye `cancelled` junto a `done` a propósito. Una cancelada también está
+ * cerrada, y dejarla fuera de los dos lados —ni pendiente ni cerrada— la volvería
+ * invisible para siempre, que es exactamente el fallo que esto viene a arreglar.
+ * Cada fila enseña su propio estado, así que una cancelada se distingue de una
+ * hecha de un vistazo.
+ */
+export const CLOSED_TASK_STATUSES = ["done", "cancelled"] as const;
 /** Prioridades que cuentan como "prioridad alta". */
 export const HIGH_PRIORITIES = ["high", "urgent"] as const;
 
@@ -25,7 +42,7 @@ export interface MyDayTask {
 }
 
 /** Filtros rápidos de la lista; el valor viaja en la URL (`?f=`). */
-export type MyDayFilter = "todas" | "vencidas" | "hoy" | "urgentes" | "en_curso";
+export type MyDayFilter = "todas" | "vencidas" | "hoy" | "urgentes" | "en_curso" | "completadas";
 
 export const MY_DAY_FILTERS: ReadonlyArray<{ value: MyDayFilter; label: string }> = [
   { value: "todas", label: "Todas" },
@@ -33,6 +50,8 @@ export const MY_DAY_FILTERS: ReadonlyArray<{ value: MyDayFilter; label: string }
   { value: "hoy", label: "Hoy" },
   { value: "urgentes", label: "Urgentes" },
   { value: "en_curso", label: "En curso" },
+  // Va al final: es el único que mira hacia atrás, no hacia lo que queda por hacer.
+  { value: "completadas", label: "Completadas" },
 ];
 
 const FILTER_VALUES = new Set<string>(MY_DAY_FILTERS.map((f) => f.value));
@@ -86,6 +105,7 @@ export function listFilter(
     case "hoy": return counts.dueToday;
     case "urgentes": return counts.highPriority;
     case "en_curso": return { assigned_to: userId, status: "in_progress" };
+    case "completadas": return { assigned_to: userId, status: { in: [...CLOSED_TASK_STATUSES] } };
     case "todas":
     default: return openTasksFilter(userId);
   }

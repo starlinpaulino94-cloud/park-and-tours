@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { supabaseService } from "@/lib/supabase/service";
 import { ok, fail } from "@/lib/api-response";
+import { startJobRun, finishJobRun, reportIncident } from "@/lib/system-health-service";
 import { TenantError } from "@/lib/tenant";
 import { notify } from "@/lib/notify-service";
 import { shouldRelease, releasableSeats, type AllotmentRow } from "@/lib/allotments";
@@ -44,6 +45,7 @@ interface Row extends AllotmentRow {
 }
 
 export async function GET(req: NextRequest) {
+  let runId: string | null = null;
   try {
     const secret = process.env.CRON_SECRET;
     if (!secret) throw new TenantError("CRON_SECRET no está configurado en el entorno", 503);
@@ -51,6 +53,8 @@ export async function GET(req: NextRequest) {
       console.warn("[cron/allotments] intento de ejecución sin credencial válida");
       throw new TenantError("No autorizado", 401);
     }
+
+    runId = await startJobRun("allotments");
 
     const now = new Date();
 
@@ -128,9 +132,12 @@ export async function GET(req: NextRequest) {
     }
 
     console.log(`[cron/allotments] ${rows.length} cupos revisados · ${released} liberados · ${seatsTotal} plazas`);
+    await finishJobRun(runId, { status: "ok", summary: { reviewed: rows.length, released, seats: seatsTotal } });
     return ok({ reviewed: rows.length, released, seats: seatsTotal, ranAt: now.toISOString() });
   } catch (err) {
     console.error("[cron/allotments] error:", err);
+    await finishJobRun(runId, { status: "failed", error: String(err) });
+    await reportIncident({ source: "cron:allotments", error: err });
     return fail(err);
   }
 }

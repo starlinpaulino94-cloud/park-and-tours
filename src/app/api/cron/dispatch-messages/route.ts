@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { supabaseService } from "@/lib/supabase/service";
 import { ok, fail } from "@/lib/api-response";
+import { startJobRun, finishJobRun, reportIncident } from "@/lib/system-health-service";
 import { TenantError } from "@/lib/tenant";
 import { dispatchQueue } from "@/lib/messaging/outbox";
 import { serviceStore } from "@/lib/messaging/service-store";
@@ -116,6 +117,7 @@ async function sweepReminders(): Promise<{ enqueued: number; companies: string[]
 }
 
 export async function GET(req: NextRequest) {
+  let runId: string | null = null;
   try {
     const secret = process.env.CRON_SECRET;
     if (!secret) throw new TenantError("CRON_SECRET no está configurado en el entorno", 503);
@@ -123,6 +125,8 @@ export async function GET(req: NextRequest) {
       console.warn("[cron/dispatch-messages] intento de ejecución sin credencial válida");
       throw new TenantError("No autorizado", 401);
     }
+
+    runId = await startJobRun("dispatch-messages");
 
     const available = configuredChannels();
     const now = new Date().toISOString();
@@ -180,6 +184,11 @@ export async function GET(req: NextRequest) {
       `${report.failed} fallidos · ${report.waiting} en espera`
     );
 
+    await finishJobRun(runId, {
+      status: "ok",
+      summary: { companies: report.companies, sent: report.sent, failed: report.failed, waiting: report.waiting },
+    });
+
     return ok({
       ...report,
       reminders: reminded.enqueued,
@@ -189,6 +198,8 @@ export async function GET(req: NextRequest) {
     });
   } catch (err) {
     console.error("[cron/dispatch-messages] error:", err);
+    await finishJobRun(runId, { status: "failed", error: String(err) });
+    await reportIncident({ source: "cron:dispatch-messages", error: err });
     return fail(err);
   }
 }

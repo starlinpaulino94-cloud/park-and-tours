@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { TICKET_STATUS, TICKET_TYPE } from "@/lib/labels-modules";
 import { formatDate, formatMoney, formatNumber } from "@/lib/format";
 import { optionsFrom } from "@/components/tf/options";
+import { ResourceForm } from "@/components/tf/resource-form";
 import { expiresWithin, isExhausted, isExpired, isNotYetValid, isUsable } from "@/lib/tickets";
 
 interface Ticket {
@@ -88,6 +89,7 @@ export default function TicketsPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
+  const [issuing, setIssuing] = useState(false);
   const [q, setQ] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("__all");
@@ -193,6 +195,39 @@ export default function TicketsPage() {
 
   return (
     <div className="space-y-6">
+
+      {/*
+        `status` y `entries_used` no son campos de este formulario: son estado de
+        consumo que llevan el canje y la anulación. Dejarlos teclear permitiría
+        marcar como usado un ticket que nadie presentó, o devolver a «emitido»
+        uno ya canjeado. `resources.ts` los deja fuera de `writable` por eso.
+      */}
+      <ResourceForm
+        open={issuing}
+        onOpenChange={setIssuing}
+        resource="access_ticket"
+        title="Emitir ticket de acceso"
+        description="Para una entrada vendida en taquilla o entregada a mano."
+        fields={[
+          { name: "code", label: "Código", required: true, span: 2,
+            help: "Lo que lleva impreso el ticket o la pulsera." },
+          { name: "ticket_type", label: "Tipo", type: "select", options: optionsFrom(TICKET_TYPE) },
+          { name: "holder_name", label: "A nombre de" },
+          { name: "valid_from", label: "Válido desde", type: "datetime" },
+          { name: "valid_to", label: "Válido hasta", type: "datetime" },
+          { name: "entries_allowed", label: "Entradas permitidas", type: "number",
+            help: "En blanco, sin límite de entradas." },
+          { name: "wristband_code", label: "Pulsera" },
+          { name: "price", label: "Precio", type: "number" },
+          { name: "customer", label: "Cliente", type: "reference", resource: "customer",
+            optionLabel: (c: any) => [c.first_name, c.last_name].filter(Boolean).join(" ") },
+          { name: "product", label: "Producto", type: "reference", resource: "product",
+            optionLabel: (p: any) => p.name },
+          { name: "notes", label: "Notas", type: "textarea", span: 2 },
+        ]}
+        onSaved={() => { setIssuing(false); void load(); }}
+      />
+
       <PageHeader
         title="Tickets de acceso"
         actions={
@@ -202,6 +237,15 @@ export default function TicketsPage() {
             </Button>
             <Button variant="outline" className="gap-1.5" onClick={exportCsv} disabled={exporting || loading}>
               <Icon name="Download" className="size-4" /> {exporting ? "Exportando…" : "Exportar"}
+            </Button>
+            {/*
+              NADA en todo el código creaba un ticket de acceso. Existían la
+              acción de canjear y la de anular —sobre tickets que no había forma
+              de traer al mundo—, así que el módulo entero estaba muerto: la
+              pantalla se veía bien y siempre vacía.
+            */}
+            <Button className="gap-1.5" onClick={() => setIssuing(true)}>
+              <Icon name="Plus" className="size-4" /> Emitir ticket
             </Button>
           </>
         }

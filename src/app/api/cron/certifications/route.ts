@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { supabaseService } from "@/lib/supabase/service";
 import { ok, fail } from "@/lib/api-response";
+import { startJobRun, finishJobRun, reportIncident } from "@/lib/system-health-service";
 import { TenantError } from "@/lib/tenant";
 import { notify } from "@/lib/notify-service";
 import { certificationState, EXPIRING_WINDOW_DAYS } from "@/lib/hr";
@@ -50,6 +51,7 @@ interface CertRow {
 }
 
 export async function GET(req: NextRequest) {
+  let runId: string | null = null;
   try {
     const secret = process.env.CRON_SECRET;
     if (!secret) throw new TenantError("CRON_SECRET no está configurado en el entorno", 503);
@@ -57,6 +59,8 @@ export async function GET(req: NextRequest) {
       console.warn("[cron/certifications] intento de ejecución sin credencial válida");
       throw new TenantError("No autorizado", 401);
     }
+
+    runId = await startJobRun("certifications");
 
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
@@ -142,9 +146,12 @@ export async function GET(req: NextRequest) {
     }
 
     console.log(`[cron/certifications] ${rows.length} revisadas · ${updated} al día · ${notified} avisos`);
+    await finishJobRun(runId, { status: "ok", summary: { reviewed: rows.length, updated, notified } });
     return ok({ reviewed: rows.length, updated, notified, ranAt: now.toISOString() });
   } catch (err) {
     console.error("[cron/certifications] error:", err);
+    await finishJobRun(runId, { status: "failed", error: String(err) });
+    await reportIncident({ source: "cron:certifications", error: err });
     return fail(err);
   }
 }

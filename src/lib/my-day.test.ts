@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  BUCKET_ORDER, HIGH_PRIORITIES, OPEN_TASK_STATUSES, canCompleteTask, candidateFilters,
+  BUCKET_ORDER, HIGH_PRIORITIES, MY_DAY_FILTERS, OPEN_TASK_STATUSES, canCompleteTask, candidateFilters,
   countFilters, listFilter, mergeUnique, openTasksFilter, parseFilter, sortTasks, taskBucket,
   type MyDayTask,
 } from "@/lib/my-day";
@@ -158,5 +158,50 @@ describe("my-day — permiso para completar", () => {
 
   it("una tarea sin responsable no la cierra cualquiera", () => {
     expect(canCompleteTask(task({ _id: "a", assigned_to_id: null }), USER, false)).toBe(false);
+  });
+});
+
+describe("las tareas completadas tienen dónde verse", () => {
+  /**
+   * EL FALLO: completar una tarea la hacía desaparecer del sistema.
+   *
+   * `OPEN_TASK_STATUSES` excluye `done`, y los cinco filtros que había —Todas,
+   * Vencidas, Hoy, Urgentes, En curso— se apoyan todos en él. No era que
+   * «Completadas» estuviera escondido: es que no existía, ni aquí ni en la
+   * pantalla completa de Tareas, que usa este mismo `listFilter`.
+   *
+   * Así que marcar algo como hecho no lo movía a ningún sitio: lo borraba de la
+   * vista. Quien quisiera comprobar qué hizo ayer no tenía dónde mirarlo.
+   */
+  const AHORA = new Date("2026-09-18T15:00:00.000Z");
+  const TZ = "America/Santo_Domingo";
+
+  it("«Completadas» es uno de los filtros ofrecidos", () => {
+    expect(MY_DAY_FILTERS.map((f) => f.value)).toContain("completadas");
+  });
+
+  it("un valor de URL válido se conserva", () => {
+    expect(parseFilter("completadas")).toBe("completadas");
+  });
+
+  it("pide las cerradas, y NINGUNA abierta", () => {
+    const f = listFilter("completadas", "u1", AHORA, TZ) as {
+      assigned_to: string; status: { in: string[] };
+    };
+    expect(f.assigned_to).toBe("u1");
+    expect([...f.status.in].sort()).toEqual(["cancelled", "done"]);
+    // Si se colara un estado abierto, la lista de completadas mezclaría trabajo
+    // pendiente y dejaría de servir para lo único que sirve: comprobar lo hecho.
+    for (const abierto of OPEN_TASK_STATUSES) {
+      expect(f.status.in).not.toContain(abierto);
+    }
+  });
+
+  it("y los filtros de trabajo pendiente NO traen cerradas", () => {
+    // La otra mitad: si «Todas» empezara a incluir lo hecho, la lista de
+    // pendientes crecería sin parar y dejaría de ser una lista de pendientes.
+    const todas = listFilter("todas", "u1", AHORA, TZ) as { status: { in: string[] } };
+    expect(todas.status.in).not.toContain("done");
+    expect(todas.status.in).not.toContain("cancelled");
   });
 });
