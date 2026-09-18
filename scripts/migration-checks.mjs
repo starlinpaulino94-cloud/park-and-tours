@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0021-0062 tienen que haber creado.
+ * El inventario de lo que las migraciones 0021-0064 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -369,6 +369,22 @@ export const MIGRATION_CHECKS = [
       ["seller", ["search_text"]],
       ["product", ["search_text"]],
       ["supplier", ["search_text"]],
+    ],
+  },
+  {
+    migration: "0064 — salud del sistema",
+    tables: ["job_run", "system_incident"],
+    columns: [
+      // Sin `status`, un trabajo colgado no se distingue de uno que terminó, y
+      // la pantalla de estado diría que todo va bien mientras nada corre.
+      ["job_run", ["organization_id", "job", "started_at", "finished_at", "status", "summary", "error"]],
+      // `fingerprint` y `occurrences` son la agrupación entera: sin ellas, mil
+      // ocurrencias del mismo fallo son mil filas y la pantalla es ilegible
+      // justo el día que hay que leerla.
+      ["system_incident", [
+        "organization_id", "fingerprint", "source", "message", "level",
+        "occurrences", "first_seen_at", "last_seen_at", "status", "context",
+      ]],
     ],
   },
 ];
