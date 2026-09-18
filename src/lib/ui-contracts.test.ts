@@ -4084,6 +4084,9 @@ describe("cada pantalla dice cómo se crea lo que enseña", () => {
     "/dashboard/operaciones/despacho": "despacho: actúa sobre salidas que ya existen",
     "/dashboard/salidas/[id]/manifiesto": "manifiesto: se deriva de las reservas de la salida",
     "/dashboard/clientes/vouchers": "vouchers: los emite la venta",
+    "/dashboard/operaciones/rutas/[id]/hoja":
+      "hoja de ruta: sus paradas las coloca «Armar rutas» en el despacho; " +
+      "teclearlas aquí a mano las descolocaría en el siguiente rearmado",
   };
 
   /**

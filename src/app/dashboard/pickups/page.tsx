@@ -1,6 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/tf/icon";
 import { PageHeader } from "@/components/tf/page-header";
 import { ResourcePage } from "@/components/tf/resource-page";
 import { StatusBadge } from "@/components/tf/status-badge";
@@ -19,8 +22,16 @@ export default function PickupsPage() {
     <div className="space-y-5">
       <PageHeader
         eyebrow="Operación"
-        title="Pickups y hoteles"
+        title="Recogidas y hoteles"
         description="Las rutas agrupan las recogidas por zona: cada parada conoce su hotel, su habitación, su hora y sus pasajeros."
+        actions={
+          // Armar se hace por salida, y es en el despacho donde se ve cuáles hay.
+          <Link href="/dashboard/operaciones/despacho">
+            <Button variant="outline" className="gap-1.5">
+              <Icon name="Route" className="size-4" /> Armar las rutas del día
+            </Button>
+          </Link>
+        }
       />
 
       <Tabs value={tab} onValueChange={setTab}>
@@ -79,6 +90,15 @@ export default function PickupsPage() {
               { key: "stops", header: "Paradas", align: "right", hideOn: "sm", render: (r: any) => formatNumber(r.stops_count ?? 0) },
               { key: "pax", header: "Pax", align: "right", render: (r: any) => <span className="font-semibold">{formatNumber(r.pax_total ?? 0)}</span> },
               { key: "status", header: "Estado", render: (r: any) => <StatusBadge value={r.status} dict={GENERIC_STATUS} /> },
+              {
+                key: "hoja", header: "", align: "right",
+                render: (r: any) => (
+                  <Link href={`/dashboard/operaciones/rutas/${r._id}/hoja`}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline">
+                    <Icon name="Printer" className="size-3.5" /> Hoja de ruta
+                  </Link>
+                ),
+              },
             ]}
             fields={[
               { name: "name", label: "Nombre de la ruta", required: true, span: 2 },
@@ -89,8 +109,11 @@ export default function PickupsPage() {
               { name: "driver", label: "Conductor", type: "reference", resource: "staff", optionLabel: (s: any) => s.full_name },
               { name: "guide", label: "Guía", type: "reference", resource: "staff", optionLabel: (s: any) => s.full_name },
               { name: "start_time", label: "Hora de inicio", placeholder: "07:30" },
-              { name: "stops_count", label: "Número de paradas", type: "number" },
-              { name: "pax_total", label: "Pax totales", type: "number" },
+              // `stops_count` y `pax_total` ya no se teclean: son el resultado de
+              // quién va en la ruta. Un número escrito a mano miente en cuanto se
+              // añade una parada, y esa mentira acaba en la hoja del conductor.
+              // Los recalcula «Armar rutas» en el despacho, también para las
+              // rutas hechas a mano.
               { name: "status", label: "Estado", type: "select", defaultValue: "planned", options: optionsFrom(GENERIC_STATUS, ROUTE_STATUS) },
               { name: "notes", label: "Notas", type: "textarea", span: 2 },
             ]}
@@ -128,7 +151,29 @@ export default function PickupsPage() {
               },
               { key: "hotel", header: "Hotel", render: (p: any) => (typeof p.hotel === "object" && p.hotel ? p.hotel.name : p.location || "—") },
               { key: "room", header: "Habitación", hideOn: "md", render: (p: any) => p.room || "—" },
-              { key: "time", header: "Hora", hideOn: "sm", render: (p: any) => p.pickup_time || "—" },
+              { key: "seq", header: "Parada", align: "right", hideOn: "lg",
+                render: (p: any) => (p.sequence ? formatNumber(p.sequence) : "—") },
+              {
+                // Las dos horas juntas y con el desajuste dicho con palabras. Si
+                // el motor pisara la prometida, un cliente con un voucher que
+                // dice 07:15 pasaría a las 07:00 sin que nadie se enterara.
+                key: "time", header: "Hora", hideOn: "sm",
+                render: (p: any) => {
+                  const prometida = p.pickup_time || null;
+                  const calculada = p.planned_time || null;
+                  if (!prometida && !calculada) return "—";
+                  const difiere = prometida && calculada && prometida.slice(0, 5) !== calculada.slice(0, 5);
+                  return (
+                    <div className="text-xs">
+                      <p className="font-mono font-semibold">{prometida || calculada}</p>
+                      {difiere && (
+                        <p className="text-destructive">Al transporte le toca {calculada}</p>
+                      )}
+                      {!prometida && calculada && <p className="text-muted-foreground">Calculada, sin confirmar</p>}
+                    </div>
+                  );
+                },
+              },
               { key: "pax", header: "Pax", align: "right", render: (p: any) => formatNumber(p.pax ?? 0) },
               { key: "status", header: "Estado", render: (p: any) => <StatusBadge value={p.status} dict={GENERIC_STATUS} /> },
             ]}
@@ -136,7 +181,10 @@ export default function PickupsPage() {
               { name: "booking", label: "Reserva", type: "reference", resource: "booking", optionLabel: (b: any) => b.booking_number || b._id, span: 2 },
               { name: "hotel", label: "Hotel", type: "reference", resource: "hotel" },
               { name: "route", label: "Ruta", type: "reference", resource: "pickup_route" },
-              { name: "pickup_time", label: "Hora de recogida", placeholder: "07:45" },
+              { name: "pickup_time", label: "Hora prometida al cliente", placeholder: "07:45",
+                help: "La que va en su voucher. El motor calcula la suya aparte y nunca pisa esta." },
+              { name: "sequence", label: "Parada nº", type: "number",
+                help: "Para reordenar el recorrido a mano cuando el conductor sabe algo que el motor no." },
               { name: "room", label: "Habitación" },
               { name: "pax", label: "Pax", type: "number" },
               { name: "status", label: "Estado", type: "select", defaultValue: "pending", options: optionsFrom(GENERIC_STATUS, PICKUP_STATUS) },
@@ -180,8 +228,12 @@ export default function PickupsPage() {
               { name: "pickup_point", label: "Punto de recogida", help: "Lobby, entrada principal, etc." },
               { name: "phone", label: "Teléfono" },
               { name: "category", label: "Categoría", placeholder: "5 estrellas" },
+              // La otra pantalla del mismo campo (Administración → Hoteles) decía
+              // «minutos antes de la salida a los que pasa el transporte», que es
+              // lo que hace de verdad. Aquí decía otra cosa. Dos definiciones del
+              // mismo dato garantizan que alguien lo cargue mal.
               { name: "pickup_offset_min", label: "Margen de recogida (min)", type: "number",
-                help: "Minutos que se suman o restan a la hora de la ruta para este hotel." },
+                help: "Minutos antes de la salida a los que pasa el transporte por este hotel. Si se deja vacío, se usa el de su zona." },
               { name: "latitude", label: "Latitud", type: "number" },
               { name: "longitude", label: "Longitud", type: "number" },
               { name: "address", label: "Dirección", span: 2 },
@@ -196,7 +248,7 @@ export default function PickupsPage() {
             embedded
             resource="zone"
             title="Zonas"
-            description="Agrupan hoteles por área geográfica para calcular tiempos y suplementos de recogida."
+            description="Agrupan hoteles por área. Su margen de recogida es el que heredan los hoteles que no tienen el suyo, y de ahí sale la hora a la que pasa el transporte."
             createLabel="Nueva zona"
             searchPlaceholder="Buscar zona…"
             emptyIcon="Map"
@@ -206,6 +258,8 @@ export default function PickupsPage() {
               { key: "name", header: "Zona", render: (z: any) => <span className="font-semibold">{z.name}</span> },
               { key: "description", header: "Descripción", hideOn: "md",
                 render: (z: any) => <span className="text-muted-foreground">{z.description || "—"}</span> },
+              { key: "offset", header: "Margen", align: "right", hideOn: "sm",
+                render: (z: any) => (z.pickup_offset_min != null ? `${z.pickup_offset_min} min` : "—") },
               { key: "color", header: "Color", align: "center", hideOn: "lg",
                 render: (z: any) => (
                   <span className="inline-block size-4 rounded-full border border-border align-middle"
@@ -215,6 +269,12 @@ export default function PickupsPage() {
             ]}
             fields={[
               { name: "name", label: "Nombre", required: true, span: 2 },
+              // Es lo que hace utilizable el margen del hotel: nadie carga
+              // doscientos hoteles poniéndoselo uno por uno, y la zona ya los
+              // agrupa por lo único de lo que el margen depende, que es dónde
+              // están.
+              { name: "pickup_offset_min", label: "Margen de recogida (min)", type: "number",
+                help: "Minutos antes de la salida a los que pasa el transporte por esta zona. El hotel que tenga el suyo manda sobre este." },
               { name: "color", label: "Color", placeholder: "#0E7C86" },
               { name: "status", label: "Estado", type: "select", defaultValue: "active", options: optionsFrom(GENERIC_STATUS, ["active", "inactive"]) },
               { name: "description", label: "Descripción", type: "textarea", span: 2 },

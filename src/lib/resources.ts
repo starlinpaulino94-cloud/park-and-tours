@@ -176,8 +176,8 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["name"],
     sort: { name: "asc" },
     writable: ["name", "description", "color", "status", "zone_type", "max_capacity",
-      "current_occupancy", "requires_wristband"],
-    numeric: ["max_capacity", "current_occupancy"],
+      "current_occupancy", "requires_wristband", "pickup_offset_min"],
+    numeric: ["max_capacity", "current_occupancy", "pickup_offset_min"],
     writeRole: "manager",
   },
   hotel: {

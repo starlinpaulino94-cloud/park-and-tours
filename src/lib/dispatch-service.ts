@@ -383,6 +383,29 @@ export async function buildDayRoutes(
     });
   }
 
+  // ── los contadores de las rutas MANUALES también se derivan ──────────────
+  //
+  // `stops_count` y `pax_total` son el resultado de quién va en la ruta, no un
+  // dato que alguien teclee: un número escrito a mano miente en cuanto se añade
+  // una parada, y esa mentira viaja a la hoja del conductor. Las rutas que arma
+  // el motor ya los llevan calculados; estas son las que el despacho hizo a
+  // mano, y se recalculan aquí, que es cuando se está mirando esta salida.
+  const manualesDeEstaSalida = rutasExistentes.filter((r) => !r.auto_key);
+  for (const ruta of manualesDeEstaSalida) {
+    const suyas = pickups.filter((p) => {
+      const rid = p.route && typeof p.route === "object"
+        ? String((p.route as { _id?: string })._id ?? "")
+        : String(p.route ?? "");
+      return rid === String(ruta._id);
+    });
+    const vivas = suyas.filter((p) => !["cancelled", "no_show"].includes(String(p.status || "")));
+    const pax = vivas.reduce((s, p) => s + (Number(p.pax) || 0), 0);
+    if (Number(ruta.stops_count) === vivas.length && Number(ruta.pax_total) === pax) continue;
+    await tenantUpdate(ctx.companyId, "pickup_route", String(ruta._id), {
+      stops_count: vivas.length, pax_total: pax,
+    });
+  }
+
   console.log(
     `[dispatch] salida ${departureId}: ${routes.length} rutas (${created} nuevas, ${updated} actualizadas) · ` +
       `${stopsAssigned} paradas · ${warnings.length} avisos`

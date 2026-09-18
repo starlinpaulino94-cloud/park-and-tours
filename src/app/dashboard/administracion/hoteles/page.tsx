@@ -26,7 +26,7 @@ export default function Page() {
         { name: "address", label: "Dirección", span: 2 },
         { name: "phone", label: "Teléfono", type: "phone" },
         { name: "pickup_point", label: "Punto de recogida" },
-        { name: "pickup_offset_min", label: "Margen de recogida", type: "number", suffix: "min", help: "Minutos antes de la salida a los que pasa el transporte." },
+        { name: "pickup_offset_min", label: "Margen de recogida", type: "number", suffix: "min", help: "Minutos antes de la salida a los que pasa el transporte. Si se deja vacío, se usa el de su zona." },
         { name: "latitude", label: "Latitud", type: "number" },
         { name: "longitude", label: "Longitud", type: "number" },
         { name: "status", label: "Estado", type: "select", defaultValue: "active", options: optionsFrom(ACTIVE_STATUS) },
