@@ -2409,6 +2409,7 @@ describe("las notificaciones internas", () => {
     ["incident_opened", "src/lib/notify.ts"],
     ["certification_expiring", "src/app/api/cron/certifications/route.ts"],
     ["allotment_released", "src/app/api/cron/allotments/route.ts"],
+    ["waitlist_offer", "src/lib/waitlist-service.ts"],
   ];
 
   it("cada evento del catálogo se dispara desde algún sitio", () => {

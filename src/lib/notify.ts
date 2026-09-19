@@ -85,6 +85,30 @@ export const NOTIFY_EVENTS = {
     link: () => "/dashboard/reservas",
   },
 
+  /**
+   * A alguien de la lista de espera le tocó una plaza.
+   *
+   * Va al mostrador y no al cliente: la plaza YA está apartada a su nombre con
+   * una reserva de verdad, y lo que falta es que alguien lo llame antes de que
+   * se le pase el plazo. Un aviso automático al cliente llegaría sin contexto
+   * —«tienes una reserva que no hiciste»— y sin nadie que le cobre.
+   */
+  waitlist_offer: {
+    // `booking` y no `alert`: no es que algo vaya mal, es que hay una venta
+    // esperando a que alguien la cierre.
+    type: "booking",
+    audience: "seller",
+    title: (v) => `Plaza libre para ${v.name ?? "un cliente en espera"}`,
+    message: (v) =>
+      [
+        v.pax ? `${v.pax} pax` : null,
+        v.channel ? `· avisar a ${v.channel}` : null,
+        v.booking ? `· reserva ${v.booking}` : null,
+        v.expires ? `· vence ${String(v.expires).slice(0, 16).replace("T", " ")}` : null,
+      ].filter(Boolean).join(" "),
+    link: () => "/dashboard/reservas",
+  },
+
   /** Una reserva cambia de día: el manifiesto de dos días deja de ser el mismo. */
   booking_rescheduled: {
     type: "booking",
