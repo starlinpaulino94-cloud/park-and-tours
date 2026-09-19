@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0021-0065 tienen que haber creado.
+ * El inventario de lo que las migraciones 0021-0066 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -413,6 +413,22 @@ export const MIGRATION_CHECKS = [
       // El estado 'conflict' existe en el check desde 0010; el motivo escrito al
       // lado es lo que evita que el despacho tenga que adivinar qué pasa.
       ["departure_resource", ["conflict_reason"]],
+    ],
+  },
+  {
+    migration: "0066 — lista de espera",
+    tables: ["waitlist_entry"],
+    columns: [
+      // Sin `status` y `offer_expires_at` no hay oferta con plazo: la plaza se
+      // guardaría para siempre a nombre de quien no contestó. Sin `booking_id`
+      // no se puede contestar la única pregunta que justifica el módulo, que es
+      // cuánta venta recuperó la lista.
+      ["waitlist_entry", [
+        "organization_id", "departure_id", "customer_id",
+        "contact_name", "contact_phone", "contact_email",
+        "seller_id", "partner_id", "pax", "status",
+        "offered_at", "offer_expires_at", "booking_id", "notes",
+      ]],
     ],
   },
 ];
