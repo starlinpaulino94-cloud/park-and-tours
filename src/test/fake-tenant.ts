@@ -1,0 +1,194 @@
+/**
+ * Una base de datos de mentira, con memoria, para probar los servicios.
+ *
+ * POR QUÉ FALSEAR LA CAPA DE ABAJO Y NO EL SERVICIO
+ *
+ * `booking-service` no calcula casi nada por sí mismo: pide el precio a
+ * `pricing`, el cupo a `availability`, el contrato a `allotment-service`, la
+ * comisión a `commission-engine`. Si se falsean esos, la prueba comprueba que
+ * el servicio llama a lo que hay que llamar, que es lo que ya se ve leyendo el
+ * código. Falseando solo `tenantQuery/Create/Update` —el suelo— todo lo de
+ * arriba corre DE VERDAD contra estas filas, y la prueba comprueba lo único que
+ * importa: qué acaba escrito.
+ *
+ * LO QUE ESTO NO ES
+ *
+ * No es Postgres. No aplica RLS, ni restricciones `check`, ni claves foráneas,
+ * ni disparadores, ni transacciones. Una prueba que pase aquí no demuestra que
+ * la base aceptaría la fila; para eso están `supabase/tests/*.test.sql` y
+ * `scripts/db-test.sh`. Aquí se comprueban las REGLAS DE NEGOCIO: que el total
+ * cuadre, que la comisión salga de la base correcta, que el cupo se devuelva a
+ * su contrato.
+ */
+
+type Fila = Record<string, unknown>;
+
+const clon = <T>(v: T): T => (v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T));
+
+/** Referencia: `"id"`, `{_id}` o `{id}` se leen igual. */
+function ref(value: unknown): string | null {
+  if (typeof value === "string") return value || null;
+  if (value && typeof value === "object") {
+    const r = value as { _id?: unknown; id?: unknown };
+    const id = r._id ?? r.id;
+    return typeof id === "string" ? id : null;
+  }
+  return null;
+}
+
+/** ¿La fila cumple una condición de `_filter`? */
+function cumple(fila: Fila, campo: string, cond: unknown): boolean {
+  const valor = campo === "_id" ? (fila._id ?? fila.id) : fila[campo];
+
+  if (cond && typeof cond === "object" && !Array.isArray(cond)) {
+    const c = cond as Record<string, unknown>;
+    if ("in" in c) {
+      const lista = (c.in as unknown[]).map((v) => ref(v) ?? v);
+      return lista.includes(ref(valor) ?? valor);
+    }
+    if ("nin" in c) {
+      const lista = (c.nin as unknown[]).map((v) => ref(v) ?? v);
+      return !lista.includes(ref(valor) ?? valor);
+    }
+    if ("gte" in c && String(valor ?? "") < String(c.gte)) return false;
+    if ("lte" in c && String(valor ?? "") > String(c.lte)) return false;
+    if ("gt" in c && !(String(valor ?? "") > String(c.gt))) return false;
+    if ("lt" in c && !(String(valor ?? "") < String(c.lt))) return false;
+    if ("neq" in c) return (ref(valor) ?? valor) !== (ref(c.neq) ?? c.neq);
+    return true;
+  }
+
+  // Una referencia se compara por identificador aunque venga expandida.
+  const esperado = ref(cond) ?? cond;
+  const real = ref(valor) ?? valor;
+  return real === esperado;
+}
+
+export interface FakeDb {
+  /** Las filas de una tabla, tal y como están ahora. */
+  rows(table: string): Fila[];
+  /** La primera fila que cumpla, o `null`. */
+  row(table: string, match: Record<string, unknown>): Fila | null;
+  /** Mete filas sin pasar por el servicio (el estado de partida). */
+  seed(table: string, filas: Fila[]): void;
+  /** Cuántas veces se escribió en cada tabla, en orden. */
+  readonly writes: { op: "create" | "update"; table: string; id?: string; data: Fila }[];
+  tenantQuery: (org: string, table: string, opts?: Record<string, unknown>) => Promise<Fila[]>;
+  tenantFindOne: (org: string, table: string, id: string, opts?: Record<string, unknown>) => Promise<Fila>;
+  tenantCreate: (org: string, table: string, data: Fila) => Promise<Fila>;
+  tenantUpdate: (org: string, table: string, id: string, data: Fila) => Promise<Fila>;
+  tenantDelete: (org: string, table: string, id: string) => Promise<void>;
+}
+
+/**
+ * Crea la base falsa con un estado de partida.
+ *
+ * Los identificadores son correlativos y previsibles (`booking-1`, `booking-2`)
+ * a propósito: una prueba que afirma sobre `booking-2` se lee sin tener que
+ * seguir una variable, y si el orden de escritura cambia, la prueba lo dice.
+ */
+export function fakeDb(inicial: Record<string, Fila[]> = {}): FakeDb {
+  const tablas = new Map<string, Fila[]>();
+  const writes: FakeDb["writes"] = [];
+  let contador = 0;
+
+  for (const [tabla, filas] of Object.entries(inicial)) {
+    tablas.set(tabla, filas.map((f) => ({ ...clon(f), _id: String(f._id ?? f.id ?? `${tabla}-${++contador}`) })));
+  }
+
+  const de = (tabla: string): Fila[] => {
+    if (!tablas.has(tabla)) tablas.set(tabla, []);
+    return tablas.get(tabla)!;
+  };
+
+  const buscar = (tabla: string, opts: Record<string, unknown> = {}): Fila[] => {
+    const filtro = (opts._filter as Record<string, unknown>) ?? {};
+    let filas = de(tabla).filter((fila) =>
+      Object.entries(filtro).every(([campo, cond]) => cumple(fila, campo, cond))
+    );
+
+    const orden = opts._sort as Record<string, "asc" | "desc"> | undefined;
+    if (orden) {
+      const [campo, dir] = Object.entries(orden)[0] ?? [];
+      if (campo) {
+        filas = [...filas].sort((a, b) => {
+          const x = String(a[campo] ?? ""), y = String(b[campo] ?? "");
+          return dir === "desc" ? y.localeCompare(x) : x.localeCompare(y);
+        });
+      }
+    }
+
+    const limite = Number(opts._limit ?? 0);
+    if (limite > 0) filas = filas.slice(0, limite);
+
+    // Las relaciones pedidas (`product: true`, `customer: { … }`) se resuelven
+    // aquí porque media aplicación lee `booking.product.name`: devolver el uuid
+    // haría fallar la prueba por un motivo que no es el que se investiga.
+    const relaciones = Object.keys(opts).filter((k) => !k.startsWith("_"));
+    return filas.map((fila) => expandir(fila, relaciones, tabla));
+  };
+
+  /** Tabla a la que apunta un campo de referencia, cuando no coincide el nombre. */
+  const DESTINO: Record<string, string> = {
+    pickup_hotel: "hotel", assigned_to: "staff", driver: "staff", guide: "staff",
+    to_org: "organizations", from_org: "organizations",
+  };
+
+  function expandir(fila: Fila, relaciones: string[], tabla: string): Fila {
+    if (relaciones.length === 0) return clon(fila);
+    const salida: Fila = clon(fila);
+    for (const rel of relaciones) {
+      const destino = DESTINO[rel] ?? rel;
+      const id = ref(fila[rel]);
+      if (id) {
+        const hijo = de(destino).find((f) => f._id === id);
+        if (hijo) salida[rel] = clon(hijo);
+        continue;
+      }
+      // Uno-a-muchos: las filas de `destino` que apuntan a esta.
+      const hijos = de(destino).filter((f) => ref(f[tabla]) === fila._id);
+      if (hijos.length > 0) salida[rel] = hijos.map((h) => clon(h));
+    }
+    return salida;
+  }
+
+  return {
+    writes,
+    rows: (tabla) => de(tabla).map((f) => clon(f)),
+    row: (tabla, match) => {
+      const f = de(tabla).find((fila) =>
+        Object.entries(match).every(([campo, cond]) => cumple(fila, campo, cond))
+      );
+      return f ? clon(f) : null;
+    },
+    seed: (tabla, filas) => {
+      for (const f of filas) {
+        de(tabla).push({ ...clon(f), _id: String(f._id ?? f.id ?? `${tabla}-${++contador}`) });
+      }
+    },
+    tenantQuery: async (_org, tabla, opts) => buscar(tabla, opts ?? {}),
+    tenantFindOne: async (_org, tabla, id, opts) => {
+      const [fila] = buscar(tabla, { ...(opts ?? {}), _filter: { _id: id }, _limit: 1 });
+      if (!fila) throw Object.assign(new Error(`No existe ${tabla} ${id}`), { status: 404 });
+      return fila;
+    },
+    tenantCreate: async (_org, tabla, data) => {
+      const fila: Fila = { ...clon(data), _id: `${tabla}-${++contador}` };
+      de(tabla).push(fila);
+      writes.push({ op: "create", table: tabla, id: String(fila._id), data: clon(data) });
+      return clon(fila);
+    },
+    tenantUpdate: async (_org, tabla, id, data) => {
+      const fila = de(tabla).find((f) => f._id === id);
+      if (!fila) throw Object.assign(new Error(`No existe ${tabla} ${id}`), { status: 404 });
+      Object.assign(fila, clon(data));
+      writes.push({ op: "update", table: tabla, id, data: clon(data) });
+      return clon(fila);
+    },
+    tenantDelete: async (_org, tabla, id) => {
+      const filas = de(tabla);
+      const i = filas.findIndex((f) => f._id === id);
+      if (i >= 0) filas.splice(i, 1);
+    },
+  };
+}

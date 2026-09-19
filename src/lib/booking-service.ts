@@ -398,6 +398,26 @@ export async function createOrderWithBookings(
   // Solo acota al SOCIO. El vendedor de la casa sigue vendiendo contra la
   // capacidad: el cupo es un acuerdo con la agencia, no un límite del negocio.
   const allotmentUse = new Map<string, { row: AllotmentRow | null; seats: number }>();
+  /**
+   * El cupo que resolvió CADA línea, guardado mientras se sabe.
+   *
+   * Antes esto se reconstruía más abajo buscando en `allotmentUse` el cupo cuyo
+   * producto coincidiera y, si no lo encontraba, cogiendo el primero de la
+   * lista. Ese respaldo existía para los contratos sin producto —«te garantizo
+   * 10 plazas en lo que sea»— pero atrapaba también a un producto que
+   * sencillamente NO tiene cupo: en un carrito con Saona (con contrato) y Buggy
+   * (sin él), la reserva de Buggy se quedaba apuntando al contrato de Saona.
+   *
+   * El consumo era correcto, así que el día de la venta no se notaba nada. Se
+   * notaba al cancelar: se le devolvían al contrato de Saona plazas que nunca
+   * se le habían quitado, y el socio acababa con más cupo del que compró. Sin
+   * ningún negativo que lo delatara, porque la devolución se topa en cero.
+   *
+   * Aquí no hay que adivinar: este bucle YA sabe qué cupo aplica a cada línea,
+   * porque acaba de preguntárselo a `assertAllotment` con las mismas reglas
+   * (salida > producto > genérico) que usa la venta.
+   */
+  const allotmentOfItem = new Map<BookingItemInput, { id: string; row: AllotmentRow | null; seats: number }>();
   if (input.partner_id) {
     // La fecha de viaje sale de la salida, no del ítem, y hace falta ANTES del
     // bucle que la resuelve más abajo: el cupo puede tener temporada y días de
@@ -427,6 +447,7 @@ export async function createOrderWithBookings(
       );
       const key = String(resolved.row?._id || resolved.row?.id || "");
       if (!key) continue;
+      allotmentOfItem.set(item, { id: key, row: resolved.row, seats: pax });
       const acc = allotmentUse.get(key) || { row: resolved.row, seats: 0 };
       acc.seats += pax;
       allotmentUse.set(key, acc);
@@ -657,13 +678,12 @@ export async function createOrderWithBookings(
       // la cancelación, devolverlas al cupo vigente le regalaría plazas a la
       // temporada nueva.
       ...(() => {
-        if (!input.partner_id) return {};
-        const used = [...allotmentUse.entries()].find(([, v]) => v.row && refId(v.row.product) === item.product_id)
-          ?? [...allotmentUse.entries()][0];
+        const used = allotmentOfItem.get(item);
         if (!used) return {};
-        const pax = toCount(item.adults) + toCount(item.children) + toCount(item.infants);
-        return allotmentState(used[1].row).holds
-          ? { allotment: used[0], allotment_seats: pax }
+        // Solo los cupos que APARTAN plazas se anotan: en venta libre no hay
+        // nada que devolver, y anotarlo haría creer que sí.
+        return allotmentState(used.row).holds
+          ? { allotment: used.id, allotment_seats: used.seats }
           : {};
       })(),
       pickup_hotel: item.pickup_hotel_id || undefined,

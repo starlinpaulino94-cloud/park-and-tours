@@ -3038,10 +3038,28 @@ describe("distribución: el cupo del socio acota de verdad", () => {
     expect(src).toMatch(/allotment_seats/);
   });
 
-  it("la reserva guarda de qué cupo salió", () => {
-    // Sin el enlace, cancelar tendría que adivinar a qué cupo devolver.
-    const src = read("src/lib/booking-service.ts");
-    expect(src).toMatch(/allotment: used\[0\], allotment_seats: pax/);
+  it("la reserva guarda de qué cupo salió, y del suyo", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * ESTA GUARDA VIGILABA LA IMPLEMENTACIÓN Y SE VOLVIÓ EN CONTRA
+     *
+     * Antes exigía el texto literal `allotment: used[0], allotment_seats: pax`.
+     * Eso fijaba UNA forma de escribirlo, no la regla — y la forma que fijaba
+     * tenía dentro un error: `used[0]` salía de un respaldo que, cuando el
+     * producto no tenía cupo propio, cogía el primer cupo de la lista y le
+     * cargaba las plazas al contrato de otro producto. La guarda protegía el
+     * error.
+     *
+     * Ahora exige lo que de verdad importa: que el cupo de cada línea se
+     * guarde mientras se sabe, en vez de reconstruirse después adivinando. El
+     * comportamiento se comprueba de verdad en `booking-service.test.ts`, que
+     * vende Saona (con contrato) y Buggy (sin él) en el mismo carrito.
+     */
+    const src = read("src/lib/booking-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src, "el cupo de cada línea se guarda cuando se resuelve").toMatch(/allotmentOfItem\.set\(item,/);
+    expect(src, "y se lee de ahí, sin adivinar").toMatch(/allotmentOfItem\.get\(item\)/);
+    expect(src, "nada de coger «el primero de la lista» como respaldo")
+      .not.toMatch(/\[\.\.\.allotmentUse\.entries\(\)\]\[0\]/);
   });
 
   it("la liberación automática está programada, no solo escrita", () => {
