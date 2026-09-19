@@ -1,4 +1,5 @@
 import "server-only";
+import { isTerminalBookingStatus } from "@/lib/types";
 import { supabaseService } from "@/lib/supabase/service";
 import { tenantQuery, tenantUpdate, TenantError, type TenantContext } from "@/lib/tenant";
 import { syncOrderTotals } from "@/lib/booking-service";
@@ -156,8 +157,7 @@ async function linesOf(companyId: string, orderId: string): Promise<{ rows: Book
   const rows = await tenantQuery<BookingRow>(companyId, "booking", {
     _filter: { order: orderId }, _limit: 100, product: true,
   });
-  const DEAD = new Set(["cancelled", "refunded"]);
-  const live = rows.filter((row) => !DEAD.has(row.status ?? ""));
+  const live = rows.filter((row) => !isTerminalBookingStatus(row.status));
   const lines: LineLike[] = live.map((row) => ({
     id: row._id,
     label: productNameOf(row),

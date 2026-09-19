@@ -1,10 +1,22 @@
 import type { AppRole } from "@/lib/auth";
 import { companyTimeZone, dayBounds, zoneOffsetMs, zonedParts } from "@/lib/time";
 
+/**
+ * Los estados en los que una reserva cuenta como venta.
+ *
+ * `partially_refunded` está dentro a propósito, y no es un descuido: una
+ * cancelación con penalización SÍ dejó dinero en la empresa. Lo que cuenta es
+ * lo retenido, y de eso se encarga `netBookingAmount` restando el reembolso.
+ * Es la misma regla que `syncOrderTotals` y que la vista de 0023.
+ *
+ * Aquí vivía también un `INVALID_SALE_STATUSES` que no usaba nadie. Se quitó
+ * porque su nombre prometía ser el complemento de esta lista y no lo era —le
+ * faltaban `partially_refunded`, `no_show` y `confirmed`—, así que el primero
+ * que lo hubiera usado habría contado mal sin enterarse.
+ */
 export const VALID_SALE_STATUSES = new Set([
   "confirmed", "partially_paid", "paid", "checked_in", "completed", "no_show", "partially_refunded",
 ]);
-export const INVALID_SALE_STATUSES = new Set(["draft", "pending", "pending_payment", "cancelled", "refunded"]);
 export const CASH_IN_PAYMENT_TYPES = new Set(["payment", "deposit"]);
 export const CASH_OUT_PAYMENT_TYPES = new Set(["refund", "credit_note"]);
 export const OPEN_RECEIVABLE_STATUSES = new Set(["pending", "partially_paid", "overdue"]);

@@ -7,7 +7,7 @@ import {
   vehicleBlock, vehicleWarnings, vehicleLabel,
   type DispatchConflict, type PlannedRoute, type ResourceUse,
 } from "@/lib/dispatch";
-import { refId } from "@/lib/types";
+import { refId, BOOKING_TERMINAL_STATES } from "@/lib/types";
 
 /**
  * El despacho, fuera de la ruta HTTP.
@@ -100,7 +100,7 @@ export async function loadDispatch(
     product: true,
     booking: {
       _limit: 300,
-      _filter: { status: { nin: ["cancelled", "refunded"] } },
+      _filter: { status: { nin: [...BOOKING_TERMINAL_STATES] } },
       customer: true, pickup_hotel: true,
     },
     departure_resource: { _limit: 60, vehicle: true, staff: true },
@@ -283,7 +283,7 @@ export async function buildDayRoutes(
   if (!departure) throw Object.assign(new Error("Salida no encontrada"), { status: 404 });
 
   const bookings = await tenantQuery<Record<string, unknown>>(ctx.companyId, "booking", {
-    _filter: { departure: departureId, status: { nin: ["cancelled", "refunded"] } },
+    _filter: { departure: departureId, status: { nin: [...BOOKING_TERMINAL_STATES] } },
     _limit: 500,
     pickup_hotel: { zone: true },
   });

@@ -5,7 +5,7 @@ import { newDocumentNumber } from "@/lib/codes";
 import { uniqueCode } from "@/lib/unique";
 import { writeAudit } from "@/lib/audit";
 import { notify } from "@/lib/notify-service";
-import { refId } from "@/lib/types";
+import { refId, isTerminalBookingStatus } from "@/lib/types";
 import {
   formatNcf, ncfTypeFor, normalizeTaxId, creditNoteTypeFor, invoiceTotals, lineAmounts,
   voidBlocker, VOID_BLOCK_MESSAGE, type NcfType, type InvoiceLineInput,
@@ -95,7 +95,7 @@ export async function issueInvoice(
     _filter: { order: input.orderId }, _limit: 200, product: true,
   });
   const billable = bookings.filter(
-    (b) => !["cancelled", "refunded", "draft"].includes(String(b.status || ""))
+    (b) => !isTerminalBookingStatus(b.status) && String(b.status || "") !== "draft"
   );
   if (billable.length === 0) {
     throw Object.assign(new Error("La orden no tiene reservas facturables"), { status: 409 });

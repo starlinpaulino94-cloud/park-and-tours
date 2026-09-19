@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { requireTenant, requireAtLeast, tenantQuery } from "@/lib/tenant";
 import { ok, fail, resolvePeriod } from "@/lib/api-response";
 import type { Booking, Commission } from "@/lib/types";
-import { refId } from "@/lib/types";
+import { refId, BOOKING_TERMINAL_STATES } from "@/lib/types";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 
 type Bucket = {
@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
     const bookings = await tenantQuery<Booking>(ctx.companyId, "booking", {
       _filter: {
         booking_date: { gte: from, lte: to },
-        status: { nin: ["draft", "cancelled", "refunded"] },
+        status: { nin: ["draft", ...BOOKING_TERMINAL_STATES] },
       },
       _limit: MAX_ROWS,
       _sort: { booking_date: "desc" },

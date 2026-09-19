@@ -1,5 +1,7 @@
 "use client";
 
+import { isTerminalBookingStatus } from "@/lib/types";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
@@ -71,7 +73,7 @@ export default function PortalBookingsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const live = rows.filter((b) => !["cancelled", "refunded", "draft"].includes(b.status || ""));
+  const live = rows.filter((b) => !isTerminalBookingStatus(b.status) && b.status !== "draft");
   const currency = rows[0]?.currency || "usd";
   const money = (n?: number | null) => formatMoney(n ?? 0, currency);
   const sales = live.reduce((s, b) => s + (b.total_amount ?? 0), 0);

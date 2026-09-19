@@ -22,7 +22,7 @@ import { planBundle, loadBundle } from "@/lib/bundle-service";
 import type {
   Booking, Channel, Currency, Departure, Order, Partner, Product, Seller,
 } from "@/lib/types";
-import { refId } from "@/lib/types";
+import { refId, isTerminalBookingStatus } from "@/lib/types";
 
 /**
  * Booking service — the single write-path for sales.
@@ -1310,8 +1310,7 @@ export async function syncOrderTotals(companyId: string, orderId: string): Promi
    *   reembolso parcial        → pagó 200, se le devolvió 100 → vale 100
    *   reembolso total          → pagó 200, se le devolvió 200 → vale 0
    */
-  const DEAD_BOOKING = new Set(["cancelled", "refunded", "partially_refunded"]);
-  const isDead = (b: Booking) => DEAD_BOOKING.has(b.status || "");
+  const isDead = (b: Booking) => isTerminalBookingStatus(b.status);
   const retained = (b: Booking) => Math.max(0, round2((b.paid_amount ?? 0) - (b.refund_amount ?? 0)));
 
   const activeBookings = bookings.filter((b) => !isDead(b));

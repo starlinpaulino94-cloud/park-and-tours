@@ -5,7 +5,7 @@ import { assertModule } from "@/lib/plan-service";
 import { newSettlementCode, newDocumentNumber } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
 import type { BeneficiaryType, Commission, Currency, Settlement } from "@/lib/types";
-import { refId } from "@/lib/types";
+import { refId, isTerminalBookingStatus } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { attachBonusesToSettlement } from "@/lib/seller-goals-service";
 
@@ -118,7 +118,7 @@ export async function POST(req: NextRequest) {
        */
       commissionTotal += fresh.net_amount ?? fresh.amount ?? 0;
       const booking: any = fresh.booking;
-      if (booking && typeof booking === "object" && ["cancelled", "refunded"].includes(booking.status)) {
+      if (booking && typeof booking === "object" && isTerminalBookingStatus(booking.status)) {
         cancellations += booking.total_amount ?? 0;
       }
     }

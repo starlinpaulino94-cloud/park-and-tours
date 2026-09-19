@@ -12,6 +12,7 @@ import { writeAudit } from "@/lib/audit";
 import { notifyBookingCancelled } from "@/lib/messaging/events";
 import { notify } from "@/lib/notify-service";
 import { parseJson } from "@/lib/format";
+import { BOOKING_TERMINAL_STATES, isTerminalBookingStatus } from "@/lib/types";
 import type { Booking, CancellationPolicy, CancellationTier, Product } from "@/lib/types";
 import { refId } from "@/lib/types";
 
@@ -68,8 +69,13 @@ export interface CancelResult {
   supplierCostsCancelled: number;
 }
 
-/** Los estados desde los que ya no se puede cancelar: cancelar dos veces reembolsa dos veces. */
-export const TERMINAL_STATES = ["cancelled", "refunded", "partially_refunded"];
+/**
+ * Los estados desde los que ya no se puede cancelar: cancelar dos veces
+ * reembolsa dos veces. La lista vive en `types.ts` porque `syncOrderTotals`
+ * necesita exactamente la misma, y tenerla escrita dos veces fue justo lo que
+ * hizo que le reclamáramos el saldo a un cliente que había cancelado.
+ */
+export const TERMINAL_STATES: readonly string[] = BOOKING_TERMINAL_STATES;
 
 export async function cancelBookingFully(
   ctx: TenantContext & { companyId: string },
@@ -96,7 +102,7 @@ export async function cancelBookingFully(
    * Y dentro de esta misma función los COMPONENTES de un paquete ya estaban
    * protegidos (más abajo). La cabecera no.
    */
-  if (TERMINAL_STATES.includes(String(booking.status || ""))) {
+  if (isTerminalBookingStatus(booking.status)) {
     throw Object.assign(
       new Error("Esta reserva ya estaba cancelada; cancelarla otra vez devolvería el dinero dos veces"),
       { status: 409, code: "ALREADY_CANCELLED" }
@@ -173,7 +179,7 @@ export async function cancelBookingFully(
     _filter: { bundle_booking: id }, _limit: 50,
   });
   for (const component of components) {
-    if (TERMINAL_STATES.includes(component.status || "")) continue;
+    if (isTerminalBookingStatus(component.status)) continue;
     /**
      * Sin `refundOverride`, y no por descuido.
      *

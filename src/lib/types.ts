@@ -326,6 +326,25 @@ export interface PriceSnapshot {
   quote_id?: string | null;
 }
 
+/**
+ * Los estados desde los que una reserva ya no se cancela ni se cobra.
+ *
+ * Vive aquí, en un módulo sin dependencias, porque la necesitan los dos lados
+ * del camino del dinero: `booking-cancel-service` para no cancelar dos veces, y
+ * `syncOrderTotals` para no pisarle el saldo a una reserva ya cancelada.
+ *
+ * Estaba escrita tres veces, y a dos de ellas les faltaba `partially_refunded`
+ * —el estado de una cancelación con penalización, la más normal de todas—. El
+ * resultado era que el sistema le reclamaba al cliente el saldo de una
+ * excursión que había cancelado. Una lista copiada acaba divergiendo; esta no
+ * se puede copiar sin que se note.
+ */
+export const BOOKING_TERMINAL_STATES = ["cancelled", "refunded", "partially_refunded"] as const;
+
+export function isTerminalBookingStatus(status: unknown): boolean {
+  return (BOOKING_TERMINAL_STATES as readonly string[]).includes(String(status ?? ""));
+}
+
 export interface Booking extends BaseRecord {
   company?: Ref<Company>; booking_number?: string;
   order?: Ref<Order>; customer?: Ref<Customer>;

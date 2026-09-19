@@ -18,6 +18,7 @@
 | Integraciones (P1) | **AUD-F22/S07** (webhook Stripe: firma en prod, idempotencia, persistencia real) | ✅ Corregidos |
 | Validación final (Fase 6) | 9 defectos de la re-auditoría adversarial | ✅ Corregidos |
 | Follow-ups (Fase 6+) | **readRole** por recurso, **allowlist de filtros**, **reconciliación de drafts** (endpoint) | ✅ Corregidos |
+| Camino del dinero (Ola 10) | **AUD-M01** (cupo del socio mal atribuido), **AUD-M02** (cancelación con penalización reclamaba el saldo), **AUD-M03** (cancelar dos veces reembolsaba dos veces), **AUD-M04** (la reserva cancelada seguía viva en 11 sitios más) | ✅ Corregidos |
 | Deferidos con fundamento | agregación en `base_amount` (necesita backfill), email en signup (riesgo de login), features nuevas (redención de tickets, billing checkout, reset de contraseña) | Trabajo de producto |
 
 Verificación transversal: `tsc --noEmit` ✅ · `npm run build` ✅ tras cada bloque.
@@ -216,3 +217,101 @@ Verificación transversal: `tsc --noEmit` ✅ · `npm run build` ✅ tras cada b
 - **Agregación en `base_amount`:** `base_amount` ya se puebla correctamente en bookings nuevos (rate resuelto por F30). Cambiar los `_sum` del dashboard/reportes a `base_amount` exige **backfill** de registros existentes (datos demo/históricos podrían tener el campo nulo → mostraría ceros). Es una migración de datos deliberada con acceso a BD, fuera del alcance de un cambio de código seguro. Los tenants de una sola moneda ya son correctos.
 - **Normalización de email en signup público:** better-auth 1.3.26 no normaliza el email en el lookup de login; bajar el email solo en el alta rompería el login con variantes de mayúsculas. Requiere soporte de `normalizeEmail` en ambos lados. El alta por `/api/team` ya es case-insensitive segura.
 - **Endpoints de ciclo de vida de `access_ticket`/`membership`/`gift_card`; checkout de billing autenticado por tenant; páginas de reset/verificación de email:** son **features nuevas** con decisiones de producto (motor de redención, mapeo plan↔precio de Stripe, envío de correos), no endurecimiento de código existente. Se dejan como trabajo de producto, no de auditoría.
+
+---
+
+## Ola 10 — Los tres que encontró la red sobre el camino del dinero
+
+Estos no salieron de una auditoría por lectura: salieron de escribir las
+primeras pruebas de `createOrderWithBookings` y `cancelBookingFully`, que hasta
+entonces no tenían ninguna. Los tres llevaban tiempo en producción y ninguno
+daba error: los tres producían números equivocados en silencio.
+
+### AUD-M01 — El cupo del socio se cargaba al contrato equivocado (P1) — CERRADA
+- **Problema:** en un carrito con dos productos, uno con contrato de cupo y otro
+  sin él, la reserva del producto SIN cupo se quedaba apuntando al contrato del
+  otro. El consumo era correcto; lo que estaba mal era el enlace que guarda la
+  reserva. Venía de un respaldo que, al no encontrar el cupo de su producto,
+  cogía el primero de la lista — un respaldo puesto para los contratos sin
+  producto («plazas en lo que sea»), que atrapaba también a quien no tenía
+  ninguno.
+- **Efecto:** al cancelar, se le devolvían al contrato del otro producto plazas
+  que nunca se le habían quitado. El socio acababa con más cupo del que compró.
+  Sin negativo que lo delatara, porque la devolución se topa en cero.
+- **Archivos:** `src/lib/booking-service.ts`, `src/lib/ui-contracts.test.ts`.
+- **Solución:** el bucle que resuelve el cupo guarda el que aplica a CADA línea
+  (`allotmentOfItem`) en vez de reconstruirlo después adivinando. El respaldo
+  legítimo sigue funcionando y tiene prueba propia.
+- **Prueba:** `booking-service.test.ts`, «un producto SIN cupo no se apunta al
+  contrato de otro producto» — roja antes del arreglo, verde después.
+- **Nota:** una guarda de `ui-contracts` exigía el texto literal de la línea
+  defectuosa. Vigilaba la implementación, no la regla, y **protegía el error**.
+  Reescrita para exigir la regla.
+
+### AUD-M02 — Una cancelación con penalización le reclamaba el saldo al cliente (P0) — CERRADA
+- **Problema:** `syncOrderTotals` tenía dos listas de estados terminales y a las
+  dos les faltaba `partially_refunded` — el estado de una cancelación con
+  penalización, o sea la más normal. Una decidía qué reservas cuentan en el
+  total de la orden; la otra, a cuáles pisarles el estado y el saldo.
+- **Efecto:** un cliente que cancelaba con diez horas de margen recibía su 50 %
+  y la reserva quedaba en `partially_paid` con saldo positivo. El sistema creía
+  que debía dinero de una excursión cancelada y el cron de cobranza se lo
+  reclamaba. La orden seguía valiendo su importe entero: una venta deshecha
+  contando como venta en todos los informes.
+- **Archivos:** `src/lib/booking-service.ts`.
+- **Solución:** una reserva muerta vale lo que el cliente pagó y no se le
+  devolvió. Con esa regla los cuatro casos —sin pagar, reembolso total,
+  reembolso parcial, sin derecho a reembolso— cuadran y ninguno deja saldo. Lo
+  retenido por una cancelada no se reparte entre las reservas vivas.
+- **Prueba:** `booking-cancel-service.test.ts`, «una cancelación no deja saldo,
+  cobre lo que cobre» (los cuatro casos) y «lo retenido no se le regala a la
+  reserva viva de al lado».
+
+### AUD-M03 — Cancelar dos veces devolvía el dinero dos veces (P1) — CERRADA
+- **Problema:** `TERMINAL_STATES` declara la regla en `booking-cancel-service`,
+  pero la comprobación vivía en cada llamador. Los dos de entonces la hacían.
+  Dentro de la propia función, los componentes de un paquete sí estaban
+  protegidos; la cabecera no.
+- **Efecto:** comprobado antes de arreglarlo — la segunda cancelación pasaba y
+  salía un segundo pago de reembolso por el importe completo. Además, las plazas
+  volvían al cupo del socio por partida doble.
+- **Archivos:** `src/lib/booking-cancel-service.ts`.
+- **Solución:** la guarda vive donde está escrita la regla. 409 `ALREADY_CANCELLED`.
+- **Prueba:** `booking-cancel-service.test.ts`, «cancelar dos veces».
+
+### AUD-M04 — La reserva reembolsada a medias seguía viva en once sitios más (P1) — CERRADA
+- **Cómo apareció:** al arreglar AUD-M02 se escribió una guarda que exigía que
+  la lista de estados terminales se escribiera una sola vez. La guarda encontró
+  **quince archivos** que la escribían a mano, y a la mitad le faltaba
+  `partially_refunded`. No era un error: era una clase.
+- **Dónde dolía de verdad:**
+  - `invoice-service.ts` — la **factura fiscal** incluía la reserva cancelada
+    por su importe entero. Con NCF emitido.
+  - `dispatch-service.ts` (dos sitios) — el manifiesto del guía y las rutas de
+    recogida llevaban a un pasajero que había cancelado. *Este lo introduje yo
+    en la ola 9, copiando el filtro corto que ya estaba en la ruta vieja.*
+  - `settlements/generate` — se le liquidaba al vendedor una venta caída.
+  - `checkin/page.tsx` — el pasajero cancelado aparecía en la lista de embarque
+    del día.
+  - `reports/profitability` — el informe contaba su ingreso y su costo.
+  - `membego-redemption-service` — un beneficio podía aplicarse sobre una línea
+    cancelada.
+  - `superadmin/stats`, `portal/summary`, `portal/reservas` y cuatro puntos de
+    `dashboard/reservas` — recuentos e interfaz.
+- **Archivos:** los once anteriores, más `src/lib/types.ts` (donde ahora vive la
+  única lista) y `src/lib/ui-contracts.test.ts` (la guarda).
+- **Solución:** `BOOKING_TERMINAL_STATES` / `isTerminalBookingStatus` en
+  `types.ts`, que no depende de nada y pueden importar los dos lados. La guarda
+  exige que ninguna lista de estados de RESERVA se escriba a mano; las tres que
+  quedan son de estados de ORDEN —otro enum, sin `partially_refunded`— y están
+  apuntadas con su motivo, con una segunda guarda que comprueba que ese motivo
+  es cierto.
+- **Falsas alarmas descartadas por el camino, y conviene que consten:**
+  `dashboard-metrics.ts` y la vista de 0023 **sí** incluyen `partially_refunded`
+  como venta válida, pero las dos restan el reembolso (`netBookingAmount`,
+  `base_refund_amount`): cuentan lo retenido, que es la misma regla que ahora
+  aplica `syncOrderTotals`. Eran el precedente correcto, no un defecto.
+- **Retirado:** `INVALID_SALE_STATUSES`, que no usaba nadie y prometía en su
+  nombre ser el complemento de `VALID_SALE_STATUSES` sin serlo —le faltaban
+  `partially_refunded`, `no_show` y `confirmed`—. El primero que lo hubiera
+  usado habría contado mal sin enterarse.
