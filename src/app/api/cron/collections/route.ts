@@ -6,6 +6,7 @@ import { TenantError } from "@/lib/tenant";
 import { serviceStore } from "@/lib/messaging/service-store";
 import { notifyBalanceDue } from "@/lib/messaging/events";
 import { releaseExpiredHolds } from "@/lib/booking-service";
+import { expireOffers, offerFreedSeatsForCompany } from "@/lib/waitlist-service";
 import { markExpiredOctoHolds } from "@/lib/octo-service";
 import { statusFor, collectionStatus, agingBucketFor, dayOf, daysBetween } from "@/lib/collections";
 import { notify } from "@/lib/notify-service";
@@ -304,6 +305,32 @@ async function releaseHolds(now: Date): Promise<{ released: number }> {
 
       const result = await releaseExpiredHolds(companyId, now);
       released += result.released;
+
+      /**
+       * LAS OFERTAS DE LISTA DE ESPERA A LAS QUE NADIE CONTESTÓ (0066).
+       *
+       * Va DESPUÉS de soltar las retenciones y por el mismo motivo que el
+       * marcado de las de OTA va antes: el orden cuenta la historia correcta.
+       * `releaseExpiredHolds` acaba de cancelar la reserva que guardaba la
+       * plaza; marcar aquí la espera como vencida deja las dos cosas diciendo
+       * lo mismo, y la plaza recién soltada se le ofrece al siguiente de la
+       * cola en el acto.
+       *
+       * No se cancelan las reservas desde aquí: de eso se encarga
+       * `releaseExpiredHolds`, que solo toca las que nadie pagó. Duplicar esa
+       * decisión habría sido la forma de que las dos acabaran discrepando.
+       */
+      try {
+        const caducadas = await expireOffers(companyId, now);
+        for (const departureId of caducadas.departures) {
+          await offerFreedSeatsForCompany(companyId, departureId);
+        }
+        if (caducadas.expired > 0) {
+          console.log(`[cron/collections] ${caducadas.expired} oferta(s) de lista de espera vencidas y reofrecidas`);
+        }
+      } catch (err) {
+        console.error(`[cron/collections] lista de espera de ${companyId} falló:`, err);
+      }
     } catch (err) {
       // Una empresa con un problema no puede dejar el cupo de las demás sin liberar.
       console.error(`[cron/collections] liberación de cupo de ${companyId} falló:`, err);

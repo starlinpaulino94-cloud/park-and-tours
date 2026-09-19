@@ -288,6 +288,34 @@ export async function offerFreedSeats(
 }
 
 /**
+ * Ofrecer desde un cron, que corre sin sesión.
+ *
+ * El contexto se arma aquí y no en la ruta del cron por dos motivos. Uno, que
+ * la empresa hay que CARGARLA: sin ella la venta que nace de la oferta se
+ * quedaría sin la moneda base de la operadora y sin su sucursal, y una reserva
+ * en la moneda equivocada es peor que no haberla hecho. Y dos, que la mentira
+ * al sistema de tipos —esto no es una sesión de verdad— se queda en un solo
+ * sitio, con el motivo escrito, en vez de repetirse en cada llamador.
+ *
+ * Es el mismo patrón que ya usan el conector de OTAs y el motor público.
+ */
+export async function offerFreedSeatsForCompany(
+  companyId: string,
+  departureId: string
+): Promise<OfferReport> {
+  const [empresa] = await tenantQuery<Record<string, unknown>>(companyId, "company", {
+    _filter: { _id: companyId }, _limit: 1,
+  });
+
+  const ctx = {
+    userId: "", email: "", name: "Sistema", role: "operations",
+    companyId, partnerId: null, branchId: null, company: empresa ?? null,
+  } as unknown as TenantContext & { companyId: string };
+
+  return offerFreedSeats(ctx, departureId);
+}
+
+/**
  * La ficha del cliente, creándola si la espera era de mostrador.
  *
  * Es el momento natural: quien acepta una plaza deja de ser «un teléfono en una

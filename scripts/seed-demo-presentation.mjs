@@ -427,6 +427,51 @@ async function main() {
     totalCommission += commissionAmount;
   }
 
+  /**
+   * LA LISTA DE ESPERA (0066).
+   *
+   * Sin esto la ola 11 no tendría nada que enseñar. Se siembra la historia
+   * entera, que es lo que hace entendible el módulo de un vistazo: alguien
+   * esperando, alguien con la plaza ya apartada y a quien hay que llamar, y
+   * alguien que acabó comprando —que es el número que dice si la lista sirve—.
+   */
+  // Las salidas se crean por producto y día en el orden [-2, 0, 1, 3, 7], así
+  // que la tercera del primer producto cae DENTRO DE DOS DÍAS: una cola tiene
+  // que colgar de una salida que todavía puede ocurrir.
+  const salidaLlena = departures[3];
+  if (salidaLlena) {
+    // Y llena de verdad, que es lo que explica por qué hay gente esperando.
+    await sb.from("departure")
+      .update({ capacity: 12, booked_pax: 12, pending_pax: 0, available_pax: 0, status: "full" })
+      .eq("id", salidaLlena.id);
+    const esperas = [
+      { name: "Familia Rodríguez", phone: "+1 809 555 0111", pax: 5, status: "waiting",
+        notes: "Se alojan en el Barceló, llegan el jueves." },
+      { name: "Anke Weber", phone: "+49 170 555 0122", pax: 2, status: "waiting",
+        notes: "Habla alemán, prefiere guía en inglés." },
+      { name: "Tom Sullivan", phone: "+1 617 555 0133", pax: 2, status: "offered",
+        notes: "Aceptó por teléfono, pendiente de cobrar." },
+      { name: "Chiara Bruno", phone: "+39 340 555 0144", pax: 3, status: "converted",
+        notes: "Entró por lista de espera y pagó el mismo día." },
+    ];
+    for (const [i, e] of esperas.entries()) {
+      await insert("waitlist_entry", {
+        organization_id: orgId,
+        departure_id: salidaLlena.id,
+        contact_name: e.name,
+        contact_phone: e.phone,
+        seller_id: i % 2 ? sellerB : sellerA,
+        pax: e.pax,
+        status: e.status,
+        // La que tiene plaza apartada lleva su plazo: es lo que el mostrador
+        // mira para saber a quién llamar primero.
+        offered_at: e.status === "offered" ? at(0, 9, 0) : null,
+        offer_expires_at: e.status === "offered" ? at(1, 9, 0) : null,
+        notes: e.notes,
+      });
+    }
+  }
+
   await insert("settlement", { organization_id: orgId, code: "LIQ-DEMO-001", beneficiary_type: "seller", seller_id: sellerA, period_from: dateOnly(-15), period_to: dateOnly(0), base_total: Math.round(totalRevenue / 2), commission_total: Math.round(totalCommission / 2), paid_total: 0, pending_total: Math.round(totalCommission / 2), currency: "usd", status: "approved", approved_by: user.id });
   await insert("receivable", { organization_id: orgId, document_number: "CXC-DEMO-001", amount: 980, paid_amount: 250, balance: 730, currency: "usd", issue_date: dateOnly(-8), due_date: dateOnly(7), status: "partially_paid" });
   await insert("payable", { organization_id: orgId, reference: "FACT-DEMO-001", category: "transport", amount: 1450, paid_amount: 0, balance: 1450, currency: "usd", issue_date: dateOnly(-10), due_date: dateOnly(5), status: "pending" });
