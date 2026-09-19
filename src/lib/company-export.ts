@@ -104,6 +104,9 @@ export const COMPANY_EXPORT_AREAS: CompanyExportArea[] = [
     files: {
       departure: "salidas",
       departure_resource: "recursos-de-salida",
+      // La cola de cada salida: quién se quedó fuera y por cuántas plazas. Es
+      // demanda que la empresa midió y que se lleva con lo demás.
+      waitlist_entry: "lista-de-espera",
       pickup: "pickups",
       pickup_route: "rutas-de-pickup",
       zone: "zonas",

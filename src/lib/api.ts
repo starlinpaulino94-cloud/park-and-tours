@@ -20,6 +20,13 @@ export interface ApiResponse<T = unknown> {
    * reintentaría para siempre lo que el servidor ya rechazó.
    */
   status?: number;
+  /**
+   * El código del servidor cuando el error tiene nombre propio: `OVERSELL`,
+   * `PLAN_BLOCKED`, `MFA_REQUIRED`… Sirve para ofrecer la salida correcta en
+   * vez de un mensaje de error: un cupo agotado no es un fallo, es un cliente
+   * que se puede apuntar a la lista de espera.
+   */
+  code?: string;
 }
 
 async function request<T>(

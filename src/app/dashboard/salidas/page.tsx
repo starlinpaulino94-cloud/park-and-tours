@@ -25,6 +25,7 @@ import { optionsFrom } from "@/components/tf/options";
 interface Departure {
   _id: string; departure_at?: string; departure_time?: string; status?: string;
   capacity?: number; booked_pax?: number; pending_pax?: number; available_pax?: number;
+  waitlist_pax?: number;
   cutoff_hours?: number; meeting_point?: string; product?: any; branch?: any;
 }
 
@@ -406,6 +407,21 @@ export default function DeparturesPage() {
               { key: "occupancy", header: "Ocupación", render: (d: Departure) => <OccupancyBar d={d} /> },
               { key: "available", header: "Libres", align: "right", hideOn: "sm",
                 render: (d: Departure) => <span className="font-semibold">{formatNumber(d.available_pax ?? 0)}</span> },
+              {
+                // Solo se pinta cuando hay gente: una columna de ceros en todas
+                // las filas es ruido que se deja de mirar, y entonces el día que
+                // hay cinco personas esperando tampoco se ve.
+                key: "waitlist", header: "En espera", align: "right", hideOn: "md",
+                render: (d: Departure) =>
+                  (d.waitlist_pax ?? 0) > 0 ? (
+                    <Link href={`/dashboard/salidas/${d._id}/espera`}
+                      className="font-semibold text-primary hover:underline">
+                      {formatNumber(d.waitlist_pax ?? 0)}
+                    </Link>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  ),
+              },
               { key: "cutoff", header: "Cierre", align: "right", hideOn: "lg",
                 render: (d: Departure) => (d.cutoff_hours != null ? `${d.cutoff_hours} h antes` : "—") },
               { key: "timing", header: "Ventana", hideOn: "md", render: (d: Departure) => <TimingPill d={d} /> },
@@ -423,6 +439,10 @@ export default function DeparturesPage() {
                     <Link href={`/dashboard/reservas?departure=${d._id}`}
                       className="text-xs font-semibold text-muted-foreground hover:underline">
                       Reservas
+                    </Link>
+                    <Link href={`/dashboard/salidas/${d._id}/espera`}
+                      className="text-xs font-semibold text-muted-foreground hover:underline">
+                      Espera
                     </Link>
                   </div>
                 ),

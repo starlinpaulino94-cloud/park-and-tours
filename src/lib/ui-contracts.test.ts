@@ -357,6 +357,9 @@ describe("Panel ejecutivo", () => {
       booking: "/api/bookings", payment: "/api/payments",
       cash_session: "/api/cash", departure: "/api/departures", task: "/api/tasks",
       quote: "/api/quotes", invoice: "/api/invoices",
+      // Se apunta desde el punto de venta, en el instante en que la venta no
+      // cabe: es el único momento en que el cliente está delante.
+      waitlist_entry: "/api/waitlist",
     };
     for (const file of walk(path.join(ROOT, "src/app"))) {
       const src = readFileSync(file, "utf8");

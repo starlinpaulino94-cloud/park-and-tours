@@ -635,6 +635,24 @@ export const RESOURCES: Record<string, ResourceDef> = {
     numeric: ["amount"],
     writeRole: "manager",
   },
+  waitlist_entry: {
+    table: "waitlist_entry",
+    search: ["contact_name", "contact_phone", "contact_email"],
+    expand: { departure: { product: true }, customer: true, seller: true, booking: true },
+    sort: { createdAt: "asc" },
+    /**
+     * Solo lo que una persona decide: a quién apunta, por cuántos y sus notas.
+     *
+     * `status`, `offered_at`, `offer_expires_at` y `booking` los escribe el
+     * servicio: son el resultado de una oferta que creó una reserva de verdad.
+     * Dejarlos teclear permitiría marcar «convertida» una espera que nadie
+     * pagó, y ese es justo el número con el que se mide si la lista sirve.
+     */
+    writable: ["departure", "customer", "contact_name", "contact_phone", "contact_email",
+      "seller", "partner", "pax", "notes"],
+    numeric: ["pax"],
+    writeRole: "cashier",
+  },
   pickup_route: {
     table: "pickup_route",
     search: ["name"],
