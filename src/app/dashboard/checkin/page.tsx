@@ -1,5 +1,7 @@
 "use client";
 
+import { isTerminalBookingStatus } from "@/lib/types";
+
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
@@ -71,7 +73,7 @@ export default function CheckinPage() {
       console.error("[checkin] error cargando las reservas de hoy:", res.error);
       return;
     }
-    setToday((res.data || []).filter((b) => !["cancelled", "refunded", "draft"].includes(b.status || "")));
+    setToday((res.data || []).filter((b) => !isTerminalBookingStatus(b.status) && b.status !== "draft"));
   }, []);
 
   useEffect(() => { loadToday(); }, [loadToday]);

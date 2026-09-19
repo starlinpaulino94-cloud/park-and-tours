@@ -22,7 +22,7 @@ import { planBundle, loadBundle } from "@/lib/bundle-service";
 import type {
   Booking, Channel, Currency, Departure, Order, Partner, Product, Seller,
 } from "@/lib/types";
-import { refId } from "@/lib/types";
+import { refId, isTerminalBookingStatus } from "@/lib/types";
 
 /**
  * Booking service — the single write-path for sales.
@@ -398,6 +398,26 @@ export async function createOrderWithBookings(
   // Solo acota al SOCIO. El vendedor de la casa sigue vendiendo contra la
   // capacidad: el cupo es un acuerdo con la agencia, no un límite del negocio.
   const allotmentUse = new Map<string, { row: AllotmentRow | null; seats: number }>();
+  /**
+   * El cupo que resolvió CADA línea, guardado mientras se sabe.
+   *
+   * Antes esto se reconstruía más abajo buscando en `allotmentUse` el cupo cuyo
+   * producto coincidiera y, si no lo encontraba, cogiendo el primero de la
+   * lista. Ese respaldo existía para los contratos sin producto —«te garantizo
+   * 10 plazas en lo que sea»— pero atrapaba también a un producto que
+   * sencillamente NO tiene cupo: en un carrito con Saona (con contrato) y Buggy
+   * (sin él), la reserva de Buggy se quedaba apuntando al contrato de Saona.
+   *
+   * El consumo era correcto, así que el día de la venta no se notaba nada. Se
+   * notaba al cancelar: se le devolvían al contrato de Saona plazas que nunca
+   * se le habían quitado, y el socio acababa con más cupo del que compró. Sin
+   * ningún negativo que lo delatara, porque la devolución se topa en cero.
+   *
+   * Aquí no hay que adivinar: este bucle YA sabe qué cupo aplica a cada línea,
+   * porque acaba de preguntárselo a `assertAllotment` con las mismas reglas
+   * (salida > producto > genérico) que usa la venta.
+   */
+  const allotmentOfItem = new Map<BookingItemInput, { id: string; row: AllotmentRow | null; seats: number }>();
   if (input.partner_id) {
     // La fecha de viaje sale de la salida, no del ítem, y hace falta ANTES del
     // bucle que la resuelve más abajo: el cupo puede tener temporada y días de
@@ -427,6 +447,7 @@ export async function createOrderWithBookings(
       );
       const key = String(resolved.row?._id || resolved.row?.id || "");
       if (!key) continue;
+      allotmentOfItem.set(item, { id: key, row: resolved.row, seats: pax });
       const acc = allotmentUse.get(key) || { row: resolved.row, seats: 0 };
       acc.seats += pax;
       allotmentUse.set(key, acc);
@@ -657,13 +678,12 @@ export async function createOrderWithBookings(
       // la cancelación, devolverlas al cupo vigente le regalaría plazas a la
       // temporada nueva.
       ...(() => {
-        if (!input.partner_id) return {};
-        const used = [...allotmentUse.entries()].find(([, v]) => v.row && refId(v.row.product) === item.product_id)
-          ?? [...allotmentUse.entries()][0];
+        const used = allotmentOfItem.get(item);
         if (!used) return {};
-        const pax = toCount(item.adults) + toCount(item.children) + toCount(item.infants);
-        return allotmentState(used[1].row).holds
-          ? { allotment: used[0], allotment_seats: pax }
+        // Solo los cupos que APARTAN plazas se anotan: en venta libre no hay
+        // nada que devolver, y anotarlo haría creer que sí.
+        return allotmentState(used.row).holds
+          ? { allotment: used.id, allotment_seats: used.seats }
           : {};
       })(),
       pickup_hotel: item.pickup_hotel_id || undefined,
@@ -1269,17 +1289,46 @@ export async function syncOrderTotals(companyId: string, orderId: string): Promi
     companyId, "payment", { _filter: { order: orderId, status: "completed" }, _limit: 200 }
   );
 
-  // AUD-F25: cancelled/refunded bookings must not inflate the order total, and
-  // the payment proration below must run over the live bookings only.
-  const DEAD_BOOKING = new Set(["cancelled", "refunded"]);
-  const activeBookings = bookings.filter((b) => !DEAD_BOOKING.has(b.status || ""));
-  const total = round2(activeBookings.reduce((s, b) => s + (b.total_amount ?? 0), 0));
+  /**
+   * UNA RESERVA CANCELADA VALE LO QUE EL CLIENTE PAGÓ Y NO SE LE DEVOLVIÓ.
+   *
+   * Aquí había dos listas de estados terminales y a las dos les faltaba
+   * `partially_refunded`, que es el estado de una cancelación con penalización
+   * —la más normal de todas—. Lo que pasaba:
+   *
+   *  · la reserva seguía contando por su importe ENTERO en el total de la
+   *    orden, así que una venta deshecha seguía figurando como venta;
+   *  · el bucle de abajo le PISABA el estado y le devolvía un saldo positivo,
+   *    de modo que el sistema creía que el cliente debía dinero de una
+   *    excursión cancelada — y el cron de cobranza se lo reclamaba.
+   *
+   * La regla que lo arregla es una sola frase: una reserva muerta vale lo
+   * retenido. Con ella las cuatro cancelaciones cuadran y ninguna deja saldo:
+   *
+   *   sin pagar y cancelada   → pagó 0, se le devolvió 0   → vale 0
+   *   no-show con penalización → pagó 200, se le devolvió 0 → vale 200
+   *   reembolso parcial        → pagó 200, se le devolvió 100 → vale 100
+   *   reembolso total          → pagó 200, se le devolvió 200 → vale 0
+   */
+  const isDead = (b: Booking) => isTerminalBookingStatus(b.status);
+  const retained = (b: Booking) => Math.max(0, round2((b.paid_amount ?? 0) - (b.refund_amount ?? 0)));
+
+  const activeBookings = bookings.filter((b) => !isDead(b));
+  const liveTotal = round2(activeBookings.reduce((s, b) => s + (b.total_amount ?? 0), 0));
+  const retainedTotal = round2(bookings.filter(isDead).reduce((s, b) => s + retained(b), 0));
+  const total = round2(liveTotal + retainedTotal);
+
   // AUD (credit_note): a credit note is an outflow, exactly like a refund.
   const OUTFLOW = new Set(["refund", "credit_note"]);
   const paid = round2(
     payments.reduce((s, p) => s + (OUTFLOW.has(p.payment_type || "") ? -(p.amount ?? 0) : p.amount ?? 0), 0)
   );
   const balance = round2(total - paid);
+
+  // Lo retenido por las canceladas NO se reparte entre las vivas: ese dinero
+  // ya tiene dueño. Repartirlo le daría por pagada a una reserva viva una parte
+  // de lo que pagó otra que se cayó.
+  const livePaid = round2(paid - retainedTotal);
 
   // An order with no live booking left (every booking cancelled/refunded) is a
   // cancelled order, not a pending one.
@@ -1317,9 +1366,12 @@ export async function syncOrderTotals(companyId: string, orderId: string): Promi
 
   // Propagate the payment state down to the bookings.
   for (const b of bookings) {
-    if (b.status === "cancelled" || b.status === "refunded") continue;
-    const share = total > 0 ? (b.total_amount ?? 0) / total : 0;
-    const bookingPaid = round2(paid * share);
+    // Una reserva muerta ya dijo lo suyo al cancelarse: su saldo es cero y su
+    // estado cuenta qué pasó con el dinero. Volver a escribirlo desde el
+    // prorrateo borraría las dos cosas.
+    if (isDead(b)) continue;
+    const share = liveTotal > 0 ? (b.total_amount ?? 0) / liveTotal : 0;
+    const bookingPaid = round2(livePaid * share);
     const bookingBalance = round2((b.total_amount ?? 0) - bookingPaid);
     let bStatus: Booking["status"] = b.status;
     if (b.status !== "checked_in" && b.status !== "completed" && b.status !== "no_show") {

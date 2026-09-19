@@ -1,5 +1,7 @@
 "use client";
 
+import { isTerminalBookingStatus } from "@/lib/types";
+
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -282,7 +284,7 @@ export default function BookingsPage() {
   };
 
   const currency = rows[0]?.currency || "usd";
-  const live = rows.filter((b) => !["cancelled", "refunded", "draft"].includes(b.status || ""));
+  const live = rows.filter((b) => !isTerminalBookingStatus(b.status) && b.status !== "draft");
   const sales = live.reduce((s, b) => s + (b.total_amount ?? 0), 0);
   const pendingBalance = live.reduce((s, b) => s + (b.balance_amount ?? 0), 0);
   const pax = live.reduce((s, b) => s + (b.pax_total ?? 0), 0);
@@ -346,7 +348,7 @@ export default function BookingsPage() {
           hint="Sin cobrar por completo · en esta página" />
         <KpiCard icon="Ticket" label="Ticket medio"
           value={formatMoney(live.length ? sales / live.length : 0, currency)}
-          hint={`${formatNumber(rows.filter((b) => ["cancelled", "refunded"].includes(b.status || "")).length)} canceladas`} />
+          hint={`${formatNumber(rows.filter((b) => isTerminalBookingStatus(b.status)).length)} canceladas`} />
       </section>
 
       <div className="flex flex-wrap items-end gap-2">
@@ -612,12 +614,12 @@ export default function BookingsPage() {
                 <Link href={`/dashboard/checkin?code=${detail.voucher_code || detail.booking_number || ""}`}>
                   <Button variant="outline" className="gap-1.5"><Icon name="ScanLine" className="size-4" /> Check-in</Button>
                 </Link>
-                {!["cancelled", "refunded", "checked_in", "completed"].includes(detail.status || "") && (
+                {!isTerminalBookingStatus(detail.status) && !["checked_in", "completed"].includes(detail.status || "") && (
                   <Button variant="outline" className="gap-1.5" onClick={() => openReschedule(detail)}>
                     <Icon name="CalendarClock" className="size-4" /> Reprogramar
                   </Button>
                 )}
-                {!["cancelled", "refunded"].includes(detail.status || "") && (
+                {!isTerminalBookingStatus(detail.status) && (
                   <Button variant="outline" className="gap-1.5 text-destructive hover:text-destructive"
                     onClick={() => setCancelling(detail)}>
                     <Icon name="Ban" className="size-4" /> Cancelar reserva

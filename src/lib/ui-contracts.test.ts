@@ -3038,10 +3038,28 @@ describe("distribución: el cupo del socio acota de verdad", () => {
     expect(src).toMatch(/allotment_seats/);
   });
 
-  it("la reserva guarda de qué cupo salió", () => {
-    // Sin el enlace, cancelar tendría que adivinar a qué cupo devolver.
-    const src = read("src/lib/booking-service.ts");
-    expect(src).toMatch(/allotment: used\[0\], allotment_seats: pax/);
+  it("la reserva guarda de qué cupo salió, y del suyo", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * ESTA GUARDA VIGILABA LA IMPLEMENTACIÓN Y SE VOLVIÓ EN CONTRA
+     *
+     * Antes exigía el texto literal `allotment: used[0], allotment_seats: pax`.
+     * Eso fijaba UNA forma de escribirlo, no la regla — y la forma que fijaba
+     * tenía dentro un error: `used[0]` salía de un respaldo que, cuando el
+     * producto no tenía cupo propio, cogía el primer cupo de la lista y le
+     * cargaba las plazas al contrato de otro producto. La guarda protegía el
+     * error.
+     *
+     * Ahora exige lo que de verdad importa: que el cupo de cada línea se
+     * guarde mientras se sabe, en vez de reconstruirse después adivinando. El
+     * comportamiento se comprueba de verdad en `booking-service.test.ts`, que
+     * vende Saona (con contrato) y Buggy (sin él) en el mismo carrito.
+     */
+    const src = read("src/lib/booking-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(src, "el cupo de cada línea se guarda cuando se resuelve").toMatch(/allotmentOfItem\.set\(item,/);
+    expect(src, "y se lee de ahí, sin adivinar").toMatch(/allotmentOfItem\.get\(item\)/);
+    expect(src, "nada de coger «el primero de la lista» como respaldo")
+      .not.toMatch(/\[\.\.\.allotmentUse\.entries\(\)\]\[0\]/);
   });
 
   it("la liberación automática está programada, no solo escrita", () => {
@@ -4258,5 +4276,99 @@ describe("la logística del día dice lo mismo en todas partes", () => {
         `${campo} no debe estar en ninguna lista de campos escribibles`
       ).toBe(false);
     }
+  });
+});
+
+describe("el camino del dinero no se contradice a sí mismo", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * TRES LISTAS QUE DEBERÍAN SER UNA
+   *
+   * Los estados terminales de una reserva —cancelada, reembolsada, reembolsada
+   * a medias— estaban escritos tres veces: una en `booking-cancel-service` y
+   * dos dentro de `syncOrderTotals`. A las dos de `syncOrderTotals` les faltaba
+   * `partially_refunded`, que es el estado de una cancelación con penalización,
+   * o sea la más normal de todas.
+   *
+   * Lo que costaba: un cliente que cancelaba con diez horas de margen recibía
+   * su 50 % y la reserva se quedaba con saldo positivo. El sistema creía que
+   * debía dinero de una excursión cancelada y el cron de cobranza se lo
+   * reclamaba.
+   *
+   * Una lista copiada acaba divergiendo. Esta guarda impide la copia.
+   */
+  /**
+   * Los sitios donde la lista se escribe a mano CON MOTIVO.
+   *
+   * Todos son listas de estados de ORDEN, que es otro enum: `sales_order` no
+   * tiene `partially_refunded` (0005). Mezclarlos con los de reserva sería el
+   * error simétrico al que esta guarda persigue.
+   */
+  const AMANO: Record<string, string> = {
+    "src/app/api/reports/collections/route.ts": "estados de ORDEN: una orden no puede estar parcialmente reembolsada",
+    "src/lib/membego-benefits.ts": "estados de ORDEN",
+  };
+
+  it("la lista de estados de RESERVA se escribe una sola vez", () => {
+    const culpables: string[] = [];
+    for (const file of walk(path.join(ROOT, "src"))) {
+      const rel = path.relative(ROOT, file);
+      if (rel.endsWith("types.ts") || rel in AMANO || /\.test\.tsx?$/.test(rel)) continue;
+      const src = readFileSync(file, "utf8");
+      // Una lista de estados de reserva que nombre cancelled y refunded y se
+      // olvide de partially_refunded trata como viva una reserva cancelada.
+      for (const lista of src.matchAll(/\[[^\]]*"cancelled"[^\]]*\]/g)) {
+        const texto = lista[0];
+        if (!texto.includes('"refunded"')) continue;
+        if (texto.includes('"partially_refunded"')) continue;
+        if (texto.includes("BOOKING_TERMINAL_STATES")) continue;
+        culpables.push(`${rel}: ${texto.slice(0, 70)}`);
+      }
+    }
+    expect(
+      culpables,
+      "una reserva reembolsada a medias sigue viva para estos: es el estado de una cancelación con penalización"
+    ).toEqual([]);
+  });
+
+  it("y las excepciones apuntadas se aplican de verdad a una orden", () => {
+    // Si alguien apunta aquí una lista de RESERVAS para callar la guarda, esto
+    // lo dice: se lee el código alrededor de la lista y tiene que estar
+    // hablando de una orden.
+    for (const [archivo, motivo] of Object.entries(AMANO)) {
+      expect(motivo, `${archivo}: el motivo apuntado tiene que decir por qué`).toMatch(/ORDEN/);
+      const src = read(archivo);
+      const lista = /\[[^\]]*"cancelled"[^\]]*"refunded"[^\]]*\]/.exec(src);
+      expect(lista, `${archivo}: ya no tiene la lista que decía tener`).toBeTruthy();
+      // Sin límites de palabra a propósito: los nombres reales son
+      // `ctx.orderStatus`, `CLOSED_ORDER` y `row.order?.status`, y un `\border\b`
+      // no casa con ninguno. Lo que se comprueba es que el código de alrededor
+      // esté hablando de órdenes, no la ortografía del identificador.
+      const alrededor = src.slice(Math.max(0, lista!.index - 600), lista!.index + 800);
+      expect(alrededor, `${archivo}: la lista no se aplica a ninguna orden`).toMatch(/order/i);
+    }
+  });
+
+  it("y quien la necesita la importa de ahí", () => {
+    for (const file of ["src/lib/booking-service.ts", "src/lib/booking-cancel-service.ts"]) {
+      expect(read(file), `${file} debe usar la lista compartida`)
+        .toMatch(/isTerminalBookingStatus|BOOKING_TERMINAL_STATES/);
+    }
+  });
+
+  it("incluye el reembolso parcial, que es el caso que se olvidaba", () => {
+    const src = read("src/lib/types.ts");
+    const lista = /BOOKING_TERMINAL_STATES\s*=\s*\[([^\]]+)\]/.exec(src)?.[1] ?? "";
+    for (const estado of ["cancelled", "refunded", "partially_refunded"]) {
+      expect(lista, `falta ${estado}`).toContain(`"${estado}"`);
+    }
+  });
+
+  it("una reserva cancelada no se vuelve a cancelar, y la guarda vive en el servicio", () => {
+    // Estaba en cada llamador. El módulo existe para que quien llame no tenga
+    // que acordarse de las trece cosas que hay que hacer al cancelar.
+    const src = read("src/lib/booking-cancel-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const cuerpo = src.slice(src.indexOf("export async function cancelBookingFully"));
+    expect(cuerpo.slice(0, 1200)).toMatch(/isTerminalBookingStatus\(booking\.status\)/);
   });
 });

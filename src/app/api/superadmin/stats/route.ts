@@ -1,6 +1,7 @@
 import { requireSuperadmin } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import { supabaseService } from "@/lib/supabase/service";
+import { isTerminalBookingStatus } from "@/lib/types";
 
 function mapCompany(row: any) {
   return { ...row, _id: row.id, plan: row.plan_id, base_currency: row.currency, storage_used_mb: row.metadata?.storage_used_mb || 0 };
@@ -25,7 +26,7 @@ export async function GET() {
     const byCompany = new Map<string, { bookings: number; revenue: number; pax: number }>();
     let gmv = 0, pax = 0;
     for (const b of bookings || []) {
-      if (["cancelled", "refunded", "draft"].includes(b.status || "")) continue;
+      if (isTerminalBookingStatus(b.status) || b.status === "draft") continue;
       const agg = byCompany.get(b.organization_id) || { bookings: 0, revenue: 0, pax: 0 };
       agg.bookings += 1;
       agg.revenue += b.total_amount ?? 0;

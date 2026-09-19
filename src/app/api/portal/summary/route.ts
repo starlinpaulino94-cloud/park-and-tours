@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { requireTenant, tenantQuery, requireAtLeast, TenantError } from "@/lib/tenant";
 import { ok, fail, resolvePeriod } from "@/lib/api-response";
 import type { Booking, Commission, Partner, Receivable, Settlement } from "@/lib/types";
-import { refId } from "@/lib/types";
+import { refId, isTerminalBookingStatus } from "@/lib/types";
 
 /**
  * GET /api/portal/summary — panel del portal B2B.
@@ -53,7 +53,7 @@ export async function GET(req: NextRequest) {
     if (!partner) throw new TenantError("Partner no encontrado", 404);
 
     const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
-    const live = bookings.filter((b) => !["cancelled", "refunded", "draft"].includes(b.status || ""));
+    const live = bookings.filter((b) => !isTerminalBookingStatus(b.status) && b.status !== "draft");
 
     const sales = live.reduce((s, b) => s + (b.total_amount ?? 0), 0);
     const pax = live.reduce((s, b) => s + (b.pax_total ?? 0), 0);

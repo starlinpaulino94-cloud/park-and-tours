@@ -12,6 +12,7 @@ import { writeAudit } from "@/lib/audit";
 import { notifyBookingCancelled } from "@/lib/messaging/events";
 import { notify } from "@/lib/notify-service";
 import { parseJson } from "@/lib/format";
+import { BOOKING_TERMINAL_STATES, isTerminalBookingStatus } from "@/lib/types";
 import type { Booking, CancellationPolicy, CancellationTier, Product } from "@/lib/types";
 import { refId } from "@/lib/types";
 
@@ -68,8 +69,13 @@ export interface CancelResult {
   supplierCostsCancelled: number;
 }
 
-/** Los estados desde los que ya no se puede cancelar: cancelar dos veces reembolsa dos veces. */
-export const TERMINAL_STATES = ["cancelled", "refunded", "partially_refunded"];
+/**
+ * Los estados desde los que ya no se puede cancelar: cancelar dos veces
+ * reembolsa dos veces. La lista vive en `types.ts` porque `syncOrderTotals`
+ * necesita exactamente la misma, y tenerla escrita dos veces fue justo lo que
+ * hizo que le reclamáramos el saldo a un cliente que había cancelado.
+ */
+export const TERMINAL_STATES: readonly string[] = BOOKING_TERMINAL_STATES;
 
 export async function cancelBookingFully(
   ctx: TenantContext & { companyId: string },
@@ -77,6 +83,31 @@ export async function cancelBookingFully(
   options: CancelOptions = {}
 ): Promise<CancelResult> {
   const id = String(booking._id);
+
+  /**
+   * LA REGLA SE COMPRUEBA AQUÍ, QUE ES DONDE ESTÁ ESCRITA.
+   *
+   * `TERMINAL_STATES` declara justo arriba que cancelar dos veces reembolsa dos
+   * veces, pero la comprobación vivía en cada llamador. Los dos de hoy —la ruta
+   * de mostrador y el conector OCTO— la hacen. El tercero tendría que
+   * acordarse, y este módulo existe precisamente para que quien llame no tenga
+   * que acordarse de nada: su cabecera dice que hay UNA sola cancelación para
+   * todos los orígenes.
+   *
+   * Si alguien se la salta, sale un segundo pago de reembolso por la misma
+   * reserva, las plazas vuelven al cupo del socio por partida doble y el
+   * cobrado de la orden se va en negativo. Se comprobó: el dinero salía dos
+   * veces.
+   *
+   * Y dentro de esta misma función los COMPONENTES de un paquete ya estaban
+   * protegidos (más abajo). La cabecera no.
+   */
+  if (isTerminalBookingStatus(booking.status)) {
+    throw Object.assign(
+      new Error("Esta reserva ya estaba cancelada; cancelarla otra vez devolvería el dinero dos veces"),
+      { status: 409, code: "ALREADY_CANCELLED" }
+    );
+  }
 
   // ---- refund according to the applicable policy ------------------------
   const product = typeof booking.product === "object" ? (booking.product as Product) : null;
@@ -148,7 +179,7 @@ export async function cancelBookingFully(
     _filter: { bundle_booking: id }, _limit: 50,
   });
   for (const component of components) {
-    if (TERMINAL_STATES.includes(component.status || "")) continue;
+    if (isTerminalBookingStatus(component.status)) continue;
     /**
      * Sin `refundOverride`, y no por descuido.
      *
