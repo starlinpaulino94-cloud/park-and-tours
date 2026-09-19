@@ -19,7 +19,7 @@ export default function TransportPage() {
       resource="vehicle"
       eyebrow="Operación"
       title="Flota y transporte"
-      description="Vehículos propios y de proveedores con capacidad, conductor asignado, seguros e inspecciones. El despacho impide asignar más pasajeros que plazas."
+      description="Vehículos propios y de proveedores con capacidad, conductor asignado, seguros e inspecciones. Un vehículo con el seguro o la inspección vencidos, o en mantenimiento, no sale: el despacho lo bloquea igual que a un guía con la licencia vencida."
       createLabel="Nuevo vehículo"
       searchPlaceholder="Buscar por nombre o placa…"
       emptyIcon="Bus"

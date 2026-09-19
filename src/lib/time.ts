@@ -131,6 +131,36 @@ export function isDueToday(due: string | Date | null | undefined, now: Date, tz:
   return d.getTime() >= now.getTime() && d.getTime() <= end.getTime();
 }
 
+/**
+ * El instante en que una hora de pared («07:15») ocurre el mismo día de
+ * calendario que `reference`, en la zona dada.
+ *
+ * Existe para las horas que el sistema guarda como texto —la hora de recogida,
+ * el turno de un recurso en el despacho— y que hay que poder comparar con
+ * instantes reales. Restar minutos «a mano» a un `timestamptz` funciona hasta
+ * que el día lleva un cambio de horario dentro; esto pasa por el mismo
+ * `wallClockToInstant` que ya usa `dayBounds`, que lo tiene en cuenta.
+ *
+ * Devuelve `null` si el texto no es una hora válida: el campo es libre y
+ * «mañana temprano» no es una hora.
+ */
+export function instantAtWallTime(reference: Date, tz: string, wallTime: string): Date | null {
+  const match = /^\s*(\d{1,2}):(\d{2})/.exec(wallTime ?? "");
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour > 23 || minute > 59) return null;
+
+  const p = zonedParts(reference, tz);
+  return wallClockToInstant({ ...p, hour, minute, second: 0 }, tz, reference);
+}
+
+/** Hora de pared «HH:MM» de un instante, en la zona dada. */
+export function wallTimeOf(date: Date, tz: string): string {
+  const p = zonedParts(date, tz);
+  return `${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
+}
+
 /** Mismo día de calendario en la zona de la empresa (independiente de la hora). */
 export function isSameZonedDay(a: Date, b: Date, tz: string): boolean {
   const x = zonedParts(a, tz);

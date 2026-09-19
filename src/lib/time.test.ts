@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   DEFAULT_TIME_ZONE, companyTimeZone, dayBounds, dueLabel, humanizeElapsed,
   isDueToday, isOverdue, isSameZonedDay, isValidTimeZone, toValidDate, zoneOffsetMs, zonedParts,
+  instantAtWallTime, wallTimeOf,
 } from "@/lib/time";
 
 const RD = "America/Santo_Domingo";
@@ -157,5 +158,59 @@ describe("time — etiquetas", () => {
     expect(humanizeElapsed("2026-08-25T14:30:00Z", now)).toBe("hace 30 min");
     expect(humanizeElapsed("2026-08-23T15:00:00Z", now)).toBe("hace 2 d");
     expect(humanizeElapsed(null, now)).toBe("—");
+  });
+});
+
+describe("la hora de pared de un día concreto", () => {
+  const referencia = new Date("2026-08-25T15:00:00Z"); // 11:00 en RD
+
+  it("devuelve el instante en que esa hora ocurre ese día, en esa zona", () => {
+    const d = instantAtWallTime(referencia, RD, "07:15")!;
+    expect(d.toISOString()).toBe("2026-08-25T11:15:00.000Z");
+  });
+
+  it("la misma hora de pared es otro instante en otra zona", () => {
+    // En invierno, y no en verano: en agosto Nueva York está en EDT, que es el
+    // mismo UTC−4 que Santo Domingo todo el año. Una prueba de verano diría que
+    // las dos zonas son la misma y no comprobaría nada.
+    const enero = new Date("2026-01-15T15:00:00Z");
+    const rd = instantAtWallTime(enero, RD, "07:15")!;
+    const ny = instantAtWallTime(enero, NY, "07:15")!;
+    expect(rd.toISOString()).toBe("2026-01-15T11:15:00.000Z");
+    expect(ny.toISOString()).toBe("2026-01-15T12:15:00.000Z");
+  });
+
+  it("la misma hora de pared cambia de instante al cruzar el horario de verano", () => {
+    const invierno = instantAtWallTime(new Date("2026-01-15T15:00:00Z"), NY, "07:15")!;
+    const verano = instantAtWallTime(new Date("2026-08-25T15:00:00Z"), NY, "07:15")!;
+    expect(wallTimeOf(invierno, NY)).toBe("07:15");
+    expect(wallTimeOf(verano, NY)).toBe("07:15");
+    // Misma hora local, una hora de diferencia en UTC: eso es el cambio de hora.
+    expect(invierno.getUTCHours() - verano.getUTCHours()).toBe(1);
+  });
+
+  it("una hora que no es una hora devuelve null, no la medianoche", () => {
+    // Caer a las 00:00 sería peor que fallar: el despacho leería una hora
+    // plausible para un campo que alguien dejó escrito «al amanecer».
+    expect(instantAtWallTime(referencia, RD, "al amanecer")).toBeNull();
+    expect(instantAtWallTime(referencia, RD, "")).toBeNull();
+    expect(instantAtWallTime(referencia, RD, "25:00")).toBeNull();
+    expect(instantAtWallTime(referencia, RD, "07:75")).toBeNull();
+  });
+
+  it("acepta la hora sin cero delante y los segundos de más", () => {
+    expect(wallTimeOf(instantAtWallTime(referencia, RD, "7:05")!, RD)).toBe("07:05");
+    expect(wallTimeOf(instantAtWallTime(referencia, RD, "07:05:30")!, RD)).toBe("07:05");
+  });
+
+  it("ida y vuelta: la hora de pared de su propio instante es ella misma", () => {
+    for (const hora of ["00:00", "07:15", "12:00", "23:59"]) {
+      expect(wallTimeOf(instantAtWallTime(referencia, RD, hora)!, RD)).toBe(hora);
+    }
+  });
+
+  it("la hora de pared se lee en la zona pedida, no en UTC", () => {
+    expect(wallTimeOf(new Date("2026-08-25T15:00:00Z"), RD)).toBe("11:00");
+    expect(wallTimeOf(new Date("2026-08-25T15:00:00Z"), "UTC")).toBe("15:00");
   });
 });

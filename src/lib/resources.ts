@@ -176,8 +176,8 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["name"],
     sort: { name: "asc" },
     writable: ["name", "description", "color", "status", "zone_type", "max_capacity",
-      "current_occupancy", "requires_wristband"],
-    numeric: ["max_capacity", "current_occupancy"],
+      "current_occupancy", "requires_wristband", "pickup_offset_min"],
+    numeric: ["max_capacity", "current_occupancy", "pickup_offset_min"],
     writeRole: "manager",
   },
   hotel: {
@@ -651,8 +651,13 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["location", "room"],
     expand: { booking: { customer: true, product: true }, hotel: true, route: true },
     sort: { pickup_time: "asc" },
-    writable: ["booking", "hotel", "route", "pickup_time", "location", "room", "pax", "status", "notes"],
-    numeric: ["pax"],
+    // `sequence` sí es editable: reordenar una parada a mano es una decisión
+    // del despacho («por ese hotel mejor pasa al final, la salida del parking
+    // es imposible a esa hora»). `planned_time` NO lo es: la calcula el motor, y
+    // dejar teclearla devolvería la hora de recogida a ser un texto suelto, que
+    // es justo el defecto que 0065 vino a arreglar.
+    writable: ["booking", "hotel", "route", "pickup_time", "location", "room", "pax", "sequence", "status", "notes"],
+    numeric: ["pax", "sequence"],
     writeRole: "operations",
     module: "pickups",
   },

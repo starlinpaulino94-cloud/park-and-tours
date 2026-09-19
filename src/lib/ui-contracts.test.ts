@@ -4084,6 +4084,9 @@ describe("cada pantalla dice cómo se crea lo que enseña", () => {
     "/dashboard/operaciones/despacho": "despacho: actúa sobre salidas que ya existen",
     "/dashboard/salidas/[id]/manifiesto": "manifiesto: se deriva de las reservas de la salida",
     "/dashboard/clientes/vouchers": "vouchers: los emite la venta",
+    "/dashboard/operaciones/rutas/[id]/hoja":
+      "hoja de ruta: sus paradas las coloca «Armar rutas» en el despacho; " +
+      "teclearlas aquí a mano las descolocaría en el siguiente rearmado",
   };
 
   /**
@@ -4183,6 +4186,77 @@ describe("cada pantalla dice cómo se crea lo que enseña", () => {
   it("cada excepción explica por qué", () => {
     for (const [route, motivo] of Object.entries(DERIVADAS)) {
       expect(motivo.length, `${route} sin motivo`).toBeGreaterThan(20);
+    }
+  });
+});
+
+describe("la logística del día dice lo mismo en todas partes", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * DOS PANTALLAS QUE DEFINÍAN EL MISMO CAMPO DE FORMA DISTINTA
+   *
+   * `hotel.pickup_offset_min` se explicaba en Administración → Hoteles como
+   * «minutos antes de la salida a los que pasa el transporte» —que es lo que el
+   * motor hace— y en Recogidas como «minutos que se suman o restan a la hora de
+   * la ruta», que es otra cosa. No es un matiz: con la segunda definición,
+   * quien carga los hoteles pone un 10 donde hacía falta un 75, y el transporte
+   * llega una hora tarde a todos los de esa zona.
+   *
+   * Dos definiciones del mismo dato garantizan que alguien lo cargue mal, y el
+   * error no se ve hasta que hay clientes esperando en un lobby.
+   */
+  const ayudasDe = (campo: string): { archivo: string; texto: string }[] => {
+    const out: { archivo: string; texto: string }[] = [];
+    for (const file of walk(path.join(ROOT, "src/app/dashboard"))) {
+      const src = readFileSync(file, "utf8");
+      // El bloque del campo hasta su cierre, para leer su `help` y no el del vecino.
+      const re = new RegExp(`name:\\s*"${campo}"[\\s\\S]{0,400}?\\}`, "g");
+      for (const bloque of src.match(re) ?? []) {
+        const help = /help:\s*"([^"]+)"/.exec(bloque);
+        if (help) out.push({ archivo: path.relative(ROOT, file), texto: help[1] });
+      }
+    }
+    return out;
+  };
+
+  it("el margen de recogida se explica igual en las dos pantallas que lo piden", () => {
+    const ayudas = ayudasDe("pickup_offset_min");
+    // Si nadie lo explica, la guarda no estaría comprobando nada.
+    expect(ayudas.length, "nadie explica pickup_offset_min").toBeGreaterThanOrEqual(2);
+
+    const discrepantes = ayudas.filter((a) => !/antes de la salida/i.test(a.texto));
+    expect(
+      discrepantes.map((d) => `${d.archivo}: «${d.texto}»`),
+      "ayudas de pickup_offset_min que no dicen «antes de la salida»"
+    ).toEqual([]);
+  });
+
+  it("lo que calcula el motor no se ofrece para teclear", () => {
+    /**
+     * `planned_time` es la hora que calcula el motor y `auto_key` la huella con
+     * la que reconoce su propia ruta. Un formulario que las ofrezca devuelve la
+     * hora de recogida a ser un texto suelto —el defecto que 0065 vino a
+     * arreglar— y permite duplicar las rutas al rehacer el día.
+     */
+    const ofrecidos: string[] = [];
+    for (const file of walk(path.join(ROOT, "src/app/dashboard"))) {
+      const src = readFileSync(file, "utf8");
+      for (const campo of ["planned_time", "auto_key"]) {
+        if (new RegExp(`name:\\s*"${campo}"`).test(src)) {
+          ofrecidos.push(`${path.relative(ROOT, file)}: ${campo}`);
+        }
+      }
+    }
+    expect(ofrecidos, "campos derivados ofrecidos en un formulario").toEqual([]);
+  });
+
+  it("tampoco son escribibles por la API genérica", () => {
+    const recursos = read("src/lib/resources.ts");
+    for (const campo of ["planned_time", "auto_key", "conflict_reason"]) {
+      expect(
+        new RegExp(`writable:[^\\]]*"${campo}"`).test(recursos),
+        `${campo} no debe estar en ninguna lista de campos escribibles`
+      ).toBe(false);
     }
   });
 });

@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0021-0064 tienen que haber creado.
+ * El inventario de lo que las migraciones 0021-0065 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -395,5 +395,24 @@ export const MIGRATION_CHECKS = [
     // verificador que da falsas alarmas se deja de mirar. La cubre
     // supabase/tests/system_health.test.sql, que además comprueba que detecta el
     // enganche roto.
+  },
+  {
+    migration: "0065 — logística del día",
+    columns: [
+      // `pickup_offset_min` en la zona es lo que hace utilizable el del hotel:
+      // sin él, nadie pone el margen a doscientos hoteles uno por uno y la hora
+      // de recogida sigue siendo la que teclee quien vende.
+      ["zone", ["pickup_offset_min"]],
+      // `planned_time` va SEPARADA de `pickup_time` a propósito. Si faltara, el
+      // motor escribiría sobre la hora que el cliente ya tiene en su voucher.
+      // Sin `sequence` no hay hoja de ruta: el conductor decide el recorrido en
+      // la calle.
+      ["pickup", ["planned_time", "sequence"]],
+      // Sin `auto_key`, cada clic en «armar rutas» duplicaría las rutas del día.
+      ["pickup_route", ["auto_key"]],
+      // El estado 'conflict' existe en el check desde 0010; el motivo escrito al
+      // lado es lo que evita que el despacho tenga que adivinar qué pasa.
+      ["departure_resource", ["conflict_reason"]],
+    ],
   },
 ];
