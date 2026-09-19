@@ -547,3 +547,127 @@ describe("la venta al socio", () => {
     expect(db.rows("booking")).toHaveLength(1);
   });
 });
+
+/* ═════════════════════════════════════════════════════════════ comisiones ══ */
+
+describe("las comisiones que genera la venta", () => {
+  const conVendedor = (reglas: Record<string, unknown>[] = [], extra: Record<string, Record<string, unknown>[]> = {}) =>
+    fakeDb(catalogo({
+      seller: [{ _id: "ven-1", first_name: "Marisol", last_name: "Peña", commission_pct: 5, status: "active" }],
+      commission_rule: reglas,
+      ...extra,
+    }));
+
+  it("la base es la venta neta: sin impuesto y con el descuento ya restado", async () => {
+    /**
+     * Comisionar sobre el total con impuesto le pagaría al vendedor un
+     * porcentaje del ITBIS, que es dinero del Estado que pasa por la caja. Y
+     * comisionar sobre el bruto le pagaría sobre un descuento que la empresa
+     * regaló.
+     */
+    db = conVendedor();
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1", seller_id: "ven-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 4, discount_pct: 10, tax_pct: 18 }],
+    });
+
+    const c = db.rows("commission")[0];
+    expect(c, "una venta con vendedor sin comisión es una liquidación que nadie cobra").toBeTruthy();
+    expect(Number(c.base_amount)).toBe(360);      // 400 bruto − 40 de descuento; el 18% no entra
+    expect(Number(c.amount)).toBe(18);            // 5% de 360
+  });
+
+  it("la comisión nace con su neto puesto, no en cero", async () => {
+    // Nacer en nulo hacía que la liquidación leyera cero para todo lo recién
+    // generado: el vendedor veía sus ventas y ningún importe.
+    db = conVendedor();
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1", seller_id: "ven-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    });
+    const c = db.rows("commission")[0];
+    expect(Number(c.net_amount)).toBe(Number(c.amount));
+    expect(Number(c.adjustment_total)).toBe(0);
+    expect(c.status).toBe("pending");
+  });
+
+  it("una regla concreta gana al porcentaje suelto de la ficha del vendedor", async () => {
+    db = conVendedor([{
+      _id: "regla-saona", name: "Saona 12%", beneficiary_type: "seller",
+      calc_type: "percentage", value: 12, product: "prod-saona", status: "active", priority: 10,
+    }]);
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1", seller_id: "ven-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    });
+    const c = db.rows("commission")[0];
+    expect(Number(c.amount)).toBe(24);            // 12% de 200, no el 5% de la ficha
+    expect(c.rule).toBe("regla-saona");
+  });
+
+  it("el socio y el vendedor cobran cada uno la suya", async () => {
+    db = conVendedor([], {
+      partner: [{ _id: "soc-1", name: "Caribe", default_commission_pct: 18, credit_limit: 0, credit_days: 0 }],
+    });
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1", seller_id: "ven-1", partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    });
+    const tipos = db.rows("commission").map((c) => c.beneficiary_type).sort();
+    expect(tipos).toEqual(["partner", "seller"]);
+  });
+
+  it("una venta sin vendedor ni socio no genera comisión de nadie", async () => {
+    // Es la venta directa de la empresa. Inventarle un beneficiario sería
+    // pagarle a alguien por algo que no vendió.
+    db = conVendedor();
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    });
+    expect(db.rows("commission")).toHaveLength(0);
+  });
+
+  it("la comisión guarda su foto: la frase que se imprime y los pax congelados", async () => {
+    // Una comisión discutida seis semanas después no se puede defender
+    // recalculándola con las reglas de hoy, que son las que pueden haber
+    // cambiado.
+    db = conVendedor();
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1", seller_id: "ven-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 3, children: 1 }],
+    });
+    const c = db.rows("commission")[0];
+    expect(c.snapshot).toBeTruthy();
+    expect(c.breakdown).toBeTruthy();
+    expect(Number(c.pax_adults)).toBe(3);
+    expect(Number(c.pax_children)).toBe(1);
+  });
+
+  it("la comisión SÍ se paga sobre los extras vendidos", async () => {
+    /**
+     * Es una decisión, no un descuido, y conviene que esté escrita porque el
+     * COSTO hace lo contrario: `resolveCost` deja los extras fuera de su base
+     * a propósito, porque el almuerzo tiene su propio proveedor y meterlo le
+     * pagaría dos veces al del tour.
+     *
+     * Con la comisión no hay doble pago: el vendedor vendió el almuerzo, y lo
+     * que cobra sale de un ingreso que existe.
+     */
+    db = conVendedor([], {
+      product_extra: [{
+        _id: "ext-almuerzo", product: "prod-saona", name: "Almuerzo",
+        price_type: "per_person", price: 35, cost: 20, status: "active", sort_order: 1,
+      }],
+    });
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1", seller_id: "ven-1",
+      items: [{
+        product_id: "prod-saona", departure_id: "sal-saona", adults: 2,
+        extras: [{ extra_id: "ext-almuerzo", quantity: 2 }],
+      }],
+    });
+    const c = db.rows("commission")[0];
+    expect(Number(c.base_amount)).toBe(270);      // 200 del tour + 70 de almuerzo
+  });
+});

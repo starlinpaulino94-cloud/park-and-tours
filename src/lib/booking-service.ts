@@ -1289,17 +1289,47 @@ export async function syncOrderTotals(companyId: string, orderId: string): Promi
     companyId, "payment", { _filter: { order: orderId, status: "completed" }, _limit: 200 }
   );
 
-  // AUD-F25: cancelled/refunded bookings must not inflate the order total, and
-  // the payment proration below must run over the live bookings only.
-  const DEAD_BOOKING = new Set(["cancelled", "refunded"]);
-  const activeBookings = bookings.filter((b) => !DEAD_BOOKING.has(b.status || ""));
-  const total = round2(activeBookings.reduce((s, b) => s + (b.total_amount ?? 0), 0));
+  /**
+   * UNA RESERVA CANCELADA VALE LO QUE EL CLIENTE PAGÓ Y NO SE LE DEVOLVIÓ.
+   *
+   * Aquí había dos listas de estados terminales y a las dos les faltaba
+   * `partially_refunded`, que es el estado de una cancelación con penalización
+   * —la más normal de todas—. Lo que pasaba:
+   *
+   *  · la reserva seguía contando por su importe ENTERO en el total de la
+   *    orden, así que una venta deshecha seguía figurando como venta;
+   *  · el bucle de abajo le PISABA el estado y le devolvía un saldo positivo,
+   *    de modo que el sistema creía que el cliente debía dinero de una
+   *    excursión cancelada — y el cron de cobranza se lo reclamaba.
+   *
+   * La regla que lo arregla es una sola frase: una reserva muerta vale lo
+   * retenido. Con ella las cuatro cancelaciones cuadran y ninguna deja saldo:
+   *
+   *   sin pagar y cancelada   → pagó 0, se le devolvió 0   → vale 0
+   *   no-show con penalización → pagó 200, se le devolvió 0 → vale 200
+   *   reembolso parcial        → pagó 200, se le devolvió 100 → vale 100
+   *   reembolso total          → pagó 200, se le devolvió 200 → vale 0
+   */
+  const DEAD_BOOKING = new Set(["cancelled", "refunded", "partially_refunded"]);
+  const isDead = (b: Booking) => DEAD_BOOKING.has(b.status || "");
+  const retained = (b: Booking) => Math.max(0, round2((b.paid_amount ?? 0) - (b.refund_amount ?? 0)));
+
+  const activeBookings = bookings.filter((b) => !isDead(b));
+  const liveTotal = round2(activeBookings.reduce((s, b) => s + (b.total_amount ?? 0), 0));
+  const retainedTotal = round2(bookings.filter(isDead).reduce((s, b) => s + retained(b), 0));
+  const total = round2(liveTotal + retainedTotal);
+
   // AUD (credit_note): a credit note is an outflow, exactly like a refund.
   const OUTFLOW = new Set(["refund", "credit_note"]);
   const paid = round2(
     payments.reduce((s, p) => s + (OUTFLOW.has(p.payment_type || "") ? -(p.amount ?? 0) : p.amount ?? 0), 0)
   );
   const balance = round2(total - paid);
+
+  // Lo retenido por las canceladas NO se reparte entre las vivas: ese dinero
+  // ya tiene dueño. Repartirlo le daría por pagada a una reserva viva una parte
+  // de lo que pagó otra que se cayó.
+  const livePaid = round2(paid - retainedTotal);
 
   // An order with no live booking left (every booking cancelled/refunded) is a
   // cancelled order, not a pending one.
@@ -1337,9 +1367,12 @@ export async function syncOrderTotals(companyId: string, orderId: string): Promi
 
   // Propagate the payment state down to the bookings.
   for (const b of bookings) {
-    if (b.status === "cancelled" || b.status === "refunded") continue;
-    const share = total > 0 ? (b.total_amount ?? 0) / total : 0;
-    const bookingPaid = round2(paid * share);
+    // Una reserva muerta ya dijo lo suyo al cancelarse: su saldo es cero y su
+    // estado cuenta qué pasó con el dinero. Volver a escribirlo desde el
+    // prorrateo borraría las dos cosas.
+    if (isDead(b)) continue;
+    const share = liveTotal > 0 ? (b.total_amount ?? 0) / liveTotal : 0;
+    const bookingPaid = round2(livePaid * share);
     const bookingBalance = round2((b.total_amount ?? 0) - bookingPaid);
     let bStatus: Booking["status"] = b.status;
     if (b.status !== "checked_in" && b.status !== "completed" && b.status !== "no_show") {

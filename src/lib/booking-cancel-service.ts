@@ -78,6 +78,31 @@ export async function cancelBookingFully(
 ): Promise<CancelResult> {
   const id = String(booking._id);
 
+  /**
+   * LA REGLA SE COMPRUEBA AQUÍ, QUE ES DONDE ESTÁ ESCRITA.
+   *
+   * `TERMINAL_STATES` declara justo arriba que cancelar dos veces reembolsa dos
+   * veces, pero la comprobación vivía en cada llamador. Los dos de hoy —la ruta
+   * de mostrador y el conector OCTO— la hacen. El tercero tendría que
+   * acordarse, y este módulo existe precisamente para que quien llame no tenga
+   * que acordarse de nada: su cabecera dice que hay UNA sola cancelación para
+   * todos los orígenes.
+   *
+   * Si alguien se la salta, sale un segundo pago de reembolso por la misma
+   * reserva, las plazas vuelven al cupo del socio por partida doble y el
+   * cobrado de la orden se va en negativo. Se comprobó: el dinero salía dos
+   * veces.
+   *
+   * Y dentro de esta misma función los COMPONENTES de un paquete ya estaban
+   * protegidos (más abajo). La cabecera no.
+   */
+  if (TERMINAL_STATES.includes(String(booking.status || ""))) {
+    throw Object.assign(
+      new Error("Esta reserva ya estaba cancelada; cancelarla otra vez devolvería el dinero dos veces"),
+      { status: 409, code: "ALREADY_CANCELLED" }
+    );
+  }
+
   // ---- refund according to the applicable policy ------------------------
   const product = typeof booking.product === "object" ? (booking.product as Product) : null;
   const policyId = refId(product?.cancellation_policy);
