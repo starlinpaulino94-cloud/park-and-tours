@@ -9,7 +9,7 @@ import {
 } from "@/lib/public-booking";
 import type { Company } from "@/lib/types";
 import type { TenantContext } from "@/lib/tenant";
-import { tryWrite } from "@/lib/supabase/write";
+import { tryWrite } from "@/lib/supabase/io";
 
 /**
  * El motor público contra la base.

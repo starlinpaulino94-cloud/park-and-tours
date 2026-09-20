@@ -2413,6 +2413,7 @@ describe("las notificaciones internas", () => {
     ["certification_expiring", "src/app/api/cron/certifications/route.ts"],
     ["allotment_released", "src/app/api/cron/allotments/route.ts"],
     ["waitlist_offer", "src/lib/waitlist-service.ts"],
+    ["survey_detractor", "src/lib/voice-service.ts"],
   ];
 
   it("cada evento del catálogo se dispara desde algún sitio", () => {
@@ -4420,10 +4421,11 @@ describe("la base dice que no y alguien tiene que oírlo (AUD-M05)", () => {
     expect(culpables, "envuélvela en mustWrite o tryWrite, o destructura su error").toEqual([]);
   });
 
-  it("los dos verbos existen y dicen lo que hacen", () => {
-    const src = read("src/lib/supabase/write.ts");
+  it("los tres verbos existen y dicen lo que hacen", () => {
+    const src = read("src/lib/supabase/io.ts");
     expect(src).toMatch(/export async function mustWrite/);
     expect(src).toMatch(/export async function tryWrite/);
+    expect(src).toMatch(/export async function mustRead/);
     // `mustWrite` lanza; `tryWrite` devuelve si llegó, para que quien llama
     // pueda no contar como hecho lo que no se escribió.
     expect(src).toMatch(/throw Object\.assign\(/);

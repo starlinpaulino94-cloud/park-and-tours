@@ -1,6 +1,6 @@
 import "server-only";
 import { supabaseService } from "@/lib/supabase/service";
-import { tryWrite } from "@/lib/supabase/write";
+import { tryWrite } from "@/lib/supabase/io";
 import {
   JOB_EXPECTATIONS, expectationFor, jobHealth, overallLevel, incidentsLevel,
   fingerprintOf, safeMessage, safeContext, sortBySeverity,

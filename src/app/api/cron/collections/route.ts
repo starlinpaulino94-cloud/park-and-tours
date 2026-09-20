@@ -11,7 +11,7 @@ import { markExpiredOctoHolds } from "@/lib/octo-service";
 import { statusFor, collectionStatus, agingBucketFor, dayOf, daysBetween } from "@/lib/collections";
 import { notify } from "@/lib/notify-service";
 import type { Booking, Company } from "@/lib/types";
-import { tryWrite } from "@/lib/supabase/write";
+import { tryWrite } from "@/lib/supabase/io";
 
 /**
  * GET /api/cron/collections — la cobranza diaria.

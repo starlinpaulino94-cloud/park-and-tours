@@ -241,6 +241,24 @@ export const NOTIFY_EVENTS = {
       `Llevas ${v.usado ?? 0} de ${v.limite ?? 0}. Al llegar al tope, el sistema deja de aceptar nuevos registros.`,
     link: () => "/dashboard/administracion/plan",
   },
+  /**
+   * Un pasajero puso una nota baja.
+   *
+   * `alert` y no `booking`: lo que hay que hacer con esto es llamar hoy, no
+   * apuntarlo. Una queja atendida el mismo día recupera al cliente; la misma
+   * queja atendida el jueves ya está escrita en TripAdvisor.
+   *
+   * Va a operaciones y no a dirección: quien puede arreglar lo que pasó es
+   * quien conoce al guía y la ruta de ese día.
+   */
+  survey_detractor: {
+    type: "alert",
+    audience: "operations",
+    title: (v) => `Un pasajero puntuó ${v.score ?? 0}/10`,
+    message: (v) =>
+      v.comment ? `«${v.comment}» · hay un caso abierto para llamarlo` : "Sin comentario: hay que llamarlo para saber qué pasó.",
+    link: () => "/dashboard/clientes/casos",
+  },
 } satisfies Record<string, NotifyEventDef>;
 
 export type NotifyEventKey = keyof typeof NOTIFY_EVENTS;

@@ -2,7 +2,7 @@ import "server-only";
 import { headers } from "next/headers";
 import { tenantCreate } from "@/lib/tenant";
 import { supabaseService } from "@/lib/supabase/service";
-import { tryWrite } from "@/lib/supabase/write";
+import { tryWrite } from "@/lib/supabase/io";
 
 /**
  * Immutable audit trail. Sensitive actions (capacity overrides, impersonation,

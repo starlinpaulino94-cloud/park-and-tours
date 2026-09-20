@@ -203,6 +203,55 @@ export async function enqueuePreTourReminder(
   }, store);
 }
 
+/**
+ * «¿Cómo te fue?», con un enlace que SÍ lleva a algún sitio.
+ *
+ * La plantilla `post_tour_thanks` existía desde hace olas con su desfase de
+ * cuatro horas y no la encolaba nadie: era una promesa escrita que ninguna
+ * línea de código cumplía. Esta función es lo que faltaba, y `voice-service` la
+ * llama después de crear la fila de la encuesta.
+ *
+ * El desfase lo pone la plantilla y el ancla es la fecha del viaje, igual que
+ * el recordatorio de la víspera: quien decide CUÁNDO preguntar es el dominio
+ * (`askAt`), y la cola solo respeta esa hora.
+ *
+ * Se puede llamar cien veces: la clave de dedupe deja una sola.
+ */
+export async function enqueuePostTourSurvey(
+  company: Company | null,
+  companyId: string,
+  input: {
+    customer: (ContactRow & { id?: string | null }) | null;
+    bookingId: string;
+    departureId?: string | null;
+    productName?: string | null;
+    travelDate?: string | null;
+    /** El enlace de la encuesta. Sin él el mensaje no tiene objeto. */
+    url: string;
+  },
+  store?: OutboxStore
+): Promise<void> {
+  if (!input.url) return;
+
+  await fanOut(company, companyId, "post_tour_thanks", input.customer, {
+    // Sin ancla se manda ya: la encuesta se crea cuando YA toca preguntar, así
+    // que el desfase de la plantilla no tiene que volver a esperar.
+    vars: {
+      cliente: nameOf(input.customer) || "viajero",
+      empresa: company?.name,
+      producto: input.productName,
+      fecha: input.travelDate ? formatDate(input.travelDate) : "",
+      enlace: input.url,
+    },
+    refs: {
+      customer: input.customer?.id ?? null,
+      booking: input.bookingId,
+      departure: input.departureId ?? null,
+    },
+    dedupeSeed: `survey:${input.bookingId}`,
+  }, store);
+}
+
 /** El recibo de un cobro: lo que el cliente pide cuando paga en efectivo. */
 export async function notifyPaymentReceived(
   company: Company | null,

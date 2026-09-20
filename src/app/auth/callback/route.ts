@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { supabaseService } from "@/lib/supabase/service";
 import { safeNextPath } from "@/lib/team";
-import { tryWrite } from "@/lib/supabase/write";
+import { tryWrite } from "@/lib/supabase/io";
 
 /**
  * GET /auth/callback — donde aterriza quien llega desde un correo.

@@ -1,7 +1,7 @@
 import "server-only";
 import { headers } from "next/headers";
 import { supabaseService } from "@/lib/supabase/service";
-import { tryWrite } from "@/lib/supabase/write";
+import { tryWrite } from "@/lib/supabase/io";
 import {
   mapMembegoRole, canLinkCompanies, clienteFromPayload, membresiaFromPayload, splitNombre,
   type MembegoSsoPayload, type MembegoEvent,

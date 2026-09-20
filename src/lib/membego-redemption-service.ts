@@ -4,7 +4,7 @@ import { supabaseService } from "@/lib/supabase/service";
 import { tenantQuery, tenantUpdate, TenantError, type TenantContext } from "@/lib/tenant";
 import { syncOrderTotals } from "@/lib/booking-service";
 import { writeAudit } from "@/lib/audit";
-import { tryWrite } from "@/lib/supabase/write";
+import { tryWrite } from "@/lib/supabase/io";
 import {
   evaluateBenefits, redeemMembership, redeemPromotion, reverseRedemption,
   platformConfigured, MembegoApiError,
