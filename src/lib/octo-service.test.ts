@@ -36,7 +36,10 @@ vi.mock("@/lib/attribution-service", () => ({
 vi.mock("@/lib/ledger-events", () => ({ postPayment: vi.fn(), postSale: vi.fn() }));
 vi.mock("@/lib/membego-redemption-service", () => ({ reverseForOrder: vi.fn(async () => []) }));
 
-import { reserve, type OctoContext } from "@/lib/octo-service";
+import {
+  reserve, confirmBooking, extendBooking, cancelBooking, getBooking,
+  sweepExpiredOctoHolds, markExpiredOctoHolds, type OctoContext,
+} from "@/lib/octo-service";
 
 const ORG = "org-1";
 const ctx: OctoContext = {
@@ -190,6 +193,55 @@ describe("cuando la base rechaza una escritura", () => {
     expect(Number(db.row("departure", { _id: "sal-1" })!.pending_pax)).toBe(0);
   });
 
+  it("confirmar a medias no deja una venta cerrada que el barrido cancele", async () => {
+    /**
+     * El orden de las dos escrituras de `confirmBooking` es el que decide qué
+     * queda si la segunda falla.
+     *
+     * Confirmando la reserva primero, quedaría una reserva CONFIRMADA cuya
+     * venta sigue en `pending_payment` con el plazo corriendo — y el barrido de
+     * retenciones vencidas la cancela sola: una venta cerrada que se cae sin
+     * que nadie lo pida. Por eso primero se para el plazo: si lo segundo falla,
+     * la reserva sigue retenida y el reintento la termina.
+     */
+    const { booking } = await reserve(ctx, reserva());
+    sb.breakWrites("sales_order", "la base rechazó la escritura");
+
+    await expect(confirmBooking(ctx, booking.uuid, {})).rejects.toThrow();
+    const fila = db.rows("booking")[0];
+    expect(fila.status, "sin poder parar el plazo, la reserva NO se confirma").not.toBe("confirmed");
+    expect(fila.octo_status).toBe("ON_HOLD");
+  });
+
+  it("si no se pueden leer las salidas, NO se reserva «para cualquier día»", async () => {
+    /**
+     * `hasDepartures` decide si el producto se vende por fecha. Con el error
+     * tragado devuelve un conjunto vacío, que significa «no se vende por
+     * fecha», y la reserva entra sin salida: sin cupo comprobado, sin
+     * manifiesto y sin nadie esperándola en el punto de encuentro.
+     *
+     * Una lectura rota tiene que contestar 500, no inventarse un producto sin
+     * fechas.
+     */
+    sb.breakReads("departure", "la base rechazó la lectura");
+    await expect(reserve(ctx, reserva({ availabilityId: null }))).rejects.toThrow();
+    expect(db.rows("booking"), "no puede quedar una reserva sin salida").toHaveLength(0);
+  });
+
+  it("si no se puede marcar EXPIRED, el barrido NO suelta la plaza", async () => {
+    // Soltarla sin marcar le contaría al revendedor una CANCELACIÓN —incidencia
+    // con reembolso que decidir— en vez de un vencimiento, que es suyo por no
+    // pagar a tiempo. La plaza se suelta en el barrido siguiente.
+    await reserve(ctx, reserva());
+    db.tenantUpdate(ORG, "order", String(db.rows("order")[0]._id), { hold_until: "2020-01-01T00:00:00.000Z" });
+    sb.breakWrites("booking", "la base rechazó la escritura");
+
+    expect(await sweepExpiredOctoHolds(ORG)).toBe(0);
+    const fila = db.rows("booking")[0];
+    expect(fila.status, "sin marca de vencida, no se cancela nada").not.toBe("cancelled");
+    expect(fila.octo_status).toBe("ON_HOLD");
+  });
+
   it("si no se puede marcar como de OTA, tampoco se da por buena", async () => {
     // Una reserva sin `octo_uuid` es invisible para el revendedor: no la puede
     // consultar, ni confirmar, ni cancelar. Y sigue ocupando su plaza.
@@ -197,5 +249,186 @@ describe("cuando la base rechaza una escritura", () => {
     await expect(reserve(ctx, reserva())).rejects.toThrow();
     const vivas = db.rows("booking").filter((b) => b.status !== "cancelled");
     expect(vivas).toEqual([]);
+  });
+});
+
+/* ══════════════════════════════════════════════════════════ confirmar ══ */
+
+describe("confirmar la retención", () => {
+  it("cierra la venta y PARA el plazo", async () => {
+    const { booking } = await reserve(ctx, reserva());
+    const vista = await confirmBooking(ctx, booking.uuid, { resellerReference: "OTA-REF-1", contact: null });
+
+    expect(vista.status).toBe("CONFIRMED");
+    const fila = db.rows("booking")[0];
+    expect(fila.status).toBe("confirmed");
+    expect(fila.octo_status).toBe("CONFIRMED");
+    expect(fila.octo_confirmed_at, "sin la hora no hay con qué reclamar").toBeTruthy();
+
+    // Y sobre todo: la plaza ya no se libera sola.
+    const orden = db.rows("order")[0];
+    expect(orden.hold_until, "una venta cerrada con el plazo corriendo se cancela sola").toBeFalsy();
+    // La venta sigue pendiente de cobro, que es la verdad: el revendedor
+    // liquida a fin de mes. Ese estado lo fija el dinero (`syncOrderTotals`),
+    // no el conector.
+    expect(orden.status).toBe("pending_payment");
+  });
+
+  it("confirmar dos veces contesta lo mismo y no cobra dos veces", async () => {
+    const { booking } = await reserve(ctx, reserva());
+    const primera = await confirmBooking(ctx, booking.uuid, {});
+    const segunda = await confirmBooking(ctx, booking.uuid, {});
+    expect(segunda.status).toBe("CONFIRMED");
+    expect(segunda.supplierReference).toBe(primera.supplierReference);
+    expect(db.rows("booking")).toHaveLength(1);
+  });
+
+  it("confirmar repara una confirmación que se quedó a medias", async () => {
+    /**
+     * El caso: la reserva quedó confirmada y la venta se quedó con su plazo
+     * corriendo. El barrido de vencidas cancelaría una venta YA cerrada, que es
+     * el peor final posible. El reintento del revendedor tiene que arreglarlo.
+     */
+    const { booking } = await reserve(ctx, reserva());
+    await confirmBooking(ctx, booking.uuid, {});
+    const orden = db.rows("order")[0];
+    db.tenantUpdate(ORG, "order", String(orden._id), { hold_until: futuro(1), status: "pending_payment" });
+
+    await confirmBooking(ctx, booking.uuid, {});
+    expect(db.rows("order")[0].hold_until).toBeFalsy();
+  });
+
+  it("una retención VENCIDA ya no se puede confirmar", async () => {
+    // La plaza volvió a la venta y puede haberla comprado otro: decir que sí y
+    // no tener asiento en el punto de encuentro es peor que negarse ahora.
+    const { booking } = await reserve(ctx, reserva());
+    const orden = db.rows("order")[0];
+    db.tenantUpdate(ORG, "order", String(orden._id), { hold_until: "2020-01-01T00:00:00.000Z" });
+
+    await expect(confirmBooking(ctx, booking.uuid, {})).rejects.toThrow();
+    expect(db.rows("booking")[0].status).not.toBe("confirmed");
+  });
+});
+
+/* ═════════════════════════════════════════════════════════ prorrogar ══ */
+
+describe("prorrogar la retención", () => {
+  it("mueve el plazo hacia adelante", async () => {
+    const { booking } = await reserve(ctx, reserva());
+    const antes = String(db.rows("order")[0].hold_until);
+    await extendBooking(ctx, booking.uuid, 60);
+    const despues = String(db.rows("order")[0].hold_until);
+    expect(Date.parse(despues)).toBeGreaterThan(Date.parse(antes));
+  });
+
+  it("no pasa del máximo que fija la operadora", async () => {
+    // El revendedor pide lo que le conviene; el techo lo pone quien tiene las
+    // plazas. Sin tope, una OTA retiene una guagua entera una semana.
+    const conTope: OctoContext = { ...ctx, company: { ...ctx.company, octo_max_hold_minutes: 45 } as never };
+    const { booking } = await reserve(conTope, reserva());
+    await extendBooking(conTope, booking.uuid, 10_000);
+    const plazo = Date.parse(String(db.rows("order")[0].hold_until));
+    expect(plazo).toBeLessThanOrEqual(Date.now() + 46 * 60_000);
+  });
+
+  it("una retención vencida no se prorroga", async () => {
+    const { booking } = await reserve(ctx, reserva());
+    db.tenantUpdate(ORG, "order", String(db.rows("order")[0]._id), { hold_until: "2020-01-01T00:00:00.000Z" });
+    await expect(extendBooking(ctx, booking.uuid, 60)).rejects.toThrow();
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════ cancelar ══ */
+
+describe("cancelar", () => {
+  it("devuelve la plaza a la salida", async () => {
+    const { booking } = await reserve(ctx, reserva());
+    expect(Number(db.row("departure", { _id: "sal-1" })!.pending_pax)).toBe(2);
+
+    const vista = await cancelBooking(ctx, booking.uuid, { reason: "El cliente no viaja" });
+    expect(vista.status).toBe("CANCELLED");
+
+    const fila = db.rows("booking")[0];
+    expect(fila.status).toBe("cancelled");
+    expect(fila.octo_status).toBe("CANCELLED");
+    const salida = db.row("departure", { _id: "sal-1" })!;
+    expect(Number(salida.pending_pax), "la plaza tiene que volver a la venta").toBe(0);
+    expect(Number(salida.available_pax)).toBe(20);
+  });
+
+  it("cancelar dos veces contesta lo mismo y no devuelve el dinero dos veces", async () => {
+    const { booking } = await reserve(ctx, reserva());
+    await cancelBooking(ctx, booking.uuid, { reason: null });
+    const segunda = await cancelBooking(ctx, booking.uuid, { reason: null });
+    expect(segunda.status).toBe("CANCELLED");
+    expect(Number(db.row("departure", { _id: "sal-1" })!.pending_pax)).toBe(0);
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════ barrido ══ */
+
+describe("el barrido de retenciones vencidas", () => {
+  const vencer = () =>
+    db.tenantUpdate(ORG, "order", String(db.rows("order")[0]._id), { hold_until: "2020-01-01T00:00:00.000Z" });
+
+  it("marca EXPIRED y SUELTA la plaza", async () => {
+    await reserve(ctx, reserva());
+    await vencer();
+
+    const marcadas = await sweepExpiredOctoHolds(ORG);
+    expect(marcadas).toBe(1);
+    expect(db.rows("booking")[0].octo_status).toBe("EXPIRED");
+    expect(Number(db.row("departure", { _id: "sal-1" })!.pending_pax), "la plaza no puede quedarse apartada").toBe(0);
+  });
+
+  it("el revendedor lee EXPIRED, no CANCELLED", async () => {
+    /**
+     * No es cosmético. CANCELLED es una incidencia que la OTA atiende, con un
+     * reembolso que decidir; EXPIRED es suyo por no haber pagado a tiempo. Por
+     * eso se marca ANTES de soltar la plaza: al revés, la cancelación pisaría
+     * la marca y la reserva llegaría al revendedor como una cancelación
+     * nuestra.
+     */
+    const { booking } = await reserve(ctx, reserva());
+    await vencer();
+    await sweepExpiredOctoHolds(ORG);
+
+    const vista = await getBooking(ctx, booking.uuid);
+    expect(vista.status).toBe("EXPIRED");
+  });
+
+  it("una retención con plazo POR VENIR no se toca", async () => {
+    await reserve(ctx, reserva());
+    expect(await markExpiredOctoHolds(ORG)).toBe(0);
+    expect(db.rows("booking")[0].octo_status).toBe("ON_HOLD");
+    expect(Number(db.row("departure", { _id: "sal-1" })!.pending_pax)).toBe(2);
+  });
+
+  it("no toca las reservas de OTRA empresa", async () => {
+    // El conector usa la llave de servicio, que se salta la RLS: el filtro por
+    // empresa lo pone el código a mano, y si se cae no lo dice nadie.
+    await reserve(ctx, reserva());
+    await vencer();
+    expect(await markExpiredOctoHolds("org-vecina")).toBe(0);
+    expect(db.rows("booking")[0].octo_status).toBe("ON_HOLD");
+  });
+});
+
+/* ════════════════════════════════════════════════ entre revendedores ══ */
+
+describe("un revendedor no ve lo del otro", () => {
+  it("el uuid de una OTA no le sirve a la de al lado", async () => {
+    // Sin el filtro por socio bastaría con adivinar un uuid para leer el nombre
+    // y el teléfono del cliente de la competencia.
+    const { booking } = await reserve(ctx, reserva());
+    const otra: OctoContext = { ...ctx, partnerId: "soc-2", keyId: "key-2" };
+    await expect(getBooking(otra, booking.uuid)).rejects.toThrow(/ninguna reserva con ese uuid/i);
+  });
+
+  it("tampoco la puede cancelar", async () => {
+    const { booking } = await reserve(ctx, reserva());
+    const otra: OctoContext = { ...ctx, partnerId: "soc-2", keyId: "key-2" };
+    await expect(cancelBooking(otra, booking.uuid, { reason: null })).rejects.toThrow();
+    expect(db.rows("booking")[0].status).not.toBe("cancelled");
   });
 });

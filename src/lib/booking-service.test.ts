@@ -51,7 +51,7 @@ vi.mock("@/lib/attribution-service", () => ({
   recordPurchaseOnce: vi.fn(),
 }));
 
-import { createOrderWithBookings } from "@/lib/booking-service";
+import { createOrderWithBookings, syncOrderTotals } from "@/lib/booking-service";
 
 const ORG = "org-1";
 const ctx = {
@@ -669,5 +669,62 @@ describe("las comisiones que genera la venta", () => {
     });
     const c = db.rows("commission")[0];
     expect(Number(c.base_amount)).toBe(270);      // 200 del tour + 70 de almuerzo
+  });
+});
+
+/* ═══════════════════════════════ el prorrateo no degrada un compromiso ══ */
+
+describe("sincronizar el cobro de una orden", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * `confirmed` NO LO PONE EL DINERO
+   *
+   * El prorrateo recalculaba el estado de cada reserva viva a partir de lo
+   * cobrado, y con saldo a cero escribía `pending_payment` pasara lo que
+   * pasara. Eso borraba `confirmed`, que es el estado de quien se compromete a
+   * viajar SIN haber pagado todavía: hoy, el revendedor de una OTA, que liquida
+   * a fin de mes.
+   *
+   * Y no es un matiz de vocabulario. Las vistas del cuadro de mando cuentan
+   * como venta las reservas en ('confirmed','partially_paid','paid',
+   * 'checked_in','completed','no_show','partially_refunded'): `pending_payment`
+   * queda fuera. Cada reserva de OTA confirmada desaparecía de las cifras de la
+   * operadora, y en el manifiesto salía como pendiente de pago.
+   */
+  const orden = (bookings: Record<string, unknown>[], pagos: Record<string, unknown>[] = []) => {
+    db.seed("order", [{ _id: "ord-1", organization_id: ORG, order_number: "ORD-1", status: "pending_payment" }]);
+    db.seed("booking", bookings.map((b) => ({ organization_id: ORG, order: "ord-1", total_amount: 200, ...b })));
+    db.seed("payment", pagos.map((p, i) => ({
+      _id: `pay-${i}`, organization_id: ORG, order: "ord-1", status: "completed", payment_type: "payment", ...p,
+    })));
+  };
+
+  it("una reserva confirmada sin pagar SIGUE confirmada", async () => {
+    orden([{ _id: "res-1", status: "confirmed" }]);
+    await syncOrderTotals(ORG, "ord-1");
+    expect(db.row("booking", { _id: "res-1" })!.status,
+      "el compromiso del revendedor no lo borra el saldo a cero").toBe("confirmed");
+  });
+
+  it("una reserva sin confirmar ni pagar queda pendiente de pago", async () => {
+    orden([{ _id: "res-1", status: "pending_payment" }]);
+    await syncOrderTotals(ORG, "ord-1");
+    expect(db.row("booking", { _id: "res-1" })!.status).toBe("pending_payment");
+  });
+
+  it("cuando entra el dinero, manda el dinero", async () => {
+    // `paid` pisa a `confirmed` y eso es lo correcto: son estados de cobro, y
+    // la reserva sigue contando como venta en los mismos cuadros.
+    orden([{ _id: "res-1", status: "confirmed" }], [{ amount: 200 }]);
+    await syncOrderTotals(ORG, "ord-1");
+    expect(db.row("booking", { _id: "res-1" })!.status).toBe("paid");
+  });
+
+  it("un cobro a medias deja la reserva pagada a medias", async () => {
+    orden([{ _id: "res-1", status: "confirmed" }], [{ amount: 80 }]);
+    await syncOrderTotals(ORG, "ord-1");
+    const r = db.row("booking", { _id: "res-1" })!;
+    expect(r.status).toBe("partially_paid");
+    expect(Number(r.balance_amount)).toBe(120);
   });
 });

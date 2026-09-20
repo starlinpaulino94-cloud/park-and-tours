@@ -315,3 +315,66 @@ daba error: los tres producían números equivocados en silencio.
   nombre ser el complemento de `VALID_SALE_STATUSES` sin serlo —le faltaban
   `partially_refunded`, `no_show` y `confirmed`—. El primero que lo hubiera
   usado habría contado mal sin enterarse.
+
+### AUD-M05 — El conector de OTAs se tragaba el error de la base (P0) — CERRADA
+- **Cómo apareció:** al escribir las primeras pruebas de `octo-service.ts` —mil
+  líneas por las que entran reservas de terceros, sin una sola prueba— hubo que
+  construir un doble del cliente de Supabase capaz de **rechazar escrituras**.
+  Con él, dos pruebas fallaron a la primera.
+- **La raíz:** `supabaseService()` no lanza cuando la base dice no; devuelve el
+  error DENTRO del resultado. `const { data } = await consulta` compila, pasa la
+  revisión, y se lleva el error al suelo. En este archivo había **nueve
+  escrituras y catorce lecturas** así.
+- **Efecto, por orden de gravedad:**
+  - El plazo de la retención (`hold_until`) se escribía DESPUÉS de crear la
+    venta y sin comprobar nada. Si falla, se queda nulo — y el barrido que
+    libera plazas filtra por `hold_until < ahora`, que un nulo **no cumple
+    jamás**, ni en Postgres ni en PostgREST. La plaza quedaba retenida para
+    siempre, el revendedor recibía una reserva de aspecto correcto, y la
+    excursión salía con asientos vacíos que el sistema daba por vendidos.
+  - Una lectura fallida de la reserva por su uuid parece «no existe»: el
+    reintento del revendedor —que reintenta siempre— apartaba OTRAS plazas para
+    el mismo pasajero.
+  - Una lectura fallida de las salidas parece «este producto no se vende por
+    fecha»: la reserva entraba sin cupo comprobado y sin manifiesto.
+- **Archivos:** `src/lib/octo-service.ts`, `src/lib/booking-service.ts`
+  (`compensateOrder` exportada).
+- **Solución:** `mustRead`/`mustWrite` — toda lectura o escritura que decida
+  plazas o dinero comprueba su error y contesta 500. Si falla una de las dos
+  escrituras posteriores a crear la venta, se deshace con la MISMA compensación
+  de la saga del mostrador: la plaza vuelve a la salida. Dos excepciones, con el
+  motivo escrito donde viven: las marcas de `octo_status: CANCELLED`, porque la
+  cancelación ya ocurrió y el estado se deduce del estado interno.
+- **De propina, el orden de dos escrituras:** confirmar paraba el plazo DESPUÉS
+  de marcar la reserva. Si lo segundo fallaba quedaba una reserva confirmada
+  bajo una venta con la retención viva — y el barrido la cancelaba sola. Ahora
+  se para el plazo primero: el peor caso es una reserva aún retenida que el
+  reintento termina. Confirmar es además reparador.
+- **Y el barrido:** si no se puede marcar EXPIRED, ya no suelta la plaza. Al
+  revés, el revendedor leía CANCELLED —incidencia con reembolso que decidir— en
+  vez de un vencimiento que es suyo por no pagar a tiempo.
+- **Pruebas:** `octo-service.test.ts` (28), con `breakWrites`/`breakReads`.
+
+### AUD-M06 — El prorrateo del cobro borraba las ventas de OTA (P1) — CERRADA
+- **Cómo apareció:** la prueba «confirmar cierra la venta» afirmaba que la
+  reserva queda `confirmed` y encontró `pending_payment`. No lo escribía el
+  conector: lo reescribía `syncOrderTotals` dos líneas después.
+- **La raíz:** el prorrateo recalculaba el estado de cada reserva viva a partir
+  de lo cobrado y, con saldo a cero, escribía `pending_payment` pasara lo que
+  pasara. Pero `confirmed` no lo pone el dinero: lo pone quien se compromete a
+  viajar **sin haber pagado todavía** — hoy, el revendedor de una OTA, que
+  liquida a fin de mes.
+- **Efecto:** las vistas del cuadro de mando (0023–0028) cuentan como venta las
+  reservas en `('confirmed','partially_paid','paid','checked_in','completed',
+  'no_show','partially_refunded')`; `pending_payment` queda fuera. Cada reserva
+  de OTA confirmada **desaparecía de las cifras de la operadora**, y en el
+  manifiesto salía como pendiente de pago.
+- **Archivos:** `src/lib/booking-service.ts`, `src/lib/octo-service.ts`.
+- **Solución:** el prorrateo promueve con el dinero y no degrada un compromiso:
+  con saldo a cero, una reserva `confirmed` sigue `confirmed`. Cuando entra
+  dinero manda el dinero (`partially_paid`/`paid`), que es correcto. Y el
+  conector deja de escribir `status: 'confirmed'` en la VENTA: esa columna tiene
+  un dueño, que es el cobro, y `pending_payment` es ahí la verdad —vendida y sin
+  cobrar—.
+- **Pruebas:** `booking-service.test.ts`, «sincronizar el cobro de una orden»
+  (cuatro casos), más el ciclo completo en `octo-service.test.ts`.

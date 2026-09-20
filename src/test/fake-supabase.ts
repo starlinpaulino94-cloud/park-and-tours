@@ -280,18 +280,30 @@ export interface FakeSupabase {
    * errores.
    */
   breakWrites(tabla: string, mensaje?: string): void;
+  /**
+   * Hace que toda LECTURA de esa tabla falle.
+   *
+   * Existe por simetría y porque una lectura fallida es más traicionera que una
+   * escritura: PostgREST devuelve `data: null`, que para el código de arriba es
+   * indistinguible de «no hay nada» —no existe la reserva, no hay salidas—, y
+   * ese «no hay nada» suele ser justo la rama que deja pasar lo que no debería.
+   */
+  breakReads(tabla: string, mensaje?: string): void;
   /** Deja de romper. */
   healWrites(tabla?: string): void;
+  healReads(tabla?: string): void;
 }
 
 export function fakeSupabase(db: FakeDb): FakeSupabase {
   const rotas = new Map<string, string>();
+  const rotasLectura = new Map<string, string>();
 
   return {
     from(tabla: string) {
       const builder = new Builder(db, tabla);
       const roto = rotas.get(tabla);
-      if (!roto) return builder;
+      const rotoLeer = rotasLectura.get(tabla);
+      if (!roto && !rotoLeer) return builder;
 
       // Se envuelve el builder para que las ESCRITURAS fallen y las lecturas
       // sigan funcionando: un fallo de escritura es el caso interesante, y
@@ -306,14 +318,19 @@ export function fakeSupabase(db: FakeDb): FakeSupabase {
         };
       }
       builder.then = ((onDone?: never, onFail?: never) => {
-        if (escribe) {
+        if (escribe && roto) {
           return Promise.resolve({ data: null, error: { message: roto } }).then(onDone, onFail);
+        }
+        if (!escribe && rotoLeer) {
+          return Promise.resolve({ data: null, error: { message: rotoLeer } }).then(onDone, onFail);
         }
         return original(onDone, onFail);
       }) as typeof builder.then;
       return builder;
     },
     breakWrites(tabla, mensaje = "la base rechazó la escritura") { rotas.set(tabla, mensaje); },
+    breakReads(tabla, mensaje = "la base rechazó la lectura") { rotasLectura.set(tabla, mensaje); },
     healWrites(tabla) { if (tabla) rotas.delete(tabla); else rotas.clear(); },
+    healReads(tabla) { if (tabla) rotasLectura.delete(tabla); else rotasLectura.clear(); },
   };
 }

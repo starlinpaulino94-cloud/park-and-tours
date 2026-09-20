@@ -1381,7 +1381,23 @@ export async function syncOrderTotals(companyId: string, orderId: string): Promi
     const bookingBalance = round2((b.total_amount ?? 0) - bookingPaid);
     let bStatus: Booking["status"] = b.status;
     if (b.status !== "checked_in" && b.status !== "completed" && b.status !== "no_show") {
-      if (bookingPaid <= 0) bStatus = "pending_payment";
+      /**
+       * El prorrateo PROMUEVE con el dinero; no degrada un compromiso.
+       *
+       * `confirmed` no lo pone el cobro: lo pone alguien que se compromete a
+       * viajar sin haber pagado todavía —hoy, el revendedor de una OTA, que
+       * liquida a fin de mes—. Recalcularlo a `pending_payment` porque el saldo
+       * está a cero borraba ese compromiso en el mismo milisegundo en que se
+       * escribía, y no es cosmético: los cuadros de mando cuentan como venta
+       * las reservas en ('confirmed','partially_paid','paid','checked_in',
+       * 'completed','no_show','partially_refunded') —`pending_payment` queda
+       * fuera—, así que cada reserva de OTA confirmada desaparecía de las
+       * cifras de la operadora y del manifiesto salía como pendiente.
+       *
+       * Cuando entra dinero sí manda el dinero: `partially_paid` y `paid` son
+       * estados de cobro y pisan a `confirmed`, que es lo correcto.
+       */
+      if (bookingPaid <= 0) bStatus = b.status === "confirmed" ? "confirmed" : "pending_payment";
       else if (bookingBalance > 0.009) bStatus = "partially_paid";
       else bStatus = "paid";
     }

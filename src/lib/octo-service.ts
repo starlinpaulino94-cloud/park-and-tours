@@ -795,7 +795,7 @@ export async function confirmBooking(
     // de vencidas cancelaría una reserva YA confirmada.
     if (row.order_id && holdUntil) {
       await mustWrite("parar el plazo de una reserva ya confirmada", supabaseService().from("sales_order")
-        .update({ hold_until: null, status: "confirmed" })
+        .update({ hold_until: null })
         .eq("organization_id", ctx.companyId).eq("id", row.order_id));
     }
     return bookingView(ctx, row);
@@ -819,8 +819,22 @@ export async function confirmBooking(
    */
   const now = new Date().toISOString();
   if (row.order_id) {
+    /**
+     * Solo el plazo. El ESTADO de la venta no se toca aquí.
+     *
+     * Antes se escribía también `status: 'confirmed'`, y `syncOrderTotals` —dos
+     * líneas más abajo— lo recalculaba a partir del dinero y lo devolvía a
+     * `pending_payment` en el mismo milisegundo. La columna tiene un dueño y es
+     * el cobro; dejar aquí un valor que se pisa solo hace que el código diga
+     * algo que es falso desde que termina de escribirlo.
+     *
+     * Y `pending_payment` es lo correcto: una reserva de OTA confirmada está
+     * vendida y sin cobrar —el revendedor liquida a fin de mes—, que es
+     * exactamente lo que ese estado significa. Sin plazo, ningún barrido la
+     * toca: los dos exigen `hold_until` con fecha pasada.
+     */
     await mustWrite("parar el plazo de la retención", supabaseService().from("sales_order")
-      .update({ hold_until: null, status: "confirmed" })
+      .update({ hold_until: null })
       .eq("organization_id", ctx.companyId).eq("id", row.order_id));
   }
 
