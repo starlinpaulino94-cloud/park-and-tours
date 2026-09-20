@@ -168,6 +168,46 @@ describe("preguntar por una salida que ya terminó", () => {
     expect(r.asked).toBe(0);
     expect(encuestas()).toHaveLength(0);
   });
+
+  it("no le escribe a los pasajeros de la operadora de al lado", async () => {
+    /**
+     * ──────────────────────────────────────────────────────────────────────
+     * POR QUÉ ESTA PRUEBA EXISTE APARTE DE LA DE ARRIBA
+     *
+     * La anterior no bastaba. Quitando el filtro por empresa de la SALIDA, la
+     * prueba seguía pasando —porque lo paraba el filtro de las RESERVAS—; y
+     * quitando el de las reservas, seguía pasando porque lo paraba el de la
+     * salida. Dos guardas que se tapan la una a la otra son dos guardas que
+     * alguien puede borrar sin que nadie se entere.
+     *
+     * Esta pide la salida de OTRA empresa desde la nuestra, con pasajeros de
+     * verdad al otro lado: solo se aguanta si al menos uno de los dos filtros
+     * está puesto, y falla en cuanto se quitan los dos — que es el fallo que
+     * de verdad hay que impedir, porque su forma es escribirle a los clientes
+     * de la competencia con nuestro nombre.
+     */
+    db.seed("departure", [{
+      _id: "sal-vecina", organization_id: "org-vecina", product: "prod-vecino",
+      departure_at: hace(24), capacity: 20, status: "completed",
+    }]);
+    db.seed("product", [{
+      _id: "prod-vecino", organization_id: "org-vecina", name: "Buggy del vecino",
+      product_type: "tour", duration_hours: 4, status: "active",
+    }]);
+    db.seed("customer", [{
+      _id: "cli-vecino", organization_id: "org-vecina", first_name: "Cliente", last_name: "Ajeno",
+      email: "ajeno@example.test",
+    }]);
+    db.seed("booking", [{
+      _id: "res-vecina", organization_id: "org-vecina", departure: "sal-vecina",
+      product: "prod-vecino", customer: "cli-vecino", status: "paid", checkin_status: "done",
+    }]);
+
+    const r = await askDeparture(company, ORG, "sal-vecina");
+    expect(r.asked, "sus pasajeros no son nuestros").toBe(0);
+    expect(encuestas(), "ni siquiera se anota una omisión sobre un cliente ajeno").toHaveLength(0);
+    expect(encolados).toHaveLength(0);
+  });
 });
 
 describe("el barrido", () => {

@@ -180,8 +180,10 @@ export async function askDeparture(
       lastAskedAt: booking.customer_id ? ultima.get(String(booking.customer_id)) ?? null : null,
     }, now);
 
+    // Sin `organization_id`: va escrito EN CADA alta, y no aquí. Un campo de
+    // empresa que viaja escondido en un objeto compartido es un campo que nadie
+    // ve al leer la escritura — y es justo el que decide de quién es la fila.
     const base = {
-      organization_id: companyId,
       booking_id: booking.id,
       departure_id: departureId,
       product_id: booking.product_id ?? departure.product_id ?? null,
@@ -195,13 +197,16 @@ export async function askDeparture(
       // La fila se escribe IGUAL, con el motivo. Sin ella, el panel no podría
       // distinguir «no contestaron» de «no se les preguntó».
       await mustWrite(`anotar la encuesta omitida de ${booking.id}`,
-        sb.from("guest_survey").insert({ ...base, status: "skipped", skip_reason: verdict.reason }));
+        sb.from("guest_survey").insert({
+          organization_id: companyId, ...base, status: "skipped", skip_reason: verdict.reason,
+        }));
       out.skipped[verdict.reason] = (out.skipped[verdict.reason] ?? 0) + 1;
       continue;
     }
 
     const askedAt = now.toISOString();
     await mustWrite(`crear la encuesta de ${booking.id}`, sb.from("guest_survey").insert({
+      organization_id: companyId,
       ...base,
       status: "pending",
       asked_at: askedAt,

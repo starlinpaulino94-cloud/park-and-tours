@@ -4472,3 +4472,68 @@ describe("la base dice que no y alguien tiene que oírlo (AUD-M05)", () => {
     }
   });
 });
+
+/* ═══════════ el filtro por empresa en los servicios sin sesión ══ */
+
+describe("la llave de servicio se salta la RLS: el filtro lo pone el código", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * POR QUÉ ESTA GUARDA ES DE CÓDIGO Y NO DE COMPORTAMIENTO
+   *
+   * Los servicios sin sesión consultan con la llave de servicio, que NO aplica
+   * la RLS: cada `eq("organization_id", …)` que escriben a mano es la única
+   * frontera entre dos operadoras.
+   *
+   * Y esos filtros se TAPAN ENTRE SÍ. Al mutarlos de uno en uno, las pruebas
+   * seguían en verde: quitando el de la salida lo paraba el de las reservas, y
+   * quitando el de las reservas lo paraba el de la salida. Hay una prueba
+   * (`voice-service.test.ts`, «no le escribe a los pasajeros de la operadora de
+   * al lado») que sí muere al quitar los dos, pero una guarda que solo muerde
+   * con la mutación combinada deja borrar cualquiera de ellos sin que nadie se
+   * entere. Esta lo impide de uno en uno.
+   */
+  const SIN_SESION = ["src/lib/voice-service.ts", "src/lib/octo-service.ts"];
+
+  it("toda consulta con la llave de servicio filtra por empresa", () => {
+    const offenders: string[] = [];
+
+    for (const file of SIN_SESION) {
+      const src = read(file);
+      for (const m of src.matchAll(/\.from\("([a-z_]+)"\)/g)) {
+        const fin = src.indexOf(";", m.index ?? 0);
+        const cadena = src.slice(m.index ?? 0, fin < 0 ? src.length : fin);
+        if (cadena.includes("organization_id")) continue;
+
+        /**
+         * Las dos excepciones, y las dos con su motivo:
+         *
+         *  · buscar por TOKEN — la encuesta se resuelve desde una página sin
+         *    sesión que no sabe de qué empresa es el cliente. Por eso el token
+         *    es único en toda la tabla, con su comprobación en la prueba SQL.
+         *  · la tabla `organizations` filtrada por `id` — ahí la empresa ES la
+         *    fila; pedirle además un `organization_id` no querría decir nada.
+         */
+        const porToken = /\.eq\("token"/.test(cadena);
+        const esLaEmpresa = m[1] === "organizations" && /\.eq\("id"/.test(cadena);
+        if (porToken || esLaEmpresa) continue;
+
+        offenders.push(`${file}:${src.slice(0, m.index).split("\n").length} → ${m[1]}`);
+      }
+    }
+
+    expect(offenders, "sin RLS que lo tape, esto son filas de otra operadora").toEqual([]);
+  });
+
+  it("la encuesta se escribe diciendo de quién es", () => {
+    // El `organization_id` va en el literal de cada alta y no escondido en un
+    // objeto compartido: el campo que decide de quién es la fila tiene que
+    // verse leyendo la escritura.
+    const src = read("src/lib/voice-service.ts");
+    const altas = [...src.matchAll(/from\("guest_survey"\)\.insert\(\{/g)];
+    expect(altas.length, "las dos altas de encuesta").toBe(2);
+    for (const m of altas) {
+      const trozo = src.slice(m.index ?? 0, (m.index ?? 0) + 260);
+      expect(trozo).toContain("organization_id");
+    }
+  });
+});
