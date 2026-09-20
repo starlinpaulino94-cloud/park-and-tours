@@ -1,5 +1,6 @@
 import "server-only";
 import { supabaseService } from "@/lib/supabase/service";
+import { tryWrite } from "@/lib/supabase/write";
 import {
   JOB_EXPECTATIONS, expectationFor, jobHealth, overallLevel, incidentsLevel,
   fingerprintOf, safeMessage, safeContext, sortBySeverity,
@@ -56,12 +57,14 @@ export async function finishJobRun(
   if (!id) return;
   try {
     const sb = supabaseService();
-    await sb.from("job_run").update({
+    // Un cierre que no se escribe deja el trabajo «en marcha» para siempre, y
+    // la pantalla de salud enseña un proceso colgado que terminó hace horas.
+    await tryWrite(`cerrar el registro del trabajo ${id}`, sb.from("job_run").update({
       status: outcome.status,
       finished_at: new Date().toISOString(),
       summary: outcome.summary ?? {},
       error: outcome.error ? safeMessage(outcome.error) : null,
-    }).eq("id", id);
+    }).eq("id", id));
   } catch (err) {
     console.error("[salud] no se pudo cerrar el diario:", err);
   }
@@ -75,10 +78,11 @@ export async function recordOrgSlice(
 ): Promise<void> {
   try {
     const sb = supabaseService();
-    await sb.from("job_run").insert({
+    // Lo que una empresa no ve en su pantalla de salud, para ella no ocurrió.
+    await tryWrite(`apuntar lo que ${job} hizo para ${organizationId}`, sb.from("job_run").insert({
       organization_id: organizationId, job, status: "ok",
       finished_at: new Date().toISOString(), summary,
-    });
+    }));
   } catch (err) {
     console.error(`[salud] no se pudo apuntar lo que ${job} hizo para ${organizationId}:`, err);
   }

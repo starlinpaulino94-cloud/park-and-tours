@@ -9,6 +9,7 @@ import {
 } from "@/lib/public-booking";
 import type { Company } from "@/lib/types";
 import type { TenantContext } from "@/lib/tenant";
+import { tryWrite } from "@/lib/supabase/write";
 
 /**
  * El motor público contra la base.
@@ -198,8 +199,12 @@ async function findOrCreateCustomer(
        */
       const id = data[0].id as string;
       if (request.language) {
-        await sb.from("customer").update({ language: request.language })
-          .eq("organization_id", orgId).eq("id", id);
+        // No lanza: el cliente ya existe y la reserva puede seguir. Lo que se
+        // pierde si falla es el idioma del recordatorio de la víspera, y eso se
+        // arregla leyendo el registro, no cancelando una venta.
+        await tryWrite("actualizar el idioma del cliente",
+          sb.from("customer").update({ language: request.language })
+            .eq("organization_id", orgId).eq("id", id));
       }
       return { id, created: false };
     }
@@ -332,11 +337,14 @@ export async function createPublicBooking(
   if (booking?._id) {
     // La petición tal cual, para poder reconstruir después una reserva que no
     // cuadra: qué escribió el cliente, con qué hotel y en qué idioma.
-    await supabaseService()
+    // Tampoco lanza, y por el mismo motivo al revés: la reserva YA está
+    // creada. Contestar error aquí haría que el cliente volviera a reservar y
+    // pagara dos veces por no haber podido guardar una copia del formulario.
+    await tryWrite("guardar la petición original de la reserva", supabaseService()
       .from("booking")
       .update({ public_request: request })
       .eq("organization_id", orgId)
-      .eq("id", booking._id);
+      .eq("id", booking._id));
   }
 
   return {

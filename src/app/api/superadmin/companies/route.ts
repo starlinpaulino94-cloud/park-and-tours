@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { supabaseService } from "@/lib/supabase/service";
 import { assertSameOriginMutation } from "@/lib/csrf";
+import { mustWrite } from "@/lib/supabase/write";
 
 function slugify(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -91,7 +92,10 @@ export async function POST(req: NextRequest) {
       metadata: { created_by_superadmin: ctx.userId },
     }).select("*").single();
     if (error) throw error;
-    await sb.from("organizations").update({ tenant_org_id: data.id }).eq("id", data.id);
+    // Sin `tenant_org_id` la empresa no se pertenece a sí misma y la RLS la
+    // deja fuera de sus propios datos.
+    await mustWrite("vincular la empresa consigo misma",
+      sb.from("organizations").update({ tenant_org_id: data.id }).eq("id", data.id));
     await writeAudit({ companyId: data.id, userId: ctx.userId, action: "company_created_by_superadmin", entityType: "company", entityId: data.id, severity: "warning", description: `Superadmin ${ctx.email} creó la empresa ${body.name}` });
     return ok(mapCompany(data));
   } catch (err) {

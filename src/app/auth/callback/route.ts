@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { supabaseService } from "@/lib/supabase/service";
 import { safeNextPath } from "@/lib/team";
+import { tryWrite } from "@/lib/supabase/write";
 
 /**
  * GET /auth/callback — donde aterriza quien llega desde un correo.
@@ -57,11 +58,14 @@ export async function GET(req: NextRequest) {
 
   // Aceptada: las invitaciones pendientes de ESTE usuario pasan a activas.
   try {
-    await supabaseService()
+    // Si esto no llega, el invitado entra pero sigue «pendiente»: ve la
+    // aplicación vacía y no entiende por qué. No se le cierra la puerta en la
+    // cara —la sesión es válida— pero queda escrito para poder activarlo.
+    await tryWrite(`activar las invitaciones de ${data.user.id}`, supabaseService()
       .from("organization_memberships")
       .update({ status: "active" })
       .eq("user_id", data.user.id)
-      .eq("status", "pending");
+      .eq("status", "pending"));
   } catch (err) {
     // La sesión ya existe y es válida: no se le cierra la puerta en la cara por
     // esto. Sin membresía activa caerá en el onboarding, que es recuperable.

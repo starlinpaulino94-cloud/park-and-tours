@@ -2,6 +2,7 @@ import "server-only";
 import { headers } from "next/headers";
 import { tenantCreate } from "@/lib/tenant";
 import { supabaseService } from "@/lib/supabase/service";
+import { tryWrite } from "@/lib/supabase/write";
 
 /**
  * Immutable audit trail. Sensitive actions (capacity overrides, impersonation,
@@ -38,7 +39,10 @@ export async function writeAudit(input: AuditInput): Promise<void> {
     if (input.companyId) {
       await tenantCreate(input.companyId, "audit_log", payload);
     } else {
-      await supabaseService().from("audit_log").insert({
+      // La bitácora no tumba nunca lo que describe, pero su fallo tampoco
+      // puede desaparecer: una auditoría con huecos que nadie ve no es una
+      // auditoría.
+      await tryWrite("anotar en la bitácora", supabaseService().from("audit_log").insert({
         action: input.action,
         entity_type: input.entityType,
         entity_id: input.entityId,
@@ -50,7 +54,7 @@ export async function writeAudit(input: AuditInput): Promise<void> {
         user_id: input.userId || null,
         impersonated_by: input.impersonatedBy || null,
         metadata_json: input.metadata || {},
-      });
+      }));
     }
     console.log(`[audit] ${input.action} ${input.entityType ?? ""}/${input.entityId ?? ""}`);
   } catch (err) {

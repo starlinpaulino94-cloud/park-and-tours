@@ -21,6 +21,8 @@
  * su contrato.
  */
 
+import { pgTable } from "@/lib/data-backend";
+
 type Fila = Record<string, unknown>;
 
 const clon = <T>(v: T): T => (v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T));
@@ -93,10 +95,21 @@ export function fakeDb(inicial: Record<string, Fila[]> = {}): FakeDb {
   let contador = 0;
 
   for (const [tabla, filas] of Object.entries(inicial)) {
-    tablas.set(tabla, filas.map((f) => ({ ...clon(f), _id: String(f._id ?? f.id ?? `${tabla}-${++contador}`) })));
+    tablas.set(pgTable(tabla), filas.map((f) => ({ ...clon(f), _id: String(f._id ?? f.id ?? `${tabla}-${++contador}`) })));
   }
 
-  const de = (tabla: string): Fila[] => {
+  /**
+   * Una sola tabla por nombre de Postgres.
+   *
+   * `order` y `sales_order` son la MISMA tabla —`pgTable` lo traduce en
+   * producción, porque `order` es palabra reservada—, igual que `company` y
+   * `organizations`. Sin esta traducción aquí, un servicio que crea la venta con
+   * las ayudas de inquilino (`order`) y luego la corrige con la llave de
+   * servicio (`sales_order`) escribiría en dos tablas distintas, y la prueba
+   * daría por perdida una escritura que en la base sí llega.
+   */
+  const de = (nombre: string): Fila[] => {
+    const tabla = pgTable(nombre);
     if (!tablas.has(tabla)) tablas.set(tabla, []);
     return tablas.get(tabla)!;
   };
@@ -172,8 +185,13 @@ export function fakeDb(inicial: Record<string, Fila[]> = {}): FakeDb {
       if (!fila) throw Object.assign(new Error(`No existe ${tabla} ${id}`), { status: 404 });
       return fila;
     },
-    tenantCreate: async (_org, tabla, data) => {
-      const fila: Fila = { ...clon(data), _id: `${tabla}-${++contador}` };
+    // El proveedor de verdad SELLA la fila con la empresa (`spCreate` añade
+    // `organization_id: orgId` a todo lo que inserta). Sin ese sello, una fila
+    // creada por un servicio sería invisible para cualquier consulta que filtre
+    // por empresa —que es lo que hacen los nueve servicios sin sesión— y la
+    // prueba fallaría por el doble, no por el código.
+    tenantCreate: async (org, tabla, data) => {
+      const fila: Fila = { organization_id: org, ...clon(data), _id: `${tabla}-${++contador}` };
       de(tabla).push(fila);
       writes.push({ op: "create", table: tabla, id: String(fila._id), data: clon(data) });
       return clon(fila);

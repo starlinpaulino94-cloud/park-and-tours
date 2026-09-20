@@ -18,6 +18,7 @@ import { stripe, STRIPE_WEBHOOK_SECRET, cryptoProvider } from "@/lib/stripe";
 import Stripe from "stripe";
 import { supabaseService } from "@/lib/supabase/service";
 import type { Company } from "@/lib/types";
+import { mustWrite } from "@/lib/supabase/write";
 
 const IS_PROD = process.env.NODE_ENV === "production";
 
@@ -83,7 +84,12 @@ async function syncSubscription(sub: Stripe.Subscription, deleted = false) {
     const end = periodEndISO(sub);
     if (end) patch.next_billing_at = end;
   }
-  await supabaseService().from("organizations").update(patch).eq("id", company._id);
+  // Un fallo aquí no puede contestarse con un 200: Stripe da el evento por
+  // entregado y no lo reintenta nunca más. La empresa se quedaría con el estado
+  // de suscripción viejo —cobrada y en «pendiente de pago», o al revés— y nadie
+  // se enteraría hasta que alguien pierda el acceso.
+  await mustWrite("guardar el estado de la suscripción", supabaseService()
+    .from("organizations").update(patch).eq("id", company._id));
   console.log(`[stripe] empresa ${company._id} → ${patch.subscription_status} (sub ${sub.id})`);
   return { resolved: true, companyId: company._id };
 }
@@ -98,7 +104,8 @@ async function syncInvoice(invoice: Stripe.Invoice, paid: boolean) {
   const patch: Record<string, unknown> = { subscription_status: paid ? "active" : "past_due" };
   const end = (invoice.lines?.data?.[0]?.period?.end as number | undefined);
   if (paid && end) patch.next_billing_at = new Date(end * 1000).toISOString();
-  await supabaseService().from("organizations").update(patch).eq("id", company._id);
+  await mustWrite("guardar el cobro de la factura", supabaseService()
+    .from("organizations").update(patch).eq("id", company._id));
   console.log(`[stripe] empresa ${company._id} → ${patch.subscription_status} (invoice ${invoice.id})`);
   return { resolved: true, companyId: company._id };
 }
@@ -178,11 +185,13 @@ export async function POST(req: Request) {
         const subId = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
         const company = await resolveCompany({ customerId: custId, companyId: session.metadata?.company_id });
         if (company) {
-          await supabaseService().from("organizations").update({
+          // Sin este vínculo, los eventos siguientes de Stripe no encuentran
+          // la empresa y la suscripción queda huérfana: pagada y sin activar.
+          await mustWrite("vincular la empresa con Stripe", supabaseService().from("organizations").update({
             stripe_customer_id: custId,
             stripe_subscription_id: subId,
             subscription_status: session.mode === "subscription" ? "active" : company.subscription_status,
-          }).eq("id", company._id);
+          }).eq("id", company._id));
           companyId = company._id;
           console.log(`[stripe] checkout completado → empresa ${company._id} vinculada (customer ${custId})`);
         } else {

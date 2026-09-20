@@ -4376,3 +4376,68 @@ describe("el camino del dinero no se contradice a sí mismo", () => {
     expect(cuerpo.slice(0, 1200)).toMatch(/isTerminalBookingStatus\(booking\.status\)/);
   });
 });
+
+/* ═══════════════════ ninguna escritura a la base sin mirar el error ══ */
+
+describe("la base dice que no y alguien tiene que oírlo (AUD-M05)", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * EL ERROR VIENE DENTRO DEL RESULTADO, NO POR EXCEPCIÓN
+   *
+   * `supabaseService()` devuelve `{ data, error }`. Esto compila, pasa la
+   * revisión y no hace nada:
+   *
+   *     await sb.from("sales_order").update({ hold_until }).eq("id", id);
+   *
+   * El `await` espera la respuesta y tira el error al suelo. Había veintiuna
+   * escrituras así, más nueve en el conector de OTAs. Sus finales, comprobados:
+   * una retención que no caduca nunca, el reintento de un socio que duplica la
+   * venta, una suscripción cobrada que sigue en «pendiente de pago».
+   *
+   * La guarda no exige que todo lance: exige que todo MIRE. Tres formas valen y
+   * una no:
+   *
+   *   · `mustWrite(…)` — la operación no vale sin esto.
+   *   · `tryWrite(…)`  — lo que importaba ya pasó; se anota y se sigue.
+   *   · `const { error } = await …` — a mano, mirando.
+   *   · `await sb.from(…).update(…)` a secas — NO.
+   */
+  const ESCRITURA = /(?:\.update\(|\.insert\(|\.delete\(|\.upsert\()/;
+
+  it("ninguna escritura con la llave de servicio ignora su error", () => {
+    const culpables: string[] = [];
+    for (const file of walk(path.join(ROOT, "src"))) {
+      const src = readFileSync(file, "utf8");
+      if (!src.includes("supabaseService") && !/\bsb\.from\(/.test(src)) continue;
+      const re = /^([ \t]*)await\s+(?:sb|supabaseService\(\))\s*\n?\s*\.?from\(/gm;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(src))) {
+        const frag = src.slice(m.index, m.index + 500);
+        if (!ESCRITURA.test(frag)) continue;
+        culpables.push(`${path.relative(ROOT, file).replace(/\\/g, "/")}:${src.slice(0, m.index).split("\n").length}`);
+      }
+    }
+    expect(culpables, "envuélvela en mustWrite o tryWrite, o destructura su error").toEqual([]);
+  });
+
+  it("los dos verbos existen y dicen lo que hacen", () => {
+    const src = read("src/lib/supabase/write.ts");
+    expect(src).toMatch(/export async function mustWrite/);
+    expect(src).toMatch(/export async function tryWrite/);
+    // `mustWrite` lanza; `tryWrite` devuelve si llegó, para que quien llama
+    // pueda no contar como hecho lo que no se escribió.
+    expect(src).toMatch(/throw Object\.assign\(/);
+    expect(src).toMatch(/Promise<boolean>/);
+  });
+
+  it("el conector de OTAs mira TODAS sus lecturas que deciden plazas", () => {
+    // Una lectura fallida devuelve `data: null`, que arriba es indistinguible
+    // de «no hay nada» — y ese «no hay nada» es la rama que deja pasar una
+    // reserva sin salida o duplica una retención.
+    const src = read("src/lib/octo-service.ts");
+    for (const fn of ["loadRow", "hasDepartures", "holdUntilOf"]) {
+      const cuerpo = src.slice(src.indexOf(`function ${fn}`), src.indexOf(`function ${fn}`) + 1400);
+      expect(cuerpo, `${fn} tiene que comprobar el error de su lectura`).toContain("mustRead");
+    }
+  });
+});
