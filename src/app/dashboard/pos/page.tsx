@@ -106,6 +106,16 @@ export default function PosPage() {
   const [override, setOverride] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
 
+  /**
+   * La lista de espera, ofrecida en el instante en que la venta no cabe.
+   *
+   * Es el único momento en que sirve: el cliente está delante del mostrador. Si
+   * apuntarlo exige salir del punto de venta, buscar la salida y abrir otra
+   * pantalla, el vendedor le dice «lo siento, está lleno» y el cliente se va.
+   */
+  const [waitlistFor, setWaitlistFor] = useState<{ departureId: string; product: string; pax: number } | null>(null);
+  const [waitlistContact, setWaitlistContact] = useState({ name: "", phone: "", notes: "" });
+
   // quick customer creation
   const [newCustomerOpen, setNewCustomerOpen] = useState(false);
   const [newCustomer, setNewCustomer] = useState({ first_name: "", last_name: "", email: "", phone: "", country: "" });
@@ -264,6 +274,29 @@ export default function PosPage() {
     if (!res.ok) {
       console.error("[pos] error creando la venta:", res.error);
       toast.error(res.error?.message || "No se pudo registrar la venta");
+
+      /**
+       * Un cupo agotado NO es un fallo: es un cliente que se puede recuperar.
+       *
+       * El servidor ya distinguía este caso con el código `OVERSELL` desde la
+       * ola 4, y lo único que se hacía con él era pintar el mismo mensaje rojo
+       * que con cualquier otro error. Aquí se convierte en la única acción que
+       * tiene sentido con el cliente delante.
+       */
+      if (res.code === "OVERSELL") {
+        const linea = cart.find((i) => i.departure_id) ?? cart[0];
+        const cliente = customers.find((c) => c._id === customerId);
+        setWaitlistContact({
+          name: cliente ? [cliente.first_name, cliente.last_name].filter(Boolean).join(" ") : "",
+          phone: cliente?.phone || cliente?.whatsapp || "",
+          notes: "",
+        });
+        setWaitlistFor({
+          departureId: linea?.departure_id || "",
+          product: linea?.product.name || "la salida",
+          pax: (linea?.adults ?? 0) + (linea?.children ?? 0) + (linea?.infants ?? 0),
+        });
+      }
       return;
     }
 
@@ -283,6 +316,32 @@ export default function PosPage() {
     setOverride(false);
     setOverrideReason("");
     loadContext();
+  };
+
+  const joinWaitlist = async () => {
+    if (!waitlistFor) return;
+    setBusy(true);
+    const res = await api.post("/api/waitlist", {
+      departure_id: waitlistFor.departureId,
+      pax: waitlistFor.pax,
+      customer_id: customerId || null,
+      contact_name: waitlistContact.name.trim() || null,
+      contact_phone: waitlistContact.phone.trim() || null,
+      seller_id: sellerId || null,
+      partner_id: partnerId || null,
+      notes: waitlistContact.notes.trim() || null,
+    });
+    setBusy(false);
+    if (!res.ok) {
+      console.error("[pos] error apuntando en la lista de espera:", res.error);
+      toast.error(res.error?.message || "No se pudo apuntar en la lista de espera");
+      return;
+    }
+    toast.success(
+      `${waitlistFor.pax} pax en lista de espera de ${waitlistFor.product}. ` +
+      `Si alguien cancela, la plaza se le aparta automáticamente.`
+    );
+    setWaitlistFor(null);
   };
 
   const registerPayment = async () => {
@@ -867,6 +926,58 @@ export default function PosPage() {
             <Button variant="outline" onClick={() => { setPayFor(null); setCustomerId(""); }}>Cobrar más tarde</Button>
             <Button onClick={registerPayment} disabled={busy || (payMethod === "cash" && !canPayCash)}>
               {busy ? "Cobrando…" : "Cobrar ahora"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---- lista de espera cuando la salida está llena ------------------ */}
+      <Dialog open={!!waitlistFor} onOpenChange={(v) => !v && setWaitlistFor(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Apuntar en la lista de espera</DialogTitle>
+            <DialogDescription>
+              {waitlistFor
+                ? `${waitlistFor.product} está llena. Si alguien cancela, la plaza se aparta automáticamente a nombre de este cliente y se avisa al mostrador para llamarle.`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm">
+              <Line label="Personas" value={String(waitlistFor?.pax ?? 0)} />
+              <Line label="Se le guarda" value="24 h, y nunca más allá de la salida" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Nombre</Label>
+              <Input value={waitlistContact.name}
+                onChange={(e) => setWaitlistContact((c) => ({ ...c, name: e.target.value }))}
+                placeholder="Michael Brennan" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Teléfono o WhatsApp</Label>
+              <Input value={waitlistContact.phone}
+                onChange={(e) => setWaitlistContact((c) => ({ ...c, phone: e.target.value }))}
+                placeholder="+1 809 555 0101" />
+              {/* Se dice por qué hace falta, en vez de dejar que el guardado
+                  falle con un mensaje que no lo explica. */}
+              <p className="text-xs text-muted-foreground">
+                {customerId
+                  ? "Opcional: ya hay ficha de cliente y se usará su teléfono."
+                  : "Sin cliente seleccionado hace falta un teléfono: es por donde se le avisará."}
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Notas</Label>
+              <Input value={waitlistContact.notes}
+                onChange={(e) => setWaitlistContact((c) => ({ ...c, notes: e.target.value }))}
+                placeholder="Se aloja en el Barceló, llega el jueves" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setWaitlistFor(null)}>Ahora no</Button>
+            <Button onClick={joinWaitlist}
+              disabled={busy || !waitlistFor?.departureId || (!customerId && !waitlistContact.phone.trim())}>
+              {busy ? "Apuntando…" : "Apuntar en la lista"}
             </Button>
           </DialogFooter>
         </DialogContent>

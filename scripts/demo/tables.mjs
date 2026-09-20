@@ -43,7 +43,7 @@ export const SEED_TABLES = [
 
   // ── venta y su rastro ────────────────────────────────────────────────────
   "sales_order", "booking", "booking_extra", "booking_cost", "participant",
-  "voucher", "access_ticket", "waiver", "pickup", "seller_attribution",
+  "voucher", "access_ticket", "waiver", "pickup", "waitlist_entry", "seller_attribution",
   "payment_schedule", "payment", "receivable", "invoice", "invoice_line",
   "ncf_sequence", "gift_card", "gift_card_movement",
 

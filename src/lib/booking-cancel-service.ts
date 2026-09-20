@@ -4,6 +4,7 @@ import { recalculateDeparture } from "@/lib/availability";
 import { cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { settleBookingStock } from "@/lib/stock-commitment-service";
 import { releaseBookingAllotment } from "@/lib/allotment-service";
+import { offerFreedSeats } from "@/lib/waitlist-service";
 import { reverseForOrder } from "@/lib/membego-redemption-service";
 import { syncOrderTotals } from "@/lib/booking-service";
 import { settleCommissionsOnCancel } from "@/lib/commission-adjust-service";
@@ -277,6 +278,27 @@ export async function cancelBookingFully(
   // ---- release the seat --------------------------------------------------
   const departureId = refId(booking.departure);
   if (departureId) await recalculateDeparture(ctx.companyId, departureId);
+
+  /**
+   * LA PLAZA QUE SE ACABA DE SOLTAR LE TOCA AL SIGUIENTE DE LA COLA (0066).
+   *
+   * Aquí y no en un reloj nocturno. Es la misma lección que ya estaba escrita
+   * para el cupo de las OTA: lo que importa no es barrer, es reaccionar al
+   * hecho. Una plaza que se libera el sábado por la mañana para una excursión
+   * del domingo no puede esperar al cron de las tres de la madrugada.
+   *
+   * Dentro de un intento y sin relanzar, como los avisos: que la lista de
+   * espera falle no puede dejar a medias una cancelación que el cliente ya
+   * tiene confirmada y cuyo dinero ya se devolvió.
+   */
+  if (departureId) {
+    try {
+      const oferta = await offerFreedSeats(ctx, departureId);
+      for (const problema of oferta.problems) console.warn(`[cancel] lista de espera: ${problema}`);
+    } catch (err) {
+      console.error("[cancel] no se pudo ofrecer la plaza a la lista de espera:", err);
+    }
+  }
 
   const orderId = refId(booking.order);
 
