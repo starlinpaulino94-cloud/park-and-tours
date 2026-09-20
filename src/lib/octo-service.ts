@@ -1,7 +1,7 @@
 import "server-only";
 import { supabaseService } from "@/lib/supabase/service";
 import { tenantQuery, tenantUpdate, type TenantContext } from "@/lib/tenant";
-import { createOrderWithBookings, releaseExpiredHolds, syncOrderTotals } from "@/lib/booking-service";
+import { compensateOrder, createOrderWithBookings, releaseExpiredHolds, syncOrderTotals } from "@/lib/booking-service";
 import { cancelBookingFully, TERMINAL_STATES } from "@/lib/booking-cancel-service";
 import { resolvePrice } from "@/lib/pricing";
 import { parseJson } from "@/lib/format";
@@ -47,6 +47,51 @@ export class OctoError extends Error {
   ) {
     super(message);
     this.name = "OctoError";
+  }
+}
+
+/* ═══════════════════════════════════════════ hablar con la base sin fe ══ */
+
+/**
+ * NI UNA LECTURA NI UNA ESCRITURA A CIEGAS.
+ *
+ * `supabaseService()` no lanza cuando la base dice no: devuelve el error dentro
+ * del resultado. Así que `const { data } = await consulta` compila, pasa la
+ * revisión y se lleva el error al suelo — y lo que sigue trabaja con `data` en
+ * nulo, que para el código de arriba significa «no hay nada».
+ *
+ * En un conector de OTAs eso no es un matiz de estilo, son ventas:
+ *
+ *  · Una lectura fallida de la reserva por su uuid parece «no existe», y el
+ *    reintento del revendedor —que reintenta siempre— aparta OTRAS plazas para
+ *    el mismo pasajero.
+ *  · Una lectura fallida de las salidas parece «este producto no se vende por
+ *    fecha», y la reserva se crea sin cupo comprobado y sin manifiesto.
+ *  · Una escritura fallida del plazo deja `hold_until` nulo. El barrido filtra
+ *    por `hold_until < ahora` y un nulo NUNCA cumple esa condición: la plaza
+ *    queda retenida para siempre, el revendedor recibe una reserva de aspecto
+ *    correcto, y la excursión sale con asientos vacíos que el sistema daba por
+ *    vendidos.
+ *
+ * Fallar con 500 es lo peor que puede hacer un conector, menos una cosa:
+ * contestar 200 sobre algo que no quedó escrito.
+ */
+type PgOutcome = { data?: unknown; error: { message: string } | null };
+
+async function mustRead<T>(accion: string, consulta: PromiseLike<PgOutcome>): Promise<T | null> {
+  const { data, error } = await consulta;
+  if (error) {
+    console.error(`[octo] no se pudo ${accion}:`, error.message);
+    throw new OctoError("INTERNAL_SERVER_ERROR", `No se pudo ${accion}.`, { detail: error.message });
+  }
+  return (data ?? null) as T | null;
+}
+
+async function mustWrite(accion: string, escritura: PromiseLike<PgOutcome>): Promise<void> {
+  const { error } = await escritura;
+  if (error) {
+    console.error(`[octo] no se pudo ${accion}:`, error.message);
+    throw new OctoError("INTERNAL_SERVER_ERROR", `No se pudo ${accion}.`, { detail: error.message });
   }
 }
 
@@ -174,12 +219,15 @@ function refOf(value: unknown): string | null {
 async function hasDepartures(companyId: string, productIds: string[]): Promise<Set<string>> {
   const out = new Set<string>();
   if (productIds.length === 0) return out;
-  const { data } = await supabaseService()
+  // Con error se LANZA en vez de devolver un conjunto vacío: vacío significa
+  // «este producto no se vende por fecha», y con eso `reserve` deja pasar una
+  // reserva sin salida, sin cupo comprobado y sin manifiesto.
+  const data = await mustRead<{ product_id: unknown }[]>("leer las salidas del producto", supabaseService()
     .from("departure")
     .select("product_id")
     .eq("organization_id", companyId)
     .in("product_id", productIds)
-    .limit(5000);
+    .limit(5000));
   for (const row of data ?? []) out.add(String(row.product_id));
   return out;
 }
@@ -336,7 +384,10 @@ async function departuresFor(
   if (ids && ids.length > 0) query = query.in("id", ids.slice(0, 100));
   else query = query.gte("departure_at", window.from).lte("departure_at", window.to);
 
-  const { data } = await query;
+  // Sin esto, un fallo de lectura se le contesta al revendedor como
+  // INVALID_AVAILABILITY_ID —«esa fecha no existe»—, y una OTA que recibe eso
+  // retira la fecha de la venta.
+  const data = await mustRead<Record<string, unknown>[]>("leer las salidas", query);
   return (data ?? []).map((row) => ({
     _id: String(row.id),
     departure_at: row.departure_at as string,
@@ -446,15 +497,20 @@ async function loadRow(ctx: OctoContext, uuid: string): Promise<BookingRow | nul
     .limit(1);
   if (ctx.partnerId) query = query.eq("partner_id", ctx.partnerId);
 
-  const { data } = await query;
-  return (data?.[0] as BookingRow | undefined) ?? null;
+  // Nula solo si de verdad no hay reserva. Si la lectura falla y se contesta
+  // «no existe», el reintento del revendedor crea una SEGUNDA retención para el
+  // mismo pasajero: dos asientos vendidos una vez.
+  const data = await mustRead<BookingRow[]>("buscar la reserva por su uuid", query);
+  return data?.[0] ?? null;
 }
 
 async function holdUntilOf(companyId: string, orderId: string | null): Promise<string | null> {
   if (!orderId) return null;
-  const { data } = await supabaseService()
-    .from("sales_order").select("hold_until").eq("organization_id", companyId).eq("id", orderId).maybeSingle();
-  return (data?.hold_until as string | null) ?? null;
+  // Un nulo aquí quiere decir «sin plazo», y una retención sin plazo se lee
+  // como viva: tragarse el error dejaría confirmar una plaza ya liberada.
+  const data = await mustRead<{ hold_until: string | null }>("leer el plazo de la retención", supabaseService()
+    .from("sales_order").select("hold_until").eq("organization_id", companyId).eq("id", orderId).maybeSingle());
+  return data?.hold_until ?? null;
 }
 
 async function cutoffHoursOf(companyId: string, productId: string | null): Promise<number> {
@@ -525,8 +581,9 @@ export async function listBookings(
   if (filter.resellerReference) query = query.eq("octo_reseller_reference", filter.resellerReference);
   if (filter.supplierReference) query = query.eq("booking_number", filter.supplierReference);
 
-  const { data } = await query;
-  const rows = (data ?? []) as BookingRow[];
+  // Una lista vacía significa «no tienes reservas con nosotros». Si eso lo
+  // provoca un fallo de lectura, el revendedor vuelve a vender lo ya vendido.
+  const rows = (await mustRead<BookingRow[]>("listar las reservas", query)) ?? [];
   return Promise.all(rows.map((row) => bookingView(ctx, row)));
 }
 
@@ -544,8 +601,8 @@ async function resolveCustomer(companyId: string, input: ReservationInput): Prom
   const sb = supabaseService();
   const email = input.contact?.emailAddress ?? null;
   if (email) {
-    const { data } = await sb.from("customer").select("id")
-      .eq("organization_id", companyId).eq("email", email).limit(1);
+    const data = await mustRead<{ id: unknown }[]>("buscar al cliente por su correo", sb.from("customer").select("id")
+      .eq("organization_id", companyId).eq("email", email).limit(1));
     if (data?.[0]) return String(data[0].id);
   }
 
@@ -664,26 +721,53 @@ export async function reserve(ctx: OctoContext, input: ReservationInput): Promis
   );
   const expiresAt = new Date(Date.now() + minutes * 60_000).toISOString();
 
-  await supabaseService().from("sales_order")
-    .update({ hold_until: expiresAt, idempotency_key: `octo:${input.uuid}` })
-    .eq("organization_id", ctx.companyId)
-    .eq("id", String(result.order._id));
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * LA VENTA YA EXISTE Y LA PLAZA YA ESTÁ APARTADA: DE AQUÍ NO SE SALE A MEDIAS
+   *
+   * Lo que falta son las dos marcas que hacen de esta venta una reserva de OTA:
+   * el plazo de la retención y el uuid del revendedor. Sin la primera la plaza
+   * no la libera nadie —el barrido filtra por `hold_until < ahora` y un nulo no
+   * cumple esa condición jamás—; sin la segunda la reserva es invisible para el
+   * revendedor, que no la puede consultar, ni confirmar, ni cancelar, mientras
+   * sigue ocupando su asiento.
+   *
+   * Por eso cualquier fallo aquí deshace la venta con la MISMA compensación que
+   * usa la saga del mostrador: cancela las reservas, devuelve la plaza a la
+   * salida, anula voucher, comisión y cuenta por cobrar, y deja la orden
+   * cancelada. Se le contesta 500 al revendedor, que reintentará; lo que no se
+   * hace es contestarle 200 sobre una reserva rota.
+   */
+  try {
+    await mustWrite("fijar el plazo de la retención", supabaseService().from("sales_order")
+      .update({ hold_until: expiresAt, idempotency_key: `octo:${input.uuid}` })
+      .eq("organization_id", ctx.companyId)
+      .eq("id", String(result.order._id)));
 
-  await supabaseService().from("booking").update({
-    octo_uuid: input.uuid,
-    octo_option_id: input.optionId,
-    octo_status: "ON_HOLD",
-    octo_reseller_reference: input.resellerReference,
-    octo_unit_items: input.unitItems,
-    octo_contact: input.contact,
-    octo_api_key_id: ctx.keyId,
-  }).eq("organization_id", ctx.companyId).eq("id", bookingId);
+    await mustWrite("marcar la reserva como del revendedor", supabaseService().from("booking").update({
+      octo_uuid: input.uuid,
+      octo_option_id: input.optionId,
+      octo_status: "ON_HOLD",
+      octo_reseller_reference: input.resellerReference,
+      octo_unit_items: input.unitItems,
+      octo_contact: input.contact,
+      octo_api_key_id: ctx.keyId,
+    }).eq("organization_id", ctx.companyId).eq("id", bookingId));
 
-  const row = await loadRow(ctx, input.uuid);
-  if (!row) throw new OctoError("INTERNAL_SERVER_ERROR", "La reserva se creó pero no se pudo releer.");
-  void travelDate;
-  void seatsOf(input.unitItems);
-  return { booking: await bookingView(ctx, row), repeated: false };
+    const row = await loadRow(ctx, input.uuid);
+    if (!row) throw new OctoError("INTERNAL_SERVER_ERROR", "La reserva se creó pero no se pudo releer.");
+    void travelDate;
+    void seatsOf(input.unitItems);
+    return { booking: await bookingView(ctx, row), repeated: false };
+  } catch (err) {
+    await compensateOrder(
+      ctx.companyId, String(result.order._id),
+      (result.order as { order_number?: string }).order_number,
+      result.bookings as never,
+      "Reserva de revendedor revertida: no se pudo completar la retención"
+    );
+    throw err;
+  }
 }
 
 /**
@@ -705,24 +789,50 @@ export async function confirmBooking(
   const status = octoStatusOf({ stored: row.octo_status, internal: row.status, holdUntil });
   const verdict = canTransition(status, "confirm");
   if (!verdict.ok) throw new OctoError(verdict.code ?? "UNPROCESSABLE_ENTITY", verdict.message ?? "", { uuid });
-  if (status === "CONFIRMED") return bookingView(ctx, row);
+  if (status === "CONFIRMED") {
+    // Idempotente y, de paso, reparadora: si una confirmación anterior se quedó
+    // a medias, la venta puede seguir con su retención corriendo, y el barrido
+    // de vencidas cancelaría una reserva YA confirmada.
+    if (row.order_id && holdUntil) {
+      await mustWrite("parar el plazo de una reserva ya confirmada", supabaseService().from("sales_order")
+        .update({ hold_until: null, status: "confirmed" })
+        .eq("organization_id", ctx.companyId).eq("id", row.order_id));
+    }
+    return bookingView(ctx, row);
+  }
 
+  /**
+   * PRIMERO SE PARA EL PLAZO, DESPUÉS SE CONFIRMA LA RESERVA.
+   *
+   * El orden es el que decide qué pasa si la segunda escritura falla:
+   *
+   *  · Confirmando primero, queda una reserva CONFIRMADA cuya venta sigue en
+   *    `pending_payment` con el plazo corriendo — y el barrido de retenciones
+   *    vencidas la cancela sola. Una venta cerrada que se cancela sin que nadie
+   *    lo pida es el peor final posible.
+   *  · Parando el plazo primero, queda una venta confirmada con la reserva
+   *    todavía retenida: ningún barrido la toca (ambos exigen la venta en
+   *    `pending_payment`) y el reintento del revendedor la termina, porque una
+   *    retención sin plazo se sigue leyendo ON_HOLD.
+   *
+   * Se pierde nada y se recupera con un reintento; al revés se pierde la venta.
+   */
   const now = new Date().toISOString();
-  await supabaseService().from("booking").update({
+  if (row.order_id) {
+    await mustWrite("parar el plazo de la retención", supabaseService().from("sales_order")
+      .update({ hold_until: null, status: "confirmed" })
+      .eq("organization_id", ctx.companyId).eq("id", row.order_id));
+  }
+
+  await mustWrite("confirmar la reserva", supabaseService().from("booking").update({
     status: "confirmed",
     octo_status: "CONFIRMED",
     octo_confirmed_at: now,
     ...(patch.resellerReference ? { octo_reseller_reference: patch.resellerReference } : {}),
     ...(patch.contact ? { octo_contact: patch.contact } : {}),
-  }).eq("organization_id", ctx.companyId).eq("id", row.id);
+  }).eq("organization_id", ctx.companyId).eq("id", row.id));
 
-  // La retención deja de correr: confirmada, la plaza ya no se libera sola.
-  if (row.order_id) {
-    await supabaseService().from("sales_order")
-      .update({ hold_until: null, status: "confirmed" })
-      .eq("organization_id", ctx.companyId).eq("id", row.order_id);
-    await syncOrderTotals(ctx.companyId, row.order_id);
-  }
+  if (row.order_id) await syncOrderTotals(ctx.companyId, row.order_id);
 
   const fresh = await loadRow(ctx, uuid);
   return bookingView(ctx, fresh ?? row);
@@ -749,9 +859,11 @@ export async function extendBooking(ctx: OctoContext, uuid: string, minutes: num
     (ctx.company as { octo_max_hold_minutes?: number } | null)?.octo_max_hold_minutes ?? null
   );
   if (row.order_id) {
-    await supabaseService().from("sales_order")
+    // Decirle que sí a una prórroga que no se escribió es prometerle una plaza
+    // que el barrido va a soltar mientras su cliente teclea la tarjeta.
+    await mustWrite("prorrogar la retención", supabaseService().from("sales_order")
       .update({ hold_until: new Date(Date.now() + capped * 60_000).toISOString() })
-      .eq("organization_id", ctx.companyId).eq("id", row.order_id);
+      .eq("organization_id", ctx.companyId).eq("id", row.order_id));
   }
   const fresh = await loadRow(ctx, uuid);
   return bookingView(ctx, fresh ?? row);
@@ -782,8 +894,13 @@ export async function cancelBooking(
   // Ya estaba cancelada: se contesta lo mismo en vez de reembolsar dos veces.
   if (status === "CANCELLED" || (row.status && TERMINAL_STATES.includes(row.status))) {
     if (row.octo_status !== "CANCELLED") {
-      await supabaseService().from("booking").update({ octo_status: "CANCELLED" })
+      // Aquí no se lanza a propósito: la reserva YA está cancelada de verdad y
+      // `octoStatusOf` deduce CANCELLED del estado interno, así que la
+      // respuesta al revendedor es correcta con o sin esta columna. Fallar
+      // sería inventarle un problema a quien solo pidió cancelar dos veces.
+      const { error } = await supabaseService().from("booking").update({ octo_status: "CANCELLED" })
         .eq("organization_id", ctx.companyId).eq("id", row.id);
+      if (error) console.error("[octo] no se pudo poner la marca de cancelada:", error.message);
     }
     const same = await loadRow(ctx, uuid);
     return bookingView(ctx, same ?? row);
@@ -803,8 +920,13 @@ export async function cancelBooking(
     reason: options.reason || "Cancelada por el revendedor",
   });
 
-  await supabaseService().from("booking").update({ octo_status: "CANCELLED" })
+  // Tampoco aquí: la cancelación ya ocurrió —plaza suelta, comisión anulada,
+  // cupo devuelto, voucher invalidado— y contestar 500 haría que el revendedor
+  // la reintentara sobre algo que ya está hecho. La columna es una copia; el
+  // estado que se contesta sale del estado interno, que sí quedó escrito.
+  const { error: markErr } = await supabaseService().from("booking").update({ octo_status: "CANCELLED" })
     .eq("organization_id", ctx.companyId).eq("id", row.id);
+  if (markErr) console.error("[octo] no se pudo poner la marca de cancelada:", markErr.message);
 
   const fresh = await loadRow(ctx, uuid);
   return bookingView(ctx, fresh ?? row);
@@ -827,31 +949,35 @@ export async function markExpiredOctoHolds(companyId: string, now: Date = new Da
 
   // Las ventas con la retención pasada. Es la consulta barata y la que casi
   // siempre vuelve vacía: si no hay ninguna, no se toca nada más.
-  const { data: orders } = await sb
+  const orders = await mustRead<{ id: unknown }[]>("leer las ventas con la retención pasada", sb
     .from("sales_order")
     .select("id")
     .eq("organization_id", companyId)
     .eq("status", "pending_payment")
     .not("hold_until", "is", null)
     .lt("hold_until", now.toISOString())
-    .limit(200);
+    .limit(200));
 
   const orderIds = (orders ?? []).map((o) => String(o.id));
   if (orderIds.length === 0) return 0;
 
-  const { data } = await sb
+  const data = await mustRead<{ id: unknown }[]>("leer las reservas retenidas", sb
     .from("booking")
     .select("id")
     .eq("organization_id", companyId)
     .eq("octo_status", "ON_HOLD")
     .in("order_id", orderIds)
-    .limit(200);
+    .limit(200));
 
   const ids = (data ?? []).map((row) => String(row.id));
   if (ids.length === 0) return 0;
 
-  await sb.from("booking").update({ octo_status: "EXPIRED" })
-    .eq("organization_id", companyId).in("id", ids);
+  // Devolver el número de marcadas sin mirar si la marca se escribió haría que
+  // quien llama —el barrido— soltara la plaza de reservas que siguen ON_HOLD, y
+  // el revendedor leería CANCELLED donde le tocaba EXPIRED. Que es justo lo que
+  // esta función existe para evitar.
+  await mustWrite("marcar como vencidas las retenciones", sb.from("booking").update({ octo_status: "EXPIRED" })
+    .eq("organization_id", companyId).in("id", ids));
   return ids.length;
 }
 
@@ -883,7 +1009,23 @@ export async function markExpiredOctoHolds(companyId: string, now: Date = new Da
  * Al revés, el revendedor leería CANCELLED en vez de EXPIRED.
  */
 export async function sweepExpiredOctoHolds(companyId: string, now: Date = new Date()): Promise<number> {
-  const marked = await markExpiredOctoHolds(companyId, now);
+  let marked = 0;
+  try {
+    marked = await markExpiredOctoHolds(companyId, now);
+  } catch (err) {
+    /**
+     * Sin la marca NO se suelta la plaza.
+     *
+     * El barrido corre al consultar disponibilidad y al reservar, así que un
+     * fallo aquí no puede tumbar esas respuestas: se avisa y se sigue. Pero
+     * soltar la plaza sin haber marcado EXPIRED le contaría al revendedor una
+     * CANCELACIÓN —una incidencia que atender, con reembolso que decidir— en
+     * lugar de un vencimiento, que es suyo por no pagar a tiempo. La plaza se
+     * soltará en el siguiente barrido, que es un precio mucho menor.
+     */
+    console.error("[octo] no se pudieron marcar las retenciones vencidas:", err);
+    return 0;
+  }
 
   // Y ahora sí se suelta la plaza de verdad, con el mismo camino de siempre:
   // compensa la venta, libera el cupo de la salida y devuelve el del socio.

@@ -1020,8 +1020,14 @@ export async function createOrderWithBookings(
  * created so far (releasing their seats) and voids the order, so a partial
  * failure never leaves live seats held by a phantom order. Best-effort — every
  * step is guarded so compensation itself cannot throw.
+ *
+ * Se exporta porque la saga de la venta no es la única que puede quedarse a
+ * medias: el conector de OTAs crea la venta por aquí y DESPUÉS le escribe el
+ * plazo de la retención y las marcas del revendedor. Si una de esas escrituras
+ * falla, la venta ya existe y la plaza ya está apartada, así que hace falta
+ * exactamente esta compensación —y no otra a medida— para devolverla.
  */
-async function compensateOrder(
+export async function compensateOrder(
   companyId: string,
   orderId: string,
   orderNumber: string | undefined,
