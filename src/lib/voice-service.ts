@@ -5,12 +5,13 @@ import { notify } from "@/lib/notify-service";
 import { enqueuePostTourSurvey } from "@/lib/messaging/events";
 import { newDocumentNumber } from "@/lib/codes";
 import { APP_URL } from "@/lib/stripe";
+import { tenantQuery } from "@/lib/tenant";
 import {
-  askVerdict, askAt, expiresAt, canAnswer, nextStep, bandOf,
+  askVerdict, askAt, expiresAt, canAnswer, nextStep, bandOf, summarize, groupNps,
   SURVEY_FATIGUE_DAYS,
-  type SkipReason,
+  type NpsResult, type SurveyRow, type VoiceSummary,
 } from "@/lib/voice";
-import type { Company } from "@/lib/types";
+import { refId, type Company } from "@/lib/types";
 
 /**
  * LA VOZ DEL CLIENTE, CONECTADA CON LA OPERACIÓN.
@@ -569,4 +570,113 @@ export async function expireSurveys(companyId: string, now: Date = new Date()): 
     sb.from("guest_survey").update({ status: "expired" })
       .eq("organization_id", companyId).in("id", vencidas.map((v) => String(v.id))));
   return vencidas.length;
+}
+
+/* ═══════════════════════════════════════════════════════════ 5 · el panel ══ */
+
+export interface VoicePanelRow {
+  id: string;
+  bookingId: string;
+  customerName: string;
+  productName: string;
+  guideName: string;
+  nps: number | null;
+  comment: string | null;
+  answeredAt: string | null;
+  askedAt: string | null;
+  status: string;
+  skipReason: string | null;
+  caseId: string | null;
+}
+
+export interface VoicePanel {
+  summary: VoiceSummary;
+  byProduct: { key: string; name: string; nps: NpsResult }[];
+  byGuide: { key: string; name: string; nps: NpsResult }[];
+  byMonth: { key: string; nps: NpsResult }[];
+  /** Los que hay que llamar: detractores con su caso abierto. */
+  detractors: VoicePanelRow[];
+  latest: VoicePanelRow[];
+}
+
+/**
+ * Lo que ve la operadora.
+ *
+ * Va por las ayudas de inquilino y no por la llave de servicio: aquí SÍ hay
+ * sesión, y con ella la RLS hace de segunda frontera por debajo del filtro.
+ * Es la diferencia con el resto de este módulo, y es deliberada.
+ */
+export async function loadVoice(companyId: string, days = 90): Promise<VoicePanel> {
+  const desde = new Date(Date.now() - days * 86_400_000).toISOString();
+  const rows = await tenantQuery<Record<string, unknown>>(companyId, "guest_survey", {
+    _filter: { created_at: { gte: desde } },
+    _limit: 2000,
+    _sort: { created_at: "desc" },
+  });
+
+  const productIds = [...new Set(rows.map((r) => refId(r.product)).filter(Boolean) as string[])];
+  const guideIds = [...new Set(rows.map((r) => refId(r.guide_staff)).filter(Boolean) as string[])];
+  const customerIds = [...new Set(rows.map((r) => refId(r.customer)).filter(Boolean) as string[])];
+
+  const [products, guides, customers] = await Promise.all([
+    productIds.length
+      ? tenantQuery<{ _id: string; name?: string }>(companyId, "product",
+          { _filter: { _id: { in: productIds } }, _limit: 300 })
+      : Promise.resolve([]),
+    guideIds.length
+      ? tenantQuery<{ _id: string; full_name?: string }>(companyId, "staff",
+          { _filter: { _id: { in: guideIds } }, _limit: 300 })
+      : Promise.resolve([]),
+    customerIds.length
+      ? tenantQuery<{ _id: string; first_name?: string; last_name?: string }>(companyId, "customer",
+          { _filter: { _id: { in: customerIds } }, _limit: 500 })
+      : Promise.resolve([]),
+  ]);
+
+  const nombreProducto = new Map(products.map((p) => [p._id, String(p.name ?? "")]));
+  const nombreGuia = new Map(guides.map((g) => [g._id, String(g.full_name ?? "")]));
+  const nombreCliente = new Map(customers.map((c) =>
+    [c._id, [c.first_name, c.last_name].filter(Boolean).join(" ").trim()]));
+
+  const planas: SurveyRow[] = rows.map((r) => ({
+    status: String(r.status ?? ""),
+    skip_reason: (r.skip_reason as string | null) ?? null,
+    nps: (r.nps as number | null) ?? null,
+    answered_at: (r.answered_at as string | null) ?? null,
+    product_id: refId(r.product),
+    guide_staff_id: refId(r.guide_staff),
+  }));
+
+  const vista = (r: Record<string, unknown>): VoicePanelRow => ({
+    id: String(r._id ?? r.id ?? ""),
+    bookingId: refId(r.booking) ?? "",
+    customerName: nombreCliente.get(refId(r.customer) ?? "") || "Cliente",
+    productName: nombreProducto.get(refId(r.product) ?? "") || "",
+    guideName: nombreGuia.get(refId(r.guide_staff) ?? "") || "",
+    nps: (r.nps as number | null) ?? null,
+    comment: (r.comment as string | null) ?? null,
+    answeredAt: (r.answered_at as string | null) ?? null,
+    askedAt: (r.asked_at as string | null) ?? null,
+    status: String(r.status ?? ""),
+    skipReason: (r.skip_reason as string | null) ?? null,
+    caseId: refId(r.guest_case),
+  });
+
+  const contestadas = rows.filter((r) => String(r.status ?? "") === "answered");
+
+  return {
+    summary: summarize(planas),
+    byProduct: groupNps(planas, (f) => f.product_id ?? null)
+      .map((g) => ({ ...g, name: nombreProducto.get(g.key) || "Sin producto" })),
+    byGuide: groupNps(planas, (f) => f.guide_staff_id ?? null)
+      .map((g) => ({ ...g, name: nombreGuia.get(g.key) || "Sin guía asignado" })),
+    byMonth: groupNps(planas, (f) => (f.answered_at ?? "").slice(0, 7) || null)
+      .sort((a, b) => a.key.localeCompare(b.key)),
+    // Primero los que todavía nadie ha llamado.
+    detractors: contestadas
+      .filter((r) => bandOf(r.nps) === "detractor")
+      .map(vista)
+      .sort((a, b) => String(b.answeredAt ?? "").localeCompare(String(a.answeredAt ?? ""))),
+    latest: contestadas.slice(0, 50).map(vista),
+  };
 }

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   SUPPORTED_LOCALES, DEFAULT_LOCALE, isLocale, normalizeLocale,
   parseAcceptLanguage, pickLocale,
-  PUBLIC_DICTIONARY, DOC_DICTIONARY, translate, translator, missingKeys,
+  PUBLIC_DICTIONARY, DOC_DICTIONARY, SURVEY_DICTIONARY, translate, translator, missingKeys,
   formatDateFor, formatTimeFor,
 } from "@/lib/i18n";
 
@@ -132,6 +132,9 @@ describe("los diccionarios están completos", () => {
 
   it("ni al de los documentos", () => {
     expect(missingKeys(DOC_DICTIONARY)).toEqual({});
+    // La encuesta también: un cliente que reservó en inglés y recibe media
+    // encuesta en español deja de contestarla en la primera pregunta.
+    expect(missingKeys(SURVEY_DICTIONARY)).toEqual({});
   });
 
   it("y la comprobación detecta de verdad una que falte", () => {

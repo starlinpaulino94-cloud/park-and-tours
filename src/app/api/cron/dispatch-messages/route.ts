@@ -6,6 +6,7 @@ import { TenantError } from "@/lib/tenant";
 import { dispatchQueue } from "@/lib/messaging/outbox";
 import { serviceStore } from "@/lib/messaging/service-store";
 import { enqueuePreTourReminder } from "@/lib/messaging/events";
+import { sweepDueSurveys, expireSurveys, SWEEP_LOOKBACK_DAYS } from "@/lib/voice-service";
 import type { Booking } from "@/lib/types";
 import { configuredChannels } from "@/lib/messaging/providers";
 import type { Company } from "@/lib/types";
@@ -116,6 +117,29 @@ async function sweepReminders(): Promise<{ enqueued: number; companies: string[]
   return { enqueued, companies: [...companies] };
 }
 
+/**
+ * Las empresas que operaron algo hace poco.
+ *
+ * La encuesta de después del viaje se pregunta por SALIDA, no por mensaje
+ * pendiente, así que estas empresas no aparecen en la cola: si no se buscaran
+ * aparte, la primera encuesta de una operadora no saldría nunca —no hay nada
+ * encolado hasta que alguien la encola—.
+ */
+async function companiesWithFinishedDepartures(now: Date): Promise<string[]> {
+  const desde = new Date(now.getTime() - SWEEP_LOOKBACK_DAYS * 86_400_000).toISOString();
+  const { data, error } = await supabaseService()
+    .from("departure")
+    .select("organization_id")
+    .gte("departure_at", desde)
+    .lte("departure_at", now.toISOString())
+    .limit(2000);
+  if (error) {
+    console.error("[cron/dispatch-messages] no se pudieron leer las salidas terminadas:", error.message);
+    return [];
+  }
+  return [...new Set((data ?? []).map((r) => String(r.organization_id)))];
+}
+
 export async function GET(req: NextRequest) {
   let runId: string | null = null;
   try {
@@ -151,8 +175,11 @@ export async function GET(req: NextRequest) {
     const companyIds = [...new Set([
       ...(pending ?? []).map((r) => r.organization_id as string),
       ...reminded.companies,
+      // Y las que operaron una salida hace poco: su encuesta todavía no está
+      // encolada, así que no aparecería por la cola de mensajes.
+      ...(await companiesWithFinishedDepartures(new Date())),
     ])];
-    const report = { companies: companyIds.length, sent: 0, failed: 0, waiting: 0 };
+    const report = { companies: companyIds.length, sent: 0, failed: 0, waiting: 0, surveys: 0, surveysExpired: 0 };
     const notConfigured = new Set<string>();
 
     for (const companyId of companyIds) {
@@ -166,6 +193,27 @@ export async function GET(req: NextRequest) {
       const company = org
         ? ({ _id: org.id, name: org.name, email: org.email, phone: org.phone, whatsapp: org.whatsapp } as Company)
         : null;
+
+      /**
+       * La voz del cliente, ANTES de despachar: lo que se encole aquí sale en
+       * esta misma pasada y no mañana. Con una cadencia diaria, dejarlo para
+       * después significaría preguntar por una excursión de anteayer.
+       *
+       * Los dos van con su try: ni una encuesta que no se pudo crear ni una
+       * caducidad que no se pudo cerrar pueden dejar a una empresa sin sus
+       * mensajes —que incluyen el recordatorio con la hora de recogida—.
+       */
+      try {
+        const voz = await sweepDueSurveys(company, companyId, new Date());
+        report.surveys += voz.asked;
+      } catch (err) {
+        console.error(`[cron/dispatch-messages] encuestas de ${companyId} fallaron:`, err);
+      }
+      try {
+        report.surveysExpired += await expireSurveys(companyId);
+      } catch (err) {
+        console.error(`[cron/dispatch-messages] caducidad de encuestas de ${companyId} falló:`, err);
+      }
 
       try {
         const result = await dispatchQueue(company, companyId, 100, serviceStore());
@@ -181,12 +229,15 @@ export async function GET(req: NextRequest) {
 
     console.log(
       `[cron/dispatch-messages] ${report.companies} empresas · ${report.sent} enviados · ` +
-      `${report.failed} fallidos · ${report.waiting} en espera`
+      `${report.failed} fallidos · ${report.waiting} en espera · ${report.surveys} encuestas`
     );
 
     await finishJobRun(runId, {
       status: "ok",
-      summary: { companies: report.companies, sent: report.sent, failed: report.failed, waiting: report.waiting },
+      summary: {
+        companies: report.companies, sent: report.sent, failed: report.failed,
+        waiting: report.waiting, surveys: report.surveys, surveysExpired: report.surveysExpired,
+      },
     });
 
     return ok({

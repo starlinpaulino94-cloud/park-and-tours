@@ -1434,6 +1434,12 @@ describe("blindaje CSRF de las rutas mutantes", () => {
     // exención es de la FORMA; hay guarda propia que exige que TODA ruta que
     // escribe autentique la llave con alcance de escritura.
     /^src\/app\/api\/octo\/v1\//,
+    // La encuesta de después del viaje: igual que el motor público, no hay
+    // sesión con cookies que proteger —el pasajero no tiene cuenta ni la va a
+    // tener—. Lo que la protege es lo POCO que el token puede hacer: poner una
+    // nota, escribir un comentario y darse de baja. Nada que mueva dinero,
+    // nada que enseñe datos de otro cliente, y caduca a los treinta días.
+    /^src\/app\/api\/opinar\//,
   ];
 
   it("toda ruta mutante verifica el origen de la solicitud", () => {
@@ -1608,6 +1614,17 @@ describe("el plan se aplica en la API, no solo en el menú", () => {
     // plan SÍ se comprueba, con `assertCanSell` sobre la empresa de esa llave,
     // y hay guarda propia que lo exige en cada ruta que vende.
     /^src\/app\/api\/octo\/v1\//,
+    /**
+     * La encuesta: lo que se escribe aquí no es una operación de la empresa,
+     * es la respuesta de UN CLIENTE a algo que ya se le preguntó.
+     *
+     * Bloquearla por una suscripción vencida tendría dos efectos y los dos
+     * malos: se perdería una opinión que la operadora ya pidió —el correo salió
+     * cuando el plan estaba al día—, y la BAJA dejaría de funcionar, que es lo
+     * único de este módulo que no se le puede negar a nadie por no pagar. Es el
+     * mismo razonamiento que la exención del segundo factor.
+     */
+    /^src\/app\/api\/opinar\//,
   ];
 
   it("toda ruta que escribe exige una suscripción que permita escribir", () => {
@@ -3742,7 +3759,15 @@ describe("i18n: que el huésped que no habla español entienda lo que compró", 
     const src = read("src/lib/i18n.ts");
     expect(src).toMatch(/NO se traduce el panel de la operadora/);
     const claves = [...src.matchAll(/^\s+"([^"]+)":/gm)].map((m) => m[1]);
-    const fuera = claves.filter((k) => !k.startsWith("engine.") && !k.startsWith("page.") && !k.startsWith("doc.") && !k.startsWith("lang."));
+    /**
+     * Las cuatro superficies que SÍ ve el huésped, y ninguna más:
+     * `engine.`/`page.` (la página pública), `doc.` (voucher y documentos),
+     * `lang.` (el selector) y `survey.` (la encuesta de después del viaje, que
+     * el cliente abre desde SU correo y en SU idioma).
+     */
+    const fuera = claves.filter((k) =>
+      !k.startsWith("engine.") && !k.startsWith("page.") &&
+      !k.startsWith("doc.") && !k.startsWith("lang.") && !k.startsWith("survey."));
     expect(fuera, "claves de i18n fuera de las superficies del huésped").toEqual([]);
   });
 });
@@ -4107,6 +4132,10 @@ describe("cada pantalla dice cómo se crea lo que enseña", () => {
     "/dashboard/operaciones/despacho": "despacho: actúa sobre salidas que ya existen",
     "/dashboard/salidas/[id]/manifiesto": "manifiesto: se deriva de las reservas de la salida",
     "/dashboard/clientes/vouchers": "vouchers: los emite la venta",
+    "/dashboard/clientes/opiniones":
+      "opiniones: las escribe el pasajero desde su enlace. Un botón de «nueva opinión» " +
+      "en el panel permitiría a la operadora escribir la nota de sus propios clientes, " +
+      "que es exactamente lo que hace que un NPS no valga nada",
     "/dashboard/operaciones/rutas/[id]/hoja":
       "hoja de ruta: sus paradas las coloca «Armar rutas» en el despacho; " +
       "teclearlas aquí a mano las descolocaría en el siguiente rearmado",
