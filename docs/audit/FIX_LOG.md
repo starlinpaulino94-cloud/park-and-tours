@@ -378,3 +378,34 @@ daba error: los tres producían números equivocados en silencio.
   cobrar—.
 - **Pruebas:** `booking-service.test.ts`, «sincronizar el cobro de una orden»
   (cuatro casos), más el ciclo completo en `octo-service.test.ts`.
+
+### AUD-M07 — Veintiuna escrituras más que no miraban su error (P1) — CERRADA
+- **Cómo apareció:** arreglado AUD-M05 en el conector de OTAs, se midió la misma
+  forma en todo el repositorio. Veintiuna.
+- **Las que dolían de verdad:**
+  - `api/v1/bookings` — la **clave de idempotencia** se escribía DESPUÉS de
+    crear la venta. Si falla, el reintento del socio —que reintenta siempre— no
+    encuentra clave que lo frene: dos ventas, las mismas plazas apartadas dos
+    veces y un pasajero cobrado dos veces. Es el gemelo exacto del bug de OCTO.
+  - `stripe/webhook` (tres) — el estado de la suscripción. Un fallo se contestaba
+    con 200, así que **Stripe no lo reintenta nunca más**: empresa cobrada y en
+    «pendiente de pago», o al revés, hasta que alguien pierde el acceso.
+  - `setup` y `superadmin/companies` — el `tenant_org_id` con el que una empresa
+    se pertenece a sí misma. Sin él, la RLS la deja fuera de sus propios datos:
+    un alta que termina en una cuenta que no ve nada.
+  - `cron/collections` — el `reminded_at` de la cuota. Sin él, el mismo cliente
+    recibe el mismo recordatorio cada día, para siempre.
+  - `membego-redemption-service` — la marca de «revertido» después de que
+    MembeGo ya revirtió el beneficio por su API. Sin ella, una segunda
+    cancelación pide la reversa de algo ya revertido.
+- **Archivos:** los doce anteriores más `plan-service`, `system-health-service`,
+  `audit`, `membego-service`, `public-booking-service` y `auth/callback`.
+- **Solución:** `src/lib/supabase/write.ts` con dos verbos y ningún tercero.
+  `mustWrite` cuando la operación no vale sin esa escritura; `tryWrite` cuando lo
+  que importaba ya pasó y no se puede deshacer —el dinero se movió, el correo
+  salió— pero callarse tampoco es una opción: devuelve si llegó, para que quien
+  llama no cuente como hecho lo que no se escribió.
+- **Guarda:** `ui-contracts.test.ts`, «la base dice que no y alguien tiene que
+  oírlo». Recorre `src/` y falla nombrando archivo y línea. Comprobada con una
+  mutación: al quitar un `tryWrite`, la guarda lo señala.
+- **Queda a cero:** ninguna escritura con la llave de servicio ignora su error.

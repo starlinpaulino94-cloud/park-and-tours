@@ -1,6 +1,7 @@
 import "server-only";
 import { headers } from "next/headers";
 import { supabaseService } from "@/lib/supabase/service";
+import { tryWrite } from "@/lib/supabase/write";
 import {
   mapMembegoRole, canLinkCompanies, clienteFromPayload, membresiaFromPayload, splitNombre,
   type MembegoSsoPayload, type MembegoEvent,
@@ -66,7 +67,10 @@ export async function auditMembego(
 ): Promise<void> {
   try {
     const h = await headers().catch(() => null);
-    await supabaseService().from("audit_log").insert({
+    // La bitácora nunca tumba la operación que describe, pero un fallo suyo
+    // tampoco puede desaparecer: sin esto, la auditoría tiene huecos que nadie
+    // sabe que existen.
+    await tryWrite("anotar en la bitácora", supabaseService().from("audit_log").insert({
       organization_id: organizationId,
       user_id: opts.userId ?? null,
       action,
@@ -77,7 +81,7 @@ export async function auditMembego(
       ip_address: h?.get("x-forwarded-for") || undefined,
       user_agent: h?.get("user-agent") || undefined,
       occurred_at: new Date().toISOString(),
-    });
+    }));
   } catch (err) {
     console.error("[membego] no se pudo escribir la bitácora:", err);
   }
@@ -339,18 +343,19 @@ export async function applyMembegoEvent(link: MembegoLink, event: MembegoEvent):
     // reintente — el reintento verá el duplicado, así que la reparación real
     // es manual, con el payload íntegro guardado aquí.
     const message = err instanceof Error ? err.message : String(err);
-    await sb.from("membego_event")
+    await tryWrite(`marcar como fallido el evento ${event.id}`, sb.from("membego_event")
       .update({ status: "failed", error: message.slice(0, 400) })
-      .eq("event_id", event.id);
+      .eq("event_id", event.id));
     throw err;
   }
 
-  await sb.from("membego_link")
+  // Contadores de la conexión: informativos. El evento ya se procesó.
+  await tryWrite("actualizar los contadores del enlace con MembeGo", sb.from("membego_link")
     .update({
       last_event_at: new Date().toISOString(),
       events_received: (link.events_received ?? 0) + 1,
     })
-    .eq("id", link.id);
+    .eq("id", link.id));
 
   return { status: known ? "processed" : "ignored" };
 }

@@ -11,6 +11,7 @@ import { markExpiredOctoHolds } from "@/lib/octo-service";
 import { statusFor, collectionStatus, agingBucketFor, dayOf, daysBetween } from "@/lib/collections";
 import { notify } from "@/lib/notify-service";
 import type { Booking, Company } from "@/lib/types";
+import { tryWrite } from "@/lib/supabase/write";
 
 /**
  * GET /api/cron/collections — la cobranza diaria.
@@ -108,11 +109,13 @@ async function refreshInstallments(now: Date): Promise<{ overdue: number; orders
       .eq("order_id", orderId)
       .limit(60);
     const state = collectionStatus(all ?? [], now);
-    await supabaseService()
+    // El cron recorre muchas ventas: que una falle no puede dejar sin repasar a
+    // las demás. Se anota y se sigue.
+    await tryWrite(`marcar el estado de cobro de la venta ${orderId}`, supabaseService()
       .from("sales_order")
       .update({ collection_status: state })
       .eq("organization_id", companyId)
-      .eq("id", orderId);
+      .eq("id", orderId));
   }
 
   return { overdue, orders: touchedOrders.size };
@@ -200,11 +203,16 @@ async function remindBalances(now: Date): Promise<{ reminded: number; companies:
         },
         serviceStore()
       );
-      await supabaseService()
+      // Si no se puede dejar constancia de que el recordatorio salió, NO se
+      // cuenta como enviado — pero tampoco se reintenta el envío en esta
+      // vuelta: el correo ya se fue. La cuota volverá mañana, y volver a
+      // recordar es mucho menos grave que decir que se recordó y no constar.
+      const anotado = await tryWrite(`anotar el recordatorio de la cuota ${row.id}`, supabaseService()
         .from("payment_schedule")
         .update({ reminded_at: now.toISOString() })
         .eq("organization_id", row.organization_id)
-        .eq("id", row.id);
+        .eq("id", row.id));
+      if (!anotado) continue;
       companies.add(row.organization_id);
       reminded++;
     } catch (err) {

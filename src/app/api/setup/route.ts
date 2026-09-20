@@ -5,6 +5,7 @@ import { supabaseServer } from "@/lib/supabase/server";
 import { supabaseService } from "@/lib/supabase/service";
 import type { CompanyType, Currency, ModuleKey } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
+import { mustWrite } from "@/lib/supabase/write";
 
 const DEFAULT_MODULES: ModuleKey[] = [
   "bookings", "crm", "commissions", "settlements", "payments", "cash_pos",
@@ -105,7 +106,11 @@ export async function POST(req: NextRequest) {
     }).select("*").single();
     if (companyError) throw companyError;
 
-    await sb.from("organizations").update({ tenant_org_id: company.id }).eq("id", company.id);
+    // Una empresa sin `tenant_org_id` no se pertenece a sí misma: la RLS la
+    // deja fuera de sus propios datos y el alta termina en una cuenta que no
+    // puede ver nada. Es parte del alta, no un adorno.
+    await mustWrite("vincular la empresa consigo misma",
+      sb.from("organizations").update({ tenant_org_id: company.id }).eq("id", company.id));
 
     const { error: membershipError } = await sb.from("organization_memberships").insert({
       user_id: user.id,

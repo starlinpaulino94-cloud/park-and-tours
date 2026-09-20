@@ -4,6 +4,7 @@ import { supabaseService } from "@/lib/supabase/service";
 import { tenantQuery, tenantUpdate, TenantError, type TenantContext } from "@/lib/tenant";
 import { syncOrderTotals } from "@/lib/booking-service";
 import { writeAudit } from "@/lib/audit";
+import { tryWrite } from "@/lib/supabase/write";
 import {
   evaluateBenefits, redeemMembership, redeemPromotion, reverseRedemption,
   platformConfigured, MembegoApiError,
@@ -396,7 +397,10 @@ async function recordFailure(
   }
 ): Promise<void> {
   const api = r.err instanceof MembegoApiError ? r.err : null;
-  await supabaseService().from("membego_redemption").insert({
+  // La fila del canje FALLIDO es lo único que quedará de él: si tampoco se
+  // puede escribir, al menos que conste en el registro. No se lanza porque
+  // quien llama ya está gestionando un fallo.
+  await tryWrite("anotar el canje fallido", supabaseService().from("membego_redemption").insert({
     organization_id: companyId,
     order_id: r.order.id,
     booking_id: r.chosen.id,
@@ -417,9 +421,7 @@ async function recordFailure(
     redeemed_by: userId || null,
     // Un intento fallido no puede bloquear el siguiente con la misma clave.
     idempotency_key: `${r.idempotencyKey}:fail:${Date.now()}`,
-  }).then(({ error }) => {
-    if (error) console.error("[membego] no se pudo anotar el canje fallido:", error.message);
-  });
+  }));
 }
 
 /* ═════════════════════════════════════════════════════════ revertir ══ */
@@ -465,9 +467,10 @@ export async function reverseForOrder(
     if (block) {
       // Una promoción no tiene reversa por API. Se dice y se deja anotado en vez
       // de fingir que se devolvió.
-      await supabaseService().from("membego_redemption").update({
-        reverse_reason: `${reason} · ${REVERSAL_BLOCK_MESSAGE[block]}`,
-      }).eq("organization_id", companyId).eq("id", row.id);
+      await tryWrite("anotar que la reversa hay que hacerla a mano",
+        supabaseService().from("membego_redemption").update({
+          reverse_reason: `${reason} · ${REVERSAL_BLOCK_MESSAGE[block]}`,
+        }).eq("organization_id", companyId).eq("id", row.id));
 
       await writeAudit({
         companyId, userId,
@@ -488,9 +491,20 @@ export async function reverseForOrder(
         String(row.redemption_id),
         reason
       );
-      await supabaseService().from("membego_redemption").update({
-        status: "reversed", reversed_at: new Date().toISOString(), reverse_reason: reason,
-      }).eq("organization_id", companyId).eq("id", row.id);
+      /**
+       * MembeGo YA revirtió el beneficio por su API. Si esta fila se queda sin
+       * marcar, la nuestra sigue diciendo «canjeado» y una segunda cancelación
+       * volvería a pedir la reversa de algo ya revertido. No se lanza —tumbar
+       * la cancelación aquí sería peor, el beneficio ya volvió— pero queda
+       * escrito con el identificador para poder cuadrarlo a mano.
+       */
+      const marcado = await tryWrite(`marcar como revertido el canje ${row.id}`,
+        supabaseService().from("membego_redemption").update({
+          status: "reversed", reversed_at: new Date().toISOString(), reverse_reason: reason,
+        }).eq("organization_id", companyId).eq("id", row.id));
+      if (!marcado) {
+        console.error(`[membego] el beneficio del canje ${row.id} se revirtió en MembeGo pero la fila local sigue activa: hay que cuadrarlo a mano`);
+      }
 
       // El importe solo vuelve a la venta si la venta sigue viva. Si se está
       // cancelando entera, subir la línea antes inflaría el reembolso.

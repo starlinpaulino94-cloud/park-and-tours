@@ -3,6 +3,7 @@ import { supabaseService } from "@/lib/supabase/service";
 import { TenantError, type TenantContext } from "@/lib/tenant";
 import { notify } from "@/lib/notify-service";
 import type { ModuleKey } from "@/lib/types";
+import { tryWrite } from "@/lib/supabase/write";
 import {
   planStatus, limitCheck, limitMessage, metricLabel, moduleAllowed, moduleMessage, monthStart,
   type LimitMetric, type PlanSnapshot, type PlanStatus, type PlanUsage,
@@ -176,9 +177,11 @@ export async function addStorageUsage(companyId: string, bytes: number): Promise
     const sb = supabaseService();
     const { data } = await sb.from("organizations").select("storage_used_mb").eq("id", companyId).maybeSingle();
     const current = Number(data?.storage_used_mb ?? 0);
-    await sb.from("organizations")
+    // Sin comprobarlo, el consumo se queda como estaba y el límite del plan
+    // deja de aplicarse: la empresa sube sin techo y nadie lo sabe.
+    await tryWrite("sumar el almacenamiento consumido", sb.from("organizations")
       .update({ storage_used_mb: Math.round((current + mb) * 100) / 100 })
-      .eq("id", companyId);
+      .eq("id", companyId));
   } catch (err) {
     console.error("[plan] no se pudo actualizar el almacenamiento consumido:", err);
   }

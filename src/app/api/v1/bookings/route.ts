@@ -7,6 +7,7 @@ import { readPublicRequest, REQUEST_PROBLEM_MESSAGE } from "@/lib/public-booking
 import { createPublicBooking, loadPublicPage } from "@/lib/public-booking-service";
 import { writeAudit } from "@/lib/audit";
 import { notify } from "@/lib/notify-service";
+import { mustWrite } from "@/lib/supabase/write";
 
 /**
  * POST /api/v1/bookings — un sistema externo crea una reserva.
@@ -100,11 +101,17 @@ export async function POST(req: NextRequest) {
 
     // La clave queda pegada a la venta: es lo que hace que el reintento
     // devuelva esto mismo en vez de crear otra.
-    await supabaseService()
+    //
+    // Y por eso se comprueba: si esta escritura falla y se contesta que sí, el
+    // socio reintenta —reintenta siempre— y la segunda llamada no encuentra
+    // clave que la frene. Dos ventas, dos veces las mismas plazas apartadas y
+    // un pasajero cobrado dos veces. Mejor un 500 que el socio reintente sobre
+    // una venta que sí quedó marcada.
+    await mustWrite("marcar la venta con la clave de idempotencia", supabaseService()
       .from("sales_order")
       .update({ idempotency_key: idempotencyKey })
       .eq("organization_id", caller.companyId)
-      .eq("order_number", result.orderNumber);
+      .eq("order_number", result.orderNumber));
 
     await writeAudit({
       companyId: caller.companyId,
