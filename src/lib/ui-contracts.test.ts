@@ -1615,6 +1615,16 @@ describe("el plan se aplica en la API, no solo en el menú", () => {
     // y hay guarda propia que lo exige en cada ruta que vende.
     /^src\/app\/api\/octo\/v1\//,
     /**
+     * Cambiar de empresa no es una operación: es navegación. No escribe nada
+     * de negocio —solo pone una cookie y deja el rastro en la bitácora—, y
+     * bloquearlo por una suscripción vencida tendría el efecto exactamente al
+     * revés del que se busca: quien pertenece a dos empresas y tiene UNA sin
+     * pagar se quedaría encerrado en la que no paga, sin poder salir a la que
+     * sí. El plan se aplica en cada ruta que escribe de verdad, que es donde
+     * tiene sentido.
+     */
+    /^src\/app\/api\/workspace\//,
+    /**
      * La encuesta: lo que se escribe aquí no es una operación de la empresa,
      * es la respuesta de UN CLIENTE a algo que ya se le preguntó.
      *

@@ -35,6 +35,7 @@ const VALID_ROLES = new Set<AppRole>([
   "superadmin", "owner", "admin", "manager", "operations", "cashier", "seller", "partner",
 ]);
 const IMPERSONATION_COOKIE = "tf_impersonate_company";
+const WORKSPACE_COOKIE = "tf_active_company";
 
 /** Decodes a JWT payload (base64url) without verifying — the caller must have
  *  already validated the token via supabase.auth.getUser(). */
@@ -133,6 +134,60 @@ async function loadOrganization(orgId: string): Promise<Company | null> {
   }
 }
 
+/**
+ * LA EMPRESA ACTIVA, CUANDO ALGUIEN PERTENECE A MÁS DE UNA.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ HACÍA FALTA
+ *
+ * La sesión resolvía la empresa SIEMPRE desde la membresía principal —lo hace
+ * el hook de la base con `order by is_primary desc` y lo repite el respaldo de
+ * este archivo—, y no había ninguna forma de cambiarla. El sembrador de
+ * demostración crea una empresa hermana y da membresía `is_primary: false` a
+ * propósito, para que nadie aterrice ahí por accidente; su propio comentario
+ * decía «para presentar se cambia de empresa en el selector». Ese selector no
+ * existía: la demostración quedaba escrita y era inalcanzable.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LA COOKIE GUARDA LA EMPRESA, Y EL ROL SE VUELVE A RESOLVER
+ *
+ * La cookie la controla el cliente, así que no se cree nada de lo que diga
+ * salvo «mira esta empresa». Lo que decide es esta consulta, en CADA petición:
+ * si no hay membresía activa en esa empresa, la cookie no vale nada.
+ *
+ * Y el rol sale de ESA membresía, no de la anterior. Es la parte que de verdad
+ * importa: quien es `owner` en su empresa y `operations` en la de al lado
+ * entraría a la segunda mandando, y eso no sería un selector — sería una
+ * escalada de privilegios a un clic. Una membresía que se desactiva deja de
+ * valer en la siguiente petición, sin sesión que cerrar.
+ */
+async function loadMembershipClaims(userId: string, orgId: string): Promise<AppClaims | null> {
+  try {
+    const sb = supabaseService();
+    const { data } = await sb
+      .from("organization_memberships")
+      .select("role,status,branch_id,organizations(id,kind,tenant_org_id)")
+      .eq("user_id", userId)
+      .eq("organization_id", orgId)
+      .eq("status", "active")
+      .limit(1)
+      .maybeSingle();
+
+    const org = Array.isArray(data?.organizations) ? data?.organizations[0] : data?.organizations;
+    if (!data || !org?.id) return null;
+
+    return {
+      org_id: org.tenant_org_id || org.id,
+      app_role: data.role,
+      status: data.status,
+      partner_id: org.kind === "partner" ? org.id : null,
+      branch_id: data.branch_id ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function loadClaimsFromPrimaryMembership(userId: string): Promise<AppClaims | null> {
   try {
     const sb = supabaseService();
@@ -170,7 +225,24 @@ export async function getSupabaseTenantContext(): Promise<TenantContext | null> 
   const { data: sessionRes } = await sb.auth.getSession();
   const token = sessionRes?.session?.access_token;
   const jwtClaims = (token ? decodeJwtClaims(token) : {}) as AppClaims;
-  const claims = jwtClaims.org_id ? jwtClaims : await loadClaimsFromPrimaryMembership(user.id);
+  let claims = jwtClaims.org_id ? jwtClaims : await loadClaimsFromPrimaryMembership(user.id);
+
+  /**
+   * El cambio de empresa, ANTES de cargar nada más.
+   *
+   * Va aquí y no al final para que el contexto salga entero de una pieza: la
+   * empresa, el rol, la sucursal y el socio del MISMO sitio. Resolverlo después
+   * dejaría la puerta abierta a un contexto mezclado —la empresa nueva con el
+   * rol viejo—, que es exactamente el fallo que este orden evita.
+   */
+  const activo = (await cookies()).get(WORKSPACE_COOKIE)?.value;
+  if (activo && activo !== claims?.org_id) {
+    const otra = await loadMembershipClaims(user.id, activo);
+    // Sin membresía activa, la cookie se ignora en silencio y se sigue en la
+    // empresa de siempre: una cookie manipulada no puede sacar a nadie de su
+    // sesión ni meterlo donde no pertenece.
+    if (otra) claims = otra;
+  }
 
   /**
    * El segundo factor se decide con lo que YA hay en la mano: el nivel del token

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
 import { SEED_TABLES, TEARDOWN_TABLES } from "./demo/tables.mjs";
@@ -181,6 +182,115 @@ async function ensureMemberships(demoOrgId, members) {
   }
 }
 
+/* ══════════════════════════ las cuentas de demostración ══════════════════ */
+
+/**
+ * TRES CUENTAS CON SU PROPIA CONTRASEÑA, DENTRO DE LA EMPRESA DEMO.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * PARA QUÉ, SI YA HAY UN SELECTOR DE EMPRESA
+ *
+ * El selector sirve para TI: entras con tu cuenta y saltas a la demo. Estas
+ * cuentas sirven para lo otro — entregarle una a un comercial, a un cliente que
+ * quiere trastear el fin de semana, o a quien prepara una feria — sin darle
+ * acceso a tu operación de verdad.
+ *
+ * Solo tienen membresía en la empresa de demostración. Aunque alguien les dé la
+ * dirección de tu panel, no hay nada que ver: la RLS resuelve por membresía y
+ * no tienen ninguna en tu empresa.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * TRES ROLES Y NO UNO
+ *
+ * Enseñar el sistema desde el propietario da una idea equivocada de él: todo se
+ * puede, todo se ve, y el visitante se lleva la impresión de un ERP sin
+ * permisos. Con las tres cuentas se puede enseñar lo que de verdad convence —
+ * que el vendedor no ve los márgenes y que el guía solo ve su manifiesto—.
+ */
+const DEMO_USERS = [
+  { suffix: "demo", role: "owner", name: "Demo · Propietario" },
+  { suffix: "demo.ventas", role: "seller", name: "Demo · Vendedor" },
+  { suffix: "demo.guia", role: "operations", name: "Demo · Operación" },
+];
+
+/**
+ * La contraseña NO vive en el repositorio.
+ *
+ * Se toma de `DEMO_USER_PASSWORD` si está puesta, y si no se genera una y se
+ * imprime UNA vez al terminar. Escribir aquí una contraseña «de demostración»
+ * sería publicar una credencial válida contra una base real, y las
+ * credenciales de demostración son justo las que nadie cambia nunca.
+ */
+function demoPassword() {
+  const puesta = process.env.DEMO_USER_PASSWORD;
+  if (puesta && puesta.length >= 12) return { value: puesta, generated: false };
+  if (puesta) throw new Error("DEMO_USER_PASSWORD es demasiado corta: mínimo 12 caracteres.");
+  const bytes = crypto.randomBytes(12);
+  const alfabeto = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  let out = "";
+  for (const b of bytes) out += alfabeto[b % alfabeto.length];
+  return { value: `Demo-${out}`, generated: true };
+}
+
+/** El correo de cada cuenta, derivado del dominio de la empresa demo. */
+function demoEmail(suffix, slug) {
+  return `${suffix}@${slug}.demo.local`.toLowerCase();
+}
+
+/**
+ * Crea (o actualiza) las cuentas y las mete SOLO en la empresa de demostración.
+ *
+ * Es idempotente: si la cuenta ya existe se le repone la contraseña y se
+ * comprueba su membresía. Así, volver a ejecutar el sembrador sirve también
+ * para «se me olvidó la contraseña de la demo».
+ */
+async function ensureDemoUsers(demoOrgId, slug, password) {
+  const creadas = [];
+  for (const perfil of DEMO_USERS) {
+    const email = demoEmail(perfil.suffix, slug);
+    let user = await findUserByEmail(email);
+
+    if (!user) {
+      const { data, error } = await sb.auth.admin.createUser({
+        email,
+        password,
+        // Sin confirmar, Supabase le pide verificar un correo que nadie va a
+        // recibir: el dominio `.demo.local` no existe a propósito, para que
+        // ninguna de estas cuentas pueda recibir un mensaje de verdad.
+        email_confirm: true,
+        user_metadata: { name: perfil.name, demo: true },
+      });
+      if (error) throw new Error(`crear ${email}: ${error.message}`);
+      user = data.user;
+      creadas.push({ email, role: perfil.role, nuevo: true });
+    } else {
+      const { error } = await sb.auth.admin.updateUserById(user.id, {
+        password,
+        user_metadata: { name: perfil.name, demo: true },
+      });
+      if (error) throw new Error(`actualizar ${email}: ${error.message}`);
+      creadas.push({ email, role: perfil.role, nuevo: false });
+    }
+
+    const { data: existing, error: memErr } = await sb
+      .from("organization_memberships")
+      .select("id")
+      .eq("user_id", user.id)
+      .eq("organization_id", demoOrgId)
+      .maybeSingle();
+    if (memErr) throw new Error(`membresía de ${email}: ${memErr.message}`);
+
+    // `is_primary: true` y aquí SÍ es lo correcto: para estas cuentas la
+    // demostración es su única empresa, así que es donde tienen que aterrizar.
+    const row = { role: perfil.role, status: "active", is_primary: true };
+    const { error: upErr } = existing?.id
+      ? await sb.from("organization_memberships").update(row).eq("id", existing.id)
+      : await sb.from("organization_memberships").insert({ user_id: user.id, organization_id: demoOrgId, ...row });
+    if (upErr) throw new Error(`membresía de ${email}: ${upErr.message}`);
+  }
+  return creadas;
+}
+
 /** Un identificador de URL estable a partir del nombre de la empresa real. */
 function slugify(text) {
   return String(text || "empresa")
@@ -255,13 +365,44 @@ async function resetDemoData(orgId) {
 }
 
 /** Borra la empresa de demostración entera, incluida la organización. */
-async function removeDemoOrg(orgId) {
+async function removeDemoOrg(orgId, slug) {
   await resetDemoData(orgId);
   const { error: memErr } = await sb.from("organization_memberships").delete().eq("organization_id", orgId);
   if (memErr) throw new Error(`borrar membresías: ${memErr.message}`);
   const { error } = await sb.from("organizations").delete().eq("id", orgId);
   if (error) throw new Error(`borrar la empresa demo: ${error.message}`);
+
+  /**
+   * Y las cuentas de demostración con ella.
+   *
+   * Si se quedaran, quedarían tres usuarios con contraseña conocida y sin
+   * ninguna empresa: hoy no ven nada, pero son credenciales válidas contra tu
+   * proyecto de Supabase esperando a que alguien les dé una membresía por
+   * error. Se borran por su correo, que es determinista a partir del slug.
+   */
+  let borradas = 0;
+  for (const perfil of DEMO_USERS) {
+    const email = demoEmail(perfil.suffix, slug);
+    const user = await findUserByEmail(email);
+    if (!user) continue;
+    const { error: delErr } = await sb.auth.admin.deleteUser(user.id);
+    if (delErr) {
+      console.warn(`  No se pudo borrar ${email}: ${delErr.message}`);
+      continue;
+    }
+    borradas++;
+  }
+  if (borradas > 0) console.log(`  ${borradas} cuenta(s) de demostración eliminada(s).`);
 }
+
+/** Lo que hay que enseñar al final, una sola vez. */
+const CREDENCIALES = { cuentas: [], password: null };
+
+const ROL_DEMO = {
+  owner: "propietario — lo ve todo",
+  seller: "vendedor — sin márgenes ni costes",
+  operations: "operación — manifiestos y despacho",
+};
 
 async function main() {
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
@@ -278,7 +419,7 @@ async function main() {
   const demoOrgId = await ensureDemoOrg(realOrg);
 
   if (ONLY_REMOVE) {
-    await removeDemoOrg(demoOrgId);
+    await removeDemoOrg(demoOrgId, `${slugify(realOrg.name)}-demo`);
     console.log(`Empresa de demostración eliminada. «${realOrg.name}» queda como estaba.`);
     return;
   }
@@ -286,6 +427,13 @@ async function main() {
   const members = await membersOf(realOrg.id);
   await ensureMemberships(demoOrgId, members);
   console.log(`Empresa real: «${realOrg.name}» — ${members.length} persona(s) con acceso a la demostración.`);
+
+  // Y las cuentas propias, para poder entregar una sin dar la tuya.
+  const slug = `${slugify(realOrg.name)}-demo`;
+  const clave = demoPassword();
+  const cuentas = await ensureDemoUsers(demoOrgId, slug, clave.value);
+  CREDENCIALES.cuentas = cuentas;
+  CREDENCIALES.password = clave;
 
   const orgId = demoOrgId;
   if (RESET) await resetDemoData(orgId);
@@ -540,8 +688,34 @@ async function resumen(sb, orgId, realOrg) {
   const ancho = Math.max(...filas.map(([t]) => t.length), 10);
   for (const [table, n] of filas) console.log(`  ${table.padEnd(ancho)}  ${n}`);
   console.log(`\n  ${filas.length} de ${SEED_TABLES.length} tablas con datos.`);
-  console.log(`\n  Entra con ${OWNER_EMAIL} y cambia a «${realOrg.name} (Demostración)» en el selector de empresa.`);
-  console.log("  Tu empresa real no se ha tocado. Para borrar la demo: npm run seed:demo-presentation -- --remove\n");
+  console.log(`\n  Entra con ${OWNER_EMAIL} y cambia a «${realOrg.name} (Demostración)» en el selector de empresa,`);
+  console.log("  arriba a la izquierda. Mientras estés dentro, una banda azul te lo recuerda en cada pantalla.");
+
+  if (CREDENCIALES.cuentas.length > 0) {
+    console.log("\n  ── Cuentas de demostración ───────────────────────────────────────");
+    console.log("  Para entregar. Solo ven la empresa de demostración; tu operación");
+    console.log("  real no existe para ellas.\n");
+    const ancho = Math.max(...CREDENCIALES.cuentas.map((c) => c.email.length));
+    for (const c of CREDENCIALES.cuentas) {
+      console.log(`    ${c.email.padEnd(ancho)}   ${ROL_DEMO[c.role] ?? c.role}${c.nuevo ? "" : "  (ya existía)"}`);
+    }
+    if (CREDENCIALES.password?.generated) {
+      /**
+       * Se imprime UNA vez y no se guarda en ningún sitio.
+       *
+       * Quien la necesite después vuelve a ejecutar el sembrador, que repone la
+       * contraseña de las tres. Guardarla en un archivo sería dejar una
+       * credencial válida contra una base real esperando a que alguien la
+       * encuentre.
+       */
+      console.log(`\n    Contraseña (se enseña AHORA y no se guarda): ${CREDENCIALES.password.value}`);
+      console.log("    Para fijar una tuya: DEMO_USER_PASSWORD=… npm run seed:demo-presentation");
+    } else {
+      console.log("\n    Contraseña: la de DEMO_USER_PASSWORD.");
+    }
+  }
+
+  console.log("\n  Tu empresa real no se ha tocado. Para borrar la demo: npm run seed:demo-presentation -- --remove\n");
 }
 
 main().catch((error) => {

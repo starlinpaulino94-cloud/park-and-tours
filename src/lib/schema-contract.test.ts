@@ -896,8 +896,48 @@ describe("el sembrador de demostración escribe columnas que existen", () => {
       .replace(/^[ \t]*\/\/.*$/gm, " ")
       .replace(/^[ \t]*\*.*$/gm, " ");
 
-    expect(codigo, "el sembrador marca la demo como empresa principal").not.toMatch(/is_primary:\s*true/);
-    expect(codigo, "el sembrador reescribe la cuenta de Auth de una persona real").not.toMatch(/updateUserById/);
+    /**
+     * ──────────────────────────────────────────────────────────────────────
+     * LA REGLA ES SOBRE LAS PERSONAS REALES, NO SOBRE LA PALABRA
+     *
+     * `is_primary: true` prohibido en TODO el archivo se quedó corto al
+     * aparecer las cuentas de demostración: ésas solo pertenecen a la empresa
+     * demo, así que es donde TIENEN que aterrizar, y marcarlas como principal
+     * es lo correcto.
+     *
+     * Lo que sigue prohibido —y es lo que rompió— es tocar la membresía de una
+     * persona REAL. Así que la comprobación se hace por función: la que reparte
+     * membresías a la gente de la empresa de verdad no puede escribir
+     * `is_primary: true` ni de lejos.
+     */
+    const cuerpoDe = (nombre) => {
+      const desde = codigo.indexOf(`async function ${nombre}(`);
+      if (desde < 0) return "";
+      const siguiente = codigo.indexOf("\nasync function ", desde + 1);
+      return codigo.slice(desde, siguiente < 0 ? codigo.length : siguiente);
+    };
+
+    const personasReales = cuerpoDe("ensureMemberships");
+    expect(personasReales, "ensureMemberships tiene que existir para poder vigilarla").not.toBe("");
+    expect(personasReales, "el sembrador marca la demo como empresa principal de una persona real")
+      .not.toMatch(/is_primary:\s*true/);
+    expect(personasReales, "la membresía de la demo nace is_primary: false SIEMPRE")
+      .toMatch(/is_primary:\s*false/);
+
+    // Las cuentas de demostración sí pueden, y solo ellas.
+    const soloDemo = cuerpoDe("ensureDemoUsers");
+    const otras = codigo.replace(soloDemo, " ");
+    expect(otras, "solo las cuentas de demostración pueden nacer como principales")
+      .not.toMatch(/is_primary:\s*true/);
+
+    /**
+     * `updateUserById` sigue prohibido sobre una persona real —reescribirle la
+     * cuenta de Auth a alguien por sembrar una demostración fue el otro fallo—,
+     * pero las cuentas de demostración se crean y se reponen con él: volver a
+     * ejecutar el sembrador es lo que arregla un «se me olvidó la contraseña».
+     */
+    expect(otras, "el sembrador reescribe la cuenta de Auth de una persona real")
+      .not.toMatch(/updateUserById/);
   });
 
   it("y el extractor no se cuela con lo anidado", () => {

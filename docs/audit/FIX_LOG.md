@@ -436,3 +436,41 @@ daba error: los tres producían números equivocados en silencio.
   —al quitar el de la salida lo paraba el de las reservas y viceversa—, así que
   ninguno moría por separado. Ahora hay una prueba que muere con la mutación
   combinada y una guarda de código que los exige de uno en uno.
+
+### AUD-M09 — La demostración estaba escrita y era inalcanzable (P1) — CERRADA
+- **Cómo apareció:** un «no puedo acceder a las cuentas demo».
+- **El defecto, en dos mitades:**
+  1. `scripts/seed-demo-presentation.mjs` crea una empresa hermana y da
+     membresía `is_primary: false`, y su mensaje final decía «cambia a la
+     empresa de demostración **en el selector**». Ese selector no existía:
+     `grep` sobre toda la aplicación no encontró nada que cambiara de empresa.
+  2. La empresa de la sesión la resuelve el hook de la base
+     (`order by mem.is_primary desc ... limit 1`) y, de respaldo,
+     `loadClaimsFromPrimaryMembership` con el mismo orden. Siempre gana la
+     principal. La demo quedaba sembrada y sin puerta.
+- **Y no había ninguna cuenta demo:** el sembrador no crea usuarios, solo
+  reparte membresías. Lo que se pedía por su nombre no existía.
+- **La única puerta que sí había** era la suplantación del superadministrador,
+  que es otra cosa: soporte, a cualquier empresa y por dos horas.
+- **Archivos:** `src/lib/supabase/auth-context.ts`, `src/lib/tenant.ts`,
+  `src/lib/workspace-service.ts`, `src/app/api/workspace/route.ts`,
+  `src/components/tf/{app-shell,org-context}.tsx`,
+  `scripts/seed-demo-presentation.mjs`, `.env.example`.
+- **Solución:** una cookie de empresa activa honrada **solo** con membresía
+  activa, con el rol resuelto desde ESA membresía. Lo segundo es lo que importa:
+  conservar el rol de origen habría convertido el selector en una escalada de
+  privilegios a un clic —`owner` en la tuya, `owner` en la de al lado donde solo
+  eres `operations`— y encima invisible, porque todo funcionaría. Más tres
+  cuentas de demostración con contraseña que no vive en el repositorio.
+- **Guardas:** once pruebas sobre quién puede entrar a dónde, y cinco
+  mutaciones, cinco muertas. La quinta —el orden del selector— sobrevivió a la
+  primera vuelta porque el fixture ya tenía la empresa principal en primer
+  lugar: sembrado al revés de como tiene que salir, el orden se comprueba de
+  verdad.
+- **Una guarda de una ola anterior, afinada:** «el sembrador no escribe
+  `is_primary: true`» era correcta cuando solo repartía membresías a personas
+  reales, y se quedó corta con las cuentas que SOLO existen en la demo —para
+  ésas, la demo es su única empresa y es donde tienen que aterrizar—. Ahora la
+  comprobación es por función: prohibido en la que toca a personas reales,
+  permitido solo en la que crea las cuentas de demostración. Comprobado con una
+  mutación.
