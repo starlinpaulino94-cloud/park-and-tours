@@ -24,7 +24,7 @@ import { signOut as authSignOut } from "@/lib/auth-client";
 import { toast } from "sonner";
 import { CommandPalette, openCommandPalette, rememberVisit } from "@/components/tf/command-palette";
 import { OrgProvider, useOrg } from "@/components/tf/org-context";
-import { COMPANY_TYPE } from "@/lib/labels";
+import { COMPANY_TYPE, APP_ROLE } from "@/lib/labels";
 
 export type NavBadges = Partial<Record<BadgeKey, number>>;
 
@@ -260,27 +260,114 @@ function WorkspaceRail({
 /* Contexto organizacional — empresa y sucursal activa                        */
 /* -------------------------------------------------------------------------- */
 
+/** El aviso de estar trabajando fuera de la empresa principal. */
+function NoEsTuEmpresa() {
+  const { workspaces, switchWorkspace } = useOrg();
+  const activa = workspaces.find((w) => w.isActive);
+  const principal = workspaces.find((w) => w.isPrimary);
+
+  // Sin lista cargada todavía, o ya estás en la tuya: nada que avisar. Y quien
+  // pertenece a una sola empresa no ve esto jamás.
+  if (!activa || activa.isPrimary || workspaces.length < 2) return null;
+
+  return (
+    <div className="flex items-center gap-3 border-b border-sky-300 bg-sky-100 px-4 py-2 text-[13px] text-sky-950 sm:px-6 dark:border-sky-900 dark:bg-sky-950/60 dark:text-sky-100">
+      <Icon name="Building2" className="size-4 shrink-0" />
+      <p className="min-w-0 flex-1">
+        Estás trabajando en <strong>{activa.name}</strong>, que no es tu empresa principal.
+        Todo lo que registres aquí se queda aquí.
+      </p>
+      {principal && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 border-sky-500 bg-transparent"
+          onClick={() => switchWorkspace(principal.id).catch(() => toast.error("No se pudo volver"))}
+        >
+          Volver a {principal.name}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function OrgHeader({ compactLabel }: { compactLabel?: boolean }) {
-  const { companyName, companyType, branches, branch, setBranchId } = useOrg();
+  const { companyName, companyType, branches, branch, setBranchId, workspaces, switchWorkspace } = useOrg();
   const typeLabel = companyType ? COMPANY_TYPE[companyType]?.label : undefined;
+  const [cambiando, setCambiando] = useState(false);
+
+  /**
+   * El selector solo aparece con más de una empresa.
+   *
+   * Quien pertenece a una sola no tiene nada que elegir, y un desplegable de un
+   * elemento es un control que enseña algo que no existe.
+   */
+  const varias = workspaces.length > 1;
+
+  const cambiar = async (id: string) => {
+    if (cambiando) return;
+    setCambiando(true);
+    try {
+      await switchWorkspace(id);
+    } catch (err) {
+      setCambiando(false);
+      toast.error(err instanceof Error ? err.message : "No se pudo cambiar de empresa");
+    }
+  };
+
+  const cabecera = (
+    <div className="flex items-center gap-2 rounded-lg bg-sidebar-accent/50 px-2.5 py-2">
+      <span className="grid size-7 shrink-0 place-items-center rounded-md bg-sidebar-primary text-[11px] font-bold text-sidebar-primary-foreground">
+        {initials(companyName)}
+      </span>
+      <div className="min-w-0 flex-1 text-left">
+        <p className="truncate text-[12.5px] font-semibold leading-tight text-sidebar-foreground">
+          {companyName}
+        </p>
+        {typeLabel && !compactLabel && (
+          <p className="truncate text-[10px] uppercase tracking-wider text-sidebar-foreground/60">
+            {typeLabel}
+          </p>
+        )}
+      </div>
+      {varias && <Icon name="ChevronsUpDown" className="size-3.5 shrink-0 opacity-60" />}
+    </div>
+  );
 
   return (
     <div className="border-b border-sidebar-border px-3 py-3">
-      <div className="flex items-center gap-2 rounded-lg bg-sidebar-accent/50 px-2.5 py-2">
-        <span className="grid size-7 shrink-0 place-items-center rounded-md bg-sidebar-primary text-[11px] font-bold text-sidebar-primary-foreground">
-          {initials(companyName)}
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-[12.5px] font-semibold leading-tight text-sidebar-foreground">
-            {companyName}
-          </p>
-          {typeLabel && !compactLabel && (
-            <p className="truncate text-[10px] uppercase tracking-wider text-sidebar-foreground/60">
-              {typeLabel}
-            </p>
-          )}
-        </div>
-      </div>
+      {varias ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button className="w-full" aria-label="Cambiar de empresa" disabled={cambiando}>
+              {cabecera}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-64">
+            <DropdownMenuLabel className="text-[11px] uppercase tracking-wider">
+              Tus empresas
+            </DropdownMenuLabel>
+            {workspaces.map((w) => (
+              <DropdownMenuItem
+                key={w.id}
+                onClick={() => !w.isActive && cambiar(w.id)}
+                className="gap-2"
+              >
+                <Icon name={w.isActive ? "Check" : "Building2"} className="size-3.5 shrink-0 opacity-70" />
+                <span className="min-w-0 flex-1 truncate">{w.name}</span>
+                {/* El rol al lado, porque en la otra empresa puede no ser el
+                    mismo: entrar creyendo que mandas y no poder hacer nada es
+                    la sorpresa que este texto evita. */}
+                <span className="shrink-0 text-[10px] uppercase tracking-wider opacity-60">
+                  {APP_ROLE[w.role] ?? w.role}
+                </span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : (
+        cabecera
+      )}
 
       {branches.length > 1 && (
         <DropdownMenu>
@@ -746,6 +833,20 @@ export function AppShell({
               </DropdownMenu>
             </div>
           </header>
+
+          {/*
+            LA BANDA DE «NO ESTÁS EN TU EMPRESA».
+            ─────────────────────────────────────────────────────────────────
+            El sembrador de demostración da de alta una empresa hermana con
+            clientes inventados, reservas que nadie hizo y comisiones que nadie
+            cobró. Trabajar ahí media hora creyendo que es la operación de
+            verdad —cobrar, cerrar caja, cancelar una salida— es un daño que no
+            se deshace tirando de un hilo.
+
+            Por eso el aviso no es discreto y va arriba del todo: mientras la
+            empresa activa NO sea la principal, se ve en cada pantalla.
+          */}
+          <NoEsTuEmpresa />
 
           {user.impersonating && (
             <div className="flex items-center gap-3 border-b border-amber-300 bg-amber-100 px-4 py-2 text-[13px] text-amber-950 sm:px-6 dark:border-amber-900 dark:bg-amber-950/60 dark:text-amber-100">

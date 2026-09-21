@@ -20,6 +20,15 @@ export interface BranchOption {
   city?: string;
 }
 
+/** Una empresa a la que esta persona pertenece de verdad. */
+export interface WorkspaceOption {
+  id: string;
+  name: string;
+  role: string;
+  isPrimary: boolean;
+  isActive: boolean;
+}
+
 interface OrgValue {
   companyName: string;
   companyType?: string;
@@ -27,6 +36,10 @@ interface OrgValue {
   branchId: string | null;
   branch: BranchOption | null;
   setBranchId: (id: string | null) => void;
+  /** Las empresas de esta persona. Vacío o con una sola: no hay nada que elegir. */
+  workspaces: WorkspaceOption[];
+  /** Cambiar de empresa. Recarga, porque cambia TODO lo que hay en pantalla. */
+  switchWorkspace: (id: string) => Promise<void>;
   loading: boolean;
 }
 
@@ -42,6 +55,7 @@ export function OrgProvider({
   children: React.ReactNode;
 }) {
   const [branches, setBranches] = useState<BranchOption[]>([]);
+  const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([]);
   const [branchId, setBranchIdState] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -65,6 +79,46 @@ export function OrgProvider({
     return () => { cancelled = true; };
   }, []);
 
+  /**
+   * Las empresas de esta persona.
+   *
+   * El servidor decide: esta lista es exactamente la que autoriza el cambio, y
+   * viene de `/api/workspace`. Aquí no se filtra nada ni se recuerda nada — una
+   * lista guardada en el navegador seguiría ofreciendo una empresa de la que ya
+   * te sacaron.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await api.get<WorkspaceOption[]>("/api/workspace");
+      if (cancelled) return;
+      if (!res.ok) {
+        console.error("[org] no se pudieron cargar las empresas:", res.error);
+        return;
+      }
+      setWorkspaces(res.data || []);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  /**
+   * Cambiar de empresa RECARGA la página entera.
+   *
+   * No es pereza: al cambiar de empresa cambian el rol, los módulos visibles,
+   * el menú, la sucursal y cada dato que hay pintado. Actualizar por partes
+   * dejaría durante unos instantes la pantalla de una empresa con los datos de
+   * la otra, y ese instante es suficiente para que alguien lea una cifra que no
+   * es suya y la apunte.
+   */
+  const switchWorkspace = useCallback(async (id: string) => {
+    const res = await api.post("/api/workspace", { company_id: id });
+    if (!res.ok) {
+      console.error("[org] no se pudo cambiar de empresa:", res.error);
+      throw new Error(res.error?.message || "No se pudo cambiar de empresa");
+    }
+    window.location.assign("/dashboard");
+  }, []);
+
   const setBranchId = useCallback((id: string | null) => {
     setBranchIdState(id);
     if (typeof window === "undefined") return;
@@ -80,8 +134,10 @@ export function OrgProvider({
     branchId,
     branch: branches.find((b) => b._id === branchId) || null,
     setBranchId,
+    workspaces,
+    switchWorkspace,
     loading,
-  }), [companyName, companyType, branches, branchId, setBranchId, loading]);
+  }), [companyName, companyType, branches, branchId, setBranchId, workspaces, switchWorkspace, loading]);
 
   return <OrgContext.Provider value={value}>{children}</OrgContext.Provider>;
 }

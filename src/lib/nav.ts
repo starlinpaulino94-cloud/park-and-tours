@@ -471,9 +471,12 @@ export const WORKSPACES: Workspace[] = [
         id: "cli-experiencia",
         title: "Experiencia",
         items: [
+          { id: "opiniones", href: "/dashboard/clientes/opiniones", label: "Opiniones", icon: "MessageSquare",
+            description: "Qué dice quien ya viajó: NPS por guía y por excursión, y a quién hay que llamar hoy.",
+            keywords: ["nps", "encuesta", "satisfacción", "reseñas", "reputación", "valoraciones", "feedback"] },
           { id: "casos", href: "/dashboard/clientes/casos", label: "Casos", icon: "Headset",
             description: "Quejas, objetos perdidos y compensaciones con SLA.",
-            keywords: ["reclamos", "quejas", "lost and found", "guest relations", "nps"] },
+            keywords: ["reclamos", "quejas", "lost and found", "guest relations"] },
           { id: "comunicaciones", href: "/dashboard/clientes/comunicaciones", label: "Comunicaciones", icon: "Mail",
             description: "Todo lo que se le ha escrito al cliente, con su estado de entrega.",
             keywords: ["correos", "mensajes", "whatsapp", "avisos", "recordatorios", "bandeja de salida"] },

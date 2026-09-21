@@ -44,7 +44,7 @@ export const TEMPLATE_VARIABLES: Record<TemplateKey, string[]> = {
   payment_receipt: ["cliente", "empresa", "reserva", "importe", "moneda", "metodo", "fecha", "saldo"],
   balance_due: ["cliente", "empresa", "reserva", "producto", "fecha", "saldo", "moneda", "vence", "telefono_empresa"],
   quote_sent: ["cliente", "empresa", "cotizacion", "titulo", "total", "moneda", "vigencia", "anticipo", "vendedor"],
-  post_tour_thanks: ["cliente", "empresa", "producto", "fecha", "telefono_empresa"],
+  post_tour_thanks: ["cliente", "empresa", "producto", "fecha", "enlace", "telefono_empresa"],
 };
 
 /** Qué hecho dispara cada plantilla, en una línea. */
@@ -217,6 +217,15 @@ Total: {{total}} {{moneda}} · válida hasta {{vigencia}}.
 Cualquier ajuste, me dices. {{vendedor}} · {{empresa}}`,
   },
   {
+    /**
+     * EL «CONTÉSTANOS A ESTE CORREO» SE FUE, Y CON MOTIVO.
+     *
+     * Ese texto mandaba la opinión a una bandeja de entrada: nadie la tabulaba,
+     * nadie la atribuía a un guía y nadie la convertía en reseña. Ahora lleva
+     * un enlace de un solo toque —una nota de 0 a 10— que además bifurca: al
+     * que sale encantado se le pide la reseña pública, y al que no, se le abre
+     * un caso para llamarlo. Preguntar sin medir es no preguntar.
+     */
     key: "post_tour_thanks", channel: "email", language: "es",
     trigger: TEMPLATE_TRIGGER.post_tour_thanks, offset_hours: 4,
     subject: "¿Cómo te fue en {{producto}}?",
@@ -224,11 +233,20 @@ Cualquier ajuste, me dices. {{vendedor}} · {{empresa}}`,
 
 Gracias por venir con {{empresa}} a {{producto}} el {{fecha}}.
 
-Si tienes un minuto, cuéntanos cómo te fue: nos ayuda a mejorar y a que otros
-viajeros se animen. Y si algo no salió como esperabas, contéstanos a este
-mismo correo — preferimos saberlo nosotros primero.
+¿Nos das un minuto? Con un toque nos dices qué tal estuvo:
+
+{{enlace}}
+
+Es una sola pregunta. Y si algo no salió como esperabas, cuéntanoslo ahí:
+preferimos saberlo nosotros primero.
 
 {{empresa}} · {{telefono_empresa}}`,
+  },
+  {
+    // En WhatsApp, el enlace y poco más: se lee en la pantalla de bloqueo.
+    key: "post_tour_thanks", channel: "whatsapp", language: "es",
+    trigger: TEMPLATE_TRIGGER.post_tour_thanks, offset_hours: 4,
+    body: `Hola {{cliente}}, ¿qué tal estuvo {{producto}}? Un toque y nos lo cuentas: {{enlace}} — {{empresa}}`,
   },
 
   /* ══════════════════════════════════════════════════════════ inglés ══
@@ -414,11 +432,19 @@ Happy to adjust anything. {{vendedor}} · {{empresa}}`,
 
 Thank you for joining {{empresa}} on {{producto}} on {{fecha}}.
 
-If you have a minute, tell us how it went: it helps us improve and helps other
-travellers decide. And if something didn't go as expected, just reply to this
-email — we'd rather hear it from you first.
+Got a minute? One tap tells us how it went:
+
+{{enlace}}
+
+It's a single question. And if something didn't go as expected, tell us there —
+we'd rather hear it from you first.
 
 {{empresa}} · {{telefono_empresa}}`,
+  },
+  {
+    key: "post_tour_thanks", channel: "whatsapp", language: "en",
+    trigger: TEMPLATE_TRIGGER.post_tour_thanks, offset_hours: 4,
+    body: `Hi {{cliente}}, how was {{producto}}? One tap to tell us: {{enlace}} — {{empresa}}`,
   },
 ];
 

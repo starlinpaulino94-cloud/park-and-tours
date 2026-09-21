@@ -238,6 +238,68 @@ export async function seed(h) {
     return n;
   });
 
+  /**
+   * ── la voz del cliente ───────────────────────────────────────────────────
+   *
+   * Sin esto, el panel de opiniones sale vacío en una demostración donde hay
+   * cuarenta reservas operadas, y la operadora que lo ve concluye lo de
+   * siempre: «esto no lo usa nadie».
+   *
+   * Las notas están puestas a mano para que el panel enseñe las tres cosas que
+   * tiene que enseñar: un NPS que no es redondo, un detractor con su caso
+   * abierto esperando la llamada, y una omisión con su motivo —el cliente de
+   * una OTA, al que por contrato no se le escribe— para que la tasa de
+   * respuesta se pueda explicar.
+   */
+  hecho.guest_survey = await h.unless("guest_survey", async () => {
+    const reservas = await h.rows("booking", "id,customer_id,product_id,departure_id", 12);
+    if (reservas.length === 0) return 0;
+    const guias = personal.filter((p) => p.full_name).slice(0, 2);
+
+    const respuestas = [
+      { nps: 10, guide: 5, transport: 5, value: 5, comment: "Ramón hizo el día. Repetiremos." },
+      { nps: 9, guide: 5, transport: 4, value: 4, comment: "Todo muy bien organizado." },
+      { nps: 9, guide: 5, transport: 5, value: 4, comment: null },
+      { nps: 8, guide: 4, transport: 4, value: 3, comment: "Bien, aunque el almuerzo justito." },
+      { nps: 7, guide: 4, transport: 3, value: 3, comment: null },
+      { nps: 4, guide: 3, transport: 1, value: 2, comment: "La guagua llegó hora y media tarde al hotel." },
+      // Preguntadas y sin contestar: es lo normal y el panel tiene que
+      // enseñarlo, porque es lo que hace creíble la tasa de respuesta.
+      { nps: null }, { nps: null },
+      // Y una a la que NO se le preguntó, con su motivo.
+      { skip: "ota" },
+    ];
+
+    let n = 0;
+    for (const [i, r] of respuestas.entries()) {
+      const reserva = reservas[i % reservas.length];
+      const askedAt = h.at(-(9 - i), 18, 0);
+      const omitida = Boolean(r.skip);
+      await h.insert("guest_survey", {
+        booking_id: reserva.id,
+        departure_id: reserva.departure_id ?? null,
+        product_id: reserva.product_id ?? null,
+        customer_id: reserva.customer_id ?? null,
+        guide_staff_id: guias[i % Math.max(guias.length, 1)]?.id ?? null,
+        token: `opi-demo-${String(i + 1).padStart(3, "0")}`,
+        status: omitida ? "skipped" : r.nps === null ? "pending" : "answered",
+        skip_reason: omitida ? r.skip : null,
+        asked_at: omitida ? null : askedAt,
+        expires_at: omitida ? null : h.at(-(9 - i) + 30, 18, 0),
+        answered_at: r.nps === null || omitida ? null : h.at(-(9 - i), 21, 30),
+        nps: r.nps ?? null,
+        rating_guide: r.guide ?? null,
+        rating_transport: r.transport ?? null,
+        rating_value: r.value ?? null,
+        comment: r.comment ?? null,
+        language: "es",
+        review_requested: (r.nps ?? 0) >= 9,
+      });
+      n++;
+    }
+    return n;
+  });
+
   // ── tickets de acceso ────────────────────────────────────────────────────
   //
   // Hasta esta ola no había forma de emitirlos, así que la pantalla salía vacía

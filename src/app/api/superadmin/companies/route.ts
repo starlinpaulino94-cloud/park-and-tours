@@ -4,7 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { supabaseService } from "@/lib/supabase/service";
 import { assertSameOriginMutation } from "@/lib/csrf";
-import { mustWrite } from "@/lib/supabase/write";
+import { mustWrite } from "@/lib/supabase/io";
 
 function slugify(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");

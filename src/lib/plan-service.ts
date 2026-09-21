@@ -3,7 +3,7 @@ import { supabaseService } from "@/lib/supabase/service";
 import { TenantError, type TenantContext } from "@/lib/tenant";
 import { notify } from "@/lib/notify-service";
 import type { ModuleKey } from "@/lib/types";
-import { tryWrite } from "@/lib/supabase/write";
+import { tryWrite } from "@/lib/supabase/io";
 import {
   planStatus, limitCheck, limitMessage, metricLabel, moduleAllowed, moduleMessage, monthStart,
   type LimitMetric, type PlanSnapshot, type PlanStatus, type PlanUsage,

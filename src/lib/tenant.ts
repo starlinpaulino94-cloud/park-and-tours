@@ -50,6 +50,15 @@ export interface TenantContext {
 /** Cookie used by the audited superadmin impersonation flow. */
 export const IMPERSONATION_COOKIE = "tf_impersonate_company";
 
+/**
+ * Cookie de la empresa activa, para quien pertenece a más de una.
+ *
+ * Guarda SOLO el identificador: el rol y la sucursal se vuelven a resolver
+ * desde la membresía en cada petición (`auth-context.ts`). Sin membresía
+ * activa ahí, la cookie no vale nada.
+ */
+export const WORKSPACE_COOKIE = "tf_active_company";
+
 export class TenantError extends Error {
   constructor(message: string, readonly status = 403) {
     super(message);

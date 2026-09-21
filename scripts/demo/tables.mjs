@@ -55,6 +55,9 @@ export const SEED_TABLES = [
 
   // ── operación diaria y plataforma ────────────────────────────────────────
   "work_order", "inspection", "incident", "incident_action", "guest_case",
+  // La encuesta cuelga de la reserva y apunta al caso: se borra antes que
+  // `guest_case` en el orden inverso, que es como esta lista se lee al limpiar.
+  "guest_survey",
   "attraction_log", "document", "document_ack", "task", "approval_request",
   "message_template", "message", "notification", "integration",
   "job_run", "system_incident", "audit_log",

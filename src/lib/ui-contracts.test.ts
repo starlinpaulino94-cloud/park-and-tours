@@ -1434,6 +1434,12 @@ describe("blindaje CSRF de las rutas mutantes", () => {
     // exención es de la FORMA; hay guarda propia que exige que TODA ruta que
     // escribe autentique la llave con alcance de escritura.
     /^src\/app\/api\/octo\/v1\//,
+    // La encuesta de después del viaje: igual que el motor público, no hay
+    // sesión con cookies que proteger —el pasajero no tiene cuenta ni la va a
+    // tener—. Lo que la protege es lo POCO que el token puede hacer: poner una
+    // nota, escribir un comentario y darse de baja. Nada que mueva dinero,
+    // nada que enseñe datos de otro cliente, y caduca a los treinta días.
+    /^src\/app\/api\/opinar\//,
   ];
 
   it("toda ruta mutante verifica el origen de la solicitud", () => {
@@ -1608,6 +1614,27 @@ describe("el plan se aplica en la API, no solo en el menú", () => {
     // plan SÍ se comprueba, con `assertCanSell` sobre la empresa de esa llave,
     // y hay guarda propia que lo exige en cada ruta que vende.
     /^src\/app\/api\/octo\/v1\//,
+    /**
+     * Cambiar de empresa no es una operación: es navegación. No escribe nada
+     * de negocio —solo pone una cookie y deja el rastro en la bitácora—, y
+     * bloquearlo por una suscripción vencida tendría el efecto exactamente al
+     * revés del que se busca: quien pertenece a dos empresas y tiene UNA sin
+     * pagar se quedaría encerrado en la que no paga, sin poder salir a la que
+     * sí. El plan se aplica en cada ruta que escribe de verdad, que es donde
+     * tiene sentido.
+     */
+    /^src\/app\/api\/workspace\//,
+    /**
+     * La encuesta: lo que se escribe aquí no es una operación de la empresa,
+     * es la respuesta de UN CLIENTE a algo que ya se le preguntó.
+     *
+     * Bloquearla por una suscripción vencida tendría dos efectos y los dos
+     * malos: se perdería una opinión que la operadora ya pidió —el correo salió
+     * cuando el plan estaba al día—, y la BAJA dejaría de funcionar, que es lo
+     * único de este módulo que no se le puede negar a nadie por no pagar. Es el
+     * mismo razonamiento que la exención del segundo factor.
+     */
+    /^src\/app\/api\/opinar\//,
   ];
 
   it("toda ruta que escribe exige una suscripción que permita escribir", () => {
@@ -2413,6 +2440,7 @@ describe("las notificaciones internas", () => {
     ["certification_expiring", "src/app/api/cron/certifications/route.ts"],
     ["allotment_released", "src/app/api/cron/allotments/route.ts"],
     ["waitlist_offer", "src/lib/waitlist-service.ts"],
+    ["survey_detractor", "src/lib/voice-service.ts"],
   ];
 
   it("cada evento del catálogo se dispara desde algún sitio", () => {
@@ -3741,7 +3769,15 @@ describe("i18n: que el huésped que no habla español entienda lo que compró", 
     const src = read("src/lib/i18n.ts");
     expect(src).toMatch(/NO se traduce el panel de la operadora/);
     const claves = [...src.matchAll(/^\s+"([^"]+)":/gm)].map((m) => m[1]);
-    const fuera = claves.filter((k) => !k.startsWith("engine.") && !k.startsWith("page.") && !k.startsWith("doc.") && !k.startsWith("lang."));
+    /**
+     * Las cuatro superficies que SÍ ve el huésped, y ninguna más:
+     * `engine.`/`page.` (la página pública), `doc.` (voucher y documentos),
+     * `lang.` (el selector) y `survey.` (la encuesta de después del viaje, que
+     * el cliente abre desde SU correo y en SU idioma).
+     */
+    const fuera = claves.filter((k) =>
+      !k.startsWith("engine.") && !k.startsWith("page.") &&
+      !k.startsWith("doc.") && !k.startsWith("lang.") && !k.startsWith("survey."));
     expect(fuera, "claves de i18n fuera de las superficies del huésped").toEqual([]);
   });
 });
@@ -4106,6 +4142,10 @@ describe("cada pantalla dice cómo se crea lo que enseña", () => {
     "/dashboard/operaciones/despacho": "despacho: actúa sobre salidas que ya existen",
     "/dashboard/salidas/[id]/manifiesto": "manifiesto: se deriva de las reservas de la salida",
     "/dashboard/clientes/vouchers": "vouchers: los emite la venta",
+    "/dashboard/clientes/opiniones":
+      "opiniones: las escribe el pasajero desde su enlace. Un botón de «nueva opinión» " +
+      "en el panel permitiría a la operadora escribir la nota de sus propios clientes, " +
+      "que es exactamente lo que hace que un NPS no valga nada",
     "/dashboard/operaciones/rutas/[id]/hoja":
       "hoja de ruta: sus paradas las coloca «Armar rutas» en el despacho; " +
       "teclearlas aquí a mano las descolocaría en el siguiente rearmado",
@@ -4420,10 +4460,11 @@ describe("la base dice que no y alguien tiene que oírlo (AUD-M05)", () => {
     expect(culpables, "envuélvela en mustWrite o tryWrite, o destructura su error").toEqual([]);
   });
 
-  it("los dos verbos existen y dicen lo que hacen", () => {
-    const src = read("src/lib/supabase/write.ts");
+  it("los tres verbos existen y dicen lo que hacen", () => {
+    const src = read("src/lib/supabase/io.ts");
     expect(src).toMatch(/export async function mustWrite/);
     expect(src).toMatch(/export async function tryWrite/);
+    expect(src).toMatch(/export async function mustRead/);
     // `mustWrite` lanza; `tryWrite` devuelve si llegó, para que quien llama
     // pueda no contar como hecho lo que no se escribió.
     expect(src).toMatch(/throw Object\.assign\(/);
@@ -4438,6 +4479,71 @@ describe("la base dice que no y alguien tiene que oírlo (AUD-M05)", () => {
     for (const fn of ["loadRow", "hasDepartures", "holdUntilOf"]) {
       const cuerpo = src.slice(src.indexOf(`function ${fn}`), src.indexOf(`function ${fn}`) + 1400);
       expect(cuerpo, `${fn} tiene que comprobar el error de su lectura`).toContain("mustRead");
+    }
+  });
+});
+
+/* ═══════════ el filtro por empresa en los servicios sin sesión ══ */
+
+describe("la llave de servicio se salta la RLS: el filtro lo pone el código", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * POR QUÉ ESTA GUARDA ES DE CÓDIGO Y NO DE COMPORTAMIENTO
+   *
+   * Los servicios sin sesión consultan con la llave de servicio, que NO aplica
+   * la RLS: cada `eq("organization_id", …)` que escriben a mano es la única
+   * frontera entre dos operadoras.
+   *
+   * Y esos filtros se TAPAN ENTRE SÍ. Al mutarlos de uno en uno, las pruebas
+   * seguían en verde: quitando el de la salida lo paraba el de las reservas, y
+   * quitando el de las reservas lo paraba el de la salida. Hay una prueba
+   * (`voice-service.test.ts`, «no le escribe a los pasajeros de la operadora de
+   * al lado») que sí muere al quitar los dos, pero una guarda que solo muerde
+   * con la mutación combinada deja borrar cualquiera de ellos sin que nadie se
+   * entere. Esta lo impide de uno en uno.
+   */
+  const SIN_SESION = ["src/lib/voice-service.ts", "src/lib/octo-service.ts"];
+
+  it("toda consulta con la llave de servicio filtra por empresa", () => {
+    const offenders: string[] = [];
+
+    for (const file of SIN_SESION) {
+      const src = read(file);
+      for (const m of src.matchAll(/\.from\("([a-z_]+)"\)/g)) {
+        const fin = src.indexOf(";", m.index ?? 0);
+        const cadena = src.slice(m.index ?? 0, fin < 0 ? src.length : fin);
+        if (cadena.includes("organization_id")) continue;
+
+        /**
+         * Las dos excepciones, y las dos con su motivo:
+         *
+         *  · buscar por TOKEN — la encuesta se resuelve desde una página sin
+         *    sesión que no sabe de qué empresa es el cliente. Por eso el token
+         *    es único en toda la tabla, con su comprobación en la prueba SQL.
+         *  · la tabla `organizations` filtrada por `id` — ahí la empresa ES la
+         *    fila; pedirle además un `organization_id` no querría decir nada.
+         */
+        const porToken = /\.eq\("token"/.test(cadena);
+        const esLaEmpresa = m[1] === "organizations" && /\.eq\("id"/.test(cadena);
+        if (porToken || esLaEmpresa) continue;
+
+        offenders.push(`${file}:${src.slice(0, m.index).split("\n").length} → ${m[1]}`);
+      }
+    }
+
+    expect(offenders, "sin RLS que lo tape, esto son filas de otra operadora").toEqual([]);
+  });
+
+  it("la encuesta se escribe diciendo de quién es", () => {
+    // El `organization_id` va en el literal de cada alta y no escondido en un
+    // objeto compartido: el campo que decide de quién es la fila tiene que
+    // verse leyendo la escritura.
+    const src = read("src/lib/voice-service.ts");
+    const altas = [...src.matchAll(/from\("guest_survey"\)\.insert\(\{/g)];
+    expect(altas.length, "las dos altas de encuesta").toBe(2);
+    for (const m of altas) {
+      const trozo = src.slice(m.index ?? 0, (m.index ?? 0) + 260);
+      expect(trozo).toContain("organization_id");
     }
   });
 });

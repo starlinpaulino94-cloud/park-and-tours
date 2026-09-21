@@ -409,3 +409,68 @@ daba error: los tres producían números equivocados en silencio.
   oírlo». Recorre `src/` y falla nombrando archivo y línea. Comprobada con una
   mutación: al quitar un `tryWrite`, la guarda lo señala.
 - **Queda a cero:** ninguna escritura con la llave de servicio ignora su error.
+
+### AUD-M08 — La plantilla de después del viaje no la encolaba nadie (P2) — CERRADA
+- **Cómo apareció:** al investigar qué llevaba ya el sistema antes de construir
+  la voz del cliente. `post_tour_thanks` existía en el catálogo de plantillas
+  desde la ola de comunicaciones, con su desfase de cuatro horas y su disparador
+  documentado —«4 horas después de terminar»—, en español y en inglés.
+- **El defecto:** ninguna línea de código la encolaba. `grep` sobre todo `src/`
+  solo la encontraba en su propia definición y en la tabla de etiquetas. Es el
+  mismo caso que `departure.waitlist_pax` antes de la ola 11 y que
+  `hotel.pickup_offset_min` antes de la 9: **una promesa escrita que nadie
+  cumple**, y que además se ve en la pantalla de plantillas, así que la
+  operadora cree que el mensaje sale.
+- **Y lo de debajo:** aunque se hubiera mandado, su texto decía «contéstanos a
+  este mismo correo». La opinión habría caído en una bandeja de entrada: nadie
+  la tabula, nadie la atribuye a un guía y nadie la convierte en reseña.
+  Preguntar sin medir es no preguntar.
+- **Archivos:** `src/lib/messaging/templates.ts`, `src/lib/messaging/events.ts`.
+- **Solución:** `enqueuePostTourSurvey` —lo que faltaba— y el texto reescrito
+  con `{{enlace}}`, más la versión de WhatsApp que no existía. Quien encola es
+  `voice-service` después de crear la fila de la encuesta, nunca antes: un
+  enlace que no abre nada es peor que no mandar nada.
+- **Guarda:** la de esta ola sobre el filtro por empresa en los servicios sin
+  sesión, más las catorce mutaciones del módulo. La que faltaba de verdad la
+  encontró la propia mutación: los filtros de inquilino **se tapaban entre sí**
+  —al quitar el de la salida lo paraba el de las reservas y viceversa—, así que
+  ninguno moría por separado. Ahora hay una prueba que muere con la mutación
+  combinada y una guarda de código que los exige de uno en uno.
+
+### AUD-M09 — La demostración estaba escrita y era inalcanzable (P1) — CERRADA
+- **Cómo apareció:** un «no puedo acceder a las cuentas demo».
+- **El defecto, en dos mitades:**
+  1. `scripts/seed-demo-presentation.mjs` crea una empresa hermana y da
+     membresía `is_primary: false`, y su mensaje final decía «cambia a la
+     empresa de demostración **en el selector**». Ese selector no existía:
+     `grep` sobre toda la aplicación no encontró nada que cambiara de empresa.
+  2. La empresa de la sesión la resuelve el hook de la base
+     (`order by mem.is_primary desc ... limit 1`) y, de respaldo,
+     `loadClaimsFromPrimaryMembership` con el mismo orden. Siempre gana la
+     principal. La demo quedaba sembrada y sin puerta.
+- **Y no había ninguna cuenta demo:** el sembrador no crea usuarios, solo
+  reparte membresías. Lo que se pedía por su nombre no existía.
+- **La única puerta que sí había** era la suplantación del superadministrador,
+  que es otra cosa: soporte, a cualquier empresa y por dos horas.
+- **Archivos:** `src/lib/supabase/auth-context.ts`, `src/lib/tenant.ts`,
+  `src/lib/workspace-service.ts`, `src/app/api/workspace/route.ts`,
+  `src/components/tf/{app-shell,org-context}.tsx`,
+  `scripts/seed-demo-presentation.mjs`, `.env.example`.
+- **Solución:** una cookie de empresa activa honrada **solo** con membresía
+  activa, con el rol resuelto desde ESA membresía. Lo segundo es lo que importa:
+  conservar el rol de origen habría convertido el selector en una escalada de
+  privilegios a un clic —`owner` en la tuya, `owner` en la de al lado donde solo
+  eres `operations`— y encima invisible, porque todo funcionaría. Más tres
+  cuentas de demostración con contraseña que no vive en el repositorio.
+- **Guardas:** once pruebas sobre quién puede entrar a dónde, y cinco
+  mutaciones, cinco muertas. La quinta —el orden del selector— sobrevivió a la
+  primera vuelta porque el fixture ya tenía la empresa principal en primer
+  lugar: sembrado al revés de como tiene que salir, el orden se comprueba de
+  verdad.
+- **Una guarda de una ola anterior, afinada:** «el sembrador no escribe
+  `is_primary: true`» era correcta cuando solo repartía membresías a personas
+  reales, y se quedó corta con las cuentas que SOLO existen en la demo —para
+  ésas, la demo es su única empresa y es donde tienen que aterrizar—. Ahora la
+  comprobación es por función: prohibido en la que toca a personas reales,
+  permitido solo en la que crea las cuentas de demostración. Comprobado con una
+  mutación.

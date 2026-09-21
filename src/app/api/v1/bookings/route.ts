@@ -7,7 +7,7 @@ import { readPublicRequest, REQUEST_PROBLEM_MESSAGE } from "@/lib/public-booking
 import { createPublicBooking, loadPublicPage } from "@/lib/public-booking-service";
 import { writeAudit } from "@/lib/audit";
 import { notify } from "@/lib/notify-service";
-import { mustWrite } from "@/lib/supabase/write";
+import { mustWrite } from "@/lib/supabase/io";
 
 /**
  * POST /api/v1/bookings — un sistema externo crea una reserva.

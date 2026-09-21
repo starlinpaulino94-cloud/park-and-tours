@@ -5,7 +5,7 @@ import { supabaseServer } from "@/lib/supabase/server";
 import { supabaseService } from "@/lib/supabase/service";
 import type { CompanyType, Currency, ModuleKey } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
-import { mustWrite } from "@/lib/supabase/write";
+import { mustWrite } from "@/lib/supabase/io";
 
 const DEFAULT_MODULES: ModuleKey[] = [
   "bookings", "crm", "commissions", "settlements", "payments", "cash_pos",

@@ -204,6 +204,85 @@ const PUBLIC_EN: Dictionary = {
 export const PUBLIC_DICTIONARY: Record<Locale, Dictionary> = { es: PUBLIC_ES, en: PUBLIC_EN };
 
 /**
+ * La encuesta de después del viaje.
+ *
+ * Tiene su propio diccionario y no va en el de la página pública por una razón
+ * práctica: el idioma NO lo elige el navegador, lo elige la ficha del cliente.
+ * Quien reservó en inglés recibió el correo en inglés y abre este enlace desde
+ * ese correo, muchas veces ya en su casa y con el móvil en otro idioma. La
+ * encuesta tiene que seguir al cliente, no al dispositivo.
+ */
+const SURVEY_ES: Dictionary = {
+  "survey.title": "¿Cómo te fue?",
+  "survey.intro": "{product} · {date}",
+  "survey.question": "¿Qué probabilidad hay de que nos recomiendes a un amigo?",
+  "survey.scaleLow": "Nada probable",
+  "survey.scaleHigh": "Muy probable",
+  "survey.detailsTitle": "¿Y qué tal estuvo…?",
+  "survey.guide": "El guía",
+  "survey.transport": "El transporte",
+  "survey.value": "Lo que pagaste",
+  "survey.comment": "Cuéntanos lo que quieras (opcional)",
+  "survey.commentPlaceholder": "Lo que más te gustó, o lo que habría que mejorar",
+  "survey.send": "Enviar",
+  "survey.sending": "Enviando…",
+  "survey.skipDetails": "Prefiero no decir más",
+  "survey.thanksTitle": "¡Gracias!",
+  "survey.thanksBody": "Nos ayuda más de lo que parece.",
+  "survey.reviewTitle": "¡Gracias! ¿Nos echas una mano?",
+  "survey.reviewBody": "Si tienes un minuto, contárselo a otros viajeros es lo que más nos ayuda.",
+  "survey.reviewCta": "Escribir una reseña",
+  "survey.recoverTitle": "Gracias por contárnoslo",
+  "survey.recoverBody": "Sentimos que no saliera como esperabas. Alguien del equipo te va a contactar hoy.",
+  "survey.doneTitle": "Ya nos diste tu opinión",
+  "survey.doneBody": "Gracias otra vez.",
+  "survey.expiredTitle": "Este enlace ya caducó",
+  "survey.expiredBody": "Si quieres contarnos algo, escríbenos y te atendemos.",
+  "survey.missingTitle": "No encontramos esta encuesta",
+  "survey.missingBody": "Puede que el enlace esté incompleto. Prueba a abrirlo otra vez desde el correo.",
+  "survey.optOut": "No quiero recibir más encuestas",
+  "survey.optOutDone": "Listo, no te escribiremos más encuestas.",
+  "survey.optOutNote": "Los avisos de tus reservas —como la hora de recogida— te seguirán llegando.",
+  "survey.error": "No pudimos guardar tu respuesta. Inténtalo otra vez.",
+};
+
+const SURVEY_EN: Dictionary = {
+  "survey.title": "How was it?",
+  "survey.intro": "{product} · {date}",
+  "survey.question": "How likely are you to recommend us to a friend?",
+  "survey.scaleLow": "Not at all likely",
+  "survey.scaleHigh": "Extremely likely",
+  "survey.detailsTitle": "And how about…?",
+  "survey.guide": "The guide",
+  "survey.transport": "The transport",
+  "survey.value": "Value for money",
+  "survey.comment": "Tell us anything you like (optional)",
+  "survey.commentPlaceholder": "What you enjoyed most, or what we should improve",
+  "survey.send": "Send",
+  "survey.sending": "Sending…",
+  "survey.skipDetails": "I'd rather not say more",
+  "survey.thanksTitle": "Thank you!",
+  "survey.thanksBody": "It helps more than you'd think.",
+  "survey.reviewTitle": "Thank you! Could you help us out?",
+  "survey.reviewBody": "If you have a minute, telling other travellers is what helps us most.",
+  "survey.reviewCta": "Write a review",
+  "survey.recoverTitle": "Thank you for telling us",
+  "survey.recoverBody": "We're sorry it didn't go as expected. Someone from the team will contact you today.",
+  "survey.doneTitle": "You already shared your thoughts",
+  "survey.doneBody": "Thanks again.",
+  "survey.expiredTitle": "This link has expired",
+  "survey.expiredBody": "If you'd like to tell us something, just write to us.",
+  "survey.missingTitle": "We couldn't find this survey",
+  "survey.missingBody": "The link may be incomplete. Try opening it again from the email.",
+  "survey.optOut": "I don't want to receive more surveys",
+  "survey.optOutDone": "Done, we won't send you more surveys.",
+  "survey.optOutNote": "You'll still get the messages about your bookings, like your pickup time.",
+  "survey.error": "We couldn't save your answer. Please try again.",
+};
+
+export const SURVEY_DICTIONARY: Record<Locale, Dictionary> = { es: SURVEY_ES, en: SURVEY_EN };
+
+/**
  * Los documentos que el huésped enseña o guarda.
  *
  * El voucher es el caso claro: lo enseña en la puerta, a veces a alguien que no

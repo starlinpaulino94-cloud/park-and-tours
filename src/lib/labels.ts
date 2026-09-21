@@ -256,6 +256,25 @@ export const GENERIC_STATUS: Record<string, LabelDef> = {
   refunded: def("Reembolsado", "danger"),
 };
 
+/**
+ * Los roles de acceso, dichos en castellano.
+ *
+ * No es lo mismo que `SELLER_ROLE`, que describe a qué se dedica un vendedor.
+ * Éste es el permiso: lo que esa persona PUEDE hacer dentro de una empresa. Se
+ * enseña al cambiar de empresa, porque el rol no tiene por qué ser el mismo en
+ * las dos y entrar creyendo que mandas es la sorpresa que hay que evitar.
+ */
+export const APP_ROLE: Record<string, string> = {
+  superadmin: "Plataforma",
+  owner: "Propietario",
+  admin: "Administrador",
+  manager: "Gerente",
+  operations: "Operaciones",
+  cashier: "Caja",
+  seller: "Ventas",
+  partner: "Socio",
+};
+
 export const SELLER_ROLE: Record<string, LabelDef> = {
   seller: def("Vendedor"),
   supervisor: def("Supervisor", "violet"),

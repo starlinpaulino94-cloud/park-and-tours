@@ -18,7 +18,7 @@ import { stripe, STRIPE_WEBHOOK_SECRET, cryptoProvider } from "@/lib/stripe";
 import Stripe from "stripe";
 import { supabaseService } from "@/lib/supabase/service";
 import type { Company } from "@/lib/types";
-import { mustWrite } from "@/lib/supabase/write";
+import { mustWrite } from "@/lib/supabase/io";
 
 const IS_PROD = process.env.NODE_ENV === "production";
 

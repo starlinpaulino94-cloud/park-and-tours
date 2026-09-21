@@ -431,4 +431,26 @@ export const MIGRATION_CHECKS = [
       ]],
     ],
   },
+  {
+    migration: "0067 — la voz del cliente",
+    tables: ["guest_survey"],
+    columns: [
+      // Sin `token` no hay enlace que abrir, y sin `expires_at` ese enlace vale
+      // para siempre en un correo que cualquiera reenvía. Sin `skip_reason` la
+      // tasa de respuesta no distingue «no contestó» de «no se le preguntó», y
+      // sin `guide_staff_id` la nota no se le puede atribuir a quien la ganó.
+      ["guest_survey", [
+        "organization_id", "booking_id", "departure_id", "product_id", "customer_id",
+        "guide_staff_id", "token", "status", "skip_reason",
+        "asked_at", "expires_at", "answered_at",
+        "nps", "rating_guide", "rating_transport", "rating_value",
+        "comment", "language", "review_requested", "review_clicked_at", "guest_case_id",
+      ]],
+      // La dirección de la reseña pública: sin ella el embudo se corta justo
+      // donde empieza a valer dinero.
+      ["organizations", ["review_url"]],
+      // La baja del cliente, que la encuesta tiene que respetar.
+      ["customer", ["survey_opt_out"]],
+    ],
+  },
 ];
