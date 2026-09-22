@@ -1231,3 +1231,44 @@ daba error: los tres producían números equivocados en silencio.
 - **Mutación:** cinco, las cinco muertas — que el `catch` relance, facturar en
   el primer abono, facturar una devolución, truncar los centavos por separado
   («CERO CON 100/100»), y devolver el fallo de la apócope.
+
+### AUD-M31 — Los paquetes se podían crear pero no vender (y se ofrecían igual)
+- **La revisión:** el modelo de paquetes es correcto y está bien pensado. Una
+  venta de combo son N+1 reservas: una CABECERA con el precio pactado y sin
+  salida —el paquete no sale ningún día, salen sus actividades— y N COMPONENTES
+  a importe cero, cada uno con **su salida real, su hora, su cupo y su
+  check-in**. `createOrderWithBookings` ya sabía expandirlo entero.
+- **EL FALLO: se ofrecía algo que no se podía cobrar.** Ni el catálogo del
+  punto de venta ni el del portal filtraban por `is_bundle`, así que un paquete
+  salía como una tarjeta normal. El cajero lo añadía y el fallo aparecía al
+  CONFIRMAR —«Falta el día en que empieza el paquete»—, con el cliente delante.
+  Ofrecer algo que no se puede cobrar es peor que no ofrecerlo: lo segundo se
+  descubre al configurar, lo primero en el mostrador.
+
+- **Ahora se venden de verdad, por su propio camino.** Los paquetes viajan en
+  una lista aparte del catálogo, porque no se venden igual: una tarjeta que
+  enseña «próxima salida» y «plazas» no dice nada útil de algo que no tiene
+  salida propia. Al abrirlo se pide el día de inicio, el servidor arma el
+  itinerario con salidas REALES y se enseña actividad por actividad —día, hora
+  y plazas— antes de comprometer al cliente.
+- **Y no deja añadir un paquete bloqueado.** Si una actividad no tiene salida
+  servible, el botón queda desactivado y se dice qué falta y por qué. Un
+  paquete a medias no es «dos de tres»: es un precio cerrado por algo que no se
+  va a entregar entero.
+- **En el carrito no se enseñan desplegables de salida ni modalidad**: un
+  paquete no los elige, los eligen sus actividades. Se enseña el itinerario,
+  que es lo que el cajero repasa con el cliente.
+
+- **CORRECCIÓN A LA REVISIÓN INICIAL.** Dije que «lo que decide qué salidas
+  encajan no tiene red». Falso: el dominio puro (`bundles.ts` — solapes,
+  itinerario, auto-resolución) tiene 33 pruebas. Lo que no tenía ninguna era
+  `bundle-service.ts`, la capa que lee la base. Ahora tiene 15, y cubren lo que
+  no se ve leyendo: que un producto normal no pueda tratarse como paquete (si
+  no, se cobraría una cabecera con CERO componentes: una venta que no reserva
+  ninguna plaza ni aparece en ningún manifiesto), que una salida cancelada o
+  cerrada no se cuele en un itinerario, y que un aforo cero se lea como «sin
+  declarar» y no como «agotado» —el mismo error que costó el «0 plazas»—.
+- **Mutación:** cinco, las cinco muertas — devolver el paquete al catálogo del
+  POS, dejar de mandar el día de inicio, permitir añadir un itinerario
+  bloqueado, tratar un producto normal como paquete, y que el aforo cero
+  cuente como agotado.

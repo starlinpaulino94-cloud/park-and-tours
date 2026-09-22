@@ -37,6 +37,10 @@ export async function GET(req: NextRequest) {
     const products = await tenantQuery<Product>(ctx.companyId, "product", {
       _filter: {
         status: "active",
+        // Mismo motivo que en el punto de venta: la reserva de un paquete
+        // necesita el día de inicio, que este catálogo no pide. Enseñarlo aquí
+        // sería ofrecerle a un socio algo que no puede reservar.
+        is_bundle: false,
         ...(authorizedIds.length ? { _id: { in: authorizedIds } } : {}),
       },
       _limit: 200, _sort: { name: "asc" },

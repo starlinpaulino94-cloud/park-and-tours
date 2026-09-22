@@ -46,11 +46,50 @@ interface CatalogProduct {
 interface PosContext {
   currency: string; role: string;
   catalog: CatalogProduct[];
+  bundles: CatalogBundle[];
   hotels: { _id: string; name?: string; zone?: string }[];
   sellers: { _id: string; name: string }[];
   partners: { _id: string; name: string }[];
   branches: { _id: string; name?: string }[];
   cash_session: { _id: string; code?: string; register?: string } | null;
+}
+
+/**
+ * UN PAQUETE EN EL PUNTO DE VENTA.
+ *
+ * No tiene salida propia: la tienen sus actividades. Por eso la tarjeta no
+ * enseña «próxima salida» ni «plazas», y para añadirlo hace falta primero el
+ * día en que empieza — que es lo que el servidor necesita para armar el
+ * itinerario con salidas reales.
+ */
+interface CatalogBundle {
+  _id: string;
+  name: string;
+  code?: string | null;
+  base_price: number;
+  currency: string;
+  category?: string;
+  cover_image_url?: string | null;
+  activities: { itemId: string; name: string; dayOffset: number; isOptional: boolean }[];
+}
+
+/** Un bloque del itinerario que devuelve `/api/bundles`. */
+interface BundleBlock {
+  itemId: string;
+  productName: string;
+  departureId: string;
+  day: string;
+  at: string;
+  seatsLeft: number | null;
+}
+
+interface BundlePlan {
+  bundleId: string;
+  bundleName: string;
+  startDay: string;
+  blocks: BundleBlock[];
+  unresolved: { itemId: string; productName: string; reason: string }[];
+  blocker: string | null;
 }
 
 interface CartItem {
@@ -68,6 +107,9 @@ interface CartItem {
   notes: string;
   /** Extras escogidos: id -> cantidad. Los obligatorios los añade el servidor. */
   extras: Record<string, number>;
+  /** Solo en los paquetes: el día en que empieza y el itinerario que sale. */
+  bundle_start_day?: string;
+  bundle_plan?: BundlePlan | null;
 }
 
 interface QuoteLine {
@@ -197,6 +239,73 @@ export default function PosPage() {
     return () => { cancelled = true; clearTimeout(t); };
   }, [cart, partnerId, sellerId, channel]);
 
+  /**
+   * EL PAQUETE SE ARMA ANTES DE AÑADIRLO.
+   *
+   * Un paquete no se puede meter en la venta «y ya veremos»: si una de sus
+   * actividades no tiene salida con plazas, lo que se habría vendido es un
+   * precio cerrado por algo que el cliente no va a recibir entero.
+   *
+   * Así que primero se pide el día, el servidor arma el itinerario con salidas
+   * REALES, se le enseña al cajero —qué actividad, qué día, a qué hora— y solo
+   * si no hay nada que lo bloquee se deja añadir.
+   */
+  const [bundleFor, setBundleFor] = useState<CatalogBundle | null>(null);
+  const [bundleDay, setBundleDay] = useState("");
+  const [bundlePax, setBundlePax] = useState(1);
+  const [bundlePlan, setBundlePlan] = useState<BundlePlan | null>(null);
+  const [bundleBusy, setBundleBusy] = useState(false);
+  const [bundleError, setBundleError] = useState<string | null>(null);
+
+  const planBundleFor = useCallback(async (bundle: CatalogBundle, day: string, pax: number) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) { setBundlePlan(null); return; }
+    setBundleBusy(true);
+    setBundleError(null);
+    const res = await api.get<BundlePlan>(
+      `/api/bundles?bundle=${encodeURIComponent(bundle._id)}&day=${day}&pax=${Math.max(1, pax)}`
+    );
+    setBundleBusy(false);
+    if (!res.ok) {
+      setBundlePlan(null);
+      setBundleError(res.error?.message || "No se pudo armar el itinerario");
+      return;
+    }
+    setBundlePlan(res.data ?? null);
+  }, []);
+
+  const abrirPaquete = (bundle: CatalogBundle) => {
+    const hoy = toDateInput(new Date());
+    setBundleFor(bundle);
+    setBundleDay(hoy);
+    setBundlePax(1);
+    setBundlePlan(null);
+    setBundleError(null);
+    void planBundleFor(bundle, hoy, 1);
+  };
+
+  const addBundleToCart = () => {
+    if (!bundleFor || !bundlePlan || bundlePlan.blocker) return;
+    setCart((c) => [...c, {
+      uid: nextUid(),
+      // El paquete viaja como producto: el servidor lo expande en cabecera +
+      // componentes. Sin salida ni modalidad propias, que las ponen sus
+      // actividades.
+      product: {
+        _id: bundleFor._id, name: bundleFor.name, code: bundleFor.code ?? undefined,
+        base_price: bundleFor.base_price, currency: bundleFor.currency,
+        category: bundleFor.category, modalities: [], extras: [], departures: [],
+      } as unknown as CatalogProduct,
+      departure_id: "", modality_id: "",
+      adults: bundlePax, children: 0, infants: 0,
+      extras: {}, discount_pct: 0,
+      pickup_hotel_id: "", room_number: "", pickup_time: "", notes: "",
+      bundle_start_day: bundlePlan.startDay,
+      bundle_plan: bundlePlan,
+    }]);
+    toast.success(`${bundleFor.name} añadido a la venta`);
+    setBundleFor(null);
+  };
+
   const addToCart = (product: CatalogProduct) => {
     const modality = product.modalities.find((m) => m.modality_type === "adult") || product.modalities[0];
     const departure = product.departures.find((d) => (plazasLibres(d) ?? 1) > 0) || product.departures[0];
@@ -264,6 +373,9 @@ export default function PosPage() {
         pickup_time: i.pickup_time || null,
         room_number: i.room_number || null,
         notes: i.notes || null,
+        // Sin esto el servidor rechaza el paquete con «Falta el día en que
+        // empieza»: es el dato del que cuelga todo el itinerario.
+        bundle_start_day: i.bundle_start_day || null,
         // Los obligatorios los añade el servidor: aquí solo viaja lo que el
         // cliente escogió, para que retirar un extra del catálogo no deje
         // vendiéndose algo que ya no existe.
@@ -475,6 +587,46 @@ export default function PosPage() {
               placeholder="Buscar excursión por nombre, código, categoría o ubicación…" />
           </div>
 
+          {(ctx?.bundles?.length ?? 0) > 0 && (
+            <section className="no-print mb-4 space-y-2">
+              <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                Paquetes
+              </h2>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {(ctx?.bundles ?? []).map((b) => (
+                  <article key={b._id} className="tf-card tf-rise flex flex-col overflow-hidden border-primary/30">
+                    <div className="flex flex-1 flex-col gap-2 p-4">
+                      <div>
+                        <p className="font-display text-sm font-semibold leading-tight">{b.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {b.activities.length} actividad(es)
+                          {b.category ? ` · ${b.category}` : ""}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Pill tone="accent" className="tf-num">{formatMoney(b.base_price, b.currency)}</Pill>
+                        <Pill tone="violet">Paquete</Pill>
+                      </div>
+                      {/* Qué lleva, sin pedir todavía la fecha: el cajero tiene
+                          que poder decírselo al cliente antes de comprometerse. */}
+                      <ul className="space-y-0.5 text-xs text-muted-foreground">
+                        {b.activities.slice(0, 4).map((a) => (
+                          <li key={a.itemId}>
+                            Día {a.dayOffset + 1} · {a.name}{a.isOptional ? " (opcional)" : ""}
+                          </li>
+                        ))}
+                      </ul>
+                      <Button size="sm" variant="outline" className="mt-auto gap-1.5"
+                        onClick={() => abrirPaquete(b)}>
+                        <Icon name="CalendarRange" className="size-4" />Armar itinerario
+                      </Button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+
           {loading ? (
             <div className="grid gap-3 sm:grid-cols-2">
               {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-36 w-full rounded-xl" />)}
@@ -642,6 +794,29 @@ export default function PosPage() {
                       </Button>
                     </header>
 
+                    {/* UN PAQUETE NO ELIGE SALIDA NI MODALIDAD: las eligen sus
+                        actividades, y ya se decidieron al armar el itinerario.
+                        Enseñar aquí dos desplegables vacíos invitaría a tocar
+                        algo que no aplica. Se enseña el itinerario, que es lo
+                        que el cajero necesita repasar con el cliente. */}
+                    {item.bundle_plan ? (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Itinerario</Label>
+                        <ul className="divide-y divide-border rounded-md border border-border text-[12.5px]">
+                          {item.bundle_plan.blocks.map((b) => (
+                            <li key={b.itemId} className="flex items-center justify-between gap-2 px-3 py-1.5">
+                              <span className="min-w-0 truncate">{b.productName}</span>
+                              <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                                {formatDate(b.at)} · {formatTime(b.at)}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                        <p className="text-[11px] text-muted-foreground">
+                          Para cambiar el día o los pasajeros, quita el paquete y vuelve a armarlo.
+                        </p>
+                      </div>
+                    ) : (
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div className="min-w-0 space-y-1.5">
                         <Label className="text-xs">Salida</Label>
@@ -673,6 +848,7 @@ export default function PosPage() {
                         </Select>
                       </div>
                     </div>
+                    )}
 
                     <div className="grid grid-cols-4 gap-2">
                       <Counter label="Adultos" value={item.adults} onChange={(v) => patchItem(item.uid, { adults: v })} />
@@ -837,6 +1013,105 @@ export default function PosPage() {
       </div>
 
       {/* ---- quick customer --------------------------------------------- */}
+      {/* ───────────────────────────────────────────────────────────────────
+          ARMAR EL PAQUETE ANTES DE VENDERLO
+
+          El cajero ve el itinerario REAL —qué actividad, qué día, a qué hora,
+          cuántas plazas quedan— antes de comprometer al cliente. Y si alguna
+          actividad no tiene salida servible, el botón no deja añadirlo: un
+          paquete a medias es un precio cerrado por algo que no se va a
+          entregar entero.
+      ─────────────────────────────────────────────────────────────────── */}
+      <Dialog open={!!bundleFor} onOpenChange={(o) => { if (!o) setBundleFor(null); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{bundleFor?.name}</DialogTitle>
+            <DialogDescription>
+              Elige el día en que empieza y cuántos van. El itinerario se arma con las salidas reales.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="flex min-w-0 flex-col gap-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Empieza el
+              <Input
+                type="date" className="h-9 w-[160px]" value={bundleDay}
+                onChange={(e) => {
+                  setBundleDay(e.target.value);
+                  if (bundleFor) void planBundleFor(bundleFor, e.target.value, bundlePax);
+                }}
+              />
+            </label>
+            <label className="flex min-w-0 flex-col gap-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Pasajeros
+              <Input
+                type="number" min={1} className="h-9 w-[90px] text-center" value={bundlePax}
+                onChange={(e) => {
+                  const n = Math.max(1, Number(e.target.value) || 1);
+                  setBundlePax(n);
+                  if (bundleFor) void planBundleFor(bundleFor, bundleDay, n);
+                }}
+              />
+            </label>
+            <p className="text-sm font-semibold tabular-nums">
+              {formatMoney((bundleFor?.base_price ?? 0) * bundlePax, bundleFor?.currency)}
+            </p>
+          </div>
+
+          {bundleBusy ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">Buscando salidas…</p>
+          ) : bundleError ? (
+            <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm">{bundleError}</p>
+          ) : bundlePlan ? (
+            <div className="space-y-2">
+              {bundlePlan.blocks.length > 0 && (
+                <ul className="divide-y divide-border rounded-md border border-border text-[13px]">
+                  {bundlePlan.blocks.map((b) => (
+                    <li key={b.itemId} className="flex items-center justify-between gap-3 px-3 py-2">
+                      <span className="min-w-0">
+                        <span className="block font-medium">{b.productName}</span>
+                        <span className="block text-xs text-muted-foreground tabular-nums">
+                          {formatDate(b.at)} · {formatTime(b.at)}
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                        {b.seatsLeft === null ? "cupo sin calcular" : `${formatNumber(b.seatsLeft)} libres`}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {/* Lo que impide venderlo, dicho con nombre y apellido. «No se
+                  pudo» obliga a adivinar; esto dice qué actividad y por qué. */}
+              {bundlePlan.blocker && (
+                <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-[13px]">
+                  <p className="font-semibold">{bundlePlan.blocker}</p>
+                  {bundlePlan.unresolved.length > 0 && (
+                    <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                      {bundlePlan.unresolved.map((u) => (
+                        <li key={u.itemId}>{u.productName}: {u.reason}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <p className="mt-1 text-xs">Prueba con otro día de inicio o con menos pasajeros.</p>
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBundleFor(null)}>Cancelar</Button>
+            <Button
+              disabled={!bundlePlan || !!bundlePlan.blocker || bundleBusy}
+              onClick={addBundleToCart}
+            >
+              Añadir a la venta
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={newCustomerOpen} onOpenChange={setNewCustomerOpen}>
         <DialogContent>
           <DialogHeader>
