@@ -5,6 +5,9 @@ const baseURL = process.env.E2E_BASE_URL || `http://localhost:${port}`;
 
 export default defineConfig({
   testDir: "./tests/e2e",
+  // `.spec.ts` es de Playwright; `.test.ts`, de Vitest. Sin esto, la prueba
+  // unitaria del arranque acabaría ejecutándose como si fuera un navegador.
+  testMatch: "**/*.spec.ts",
   timeout: 45_000,
   fullyParallel: false,
   reporter: "list",

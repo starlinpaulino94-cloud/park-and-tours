@@ -559,3 +559,142 @@ daba error: los tres producían números equivocados en silencio.
   de código del filtro de inquilino a este servicio, aunque use el cliente con
   sesión: ahí la RLS es la barrera de verdad, pero el día que alguien lo cambie
   por la llave de servicio el filtro ya tiene que estar.
+
+### AUD-M13 — El mensaje de la puerta afirmaba una causa que nadie le dijo (P2) — CERRADA
+- **Cómo apareció:** una cuenta de demostración que no entraba. El formulario
+  contestaba *«Email o contraseña incorrectos para este ambiente. Verifica que
+  la cuenta exista en este proyecto»*, y eso mandó a revisar la base de datos
+  cuando el servidor no había dicho nada de la base de datos.
+- **La raíz:** Supabase contesta `invalid_credentials` a **tres** situaciones
+  —la cuenta no existe aquí, la contraseña no es esa, la cuenta quedó en otro
+  proyecto— y las junta a propósito: separarlas en la respuesta convertiría el
+  formulario en un buscador de correos existentes. La pantalla elegía una de las
+  tres y la daba por cierta. En el caso corriente, una contraseña mal tecleada,
+  el mensaje manda a buscar el problema donde no está.
+- **Y lo demás llegaba crudo:** email sin confirmar, cuenta bloqueada, límite de
+  intentos y servidor inalcanzable salían con el texto del proveedor, en inglés.
+  El peor de los cuatro es el último: sin red no hay respuesta, y enseñar
+  «contraseña incorrecta» ahí hace que alguien cambie una que estaba bien.
+- **Archivos:** `src/lib/auth-errors.ts` (nuevo), `src/lib/auth-client.ts`
+  (reenvía `code` y `status`, no solo el texto), `src/app/login/page.tsx`,
+  `src/app/register/page.tsx`, `scripts/check-account.mjs` (nuevo).
+- **Solución, en dos mitades.** La pantalla dice lo único que sabe —«no
+  coinciden»— y ofrece lo único que se puede hacer sin adivinar: restablecerla.
+  Lo que **no** es ambiguo sí se distingue, porque ocultarlo no protege nada y
+  deja a la persona probando contraseñas correctas. Y la otra mitad: la pantalla
+  puede dejar de adivinar porque ahora hay dónde mirar de verdad —
+  `npm run check:account -- --email=…` dice a qué proyecto apunta el despliegue,
+  si la cuenta existe **ahí**, si su email está confirmado, si está bloqueada y a
+  qué empresas pertenece con qué rol. Corre con credenciales, no delante de un
+  desconocido, y **solo lee**: un comprobador que además escribe es uno que nadie
+  se atreve a ejecutar cuando hace falta.
+- **Mutación:** cuatro, cuatro muertas — volver a traducir en la pantalla,
+  saltarse el traductor en el registro, devolver el mensaje que adivina, y hacer
+  que el comprobador escriba.
+- **De paso, un cabo suelto del sembrador viejo:** `demopresentaciones@havelgo.com`
+  venía escrita en el código del sembrador anterior, que **no creaba el usuario**
+  —exigía darlo de alta a mano en Supabase Auth—. Ninguna orden del repositorio
+  la crea hoy, así que en un proyecto que no la tenga no hay contraseña que
+  valga. Queda escrito en `docs/operaciones/ENTRAR_A_LA_DEMOSTRACION.md`.
+
+### AUD-M14 — El diagnóstico existía solo para quien tuviera terminal — CERRADA
+- **Cómo apareció:** «quiero hacer todo eso en el editor de SQL de Supabase, no
+  en la terminal». Una herramienta de diagnóstico que exige un entorno de
+  desarrollo montado no está disponible el día que hace falta, que es
+  precisamente el día en que alguien no puede entrar.
+- **Archivos:** `docs/operaciones/DESDE_EL_EDITOR_SQL.md` (nuevo),
+  `supabase/tests/sql_playbook.test.sql` (nuevo),
+  `supabase/tests/00_supabase_stub.sql` (las columnas de GoTrue que el cuaderno
+  consulta, más `auth.identities`).
+- **Lo que sí se puede desde SQL, y se documenta:** ver si la cuenta existe en
+  ESTE proyecto y en qué estado, a qué empresas pertenece y dónde aterriza, dar
+  o corregir una membresía, y confirmar un email.
+- **Lo que NO, y por qué se dice en vez de improvisarlo:** crear la cuenta o
+  ponerle contraseña. El hash vive en `auth.users` pero quien lo interpreta es
+  GoTrue, que además lleva identidades, sesiones y auditoría propias: escribirlo
+  a mano cambia la mitad que se ve y deja la otra como estaba, y una cuenta a
+  medias que parece funcionar falla después y en otro sitio. El camino sin
+  terminal es *Authentication → Users*, dos clics. El atajo en SQL queda escrito
+  con lo que se está aceptando al usarlo, incluido que la clave se queda en el
+  historial del editor.
+- **Y sembrar la demostración tampoco:** son catálogo, reservas, cobros y
+  contabilidad con dependencias entre sí. Lo que sí contesta el cuaderno es si
+  **ya está sembrada**, que es la pregunta que de verdad se tenía.
+- **La guarda, que es lo que separa esto de un apunte:** el cuaderno **se
+  ejecuta** en cada CI contra un Postgres real con todas las migraciones. No
+  solo que corra: que buscar el correo en mayúsculas encuentre la cuenta, que la
+  ★ sea la misma empresa que elegiría el enganche del token, que el bloque de
+  membresía no borre la de la empresa real ni duplique al repetirlo, que un slug
+  inexistente no escriba nada, y que el segundo primario choque contra
+  `memberships_one_primary` — que es el motivo de que el bloque vaya en dos
+  sentencias y en ese orden.
+- **Mutación:** cuatro. Tres muertas a la primera. **La cuarta no mordió**: la
+  idempotencia del bloque 4 se comprobaba comparando la fecha antes y después, y
+  `now()` devuelve el reloj de la TRANSACCIÓN — la prueba entera es una sola, así
+  que las dos pasadas escribían el mismo instante y la aserción pasaba también
+  sin el `coalesce`. En el editor cada bloque es su propia transacción y ahí sí
+  diferirían: la aserción cómoda era justo la que no servía donde importa. Se
+  reescribió midiendo `row_count`, y entonces mordió.
+
+### AUD-M15 — El cuaderno de SQL se pegaba mal, y nada lo impedía — CERRADA
+- **Cómo apareció:** se pegó `supabase/tests/sql_playbook.test.sql` en el editor
+  de Supabase y contestó `syntax error at or near "\"`. Es la prueba automática
+  del cuaderno, no el cuaderno: usa órdenes de `psql` (`\set`, `\echo`) que el
+  editor no entiende. Confusión razonable — dos ficheros con el mismo tema, y
+  sólo uno se pega.
+- **Lo que de verdad falló:** nada comprobaba que lo que se entrega **sea
+  pegable**, ni que siga encajando con el esquema. Documentación que nadie
+  ejecuta envejece en silencio, y ésta se usa el peor día contra producción.
+- **Archivos:** `scripts/extract-doc-sql.mjs` (nuevo), `scripts/db-test.sh`,
+  `docs/operaciones/DESDE_EL_EDITOR_SQL.md`,
+  `supabase/tests/sql_playbook.test.sql` (aviso en la cabecera).
+- **Solución:** el CI **ejecuta los bloques del cuaderno** contra el Postgres
+  efímero con todas las migraciones aplicadas. Los correos y slugs de los
+  ejemplos no existen, así que las escrituras tocan cero filas: lo que se
+  comprueba es que todos analizan y encajan. Y el extractor rechaza cualquier
+  bloque con una orden de `psql`, que es exactamente el defecto que se vio.
+  El único bloque que no puede correr —el atajo con `extensions.crypt`, que vive
+  en Supabase y no en Postgres— va marcado `ci:skip` con el motivo a la vista.
+- **Y una consulta única al principio del cuaderno**, que contesta las diez
+  preguntas de una pegada y termina diciendo qué hacer. Probada en los cuatro
+  estados que importan: cuenta ausente, sin confirmar, sin empresa, y sana. Con
+  la cuenta ausente las filas que dependen de ella salen `—` en vez de
+  inventarse un estado — decir «ninguna empresa» de una cuenta que no existe es
+  la clase de dato que manda a arreglar lo que no está roto.
+- **Mutación:** dos, dos muertas — colar un `\set` en el cuaderno, y renombrar
+  una columna que el cuaderno consulta.
+
+### AUD-M16 — El E2E se apropiaba de la cuenta de una persona en cada PR (P0) — CERRADA
+- **Cómo apareció:** «no me permite entrar aunque pongo todo bien». La consulta
+  de diagnóstico del cuaderno contestó lo que ningún vistazo al formulario podía
+  decir: la cuenta existe, está confirmada, tiene contraseña, entró hoy… y su
+  empresa de aterrizaje es **E2E Tenant**.
+- **La raíz:** el secreto `E2E_EMAIL` del CI apuntaba a una cuenta de
+  demostración en uso. `tests/e2e/global-setup.ts` corre con la llave de
+  servicio y, en **cada ejecución** —o sea, en cada PR—, hacía dos cosas:
+  1. `updateUserById(..., { password })` le **reescribía la contraseña**;
+  2. `update({ is_primary: false }).neq(organization_id, e2e)` le **movía la
+     empresa de aterrizaje** al inquilino de pruebas.
+- **Por qué era tan difícil de ver:** el efecto es silencioso, a distancia y
+  disfrazado de error de quien lo sufre. La persona tecleaba una contraseña que
+  era correcta cuando la puso; nada en pantalla apuntaba a la causa, porque la
+  causa había ocurrido la última vez que alguien abrió un PR.
+- **Archivos:** `tests/e2e/global-setup.ts`,
+  `tests/e2e/global-setup.test.ts` (nuevo), `vitest.config.ts`,
+  `playwright.config.ts`, `.env.example`.
+- **Solución:** el arranque sólo opera sobre una cuenta **exclusiva del E2E**.
+  Antes de escribir nada lee las membresías; si hay alguna fuera de
+  `e2e-tenant`, falla nombrando la cuenta, la empresa que la reclama y el
+  remedio. El orden es el arreglo: comprobar después de reescribir la contraseña
+  no comprueba nada, el daño ya está hecho.
+- **De reparto:** `tests/**` entra ahora en Vitest, y Playwright se queda con
+  `**/*.spec.ts`. El arranque del E2E es lógica que corre con la llave de
+  servicio y decide a quién le cambia la contraseña: no podía seguir siendo el
+  único código sin pruebas por estar en la carpeta de Playwright.
+- **Mutación:** tres, tres muertas — invertir el orden (escribir y luego
+  preguntar), quitar la comprobación, y vaciar el mensaje de error.
+- **Lo que queda abierto, y no es de código:** el E2E corre contra el **proyecto
+  de Supabase de producción**. Cada PR mantiene ahí la empresa `e2e-tenant`, y el
+  secreto del CI es una llave de servicio sobre la operación de verdad. Anotado
+  como **CI-001** en el informe de preparación; se cierra con un proyecto aparte
+  para CI, no con más código.

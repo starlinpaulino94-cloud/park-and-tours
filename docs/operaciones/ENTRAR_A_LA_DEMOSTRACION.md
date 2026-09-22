@@ -98,6 +98,80 @@ una membresía por error.
 
 ---
 
+## Si una cuenta no entra
+
+El formulario dice lo mismo a tres cosas distintas:
+
+- la cuenta **no existe** en este proyecto de Supabase;
+- la cuenta existe y **la contraseña no es esa**;
+- la cuenta existía en **otro proyecto** — el de antes de una migración.
+
+Las junta a propósito: distinguirlas ahí convertiría la pantalla de acceso en un
+buscador de correos. Quien administra sí puede mirar, y para eso está:
+
+```bash
+npm run check:account -- --email=persona@empresa.com
+```
+
+Dice a qué proyecto de Supabase está apuntando, si la cuenta existe **ahí**, si
+su email está confirmado, si está bloqueada, y a qué empresas pertenece con qué
+rol — con la de aterrizaje marcada. **Solo lee**: no cambia una sola fila.
+
+¿Sin terminal? Lo mismo, bloque a bloque, para pegar en el editor SQL de
+Supabase: **[Arreglar un acceso desde el editor SQL](./DESDE_EL_EDITOR_SQL.md)**.
+
+Si falta algo, el propio comprobador imprime la orden que lo arregla:
+
+```bash
+node scripts/migrate/onboard-user.mjs --email=persona@empresa.com \
+  --org=<slug-de-la-empresa> --role=owner --password='<clave>'
+```
+
+Ese script crea la cuenta si no existe, le repone la contraseña si existe, la
+deja con el email confirmado y le asegura la membresía. Ojo con una cosa: pone
+esa empresa como **primaria** y le quita la marca a las demás, así que pásale el
+slug de donde quieres que aterrice.
+
+### `demopresentaciones@havelgo.com`
+
+Esa cuenta es del sembrador **viejo**, que traía una empresa fija escrita en el
+código y **no creaba el usuario**: exigía que ya estuviera dado de alta a mano en
+Supabase Auth. Hoy ninguna orden del repositorio la crea, así que si el proyecto
+al que apunta el despliegue no la tiene, no hay contraseña que valga.
+
+Las de ahora son las tres de arriba, `demo@…demo.local`, y se crean solas.
+
+---
+
+## El caso que costó entenderlo: el E2E se quedaba la cuenta
+
+Merece estar escrito, porque desde fuera era indistinguible de una contraseña
+mal tecleada.
+
+El secreto `E2E_EMAIL` del CI apuntaba a una cuenta de demostración que se
+usaba de verdad. El arranque de Playwright, que corre con la llave de servicio,
+hacía dos cosas en **cada ejecución** —o sea, en cada PR—:
+
+- le **reescribía la contraseña** con `E2E_PASSWORD`;
+- le movía la **membresía primaria** a la empresa `e2e-tenant`.
+
+Resultado: la persona tecleaba su contraseña, que era correcta cuando la puso, y
+el formulario la rechazaba. Y si conseguía entrar, aterrizaba en un inquilino de
+pruebas vacío. Nada de lo que se veía en pantalla apuntaba a la causa, porque la
+causa no estaba pasando en ese momento: había pasado la última vez que alguien
+abrió un PR.
+
+**Hoy el arranque se niega.** Si `E2E_EMAIL` pertenece a alguna empresa que no
+sea la del E2E, falla diciendo qué cuenta, qué empresa la reclama y qué hacer,
+en vez de apropiársela. Un E2E en rojo cuesta una ejecución; apropiarse de una
+cuenta cuesta que alguien no pueda trabajar sin entender por qué.
+
+Si te pasa a ti, se ve así en la consulta de diagnóstico: la cuenta existe, está
+confirmada, tiene contraseña, y la ★ está sobre **E2E Tenant**. Eso no es un
+problema de la cuenta: es esto.
+
+---
+
 ## Lo que NO cambió
 
 - Tu empresa real no se toca nunca. La demo es una empresa aparte, con
@@ -118,3 +192,5 @@ una membresía por error.
 | La ruta del cambio | `POST /api/workspace` |
 | El selector y la banda | `src/components/tf/app-shell.tsx` |
 | El sembrador y las cuentas | `scripts/seed-demo-presentation.mjs` |
+| Por qué una cuenta no entra | `npm run check:account` |
+| Qué se le dice a quien no entra | `src/lib/auth-errors.ts` |

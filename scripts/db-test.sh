@@ -58,4 +58,21 @@ for t in "$ROOT"/supabase/tests/*.test.sql; do
   fi
 done
 
+# ── Los cuadernos de SQL, ejecutados ────────────────────────────────────────
+# Lo que se le entrega a alguien para que lo pegue en el editor de Supabase se
+# ejecuta aquí primero. Los correos y slugs de los ejemplos no existen, así que
+# las escrituras tocan cero filas: lo que se comprueba es que TODOS los bloques
+# analizan y encajan con el esquema de verdad. Documentación que nadie ejecuta
+# envejece en silencio, y esta se usa el peor día contra producción.
+for doc in "$ROOT"/docs/operaciones/DESDE_EL_EDITOR_SQL.md; do
+  [ -e "$doc" ] || { echo "✘ falta $doc"; fail=1; continue; }
+  echo "→ bloques SQL de $(basename "$doc")"
+  extraido="$WORK/$(basename "$doc").sql"
+  if ! node "$ROOT/scripts/extract-doc-sql.mjs" "$doc" > "$extraido"; then fail=1; continue; fi
+  [ "$(id -u)" = "0" ] && chown postgres "$extraido"
+  if ! psql_run -f "$extraido" >/dev/null; then
+    echo "✘ un bloque del cuaderno no corre contra el esquema actual"; fail=1
+  fi
+done
+
 [ "$fail" = "0" ] && echo "✔ pruebas de base de datos en verde" || { echo "✘ fallaron pruebas de base de datos"; exit 1; }

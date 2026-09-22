@@ -29,7 +29,16 @@ export default defineConfig({
   test: {
     environment: "node",
     environmentMatchGlobs: [["src/**/*.test.tsx", "jsdom"]],
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx", "scripts/**/*.test.mjs"],
+    /*
+     * `tests/**` entra aquí por el arranque del E2E: corre con la llave de
+     * servicio y decide a qué cuenta le reescribe la contraseña, así que es
+     * lógica que necesita pruebas — y no se puede probar desde Playwright, que
+     * es justo quien lo ejecuta.
+     *
+     * El reparto es por extensión, y Playwright lo respeta con su `testMatch`:
+     * `.spec.ts` es suyo, `.test.ts` es de aquí.
+     */
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx", "scripts/**/*.test.mjs", "tests/**/*.test.ts"],
     globals: true,
   },
 });
