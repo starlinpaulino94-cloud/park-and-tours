@@ -143,6 +143,35 @@ Las de ahora son las tres de arriba, `demo@…demo.local`, y se crean solas.
 
 ---
 
+## El caso que costó entenderlo: el E2E se quedaba la cuenta
+
+Merece estar escrito, porque desde fuera era indistinguible de una contraseña
+mal tecleada.
+
+El secreto `E2E_EMAIL` del CI apuntaba a una cuenta de demostración que se
+usaba de verdad. El arranque de Playwright, que corre con la llave de servicio,
+hacía dos cosas en **cada ejecución** —o sea, en cada PR—:
+
+- le **reescribía la contraseña** con `E2E_PASSWORD`;
+- le movía la **membresía primaria** a la empresa `e2e-tenant`.
+
+Resultado: la persona tecleaba su contraseña, que era correcta cuando la puso, y
+el formulario la rechazaba. Y si conseguía entrar, aterrizaba en un inquilino de
+pruebas vacío. Nada de lo que se veía en pantalla apuntaba a la causa, porque la
+causa no estaba pasando en ese momento: había pasado la última vez que alguien
+abrió un PR.
+
+**Hoy el arranque se niega.** Si `E2E_EMAIL` pertenece a alguna empresa que no
+sea la del E2E, falla diciendo qué cuenta, qué empresa la reclama y qué hacer,
+en vez de apropiársela. Un E2E en rojo cuesta una ejecución; apropiarse de una
+cuenta cuesta que alguien no pueda trabajar sin entender por qué.
+
+Si te pasa a ti, se ve así en la consulta de diagnóstico: la cuenta existe, está
+confirmada, tiene contraseña, y la ★ está sobre **E2E Tenant**. Eso no es un
+problema de la cuenta: es esto.
+
+---
+
 ## Lo que NO cambió
 
 - Tu empresa real no se toca nunca. La demo es una empresa aparte, con

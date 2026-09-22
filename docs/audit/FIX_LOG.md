@@ -663,3 +663,38 @@ daba error: los tres producían números equivocados en silencio.
   la clase de dato que manda a arreglar lo que no está roto.
 - **Mutación:** dos, dos muertas — colar un `\set` en el cuaderno, y renombrar
   una columna que el cuaderno consulta.
+
+### AUD-M16 — El E2E se apropiaba de la cuenta de una persona en cada PR (P0) — CERRADA
+- **Cómo apareció:** «no me permite entrar aunque pongo todo bien». La consulta
+  de diagnóstico del cuaderno contestó lo que ningún vistazo al formulario podía
+  decir: la cuenta existe, está confirmada, tiene contraseña, entró hoy… y su
+  empresa de aterrizaje es **E2E Tenant**.
+- **La raíz:** el secreto `E2E_EMAIL` del CI apuntaba a una cuenta de
+  demostración en uso. `tests/e2e/global-setup.ts` corre con la llave de
+  servicio y, en **cada ejecución** —o sea, en cada PR—, hacía dos cosas:
+  1. `updateUserById(..., { password })` le **reescribía la contraseña**;
+  2. `update({ is_primary: false }).neq(organization_id, e2e)` le **movía la
+     empresa de aterrizaje** al inquilino de pruebas.
+- **Por qué era tan difícil de ver:** el efecto es silencioso, a distancia y
+  disfrazado de error de quien lo sufre. La persona tecleaba una contraseña que
+  era correcta cuando la puso; nada en pantalla apuntaba a la causa, porque la
+  causa había ocurrido la última vez que alguien abrió un PR.
+- **Archivos:** `tests/e2e/global-setup.ts`,
+  `tests/e2e/global-setup.test.ts` (nuevo), `vitest.config.ts`,
+  `playwright.config.ts`, `.env.example`.
+- **Solución:** el arranque sólo opera sobre una cuenta **exclusiva del E2E**.
+  Antes de escribir nada lee las membresías; si hay alguna fuera de
+  `e2e-tenant`, falla nombrando la cuenta, la empresa que la reclama y el
+  remedio. El orden es el arreglo: comprobar después de reescribir la contraseña
+  no comprueba nada, el daño ya está hecho.
+- **De reparto:** `tests/**` entra ahora en Vitest, y Playwright se queda con
+  `**/*.spec.ts`. El arranque del E2E es lógica que corre con la llave de
+  servicio y decide a quién le cambia la contraseña: no podía seguir siendo el
+  único código sin pruebas por estar en la carpeta de Playwright.
+- **Mutación:** tres, tres muertas — invertir el orden (escribir y luego
+  preguntar), quitar la comprobación, y vaciar el mensaje de error.
+- **Lo que queda abierto, y no es de código:** el E2E corre contra el **proyecto
+  de Supabase de producción**. Cada PR mantiene ahí la empresa `e2e-tenant`, y el
+  secreto del CI es una llave de servicio sobre la operación de verdad. Anotado
+  como **CI-001** en el informe de preparación; se cierra con un proyecto aparte
+  para CI, no con más código.
