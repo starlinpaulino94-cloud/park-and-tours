@@ -17,6 +17,7 @@ import {
   type OctoProduct, type OctoSupplier, type ProductLike, type ReservationInput,
 } from "@/lib/octo";
 import type { Company } from "@/lib/types";
+import { writeAudit } from "@/lib/audit";
 
 /**
  * EL CONECTOR OCTO CONTRA LA BASE.
@@ -849,6 +850,21 @@ export async function confirmBooking(
   if (row.order_id) await syncOrderTotals(ctx.companyId, row.order_id);
 
   const fresh = await loadRow(ctx, uuid);
+
+  /**
+   * Lo que entra por una OTA es una venta como cualquier otra, y la hace un
+   * sistema, no una persona. Sin anotarlo, la bitácora tiene un agujero justo
+   * en el canal que nadie mira a diario.
+   */
+  await writeAudit({
+    companyId: ctx.companyId,
+    action: "octo_booking_confirmed",
+    entityType: "booking",
+    entityId: row.id as string,
+    description: "Una OTA confirmó una reserva",
+    metadata: { canal: "octo", uuid: row.octo_uuid as string | undefined },
+  });
+
   return bookingView(ctx, fresh ?? row);
 }
 
@@ -880,6 +896,21 @@ export async function extendBooking(ctx: OctoContext, uuid: string, minutes: num
       .eq("organization_id", ctx.companyId).eq("id", row.order_id));
   }
   const fresh = await loadRow(ctx, uuid);
+
+  /**
+   * Lo que entra por una OTA es una venta como cualquier otra, y la hace un
+   * sistema, no una persona. Sin anotarlo, la bitácora tiene un agujero justo
+   * en el canal que nadie mira a diario.
+   */
+  await writeAudit({
+    companyId: ctx.companyId,
+    action: "octo_hold_extended",
+    entityType: "booking",
+    entityId: row.id as string,
+    description: "Una OTA extendió la retención de una reserva",
+    metadata: { canal: "octo", uuid: row.octo_uuid as string | undefined },
+  });
+
   return bookingView(ctx, fresh ?? row);
 }
 
@@ -943,6 +974,21 @@ export async function cancelBooking(
   if (markErr) console.error("[octo] no se pudo poner la marca de cancelada:", markErr.message);
 
   const fresh = await loadRow(ctx, uuid);
+
+  /**
+   * Lo que entra por una OTA es una venta como cualquier otra, y la hace un
+   * sistema, no una persona. Sin anotarlo, la bitácora tiene un agujero justo
+   * en el canal que nadie mira a diario.
+   */
+  await writeAudit({
+    companyId: ctx.companyId,
+    action: "octo_booking_cancelled",
+    entityType: "booking",
+    entityId: row.id as string,
+    description: "Una OTA canceló una reserva",
+    metadata: { canal: "octo", uuid: row.octo_uuid as string | undefined },
+  });
+
   return bookingView(ctx, fresh ?? row);
 }
 

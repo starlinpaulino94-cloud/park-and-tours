@@ -12,6 +12,7 @@ import {
   type NpsResult, type SurveyRow, type VoiceSummary,
 } from "@/lib/voice";
 import { refId, type Company } from "@/lib/types";
+import { writeAudit } from "@/lib/audit";
 
 /**
  * LA VOZ DEL CLIENTE, CONECTADA CON LA OPERACIÓN.
@@ -442,6 +443,21 @@ export async function answerSurvey(token: string, input: AnswerInput): Promise<A
     comment: (input.comment ?? "").trim().slice(0, 4000) || null,
   }).eq("organization_id", row.organization_id).eq("id", row.id));
 
+  /**
+   * La respuesta del huésped es una acción sobre el negocio, y la contesta
+   * alguien SIN cuenta: si no se anota aquí, no se anota en ningún sitio. Va
+   * sin `userId` a propósito —no hay usuario— pero con la empresa, que es lo
+   * que la hace aparecer en su bitácora.
+   */
+  await writeAudit({
+    companyId: row.organization_id,
+    action: "survey_answered",
+    entityType: "guest_survey",
+    entityId: row.id,
+    description: "Un huésped respondió la encuesta post-tour",
+    metadata: { nps: input.nps },
+  });
+
   const paso = nextStep(nota);
 
   if (paso === "recover") {
@@ -504,6 +520,14 @@ export async function optOutByToken(token: string): Promise<boolean> {
   await mustWrite("dar de baja al cliente de las encuestas",
     supabaseService().from("customer").update({ survey_opt_out: true })
       .eq("organization_id", row.organization_id).eq("id", row.customer_id));
+
+  await writeAudit({
+    companyId: row.organization_id,
+    action: "survey_opted_out",
+    entityType: "customer",
+    entityId: row.customer_id,
+    description: "Un huésped pidió no recibir más encuestas",
+  });
   return true;
 }
 

@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { requireTenantWrite, requireAtLeast, tenantCreate, tenantFindOne, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { assertSameOriginMutation } from "@/lib/csrf";
+import { writeAudit } from "@/lib/audit";
 
 /**
  * POST /api/attractions/status — live status change from the park control room.
@@ -57,6 +58,12 @@ export async function POST(req: NextRequest) {
       `[api] ${ctx.email} cambió ${attraction.name}: ${from} → ${body.status} ` +
       `(${elapsed} min en el estado anterior, downtime hoy=${downtimeToday})`
     );
+    await writeAudit({
+      companyId: ctx.companyId, userId: ctx.userId,
+      action: "attraction_status_changed", entityType: "attraction", entityId: body.attraction,
+      description: `${ctx.email} cambió el estado de una atracción a ${body.status}`,
+      severity: "warning", metadata: { de: from, a: body.status },
+    });
     return ok({ from, to: body.status, elapsed, downtimeToday });
   } catch (err) {
     return fail(err);

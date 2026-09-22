@@ -3,6 +3,7 @@ import { requireTenantWrite, requireAtLeast, tenantCreate, tenantQuery } from "@
 import { ok, fail, readJson } from "@/lib/api-response";
 import type { Product } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
+import { writeAudit } from "@/lib/audit";
 
 const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
@@ -94,6 +95,12 @@ export async function POST(req: NextRequest) {
     }
 
     console.log(`[departures] ${created} salidas creadas para ${product.name} (${skipped} ya existían)`);
+    await writeAudit({
+      companyId: ctx.companyId, userId: ctx.userId,
+      action: "departures_generated", entityType: "departure",
+      description: `${ctx.email} generó ${created} salida(s)`,
+      metadata: { creadas: created, omitidas: skipped },
+    });
     return ok({ created, skipped });
   } catch (err) {
     return fail(err);

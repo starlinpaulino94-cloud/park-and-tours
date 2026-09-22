@@ -802,3 +802,32 @@ daba error: los tres producían números equivocados en silencio.
   migraciones (idempotente), y los 13 trozos planos regenerados corren en orden
   en CI. Auditoría final: 83 de 85 tablas de `SEED_TABLES` con datos; las 2
   restantes son las append-only, por diseño.
+
+### AUD-M20 — Casi todo lo que se registra a diario no dejaba rastro (P1) — CERRADA
+- **Cómo apareció:** «ninguna acción que se realice dentro del sistema debe
+  quedar sin reporte». Al medirlo: de 95 rutas que cambian datos, **27 no
+  escribían en la bitácora**, ni por sí mismas ni a través de un servicio.
+- **La raíz, y era la peor posible:** el CRUD genérico —por donde pasa la
+  mayoría de lo que se registra un día normal: clientes, proveedores, activos,
+  gastos— anotaba el **borrado** desde el principio, pero **no la creación ni la
+  edición**. O sea que la pantalla de Auditoría parecía completa y no lo era,
+  que es peor que no tenerla.
+- **Archivos:** el CRUD genérico (`erp/[resource]` POST y `[id]` PUT), y once
+  rutas más: caja, inventario, asientos contables y su reversión, plan de
+  cuentas, estado de activos y de atracciones, generación de salidas, subida de
+  archivos, y los caminos sin sesión —encuesta respondida y baja, reservas de
+  OTA (confirmar/extender/cancelar), webhooks de MembeGo y Stripe—.
+- **Dónde va la anotación:** en la ruta cuando hay sesión; **dentro del
+  servicio** cuando no la hay (encuestas, OCTO), porque es quien conoce la
+  empresa. Una encuesta la contesta alguien sin cuenta: si no se anota ahí, no
+  se anota en ningún sitio.
+- **Qué se guarda de una edición:** los NOMBRES de los campos que cambiaron, no
+  sus valores. «Alguien editó la reserva» no reconstruye nada; «cambió precio y
+  titular» sí. Y no se copian datos del cliente a una tabla que nadie puede
+  borrar.
+- **La guarda:** toda ruta mutante audita o delega en un servicio que audita.
+  Las ocho excepciones van con su motivo escrito (un cálculo de precio no es una
+  acción; marcar avisos como leídos sería ruido; la disponibilidad de la OTA es
+  una lectura con verbo POST).
+- **Mutación:** dos, dos muertas — quitar la auditoría de la creación, y dejar
+  la edición sin decir qué campos cambiaron.

@@ -12,6 +12,7 @@
  * Subscribe in Stripe to: customer.subscription.{created,updated,deleted},
  * invoice.{paid,payment_failed}.
  */
+import { writeAudit } from "@/lib/audit";
 
 import { NextResponse } from "next/server";
 import { stripe, STRIPE_WEBHOOK_SECRET, cryptoProvider } from "@/lib/stripe";
@@ -219,6 +220,21 @@ export async function POST(req: Request) {
     // Record only after successful handling, so a thrown handler lets Stripe
     // retry (the event stays un-recorded and will be reprocessed).
     await recordEvent(event, companyId, "processed");
+
+    /**
+     * Un evento de Stripe cambia el estado de la suscripción —y con él lo que
+     * la empresa puede hacer— sin que nadie de aquí toque nada. Anotarlo es lo
+     * que permite explicar por qué un día el sistema dejó de dejar vender.
+     */
+    await writeAudit({
+      companyId,
+      action: "stripe_event_processed",
+      entityType: "organizations",
+      entityId: companyId ?? undefined,
+      description: `Stripe procesó un evento (${event.type})`,
+      severity: "warning",
+      metadata: { tipo: event.type, evento: event.id },
+    });
 
     return NextResponse.json({ received: true });
   } catch (err: any) {

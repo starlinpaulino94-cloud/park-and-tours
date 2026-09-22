@@ -4650,3 +4650,89 @@ describe("la puerta de entrada", () => {
     expect(src, "listar usuarios es una lectura; crearlos no").not.toMatch(/admin\.(createUser|updateUserById|deleteUser)/);
   });
 });
+
+describe("ninguna acción sin bitácora", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * LA REGLA
+   *
+   * Toda ruta que CAMBIA algo deja rastro: o llama a `writeAudit`, o delega en
+   * un servicio que lo llama. Sin esto, la pantalla de Auditoría enseña una
+   * parte de lo que pasó y da por hecho el resto — que es peor que no tenerla,
+   * porque parece completa.
+   *
+   * El hueco era grande y silencioso: el CRUD genérico anotaba el BORRADO desde
+   * el principio, pero no la creación ni la edición. O sea que casi todo lo que
+   * se registra un día normal —un cliente, un proveedor, un gasto, un activo—
+   * no dejaba constancia de quién lo hizo.
+   */
+  const MUTANTES = /export async function (POST|PUT|PATCH|DELETE)\b/;
+
+  /**
+   * Lo que legítimamente no se anota, con su motivo. La lista es corta a
+   * propósito: cada entrada es una decisión, no un olvido.
+   */
+  const SIN_BITACORA: Record<string, string> = {
+    "pricing/quote": "calcula un precio y no guarda nada: no hay acción que anotar",
+    "octo/v1/availability": "consulta de disponibilidad de la OTA; es una lectura con verbo POST",
+    "octo/v1/availability/calendar": "igual que la anterior: lectura con verbo POST",
+    "notifications": "marcar avisos como leídos llenaría la bitácora de ruido sin valor",
+    "notifications/[id]/read": "lo mismo: es estado de lectura de quien mira, no una acción sobre el negocio",
+    "stripe/create-checkout-session": "abre una sesión de pago; lo que hay que anotar es el cobro, y eso lo hace el webhook",
+    "stripe/customer-portal": "abre el portal del cliente en Stripe; no cambia nada aquí",
+    "workspace": "el cambio de empresa ya escribe su propia auditoría con writeAudit",
+  };
+
+  function auditaPorSuCuenta(src: string) { return src.includes("writeAudit"); }
+
+  /** Servicios de `src/lib` que anotan por dentro. */
+  const SERVICIOS_QUE_ANOTAN = new Set(
+    readdirSync(path.join(ROOT, "src/lib"))
+      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
+      .filter((f) => readFileSync(path.join(ROOT, "src/lib", f), "utf8").includes("writeAudit"))
+      .map((f) => f.replace(/\.ts$/, ""))
+  );
+
+  function delegaEnServicioQueAnota(src: string) {
+    for (const m of src.matchAll(/from "@\/lib\/([a-z0-9-]+)"/g)) {
+      if (SERVICIOS_QUE_ANOTAN.has(m[1])) return true;
+    }
+    return false;
+  }
+
+  it("toda ruta que cambia algo deja rastro", () => {
+    const huerfanas: string[] = [];
+    for (const file of walk(path.join(ROOT, "src/app/api"))) {
+      if (!file.endsWith("route.ts")) continue;
+      const src = readFileSync(file, "utf8");
+      if (!MUTANTES.test(src)) continue;
+
+      const ruta = path.relative(path.join(ROOT, "src/app/api"), file)
+        .replace(/\/route\.ts$/, "").replace(/\\/g, "/");
+      if (ruta in SIN_BITACORA) continue;
+      if (auditaPorSuCuenta(src) || delegaEnServicioQueAnota(src)) continue;
+      huerfanas.push(ruta);
+    }
+    expect(huerfanas, "estas acciones cambian datos y no quedan en la bitácora").toEqual([]);
+  });
+
+  it("el CRUD genérico anota las tres cosas: crear, editar y borrar", () => {
+    /**
+     * Es por donde pasa la mayoría de lo que se registra a diario, así que si
+     * alguna de las tres se cae, la bitácora deja de servir para reconstruir
+     * nada. La regla se afirma sobre las ACCIONES, no sobre cómo estén escritas.
+     */
+    const crear = read("src/app/api/erp/[resource]/route.ts");
+    const editarBorrar = read("src/app/api/erp/[resource]/[id]/route.ts");
+    expect(crear, "crear").toContain("record_created");
+    expect(editarBorrar, "editar").toContain("record_updated");
+    expect(editarBorrar, "borrar").toContain("record_deleted");
+  });
+
+  it("y la edición dice QUÉ campos cambiaron", () => {
+    // «Alguien editó la reserva» no reconstruye nada. Qué campos tocó, sí.
+    const src = read("src/app/api/erp/[resource]/[id]/route.ts");
+    const i = src.indexOf("record_updated");
+    expect(src.slice(i, i + 400)).toMatch(/campos/);
+  });
+});
