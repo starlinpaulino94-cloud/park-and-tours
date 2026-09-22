@@ -865,3 +865,61 @@ daba error: los tres producían números equivocados en silencio.
   módulos con el mismo total bailan de sitio entre dos impresiones del MISMO
   período, y dos copias dejan de poder compararse línea a línea.
 - **Mutación:** una más, muerta — quitar el desempate.
+
+### AUD-M23 — Veintidós reportes imprimibles por fecha, de un registro
+- **Qué pedía el negocio:** que cualquier cosa que el sistema haga se pueda
+  imprimir acotada a un período. Convertir cada pantalla operativa en reporte
+  habría sido invasivo —son pantallas con acciones, no documentos— y habría
+  dejado veinte selectores de fecha distintos.
+- **Lo que se hizo:** un **registro** (`src/lib/reportes.ts`) donde cada reporte
+  es un dato —tabla, campo de fecha, columnas, qué se suma— y **una sola
+  pantalla** (`/dashboard/reportes/[slug]`) que los pinta todos. El período, la
+  impresión, el CSV y los totales son literalmente el mismo código en los
+  veintidós, así que no pueden divergir. El índice sale del registro, no de una
+  lista a mano: añadir un reporte basta para que aparezca.
+- **Lo que NO entra en el registro:** el 606/607, la antigüedad de saldos, la
+  rentabilidad. Ésos CALCULAN, no listan, y tienen su propio servicio.
+
+- **Un documento que trae la primera página no es un documento.** El listado del
+  ERP pagina de 200 en 200. Para una pantalla está bien; para una hoja que dice
+  «Ventas de septiembre» y trae 200 de 340, no: el total del pie parece correcto
+  y está mal. La pantalla pide las páginas que hagan falta hasta juntar el
+  período, con tope duro de 2.000 filas — y al llegar al tope **lo dice en el
+  papel** y manda al CSV, en vez de imprimir un total incompleto con cara de
+  completo.
+
+- **`partially_paid` en una hoja firmada.** Las columnas de estado salían con la
+  clave cruda de la base. Una hoja que hay que traducir mentalmente no es un
+  reporte. Ahora el registro declara qué columnas son enum y `textoCelda` las
+  traduce; una que nadie haya traducido se humaniza («algo muy raro») antes que
+  imprimir el identificador. La guarda recorre el registro y exige `etiqueta` en
+  los quince campos que en este sistema siempre son enum.
+
+- **FALLO REAL, de los que no dan error:** la bitácora pedía
+  `_limit=200&_sort=occurred_at:desc`. La ruta `/api/erp/:recurso` lee `limit` y
+  `sort` —sin guion bajo—, así que los **ignoraba en silencio**: el reporte
+  salía con 50 eventos, en el orden por defecto, con toda la pinta de estar
+  completo. El guion bajo es la forma interna de `tenantQuery`, no la de la URL,
+  y confundirlas no rompe nada visible. La guarda ahora recorre las pantallas y
+  rechaza cualquier parámetro `_*` en una URL; en el servidor sigue siendo
+  correcto, porque allí se le habla directo a `tenantQuery`.
+
+- **Tres guardas ajenas saltaron al registrar `guest_survey` como recurso**, y
+  las tres tenían razón: el expand declaraba `guide_staff` sin destino (la
+  encuesta nombra al guía por su papel, no por su tabla), y las encuestas no
+  salían en «llévate tus datos» — la opinión de un huésped es suya y tiene que
+  ir en el ZIP. Se registra de **solo lectura** (`writable: []`): una valoración
+  corregida a mano deja de ser una valoración.
+
+- **Una columna inventada no revienta: sale vacía.** El reporte se imprimiría
+  con una raya en todas las filas y nadie sabría si es que no hay dato o que la
+  columna está mal. Tres guardas nuevas cruzan el registro contra el esquema
+  reconstruido de las migraciones: el campo de fecha existe, cada columna
+  existe (resolviendo los alias, `customer` → `customer_id`) y toda relación la
+  expande su recurso, para que la celda no acabe imprimiendo un UUID. La
+  primera ya atrapó algo al escribirla: `order` vive en la tabla `sales_order`.
+
+- **Mutación:** ocho, las ocho muertas — volver a `_limit` en la URL, dejar una
+  columna `status` sin `etiqueta`, que `textoCelda` deje de traducir, que un
+  vacío imprima cero en vez de raya, quitar el enlace del índice, y torcer el
+  campo de fecha, una columna y una relación del registro.

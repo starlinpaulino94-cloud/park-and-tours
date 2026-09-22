@@ -88,6 +88,10 @@ export const TABLE_RELATION_RESOURCE: Record<string, Record<string, string>> = {
   commission_rule: { category: "product_category" },
   seller_goal: { category: "product_category" },
   expense: { category: "expense_category" },
+  // La encuesta nombra al guía por su papel, no por su tabla: `guide_staff_id`
+  // apunta a `staff`. Sin esta línea el expand se quedaría sin destino y el
+  // reporte de encuestas saldría sin nombre de guía.
+  guest_survey: { guide_staff: "staff" },
 };
 
 /**

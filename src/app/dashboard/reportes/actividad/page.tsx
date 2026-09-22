@@ -41,10 +41,13 @@ function Reporte() {
     const ac = new AbortController();
     setCargando(true);
     setError(null);
+    // Los nombres importan: la ruta lee `limit` y `sort`, no `_limit` ni
+    // `_sort`. Con el guion bajo los ignoraba en silencio y la bitácora salía
+    // con 50 eventos y en el orden por defecto, pareciendo completa.
     const qs = new URLSearchParams({
       dateField: "occurred_at",
-      _sort: "occurred_at:desc",
-      _limit: String(PAGINA),
+      sort: "-occurred_at",
+      limit: String(PAGINA),
     });
     if (desde) qs.set("from", desde);
     if (hasta) qs.set("to", hasta);

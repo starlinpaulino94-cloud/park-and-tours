@@ -1,13 +1,32 @@
 import Link from "next/link";
 import { requireTenant } from "@/lib/tenant";
+import { gruposDeReportes } from "@/lib/reportes";
 import { PageHeader } from "@/components/tf/page-header";
 import { Icon } from "@/components/tf/icon";
 import { Card } from "@/components/ui/card";
 
 /**
- * Index of the reports the business actually runs on. Each one lives in the
- * module that owns its data, so the numbers never diverge between screens.
+ * EL ÍNDICE DE REPORTES.
+ *
+ * Tiene dos mitades, y la diferencia importa:
+ *
+ *  • Los ANALÍTICOS (abajo, escritos a mano): pantallas que CALCULAN —margen,
+ *    antigüedad de saldos, ocupación—. Cada una vive en el módulo dueño de su
+ *    dato, para que dos pantallas no cuenten historias distintas.
+ *
+ *  • Los DOCUMENTOS (arriba, salidos del registro `reportes.ts`): listados
+ *    acotados a un período, con totales, pensados para imprimirse y
+ *    archivarse. No se enumeran aquí a mano a propósito: añadir uno al
+ *    registro tiene que bastar para que aparezca, o el índice se queda atrás
+ *    y el reporte nuevo no existe para nadie.
  */
+
+/** Un ícono por grupo del registro; el genérico si el grupo es nuevo. */
+const ICONO_GRUPO: Record<string, string> = {
+  Comercial: "ShoppingCart", Dinero: "Banknote", "Operación": "CalendarRange",
+  "Almacén": "Layers3", Equipo: "UserRoundCheck", "Huésped": "Star",
+};
+
 const REPORTS: { group: string; items: { href: string; label: string; description: string; icon: string }[] }[] = [
   {
     group: "Actividad",
@@ -76,8 +95,39 @@ export default async function ReportsPage() {
       <PageHeader
         eyebrow="Analítica"
         title="Reportes operativos"
-        description="Los reportes indispensables del negocio, cada uno alimentado por el módulo dueño de su dato."
+        description="Los documentos que se imprimen por fecha y los análisis que calculan. Ninguno inventa un dato: todos salen del módulo que lo produce."
       />
+
+      {/* Documentos imprimibles: salen del registro, no de una lista a mano. */}
+      <section className="space-y-3">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+          Documentos imprimibles por fecha
+        </h2>
+        <p className="-mt-1 text-xs text-muted-foreground">
+          Cada uno se abre en el período que elijas, se imprime con encabezado de empresa y se baja en CSV.
+        </p>
+        {gruposDeReportes().map(({ grupo, reportes }) => (
+          <div key={grupo} className="space-y-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/80">{grupo}</h3>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {reportes.map((r) => (
+                <Link key={r.slug} href={`/dashboard/reportes/${r.slug}`} className="group">
+                  <Card className="flex h-full items-start gap-3 p-4 transition-colors hover:border-primary/40 hover:bg-primary/[0.03]">
+                    <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-muted text-muted-foreground transition-colors group-hover:bg-primary/10 group-hover:text-primary">
+                      <Icon name={ICONO_GRUPO[grupo] ?? "FileText"} className="size-4" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold">{r.titulo}</span>
+                      <span className="mt-0.5 block text-xs text-muted-foreground">{r.descripcion}</span>
+                    </span>
+                    <Icon name="Printer" className="ml-auto size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                  </Card>
+                </Link>
+              ))}
+            </div>
+          </div>
+        ))}
+      </section>
 
       {REPORTS.map((section) => (
         <section key={section.group} className="space-y-3">
