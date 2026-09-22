@@ -1135,3 +1135,49 @@ daba error: los tres producían números equivocados en silencio.
 - **Mutación:** tres, las tres muertas — una verificación que solo sabe decir
   OK, el borrado sin el cerrojo de `purpose` (y entonces **sí** borra una
   empresa que no es la del E2E), y un script con un nombre que no dice qué hace.
+
+### AUD-M29 — «0 plazas» en TODOS los canales de venta, y una tipografía que cansa
+- **Cómo apareció:** una captura del punto de venta. Todas las tarjetas del
+  catálogo decían «0 plazas» en rojo y, al añadir una excursión, saltaba «Solo
+  quedan 0 plazas para 1 pasajeros» — con las salidas completamente vacías.
+- **La causa:** `departure.available_pax` es una CACHÉ que recalcula
+  `availability.ts`. El sembrador SQL de la ola 16 inserta las salidas sin
+  rellenarla, y el código hacía `available_pax ?? 0`, que convierte **«no lo
+  sé» en «agotado»**. Es el mismo error que el cierre del día evita al no decir
+  «0 % de ocupación» cuando no hay cupo: un dato que falta y un dato que vale
+  cero son cosas distintas.
+- **EL ALCANCE ERA MUCHO MAYOR DE LO QUE SE VEÍA.** La guarda encontró **13
+  sitios más** con el mismo `?? 0`, y tres de ellos no son cosméticos:
+  · `octo.ts` — le respondía **SOLD_OUT a las OTAs**. La venta se pierde en el
+    canal de más volumen y nadie se entera.
+  · `portal/catalogo` y `public-booking-service` — el catálogo público y la
+    reserva directa enseñaban todo agotado al cliente final.
+  El fallo se veía en el POS, pero estaba costando ventas en todos los canales.
+- **La solución:** `src/lib/plazas.ts`, que usa la caché si está y la calcula
+  si no, y devuelve `null` solo cuando no hay nada con que responder. La
+  interfaz distingue ahora «Cupo sin calcular» de «0 plazas», y OCTO devuelve
+  `AVAILABLE`/`null` en vez de agotado.
+- **Y el sembrador arreglado**, que es donde nació: ahora rellena
+  `available_pax`. Probado contra Postgres real: las 60 salidas quedan con cupo.
+- **Otros defectos del punto de venta, de la misma captura:**
+  · Los desplegables se montaban unos encima de otros. `SelectTrigger` traía
+    `w-fit` + `whitespace-nowrap`: crecía hasta caber su texto y, dentro de una
+    rejilla —donde los hijos tienen `min-width: auto`—, desbordaba sobre el
+    vecino. Arreglado en el componente, no tarjeta por tarjeta.
+  · «1 pasajeros en 1 excursion». La concordancia y el acento, en la pantalla
+    donde se cobra, restan más confianza de lo que parece.
+
+- **La tipografía: de cuatro familias a una.** Había Fraunces (serif de
+  titulares), Manrope, Space Grotesk entera y una Space Grotesk recortada a las
+  cifras. El serif cargaba la vista en pantallas que se miran ocho horas al
+  día. Ahora la jerarquía la hacen el tamaño y el peso. Las cifras se alinean
+  con `font-variant-numeric: tabular-nums` —una propiedad CSS en vez de una
+  descarga—, que es lo que de verdad justificaba la fuente aparte. La
+  monoespaciada se queda: los códigos de reserva y los NCF se leen en columna.
+  Los tres tokens (`--font-sans`, `--font-display`, `--font-num`) apuntan al
+  mismo sitio, así que los ~250 usos de `font-display` y `tf-num` siguen
+  funcionando sin tocar ninguno.
+- **Mutación:** cinco, las cinco muertas — devolver el serif a los titulares,
+  quitarle las cifras tabulares a `.tf-num`, volver a importar una familia
+  decorativa, que OCTO vuelva a decir agotado, y que un hueco vuelva a contar
+  como cero.

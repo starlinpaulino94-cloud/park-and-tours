@@ -6,13 +6,17 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  /* --font-figures is Space Grotesk cut down to digits and arithmetic/currency
-     signs only (see FIGURE_GLYPHS in layout.tsx). Putting it FIRST in every
-     stack makes every number and sign in the app render in it, while the
-     browser falls through to Manrope/Fraunces for every letter. */
-  --font-sans: var(--font-figures), var(--font-manrope), ui-sans-serif, sans-serif;
-  --font-display: var(--font-figures), var(--font-fraunces), Georgia, serif;
-  --font-num: var(--font-grotesk), ui-sans-serif, sans-serif;
+  /* UNA SOLA FAMILIA PARA TODA LA APLICACIÓN.
+     Antes había cuatro: Fraunces (serif de titulares), Manrope, Space Grotesk
+     recortada a las cifras, y la monoespaciada. El serif cargaba la vista en
+     pantallas de trabajo —el punto de venta, los listados—, que se miran ocho
+     horas al día y no son una portada.
+     La jerarquía la hacen ahora el TAMAÑO y el PESO, no la familia. Los tres
+     tokens apuntan al mismo sitio a propósito: así `font-display` y `tf-num`
+     siguen funcionando en los ~250 sitios que ya los usan, sin tocar ninguno. */
+  --font-sans: var(--font-manrope), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-manrope), ui-sans-serif, system-ui, sans-serif;
+  --font-num: var(--font-manrope), ui-sans-serif, system-ui, sans-serif;
   /* Codes and references (booking numbers, plates, document numbers) stay
      monospaced on purpose: a proportional face would break the column
      alignment those cells exist for. */
@@ -189,12 +193,16 @@
   /* Stacks are written out here rather than via var(--font-sans) so the base
      layer never depends on Tailwind emitting the theme token. */
   body {
-    font-family: var(--font-figures), var(--font-manrope), ui-sans-serif, sans-serif;
+    font-family: var(--font-manrope), ui-sans-serif, system-ui, sans-serif;
     font-feature-settings: "ss01", "cv01";
   }
+  /* Los titulares se distinguen por peso y por un apretado ligero, no por
+     cambiar de familia. Es lo que hace que una pantalla densa se lea sin
+     cansar. */
   h1, h2, h3, .font-display {
-    font-family: var(--font-figures), var(--font-fraunces), Georgia, serif;
-    letter-spacing: -0.015em;
+    font-family: var(--font-manrope), ui-sans-serif, system-ui, sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.018em;
   }
 }
 
@@ -203,15 +211,13 @@
    specificity, which silently killed `bg-*`/`border-*` utilities applied
    alongside `.tf-card` (a KPI card ended up with white text on white). */
 @layer components {
-  /* Digits and signs already render in Space Grotesk everywhere thanks to the
-     --font-figures unicode-range trick above. `.tf-num` is still needed for
-     strings that are figures *including their letters* — "RD$67,000", "US$",
-     "12h", "3 pax" — where the surrounding characters must match the digits
-     instead of falling back to Manrope. It also turns on tabular figures so
-     columns of amounts align. Weight stays at 500 on purpose: utilities win
-     over this rule, so `font-semibold` can override it where needed. */
+  /* `.tf-num` ya no cambia de familia —todo es Manrope—, pero sigue haciendo
+     su trabajo de verdad: CIFRAS TABULARES, para que una columna de importes
+     quede alineada en el punto decimal. Eso es lo que justificaba la fuente
+     aparte, y se consigue con una propiedad en vez de con una descarga.
+     El peso se queda en 500 a propósito: las utilidades ganan a esta regla, así
+     que `font-semibold` puede seguir pisándolo donde haga falta. */
   .tf-num {
-    font-family: var(--font-grotesk), ui-sans-serif, sans-serif;
     font-variant-numeric: tabular-nums;
     font-weight: 500;
     letter-spacing: -0.02em;

@@ -4,6 +4,7 @@ import { ok, fail } from "@/lib/api-response";
 import { resolvePrice } from "@/lib/pricing";
 import type { Departure, Partner, Product, ProductModality } from "@/lib/types";
 import { refId } from "@/lib/types";
+import { plazasLibres, type SalidaConCupo } from "@/lib/plazas";
 
 /**
  * GET /api/portal/catalog?date=YYYY-MM-DD
@@ -109,7 +110,8 @@ export async function GET(req: NextRequest) {
           departures: productDepartures.slice(0, 20).map((d) => ({
             _id: d._id,
             departure_at: d.departure_at,
-            available_pax: d.available_pax ?? 0,
+            // Mismo motivo que en el POS: un hueco no es un agotado.
+            available_pax: plazasLibres(d as SalidaConCupo),
             capacity: d.capacity ?? 0,
             status: d.status,
           })),
