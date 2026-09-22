@@ -1000,10 +1000,26 @@ describe("Panel ejecutivo", () => {
     // Pagarle en un solo importe lo que se le debe en pesos y en dólares es
     // inventarse una tasa.
     expect(service).toMatch(/Liquida cada moneda por separado/);
-    // Cada devengo se enlaza AL RECLAMARLO: sin eso, dos generaciones
-    // simultáneas incluirían el mismo servicio dos veces.
-    expect(service).toMatch(/CLAIMABLE\.has\(fresh\.status/);
-    expect(service).toMatch(/status: "settled", settlement: settlement\._id/);
+    /**
+     * ──────────────────────────────────────────────────────────────────────
+     * LA CONDICIÓN VIAJA DENTRO DE LA ESCRITURA
+     *
+     * Esta guarda exigía `CLAIMABLE.has(fresh.status)`: o sea, releer el
+     * devengo y decidir en la aplicación. Eso ESTRECHA la ventana y no la
+     * cierra — entre la lectura y la escritura cabe otra liquidación, y se
+     * comprobó que cabía: la segunda pisaba el enlace de la primera y contaba
+     * el importe igual, así que al transportista se le pagaba dos veces.
+     *
+     * La guarda fijaba la implementación en vez de la regla, y al sustituirla
+     * por una más fuerte saltó. Ahora afirma la regla: reclamar es un `update`
+     * con la condición dentro (`in("status", …)`), y lo que se cuenta es lo que
+     * la base dice que cambió.
+     */
+    expect(service, "reclamar tiene que ser una escritura condicional")
+      .toMatch(/\.update\(\{ status: "settled"[\s\S]{0,300}?\.in\("status", \[\.\.\.CLAIMABLE\]\)/);
+    // Y no se cuenta lo que se leyó antes, sino la fila devuelta.
+    expect(service).toMatch(/const mio = await claimCost\(/);
+    expect(service).toMatch(/if \(!mio\) continue;/);
     // Y una liquidación que no reclamó nada se anula en vez de quedar en cero.
     expect(service).toMatch(/status: "void"/);
   });
@@ -4502,7 +4518,20 @@ describe("la llave de servicio se salta la RLS: el filtro lo pone el código", (
    * con la mutación combinada deja borrar cualquiera de ellos sin que nadie se
    * entere. Esta lo impide de uno en uno.
    */
-  const SIN_SESION = ["src/lib/voice-service.ts", "src/lib/octo-service.ts"];
+  const SIN_SESION = [
+    "src/lib/voice-service.ts",
+    "src/lib/octo-service.ts",
+    /**
+     * La liquidación a proveedores entra aquí aunque use el cliente CON sesión.
+     *
+     * Ahí la RLS sí es una barrera de verdad, así que el `eq` es cinturón y
+     * tirantes — pero la mutación lo demostró: quitarlo no rompía ninguna
+     * prueba. Y el día que alguien cambie ese cliente por el de servicio —para
+     * un cron de liquidaciones, por ejemplo— el filtro ya tiene que estar
+     * puesto, porque entonces es lo único que queda.
+     */
+    "src/lib/supplier-settlement-service.ts",
+  ];
 
   it("toda consulta con la llave de servicio filtra por empresa", () => {
     const offenders: string[] = [];

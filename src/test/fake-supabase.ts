@@ -66,6 +66,30 @@ function valorDe(fila: Fila, columna: string): unknown {
   return undefined;
 }
 
+/**
+ * La fila que se va a escribir, con las referencias en las DOS formas.
+ *
+ * `valorDe` ya lee `settlement_id` y `settlement` como el mismo campo, porque
+ * la base guarda uno y la aplicación lee el otro. Al escribir hacía lo
+ * contrario: guardaba literalmente la clave que le dieran, así que una fila
+ * escrita por PostgREST no se podía leer con la forma de la aplicación — y una
+ * prueba que mezclara las dos capas veía un campo vacío que en producción está
+ * lleno.
+ *
+ * Se guardan las dos y quedan equivalentes en las dos direcciones. Que el
+ * nombre REAL de la columna exista lo comprueba `schema-contract.test.ts`
+ * contra el esquema, que es donde se puede comprobar de verdad.
+ */
+function conAmbasFormas(fila: Fila): Fila {
+  const out: Fila = { ...fila };
+  for (const [clave, valor] of Object.entries(fila)) {
+    if (clave === "organization_id" || !clave.endsWith("_id")) continue;
+    const corto = clave.slice(0, -3);
+    if (!(corto in out)) out[corto] = valor;
+  }
+  return out;
+}
+
 type Filtro = (fila: Fila) => boolean;
 
 /**
@@ -204,7 +228,8 @@ class Builder implements PromiseLike<Resultado> {
         const rows = Array.isArray(this.payload) ? this.payload : [this.payload as Fila];
         const creadas: Fila[] = [];
         for (const row of rows) {
-          creadas.push(await this.db.tenantCreate(String(row.organization_id ?? ""), this.tabla, row));
+          creadas.push(await this.db.tenantCreate(
+            String(row.organization_id ?? ""), this.tabla, conAmbasFormas(row)));
         }
         return this.envolver(creadas);
       }
@@ -214,7 +239,8 @@ class Builder implements PromiseLike<Resultado> {
         const out: Fila[] = [];
         for (const fila of afectadas) {
           out.push(await this.db.tenantUpdate(
-            String(fila.organization_id ?? ""), this.tabla, String(fila._id), this.payload as Fila
+            String(fila.organization_id ?? ""), this.tabla, String(fila._id),
+            conAmbasFormas(this.payload as Fila)
           ));
         }
         return this.envolver(out);

@@ -1,5 +1,6 @@
 import "server-only";
 import { tenantCreate, tenantFindOne, tenantQuery, tenantUpdate } from "@/lib/tenant";
+import { supabaseServer } from "@/lib/supabase/server";
 import { loadCostTariffs } from "@/lib/pricing";
 import {
   costLines, costTotal, retentionsFor, settlementTotals, reconcile,
@@ -27,6 +28,50 @@ import { refId } from "@/lib/types";
  */
 
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+/**
+ * RECLAMAR UN DEVENGO, CON LA CONDICIÓN DENTRO DE LA ESCRITURA.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ NO BASTA CON RELEERLO ANTES
+ *
+ * Antes se releía el devengo y, si seguía reclamable, se escribía. Eso ESTRECHA
+ * la ventana y no la cierra: entre la lectura y la escritura cabe otra
+ * liquidación. Probado — la segunda pisaba el enlace de la primera y contaba el
+ * importe igual, así que el mismo viaje salía en dos liquidaciones y al
+ * transportista se le pagaba dos veces.
+ *
+ * Sin transacciones, lo único que cierra la ventana es que la CONDICIÓN viaje
+ * dentro de la misma sentencia: `update … where id = ? and status in (…)`. Si
+ * otro llegó antes, el `where` ya no encuentra nada y vuelve vacío. Postgres
+ * resuelve el desempate, que es donde se puede resolver.
+ *
+ * Y lo que se cuenta es lo que la BASE dice que cambió, no lo que se leyó
+ * antes: el importe sale de la fila devuelta.
+ */
+async function claimCost(
+  companyId: string,
+  costId: string,
+  settlementId: string
+): Promise<{ amount: number } | null> {
+  const sb = await supabaseServer();
+  const { data, error } = await sb
+    .from("booking_cost")
+    .update({ status: "settled", settlement_id: settlementId })
+    .eq("organization_id", companyId)
+    .eq("id", costId)
+    // La condición. Sin ella esto es un `last write wins`, que aquí significa
+    // pagar dos veces.
+    .in("status", [...CLAIMABLE])
+    .select("id,amount");
+
+  if (error) {
+    console.error(`[liquidación] no se pudo reclamar el devengo ${costId}:`, error.message);
+    return null;
+  }
+  const fila = (data ?? [])[0] as { amount?: number } | undefined;
+  return fila ? { amount: Number(fila.amount ?? 0) } : null;
+}
 
 /** Estados de un devengo que ya no espera pago. */
 const DEAD_COST = new Set(["cancelled", "waived"]);
@@ -221,16 +266,11 @@ export async function generateSupplierSettlement(
   let services = 0;
   let claimed = 0;
   for (const row of inPeriod) {
-    // Se relee para no reclamar dos veces bajo concurrencia o en un reintento.
-    const fresh = (await tenantQuery<{ _id: string; status?: string; amount?: number }>(
-      companyId, "booking_cost", { _filter: { _id: row._id }, _limit: 1 }
-    ))[0];
-    if (!fresh || !CLAIMABLE.has(fresh.status || "")) continue;
-
-    await tenantUpdate(companyId, "booking_cost", row._id, {
-      status: "settled", settlement: settlement._id,
-    });
-    services += fresh.amount ?? 0;
+    // La condición va DENTRO de la escritura: si otra liquidación llegó antes,
+    // esto vuelve vacío y el devengo no se cuenta. Ver `claimCost`.
+    const mio = await claimCost(companyId, row._id, String(settlement._id));
+    if (!mio) continue;
+    services += mio.amount;
     claimed++;
   }
 
