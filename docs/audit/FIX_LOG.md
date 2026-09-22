@@ -1046,3 +1046,61 @@ daba error: los tres producían números equivocados en silencio.
   error, no deshacer el cambio, dar por bueno un token ilegible, no comparar la
   empresa, y decodificar con `atob` sin reconstruir el UTF-8 (que parte los
   acentos).
+
+### AUD-M27 — CI-001: el E2E dejó de correr contra la base de verdad — CERRADA
+- **Qué pasaba:** el paso de E2E recibía la URL y la **llave de servicio del
+  proyecto de producción**. Cada pull request creaba y mantenía la empresa
+  `e2e-tenant` en la base real y reescribía la contraseña de la cuenta de
+  pruebas. Ya causó un incidente (AUD-M16): una cuenta que una persona usaba
+  dejó de dejarle entrar, en silencio, porque alguien abrió un PR.
+- **Por qué no bastaba con acotarlo:** mientras el CI tenga una llave de
+  servicio sobre la operación de verdad, cualquier fallo —un filtro mal escrito,
+  una prueba nueva que limpia más de la cuenta— escribe en los datos del
+  negocio, y de ahí no se vuelve con un `git revert`. La única forma de que no
+  pueda pasar es que el CI no tenga con qué.
+- **La decisión: pila local efímera, no un segundo proyecto.** Cada corrida
+  levanta su propio Supabase (`supabase/config.toml`), aplica las migraciones
+  desde cero y lo destruye. Mejor que un segundo proyecto en la nube: no hay
+  secretos que custodiar, no hay nada que mantener ni pagar, y **el E2E
+  comprueba ahora que las migraciones levantan un sistema utilizable desde
+  cero**, que no lo comprobaba nadie.
+- **Resultado medible:** `.github/workflows/ci.yml` ya no contiene **ni una**
+  referencia a `secrets.*`.
+
+- **LA TRAMPA QUE CASI SE CUELA, Y QUE NO SE VE MIRANDO EL FICHERO.** El paso de
+  build iba ANTES, con la URL de producción. Las variables `NEXT_PUBLIC_*` no se
+  leen en tiempo de ejecución: Next las **incrusta en el paquete del navegador
+  al compilar**. Compilado así, el navegador del E2E habría iniciado sesión
+  contra producción por mucho que el servidor tuviera la pila local en su
+  entorno — el aislamiento entero no habría servido de nada, y el E2E habría
+  pasado en verde escribiendo en la base real. El build se movió después del
+  arranque de la pila, y hay una guarda que compara el ORDEN de los pasos.
+- **Segundo detalle silencioso:** `supabase status -o env` emite `CLAVE="valor"`.
+  Volcado tal cual a `$GITHUB_ENV`, las comillas viajan **dentro** del valor y no
+  conecta nada. Se quitan al leerlas.
+
+- **Y una segunda cerradura, en el código y no solo en el CI:** el arranque del
+  E2E clasifica el destino antes de tocar nada y se niega a escribir en un
+  proyecto que no sea desechable. Denegar por defecto: lo que no se reconoce
+  como local se trata como la base de alguien, y una URL ilegible tampoco pasa.
+  `E2E_ALLOW_REMOTE=true` es la salida deliberada, que tiene que escribir una
+  persona. Vive ahí a propósito: un día alguien cambiará el fichero del CI, y
+  esto seguirá puesto.
+- **La comprobación va ANTES del primer `await`**, por la misma razón que la de
+  la cuenta: un arranque que crea la empresa, crea el usuario y *luego* se da
+  cuenta de que la base era la de producción, ya escribió en producción.
+
+- **Mutación: siete, las siete muertas** — volver a pasar un secreto al E2E,
+  compilar antes de levantar la pila, quitar el apagado incondicional, apagar la
+  RLS, apagar el enganche del token, permitir un destino remoto por defecto, y
+  mover la comprobación de destino después de las escrituras. **Dos no mordieron
+  a la primera** (el enganche apagado casaba con el `enabled = true` de otra
+  sección, y no había prueba del ORDEN de la comprobación); las dos guardas se
+  reescribieron hasta que mordieron.
+
+- **Lo que NO se ha podido comprobar desde aquí:** este entorno no tiene Docker,
+  así que `supabase start` no se ha ejecutado ni una vez. La sintaxis del
+  `config.toml` sí está validada con la propia CLI —de hecho rechazó dos cosas:
+  `major_version = 16` y la sección `[inbucket]`, ya deprecada—, y el YAML del CI
+  se parsea en las pruebas. Pero la **primera corrida de verdad es la primera
+  ejecución del CI**, y conviene mirarla.

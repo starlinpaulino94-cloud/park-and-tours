@@ -40,6 +40,76 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
  * faltan E2E_EMAIL/E2E_PASSWORD), así que en local sigue siendo inofensivo.
  */
 
+
+/**
+ * ────────────────────────────────────────────────────────────────────────────
+ * Y NO ESCRIBE EN UNA BASE QUE NO SEA DESECHABLE. NUNCA.
+ *
+ * Lo de arriba impide apropiarse de la cuenta de una PERSONA. Esto impide algo
+ * más gordo: escribir en el proyecto de Supabase DE VERDAD.
+ *
+ * Durante meses este arranque corrió contra producción. Creaba y mantenía la
+ * empresa `e2e-tenant` en la base real, con una llave de servicio, en cada pull
+ * request. Acotarlo con cuidado no arregla la categoría del problema: mientras
+ * el CI tenga una llave de servicio sobre la operación de verdad, cualquier
+ * fallo —un filtro mal escrito, una prueba nueva que limpia más de la cuenta—
+ * escribe en los datos del negocio, y de ahí no se vuelve con un `git revert`.
+ *
+ * Ahora el CI levanta su propia pila local (ver `supabase/config.toml`), y esto
+ * comprueba que el destino es una base desechable antes de tocar nada. La
+ * comprobación vive aquí y no solo en el fichero del CI a propósito: un día
+ * alguien cambiará el CI, y esto seguirá puesto.
+ */
+
+/** Anfitriones que solo pueden ser una pila local y efímera. */
+const ANFITRIONES_DESECHABLES = new Set([
+  "localhost", "127.0.0.1", "0.0.0.0", "::1",
+  // El nombre del contenedor cuando el E2E corre dentro de la red de Docker.
+  "host.docker.internal", "kong", "supabase_kong_park-and-tours",
+]);
+
+export type DestinoE2E = "desechable" | "remoto_permitido" | "remoto_prohibido" | "ilegible";
+
+/**
+ * ¿Se puede escribir en este destino?
+ *
+ * Denegar por defecto: lo que no se reconozca como local se trata como la base
+ * de alguien. Una URL ilegible tampoco pasa — si no se sabe a dónde apunta, no
+ * se escribe.
+ *
+ * `E2E_ALLOW_REMOTE` es la salida deliberada para quien de verdad quiera correr
+ * contra un proyecto de pruebas remoto. Tiene que escribirla una persona a
+ * propósito; nada la pone sola.
+ */
+export function clasificarDestino(url: string | undefined, permitirRemoto?: string): DestinoE2E {
+  let anfitrion: string;
+  try {
+    anfitrion = new URL(String(url)).hostname.toLowerCase();
+  } catch {
+    return "ilegible";
+  }
+  if (!anfitrion) return "ilegible";
+  if (ANFITRIONES_DESECHABLES.has(anfitrion)) return "desechable";
+  return String(permitirRemoto).toLowerCase() === "true" ? "remoto_permitido" : "remoto_prohibido";
+}
+
+export function mensajeDestinoProhibido(url: string | undefined, destino: DestinoE2E): string {
+  const que = destino === "ilegible"
+    ? `NEXT_PUBLIC_SUPABASE_URL no es una URL legible (${url ?? "vacía"})`
+    : `NEXT_PUBLIC_SUPABASE_URL apunta a un proyecto remoto (${url})`;
+  return (
+    `${que}.\n\n` +
+    "El arranque del E2E CREA empresas, CREA usuarios y REESCRIBE contraseñas con " +
+    "la llave de servicio. Contra el proyecto de verdad, eso escribe en los datos " +
+    "del negocio en cada pull request — que es exactamente de donde viene esta " +
+    "comprobación.\n\n" +
+    "El CI levanta su propia pila con `supabase start` (ver supabase/config.toml) " +
+    "y apunta aquí a http://127.0.0.1:54321.\n\n" +
+    "Si de verdad quieres correr contra un proyecto remoto DESECHABLE —nunca el " +
+    "de producción—, ponle E2E_ALLOW_REMOTE=true a propósito."
+  );
+}
+
 const E2E_ORG_SLUG = "e2e-tenant";
 
 // El tipo del Admin API de Supabase resuelve `data.users` de forma inestable
@@ -171,6 +241,16 @@ async function globalSetup(): Promise<void> {
   if (!url || !serviceKey || !email || !password) {
     console.log("[e2e setup] Env de Supabase incompleto — se omite el seeding de la cuenta de prueba.");
     return;
+  }
+
+  // Antes de crear el cliente: comprobar después de tener la llave en la mano y
+  // el primer `await` hecho es comprobar tarde.
+  const destino = clasificarDestino(url, process.env.E2E_ALLOW_REMOTE);
+  if (destino === "remoto_prohibido" || destino === "ilegible") {
+    throw new Error(mensajeDestinoProhibido(url, destino));
+  }
+  if (destino === "remoto_permitido") {
+    console.warn(`[e2e setup] AVISO: escribiendo en un proyecto REMOTO (${url}) por E2E_ALLOW_REMOTE=true.`);
   }
 
   const sb = createClient(url, serviceKey, { auth: { persistSession: false } });

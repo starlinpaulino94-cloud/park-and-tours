@@ -104,7 +104,7 @@ Además, cerrados en este ciclo y no listados antes:
 | **F-001** módulos fiscales sin pruebas | **Alto** | `invoice-service` (NCF), `dgii-service` (606/607) y `supplier-settlement-service` suman 1 090 líneas sin una sola prueba. Un NCF mal emitido no se corrige: se nota de crédito |
 | **P-001** rendimiento desconocido | Medio | Sin `EXPLAIN` sobre las consultas del panel ni pruebas de carga |
 | **DR-001** restauración sin probar | **Alto** | Supabase hace copias; que se pueda volver de una no lo ha verificado nadie |
-| **CI-001** el E2E corre contra el proyecto de producción | **Alto** | El paso de E2E de `ci.yml` usa los mismos `NEXT_PUBLIC_SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` que la aplicación desplegada. Cada PR crea/mantiene la empresa `e2e-tenant` **en producción** y reescribe la contraseña de la cuenta `E2E_EMAIL`. Lo segundo ya causó un incidente (AUD-M16) y está acotado por código; lo primero sigue abierto y se cierra con un **proyecto de Supabase aparte para CI** |
+| ~~**CI-001** el E2E corre contra el proyecto de producción~~ | **CERRADA** | Cada corrida levanta **su propia pila de Supabase** (`supabase/config.toml`), aplica las migraciones desde cero y la destruye al terminar. El fichero del CI ya no contiene **ni una sola** referencia a `secrets.*`: no hay llave de servicio sobre la operación real que pueda usarse mal. De regalo, el E2E comprueba ahora que las migraciones levantan un sistema utilizable **desde cero**, que no lo comprobaba nadie. Ver AUD-M27 |
 
 ---
 
@@ -163,9 +163,9 @@ En orden de lo que más cuesta si sale mal:
    navegador, contra una base de prueba.
 4. **`EXPLAIN` y carga** sobre las consultas del panel y del manifiesto, que
    son las que se abren cien veces al día.
-5. **Separar el proyecto de Supabase del CI** del de producción (CI-001). Hoy
-   cada PR escribe en la base real, y el secreto del CI es una llave de servicio
-   sobre la operación de verdad.
+5. ~~**Separar el proyecto de Supabase del CI** del de producción (CI-001).~~
+   **HECHO**, y mejor que separándolo: el CI levanta su propia pila efímera, así
+   que no hay un segundo proyecto que mantener ni ningún secreto que custodiar.
 6. **Probar la reversión de un despliegue**, una vez, a propósito.
 
 ---
