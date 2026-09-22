@@ -20,9 +20,12 @@ import { CHANNEL, DEPARTURE_STATUS, MODALITY_TYPE, PAYMENT_METHOD } from "@/lib/
 import { formatDate, formatMoney, formatNumber, formatTime, toDateInput } from "@/lib/format";
 import { optionsFrom } from "@/components/tf/options";
 import { MembegoBenefits } from "./_components/membego-benefits";
+import { plazasDeProducto, plazasLibres } from "@/lib/plazas";
 
 interface CatalogDeparture {
-  _id: string; departure_at?: string; capacity: number; available_pax: number; status?: string;
+  _id: string; departure_at?: string; capacity: number;
+  /** null = nadie ha calculado el cupo todavía. NO es agotado. */
+  available_pax: number | null; status?: string;
 }
 interface CatalogModality {
   _id: string; name?: string; modality_type?: string; price?: number; min_pax?: number; max_pax?: number;
@@ -196,7 +199,7 @@ export default function PosPage() {
 
   const addToCart = (product: CatalogProduct) => {
     const modality = product.modalities.find((m) => m.modality_type === "adult") || product.modalities[0];
-    const departure = product.departures.find((d) => (d.available_pax ?? 0) > 0) || product.departures[0];
+    const departure = product.departures.find((d) => (plazasLibres(d) ?? 1) > 0) || product.departures[0];
     setCart((c) => [...c, {
       uid: nextUid(),
       product,
@@ -386,7 +389,8 @@ export default function PosPage() {
   const overCapacity = cart.some((i) => {
     const dep = i.product.departures.find((d) => d._id === i.departure_id);
     if (!dep) return false;
-    return i.adults + i.children + i.infants > (dep.available_pax ?? 0);
+    const libres = plazasLibres(dep);
+    return libres !== null && i.adults + i.children + i.infants > libres;
   });
 
   // Ayudas del cobro tras la venta.
@@ -451,7 +455,7 @@ export default function PosPage() {
             <div className="grid gap-3 sm:grid-cols-2">
               {filteredCatalog.map((p) => {
                 const next = p.departures[0];
-                const seats = p.departures.reduce((s, d) => s + (d.available_pax ?? 0), 0);
+                const cupo = plazasDeProducto(p.departures);
                 return (
                   <article key={p._id} className="tf-card tf-rise flex flex-col overflow-hidden">
                     {p.cover_image_url && (
@@ -467,7 +471,16 @@ export default function PosPage() {
                       <div className="flex flex-wrap items-center gap-1.5">
                         <Pill tone="accent" className="tf-num">{formatMoney(p.base_price, p.currency)}</Pill>
                         {p.modalities.length > 0 && <Pill tone="neutral">{p.modalities.length} modalidades</Pill>}
-                        <Pill tone={seats > 0 ? "success" : "danger"} className="tf-num">{formatNumber(seats)} plazas</Pill>
+                        {/* Agotado y «no se sabe» son dos cosas distintas, y pintarlas
+                            igual —rojo, 0 plazas— hace que el catálogo entero parezca
+                            vendido cuando solo falta calcular la caché. */}
+                        {cupo.desconocido ? (
+                          <Pill tone="neutral">Cupo sin calcular</Pill>
+                        ) : (
+                          <Pill tone={cupo.libres > 0 ? "success" : "danger"} className="tf-num">
+                            {formatNumber(cupo.libres)} {cupo.libres === 1 ? "plaza" : "plazas"}
+                          </Pill>
+                        )}
                       </div>
                       <p className="text-xs text-muted-foreground">
                         {next ? `Próxima salida ${formatDate(next.departure_at)} · ${formatTime(next.departure_at)}` : "Sin salidas programadas"}
@@ -581,7 +594,8 @@ export default function PosPage() {
                 const line = quote?.lines[idx];
                 const departure = item.product.departures.find((d) => d._id === item.departure_id);
                 const pax = item.adults + item.children + item.infants;
-                const noSeats = departure && pax > (departure.available_pax ?? 0);
+                const libresSel = departure ? plazasLibres(departure) : null;
+                const noSeats = libresSel !== null && pax > libresSel;
                 return (
                   <article key={item.uid} className="tf-card space-y-3 p-4">
                     <header className="flex items-start justify-between gap-2">
@@ -596,20 +610,20 @@ export default function PosPage() {
                     </header>
 
                     <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="space-y-1.5">
+                      <div className="min-w-0 space-y-1.5">
                         <Label className="text-xs">Salida</Label>
                         <Select value={item.departure_id} onValueChange={(v) => patchItem(item.uid, { departure_id: v })}>
                           <SelectTrigger><SelectValue placeholder="Selecciona la salida" /></SelectTrigger>
                           <SelectContent>
                             {item.product.departures.map((d) => (
                               <SelectItem key={d._id} value={d._id}>
-                                {formatDate(d.departure_at)} · {formatTime(d.departure_at)} · {d.available_pax} libres
+                                {formatDate(d.departure_at)} · {formatTime(d.departure_at)} · {plazasLibres(d) === null ? "cupo sin calcular" : `${plazasLibres(d)} libres`}
                               </SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
                       </div>
-                      <div className="space-y-1.5">
+                      <div className="min-w-0 space-y-1.5">
                         <Label className="text-xs">Modalidad</Label>
                         <Select value={item.modality_id || "__none"}
                           onValueChange={(v) => patchItem(item.uid, { modality_id: v === "__none" ? "" : v })}>
@@ -687,7 +701,7 @@ export default function PosPage() {
                     )}
 
                     <div className="grid gap-3 sm:grid-cols-3">
-                      <div className="space-y-1.5">
+                      <div className="min-w-0 space-y-1.5">
                         <Label className="text-xs">Hotel de recogida</Label>
                         <Select value={item.pickup_hotel_id || "__none"}
                           onValueChange={(v) => patchItem(item.uid, { pickup_hotel_id: v === "__none" ? "" : v })}>
@@ -700,11 +714,11 @@ export default function PosPage() {
                           </SelectContent>
                         </Select>
                       </div>
-                      <div className="space-y-1.5">
+                      <div className="min-w-0 space-y-1.5">
                         <Label className="text-xs">Habitación</Label>
                         <Input value={item.room_number} onChange={(e) => patchItem(item.uid, { room_number: e.target.value })} />
                       </div>
-                      <div className="space-y-1.5">
+                      <div className="min-w-0 space-y-1.5">
                         <Label className="text-xs">Hora de recogida</Label>
                         <Input value={item.pickup_time} placeholder="07:30"
                           onChange={(e) => patchItem(item.uid, { pickup_time: e.target.value })} />
@@ -714,7 +728,7 @@ export default function PosPage() {
                     {noSeats && (
                       <p className="flex items-center gap-1.5 rounded-lg bg-rose-50 px-3 py-2 text-[13px] text-rose-900 dark:bg-rose-950/40 dark:text-rose-100">
                         <Icon name="TriangleAlert" className="size-3.5 shrink-0" />
-                        Solo quedan {departure?.available_pax ?? 0} plazas para {pax} pasajeros.
+                        Solo {libresSel === 1 ? "queda 1 plaza" : `quedan ${libresSel ?? 0} plazas`} para {pax} {pax === 1 ? "pasajero" : "pasajeros"}.
                       </p>
                     )}
 
@@ -754,7 +768,11 @@ export default function PosPage() {
                   </span>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {formatNumber(quote?.totals.pax ?? 0)} pasajeros en {cart.length} excursion{cart.length === 1 ? "" : "es"}
+                  {/* Concordancia de verdad: «1 pasajeros en 1 excursion» se lee como
+                      un descuido, y en la pantalla donde se cobra eso resta confianza. */}
+                  {formatNumber(quote?.totals.pax ?? 0)}{" "}
+                  {(quote?.totals.pax ?? 0) === 1 ? "pasajero" : "pasajeros"} en {cart.length}{" "}
+                  {cart.length === 1 ? "excursión" : "excursiones"}
                 </p>
               </div>
 

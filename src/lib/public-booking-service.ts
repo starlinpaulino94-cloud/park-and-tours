@@ -1,4 +1,5 @@
 import "server-only";
+import { plazasLibres, type SalidaConCupo } from "@/lib/plazas";
 import { supabaseService } from "@/lib/supabase/service";
 import { createOrderWithBookings } from "@/lib/booking-service";
 import { subscriptionState } from "@/lib/plan";
@@ -163,7 +164,7 @@ export async function loadPublicDepartures(
       at: row.departure_at as string,
       // Sin capacidad declarada no hay techo que enseñar: `null` es «no
       // aplica», nunca «cero».
-      seatsLeft: Number(row.capacity ?? 0) > 0 ? Number(row.available_pax ?? 0) : null,
+      seatsLeft: plazasLibres(row as SalidaConCupo),
       meetingPoint: (row.meeting_point as string) ?? null,
     }))
     .filter((departure) => departure.seatsLeft === null || departure.seatsLeft > 0);

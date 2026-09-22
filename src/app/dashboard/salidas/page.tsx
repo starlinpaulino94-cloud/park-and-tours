@@ -21,6 +21,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DEPARTURE_STATUS } from "@/lib/labels";
 import { formatDate, formatNumber, formatTime, toDateInput } from "@/lib/format";
 import { optionsFrom } from "@/components/tf/options";
+import { plazasLibres } from "@/lib/plazas";
 
 interface Departure {
   _id: string; departure_at?: string; departure_time?: string; status?: string;
@@ -193,7 +194,7 @@ export default function DeparturesPage() {
       d.meeting_point || "",
       d.capacity ?? 0,
       (d.booked_pax ?? 0) + (d.pending_pax ?? 0),
-      d.available_pax ?? 0,
+      plazasLibres(d) ?? "",
       occupancyOf(d),
       d.cutoff_hours ?? "",
       DEPARTURE_STATUS[d.status || ""]?.label || d.status || "",
@@ -406,7 +407,12 @@ export default function DeparturesPage() {
               ) },
               { key: "occupancy", header: "Ocupación", render: (d: Departure) => <OccupancyBar d={d} /> },
               { key: "available", header: "Libres", align: "right", hideOn: "sm",
-                render: (d: Departure) => <span className="font-semibold">{formatNumber(d.available_pax ?? 0)}</span> },
+                render: (d: Departure) => {
+                  // Un cupo sin calcular se dice con una raya, no con un cero
+                  // que afirma que la salida está llena.
+                  const libres = plazasLibres(d);
+                  return <span className="font-semibold">{libres === null ? "—" : formatNumber(libres)}</span>;
+                } },
               {
                 // Solo se pinta cuando hay gente: una columna de ceros en todas
                 // las filas es ruido que se deja de mirar, y entonces el día que

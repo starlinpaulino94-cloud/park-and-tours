@@ -3,6 +3,7 @@ import { requireTenant, tenantQuery } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import type { Branch, CashSession, Departure, Hotel, Partner, Product, Seller } from "@/lib/types";
 import { refId } from "@/lib/types";
+import { plazasLibres, type SalidaConCupo } from "@/lib/plazas";
 
 /**
  * GET /api/pos/context?date=YYYY-MM-DD
@@ -88,7 +89,9 @@ export async function GET(req: NextRequest) {
         _id: d._id,
         departure_at: d.departure_at,
         capacity: d.capacity ?? 0,
-        available_pax: d.available_pax ?? 0,
+        // `?? 0` convertía «la caché no está calculada» en «agotado», y con eso
+        // el catálogo entero salía en rojo con salidas vacías. Ver plazas.ts.
+        available_pax: plazasLibres(d as SalidaConCupo),
         status: d.status,
       })),
     }));

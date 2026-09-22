@@ -44,8 +44,12 @@ insert into attraction (id, organization_id, name, code, zone_id, attraction_typ
   (md5('demo:' || ('attr:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Hoyo Azul', 'HOYO', md5('demo:' || ('zone:1'))::uuid, 'adventure', 'open', 120, 45, 'active'),
   (md5('demo:' || ('attr:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Tirolesa Anamuya', 'ZIP', md5('demo:' || ('zone:1'))::uuid, 'adventure', 'open', 60, 90, 'active');
 -- 60 salidas repartidas entre -29 y +30 días, sobre los 8 primeros productos.
+-- `available_pax` se rellena aquí a propósito. Dejarla nula hacía que el punto
+-- de venta, el catálogo público y la API de las OTAs dieran TODAS las salidas
+-- por agotadas: esa columna es una caché y quien inserta a mano tiene que
+-- dejarla coherente. Ver src/lib/plazas.ts.
 insert into departure (id, organization_id, product_id, departure_at, departure_time, capacity,
-    booked_pax, cutoff_hours, meeting_point, status, branch_id)
+    booked_pax, available_pax, cutoff_hours, meeting_point, status, branch_id)
 select
   md5('demo:' || ('dep:' || n))::uuid,
   (select id from organizations where slug = 'havelgo-demo-presentaciones'),
@@ -54,6 +58,8 @@ select
   case when n % 2 = 0 then '08:00' else '13:00' end,
   (array[40,35,16,24,30,45,120,30])[1 + ((n - 1) % 8)],
   0,
+  -- available_pax = cupo - vendidas; aquí booked_pax es 0, así que es el cupo.
+  (array[40,35,16,24,30,45,120,30])[1 + ((n - 1) % 8)],
   4,
   'Recogida en lobby',
   case when (n - 30) < 0 then 'completed' else 'available' end,
