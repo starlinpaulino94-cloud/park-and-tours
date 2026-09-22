@@ -245,12 +245,41 @@ on conflict (user_id, organization_id) do update
 commit;
 ```
 
-**Antes de `commit`, comprueba.** Si el `insert` dice `INSERT 0 0`, uno de los
-dos `select` volvió vacío —correo mal escrito o slug que no existe— y no se hizo
-nada. Los slugs que hay:
+### «Success. No rows returned» NO quiere decir que haya funcionado
+
+Es lo que el editor contesta a ese bloque **en los dos casos**: un `update` y un
+`insert` sin `returning` no devuelven filas ni cuando cambian algo ni cuando no.
+Y el editor de Supabase tampoco enseña el contador (`INSERT 0 1`) que sí saca
+`psql`. O sea que ese mensaje no distingue «hecho» de «no encontró ni el correo
+ni la empresa».
+
+Así que la comprobación va aparte. Pega esto después:
+
+```sql
+select
+  case when m.is_primary then '★' else ' ' end as aterriza,
+  org.name as empresa, org.slug, m.role as rol, m.status as membresia
+from organization_memberships m
+join organizations org on org.id = m.organization_id
+join auth.users u      on u.id  = m.user_id
+where lower(u.email) = lower('demopresentaciones@havelgo.com')
+order by m.is_primary desc, org.name;
+```
+
+- **Sale la empresa que querías, con la ★** → hecho.
+- **Cero filas, o falta esa empresa** → uno de los dos `select` del bloque 3
+  volvió vacío. El correo está mal escrito, o el slug no existe. Los slugs que
+  hay son estos:
 
 ```sql
 select name, slug, kind, status from organizations where kind = 'tenant' order by name;
+```
+
+Y para confirmar que el correo es exactamente el que está en la base —mayúsculas
+incluidas, aunque la búsqueda no las mire—:
+
+```sql
+select email from auth.users order by created_at desc limit 20;
 ```
 
 > `is_primary = true` mueve **dónde aterriza esa persona al entrar**. Si el
@@ -297,6 +326,37 @@ que no entra, porque el fallo aparece después y en otro sitio.
 
 Eso hace lo mismo que `onboard-user.mjs`, con la ventaja de que lo hace GoTrue.
 
+### Si no tienes acceso al buzón de esa cuenta
+
+*Reset password* y *Send magic link* mandan un correo: sin buzón no sirven.
+Quedan tres caminos, y no son igual de buenos.
+
+**1 · El recomendado: no rescates esa dirección, haz una nueva.**
+
+Una cuenta de demostración no tiene por qué ser una dirección concreta. En
+*Authentication → Users → Add user* se escribe la contraseña **ahí mismo**, sin
+correo de por medio: marca **Auto Confirm User** y ya está. Luego el bloque 3 de
+arriba le da la membresía. Dos minutos, cero riesgo.
+
+Sirve cualquier dirección que no exista de verdad —`demo@havelgo-demo.local`—
+porque nunca va a recibir nada.
+
+**2 · NO borres la cuenta para recrearla.**
+
+Es la salida que parece obvia y es la cara. `auth.users` tiene **62 claves
+foráneas** apuntándole: tres borran en cascada (membresías, notificaciones,
+acuses de documentos) y **las otras 59 ponen el campo a NULL**. Esos campos son
+`created_by`, `approved_by`, `checked_in_by`, `user_id` en cobros, movimientos
+de caja y registro de auditoría.
+
+O sea: borrar la cuenta no borra lo que hizo — le quita el autor. El historial
+queda entero y anónimo, y eso no se deshace.
+
+**3 · Ponerle la contraseña desde SQL.**
+
+Si de verdad necesitas **esa** dirección y no tienes su buzón, este es el camino
+que queda. Abajo está, con lo que se acepta al usarlo.
+
 <details>
 <summary>El atajo en SQL, si aun así lo prefieres</summary>
 
@@ -306,12 +366,20 @@ de Auth, y depende de que el algoritmo siga siendo bcrypt — el día que cambie
 esta orden deja de servir sin avisar.
 
 ```sql
--- ci:skip — `extensions.crypt` vive en Supabase, no en el Postgres del CI.
+-- ci:skip — `extensions.crypt` y `auth.sessions` viven en Supabase, no en el
+-- Postgres del CI, así que este bloque no se puede ejecutar allí.
 update auth.users
    set encrypted_password = extensions.crypt('PonAquiUnaClaveLarga', extensions.gen_salt('bf')),
        email_confirmed_at = coalesce(email_confirmed_at, now()),
        updated_at         = now()
  where lower(email) = lower('demopresentaciones@havelgo.com');
+
+-- GoTrue cierra las sesiones abiertas al cambiar una contraseña; escribiendo el
+-- hash a mano, no. Sin esto, una sesión anterior sigue viva con la clave vieja
+-- —que es justo lo que se quería revocar—.
+delete from auth.sessions
+ where user_id = (select id from auth.users
+                   where lower(email) = lower('demopresentaciones@havelgo.com'));
 ```
 
 Si el `update` dice `UPDATE 0`, la cuenta no existe: no la crees con un
