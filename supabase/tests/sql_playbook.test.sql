@@ -1,4 +1,11 @@
 -- ============================================================================
+-- ⚠ ESTE FICHERO NO SE PEGA EN EL EDITOR SQL DE SUPABASE.
+--
+-- Pasó: usa órdenes de `psql` —`\set`, `\echo`— que el editor no entiende, y
+-- contesta `syntax error at or near "\"`. Lo que se pega son los bloques de
+-- docs/operaciones/DESDE_EL_EDITOR_SQL.md, que sí son SQL puro. Esto de aquí es
+-- la prueba automática de esa página, y corre en CI.
+-- ============================================================================
 -- EL CUADERNO DEL EDITOR SQL, EJECUTADO.
 --
 -- `docs/operaciones/DESDE_EL_EDITOR_SQL.md` se le entrega a alguien que no

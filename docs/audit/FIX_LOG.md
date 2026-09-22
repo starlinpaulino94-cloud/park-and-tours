@@ -635,3 +635,31 @@ daba error: los tres producían números equivocados en silencio.
   sin el `coalesce`. En el editor cada bloque es su propia transacción y ahí sí
   diferirían: la aserción cómoda era justo la que no servía donde importa. Se
   reescribió midiendo `row_count`, y entonces mordió.
+
+### AUD-M15 — El cuaderno de SQL se pegaba mal, y nada lo impedía — CERRADA
+- **Cómo apareció:** se pegó `supabase/tests/sql_playbook.test.sql` en el editor
+  de Supabase y contestó `syntax error at or near "\"`. Es la prueba automática
+  del cuaderno, no el cuaderno: usa órdenes de `psql` (`\set`, `\echo`) que el
+  editor no entiende. Confusión razonable — dos ficheros con el mismo tema, y
+  sólo uno se pega.
+- **Lo que de verdad falló:** nada comprobaba que lo que se entrega **sea
+  pegable**, ni que siga encajando con el esquema. Documentación que nadie
+  ejecuta envejece en silencio, y ésta se usa el peor día contra producción.
+- **Archivos:** `scripts/extract-doc-sql.mjs` (nuevo), `scripts/db-test.sh`,
+  `docs/operaciones/DESDE_EL_EDITOR_SQL.md`,
+  `supabase/tests/sql_playbook.test.sql` (aviso en la cabecera).
+- **Solución:** el CI **ejecuta los bloques del cuaderno** contra el Postgres
+  efímero con todas las migraciones aplicadas. Los correos y slugs de los
+  ejemplos no existen, así que las escrituras tocan cero filas: lo que se
+  comprueba es que todos analizan y encajan. Y el extractor rechaza cualquier
+  bloque con una orden de `psql`, que es exactamente el defecto que se vio.
+  El único bloque que no puede correr —el atajo con `extensions.crypt`, que vive
+  en Supabase y no en Postgres— va marcado `ci:skip` con el motivo a la vista.
+- **Y una consulta única al principio del cuaderno**, que contesta las diez
+  preguntas de una pegada y termina diciendo qué hacer. Probada en los cuatro
+  estados que importan: cuenta ausente, sin confirmar, sin empresa, y sana. Con
+  la cuenta ausente las filas que dependen de ella salen `—` en vez de
+  inventarse un estado — decir «ninguna empresa» de una cuenta que no existe es
+  la clase de dato que manda a arreglar lo que no está roto.
+- **Mutación:** dos, dos muertas — colar un `\set` en el cuaderno, y renombrar
+  una columna que el cuaderno consulta.

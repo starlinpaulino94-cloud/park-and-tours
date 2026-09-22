@@ -37,6 +37,98 @@ del proyecto como propietario, no con una clave de rol limitado.
 
 ---
 
+## Antes de los bloques: una sola consulta que lo contesta todo
+
+Si no quieres ir bloque a bloque, pega **sólo esto**. Cambia el correo de la
+primera línea y nada más. Devuelve diez filas y la última dice qué hacer.
+
+```sql
+with objetivo as (
+  select lower('demopresentaciones@havelgo.com') as email   -- ← cambia sólo esto
+),
+u as (
+  select usr.* from auth.users usr, objetivo o where lower(usr.email) = o.email
+),
+mem as (
+  select m.is_primary, m.role, m.status as mem_status,
+         org.name, org.slug, org.status as org_status
+    from organization_memberships m
+    join organizations org on org.id = m.organization_id
+   where m.user_id = (select id from u)
+)
+select * from (values
+  ('0 · la sesión del editor lo ve todo',
+   case when (select rolbypassrls from pg_roles where rolname = current_user)
+        then 'sí' else 'NO — lo de abajo puede salir vacío sin ser verdad' end),
+
+  ('1 · la cuenta existe en este proyecto',
+   case when exists (select 1 from u) then 'SÍ'
+        else 'NO — ninguna contraseña va a funcionar. Créala en Authentication → Users' end),
+
+  ('2 · email confirmado',
+   coalesce((select case when email_confirmed_at is not null then 'sí'
+                         else 'NO — el acceso se rechaza aunque la clave sea correcta' end from u), '—')),
+
+  ('3 · tiene contraseña',
+   coalesce((select case when encrypted_password is not null then 'sí'
+                         else 'NO — se creó por invitación: no hay clave que probar' end from u), '—')),
+
+  ('4 · identidad de correo',
+   coalesce((select case when exists (select 1 from auth.identities i
+                                       where i.user_id = u.id and i.provider = 'email')
+                         then 'sí' else 'NO — GoTrue no la reconoce como cuenta de correo' end from u), '—')),
+
+  ('5 · bloqueada',
+   coalesce((select case when (to_jsonb(u) ->> 'banned_until')::timestamptz > now()
+                         then 'SÍ, hasta ' || (to_jsonb(u) ->> 'banned_until')
+                         else 'no' end from u), '—')),
+
+  ('6 · borrada',
+   coalesce((select case when (to_jsonb(u) ->> 'deleted_at') is not null
+                         then 'SÍ — no se recupera, hay que crear otra' else 'no' end from u), '—')),
+
+  ('7 · último acceso',
+   coalesce((select coalesce(last_sign_in_at::text, 'nunca ha entrado') from u), '—')),
+
+  ('8 · empresas (★ = donde aterriza)',
+   coalesce((select string_agg(
+              case when is_primary then '★ ' else '  ' end
+              || name || ' [' || coalesce(slug,'sin slug') || '] rol=' || role
+              || ' membresía=' || mem_status || ' empresa=' || org_status,
+              e'\n' order by is_primary desc, name)
+             from mem),
+            case when exists (select 1 from u)
+                 then 'NINGUNA — entraría pero no vería nada: hace falta darle membresía'
+                 else '—' end)),
+
+  ('9 · qué hacer',
+   case
+     when not exists (select 1 from u)
+       then 'La cuenta no está aquí. Authentication → Users → Add user (Auto Confirm), y luego dale membresía.'
+     when (select email_confirmed_at from u) is null
+       then 'Confirma el email (bloque 4 del cuaderno) y vuelve a probar.'
+     when not exists (select 1 from mem where mem_status = 'active')
+       then 'Existe y puede entrar, pero no pertenece a ninguna empresa activa: dale membresía.'
+     when not exists (select 1 from mem where mem_status = 'active' and is_primary)
+       then 'Todo bien salvo que ninguna membresía es la primaria: aterriza donde salga por fecha.'
+     else 'Nada impide el acceso desde la base. Si el formulario lo rechaza, es la CONTRASEÑA: Authentication → Users → Reset password.'
+   end)
+) as t(comprobacion, resultado);
+```
+
+Funciona también cuando la cuenta **no existe** — que es el caso que hay que
+distinguir — y entonces las filas que dependen de ella salen con `—` en vez de
+inventarse un estado. Lo de abajo es lo mismo, desglosado, para cuando haga
+falta mirar una cosa concreta o arreglarla.
+
+> **Ojo con `supabase/tests/sql_playbook.test.sql`.** Ese fichero NO se pega
+> aquí: es la prueba automática de esta página y usa órdenes de `psql`
+> (`\set`, `\echo`) que el editor de Supabase no entiende — da
+> `syntax error at or near "\"`. Corre en CI. Lo que se pega es lo de esta
+> página.
+
+---
+
 ## 1 · ¿Existe la cuenta en ESTE proyecto?
 
 Es la pregunta que la pantalla de acceso no puede contestar, porque contesta lo
@@ -214,6 +306,7 @@ de Auth, y depende de que el algoritmo siga siendo bcrypt — el día que cambie
 esta orden deja de servir sin avisar.
 
 ```sql
+-- ci:skip — `extensions.crypt` vive en Supabase, no en el Postgres del CI.
 update auth.users
    set encrypted_password = extensions.crypt('PonAquiUnaClaveLarga', extensions.gen_salt('bf')),
        email_confirmed_at = coalesce(email_confirmed_at, now()),
