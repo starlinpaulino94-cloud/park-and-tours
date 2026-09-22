@@ -312,10 +312,16 @@ select pg_temp.d('shift:' || n), pg_temp.org(),
 from generate_series(1, 18) as n;
 
 -- ── VENTA Y SU RASTRO ───────────────────────────────────────────────────────
--- Una tabla temporal con las 60 ventas ya calculadas. Todo lo que sigue —orden,
+-- Una tabla auxiliar con las 60 ventas ya calculadas. Todo lo que sigue —orden,
 -- reserva, pagos, factura, comisión— sale de aquí, así que los importes cuadran
 -- entre módulos en vez de inventarse en cada uno.
-create temp table v as
+--
+-- Es una tabla NORMAL, no temporal, a propósito: el editor SQL de Supabase usa
+-- un pool de conexiones y NO conserva las tablas temporales entre sentencias
+-- («relation "v" does not exist»). Una tabla normal sí persiste; se borra al
+-- final. El nombre lleva prefijo para no chocar con nada.
+drop table if exists demo_seed_rows;
+create table demo_seed_rows as
 with base as (
   select
     n,
@@ -361,7 +367,7 @@ select pg_temp.d('order:' || v.n), pg_temp.org(), 'ORD-' || lpad(v.n::text, 4, '
     pg_temp.d('cust:' || v.cust), pg_temp.d('seller:' || v.seller), v.canal::sales_channel, v.estado,
     'usd'::currency, 1, v.gross, v.discount, 0, v.total, v.paid, v.total - v.paid,
     (v.travel_date - 3)::date
-from v;
+from demo_seed_rows v;
 
 insert into booking (id, organization_id, booking_number, order_id, customer_id, product_id, departure_id,
     modality_id, seller_id, travel_date, adults, children, pax_total, gross_amount, discount_amount,
@@ -376,24 +382,24 @@ select pg_temp.d('book:' || v.n), pg_temp.org(), 'RES-' || lpad(v.n::text, 4, '0
          when v.paid < v.total then 'partially_paid' else 'paid' end,
     case when v.pasada then 'done' else 'pending' end,
     pg_temp.d('hotel:' || (1 + (v.n % 5))), 1, v.price, (v.travel_date - 3)::date
-from v;
+from demo_seed_rows v;
 
 -- Participantes: el titular por reserva, más un acompañante en la mitad.
 insert into participant (id, organization_id, booking_id, full_name, checkin_status)
 select pg_temp.d('part:' || v.n || ':1'), pg_temp.org(), pg_temp.d('book:' || v.n),
     'Titular reserva ' || v.n, case when v.pasada then 'done' else 'pending' end
-from v
+from demo_seed_rows v
 union all
 select pg_temp.d('part:' || v.n || ':2'), pg_temp.org(), pg_temp.d('book:' || v.n),
     'Acompañante ' || v.n, case when v.pasada then 'done' else 'pending' end
-from v where v.children > 0 or v.n % 2 = 0;
+from demo_seed_rows v where v.children > 0 or v.n % 2 = 0;
 
 -- Un voucher por reserva.
 insert into voucher (id, organization_id, booking_id, code, status)
 select pg_temp.d('vou:' || v.n), pg_temp.org(), pg_temp.d('book:' || v.n),
     'VCH-' || lpad(v.n::text, 5, '0'),
     case when v.pasada then 'used' else 'valid' end
-from v;
+from demo_seed_rows v;
 
 -- Recogidas de las reservas futuras confirmadas.
 insert into pickup (id, organization_id, booking_id, hotel_id, status, pickup_time)
@@ -401,7 +407,7 @@ select pg_temp.d('pick:' || v.n), pg_temp.org(), pg_temp.d('book:' || v.n),
     pg_temp.d('hotel:' || (1 + (v.n % 5))),
     case when v.pasada then 'picked_up' else 'confirmed' end,
     '07:00'
-from v where v.paid > 0;
+from demo_seed_rows v where v.paid > 0;
 
 -- ── DINERO ──────────────────────────────────────────────────────────────────
 -- Un pago por cada venta con algo cobrado.
@@ -411,7 +417,7 @@ select pg_temp.d('pay:' || v.n), pg_temp.org(), pg_temp.d('order:' || v.n), pg_t
     'PAY-' || lpad(v.n::text, 5, '0'), 'payment'::payment_kind,
     (array['cash','card','transfer','link','card']::payment_method[])[1 + (v.n % 5)], 'completed',
     v.paid, 'usd'::currency, 1, (v.travel_date - 2)::timestamptz
-from v where v.paid > 0;
+from demo_seed_rows v where v.paid > 0;
 
 -- Cuenta por cobrar por cada venta con saldo.
 insert into receivable (id, organization_id, order_id, customer_id, document_number, amount, paid_amount,
@@ -420,7 +426,7 @@ select pg_temp.d('rec:' || v.n), pg_temp.org(), pg_temp.d('order:' || v.n), pg_t
     'CxC-' || lpad(v.n::text, 5, '0'), v.total, v.paid, v.total - v.paid, 'usd'::currency,
     case when v.travel_date < current_date then 'overdue' else 'pending' end,
     (v.travel_date - 3)::date, (v.travel_date + 7)::date
-from v where v.total - v.paid > 0;
+from demo_seed_rows v where v.total - v.paid > 0;
 
 -- La secuencia de NCF de consumo.
 insert into ncf_sequence (id, organization_id, ncf_type, status) values
@@ -434,12 +440,12 @@ select pg_temp.d('inv:' || v.n), pg_temp.org(), 'FAC-' || lpad(v.n::text, 5, '0'
     'B02' || lpad(v.n::text, 8, '0'), 'b02', 'sale', 'paid', (v.travel_date - 2)::timestamptz,
     round(v.total / 1.18, 2), round(v.total - v.total / 1.18, 2), 18, v.discount, v.total, v.total,
     'usd'::currency, 1, 'Cliente ' || v.cust, NULL, pg_temp.d('cust:' || v.cust), pg_temp.d('order:' || v.n)
-from v where v.paid >= v.total and v.paid > 0;
+from demo_seed_rows v where v.paid >= v.total and v.paid > 0;
 
 insert into invoice_line (id, organization_id, invoice_id, description, quantity, unit_price, total)
 select pg_temp.d('invl:' || v.n), pg_temp.org(), pg_temp.d('inv:' || v.n),
     'Excursión ' || v.prod || ' — ' || v.pax_total || ' pax', v.pax_total, v.price, v.total
-from v where v.paid >= v.total and v.paid > 0;
+from demo_seed_rows v where v.paid >= v.total and v.paid > 0;
 
 -- Comisión del vendedor por cada reserva.
 insert into commission (id, organization_id, booking_id, order_id, seller_id, beneficiary_type,
@@ -450,7 +456,7 @@ select pg_temp.d('com:' || v.n), pg_temp.org(), pg_temp.d('book:' || v.n), pg_te
     'usd'::currency,
     case when v.travel_date < current_date then 'approved' else 'pending' end,
     'Vendedor ' || v.seller
-from v;
+from demo_seed_rows v;
 
 -- Coste del proveedor de transporte por reserva (lo que se liquida los viernes).
 insert into booking_cost (id, organization_id, booking_id, supplier_id, concept, cost_type, quantity,
@@ -458,7 +464,7 @@ insert into booking_cost (id, organization_id, booking_id, supplier_id, concept,
 select pg_temp.d('bcost:' || v.n), pg_temp.org(), pg_temp.d('book:' || v.n), pg_temp.d('sup:1'),
     'Transporte terrestre', 'per_group', 1, v.cost_amount, v.cost_amount, 'usd'::currency,
     case when v.travel_date < current_date then 'confirmed' else 'accrued' end
-from v;
+from demo_seed_rows v;
 
 -- Caja: dos registradoras, sesiones y movimientos de los pagos en efectivo.
 insert into cash_register (id, organization_id, name, code, currency, status, branch_id) values
@@ -477,7 +483,7 @@ insert into cash_movement (id, organization_id, cash_session_id, payment_id, mov
     currency, concept, movement_at)
 select pg_temp.d('cmov:' || v.n), pg_temp.org(), pg_temp.d('csess:1'), pg_temp.d('pay:' || v.n),
     'sale', v.paid, 'usd'::currency, 'Venta ' || v.n, (v.travel_date - 2)::timestamptz
-from v where v.paid > 0 and (v.n % 5) not in (0, 1) and (v.n % 5) = 2;
+from demo_seed_rows v where v.paid > 0 and (v.n % 5) not in (0, 1) and (v.n % 5) = 2;
 
 -- Gastos del mes, algunos con NCF para el 606.
 insert into expense (id, organization_id, category_id, supplier_id, concept, amount, currency,
@@ -621,14 +627,14 @@ begin
       (array[5,4,5,5,4,4,5,3,4,5])[1 + (v.n % 10)],
       (array['¡Excelente día!','Muy recomendable','El guía fue genial','Repetiremos','Todo perfecto'])[1 + (v.n % 5)],
       'es'
-  from v where v.travel_date < current_date and v.n % 2 = 0;
+  from demo_seed_rows v where v.travel_date < current_date and v.n % 2 = 0;
 
   insert into guest_survey (id, organization_id, booking_id, departure_id, product_id, customer_id,
       token, status, asked_at, expires_at, language)
   select pg_temp.d('survp:' || v.n), pg_temp.org(), pg_temp.d('book:' || v.n), pg_temp.d('dep:' || v.n),
       pg_temp.d('product:' || v.prod), pg_temp.d('cust:' || v.cust),
       'TOKP-' || lpad(v.n::text, 6, '0'), 'pending', now(), now() + interval '7 days', 'es'
-  from v where v.travel_date >= current_date and v.n % 3 = 0;
+  from demo_seed_rows v where v.travel_date >= current_date and v.n % 3 = 0;
   else
     raise warning 'guest_survey no existe (falta la migración 0067): se omiten las encuestas.';
   end if;
@@ -642,7 +648,7 @@ select pg_temp.org(),
 from generate_series(1, 20) as n;
 
 -- La tabla temporal ya cumplió su función.
-drop table if exists v;
+drop table if exists demo_seed_rows;
 
 -- ── RECUENTO ─────────────────────────────────────────────────────────────
 -- Cuenta tolerante: 0 si la tabla no existe (base por detrás de migraciones),
