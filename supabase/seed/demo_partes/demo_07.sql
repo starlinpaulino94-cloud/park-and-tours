@@ -1,68 +1,77 @@
--- SEMBRADOR DEMO - TROZO 07 de 08. Ejecutar EN ORDEN, del 01 al 08.
+-- SEMBRADOR DEMO - TROZO 07 de 13. Ejecutar EN ORDEN del 01 al 13.
 -- Pegar entero (Ctrl+A, Run). Requiere la migracion 0067 aplicada.
 
-insert into lead (id, organization_id, seller_id, product_id, name, email, phone, source, status,
-    estimated_value, currency, pax, travel_date, next_action_at)
-select md5('demo:' || ('lead:' || n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('seller:' || (1 + (n % 4))))::uuid,
-    md5('demo:' || ('product:' || (1 + (n % 8))))::uuid,
-    'Prospecto ' || n, 'prospecto' || n || '@ejemplo-demo.com', '+1 809 720 ' || lpad((5000 + n)::text, 4, '0'),
-    (array['web','whatsapp','referral','agency','phone'])[1 + (n % 5)],
-    (array['new','contacted','interested','quoted','follow_up','lost'])[1 + (n % 6)],
-    (200 + n * 15), 'usd'::currency, 2 + (n % 4), (current_date + (n % 20))::date,
-    (now() + ((n % 5) || ' days')::interval)
-from generate_series(1, 15) as n;
-insert into crm_activity (id, organization_id, lead_id, activity_type, subject, status, due_at)
-select md5('demo:' || ('act:' || n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('lead:' || n))::uuid,
-    (array['call','whatsapp','email','note','meeting'])[1 + (n % 5)],
-    'Seguimiento prospecto ' || n,
-    case when n % 3 = 0 then 'done' else 'pending' end,
-    (now() + ((n % 4) || ' days')::interval)
-from generate_series(1, 15) as n;
-insert into promotion (id, organization_id, name, code, discount_type, value, valid_from, valid_to,
-    max_uses, used_count, min_amount, channels, status) values
-  (md5('demo:' || ('promo:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Verano -15%', 'VERANO15', 'percentage', 15, current_date - 10, current_date + 50, 200, 34, 100, array['web','ota'], 'active'),
-  (md5('demo:' || ('promo:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Reserva anticipada USD 20', 'EARLY20', 'fixed', 20, current_date - 30, current_date + 20, 100, 58, 150, array['web'], 'active');
-insert into quote (id, organization_id, code, status, quote_type, issued_at, valid_until, pax,
-    subtotal, discount, tax, total, currency, customer_id, seller_id) values
-  (md5('demo:' || ('quote:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'COT-0001', 'sent', 'group', now() - interval '3 days', now() + interval '11 days', 24, 2136, 200, 0, 1936, 'usd', md5('demo:' || ('cust:1'))::uuid, md5('demo:' || ('seller:1'))::uuid),
-  (md5('demo:' || ('quote:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'COT-0002', 'accepted', 'wedding', now() - interval '8 days', now() + interval '6 days', 60, 6600, 600, 0, 6000, 'usd', md5('demo:' || ('cust:2'))::uuid, md5('demo:' || ('seller:2'))::uuid);
-insert into task (id, organization_id, title, task_type, status, due_at)
-select md5('demo:' || ('task:' || n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'),
-    (array['Confirmar guía Isla Saona','Llamar prospecto boda','Revisar caja Marina',
-           'Cargar combustible flota','Cerrar liquidación viernes','Renovar seguro van'])[1 + ((n - 1) % 6)],
-    (array['operational','sales','finance','maintenance','finance','operational'])[1 + ((n - 1) % 6)],
-    case when n % 3 = 0 then 'done' else 'todo' end,
-    (now() + ((n % 5) || ' days')::interval)
+insert into commission (id, organization_id, booking_id, order_id, seller_id, beneficiary_type,
+    calc_type, base_amount, percentage, amount, currency, status, beneficiary_name)
+select md5('demo:' || ('com:' || v.n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('book:' || v.n))::uuid, md5('demo:' || ('order:' || v.n))::uuid,
+    md5('demo:' || ('seller:' || v.seller))::uuid, 'seller'::beneficiary_type, 'percentage'::calc_type,
+    v.total, (array[8,8,6,12])[v.seller], round(v.total * (array[8,8,6,12])[v.seller] / 100.0, 2),
+    'usd'::currency,
+    case when v.travel_date < current_date then 'approved' else 'pending' end,
+    'Vendedor ' || v.seller
+from demo_seed_rows v;
+insert into booking_cost (id, organization_id, booking_id, supplier_id, concept, cost_type, quantity,
+    unit_cost, amount, currency, status)
+select md5('demo:' || ('bcost:' || v.n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('book:' || v.n))::uuid, md5('demo:' || ('sup:1'))::uuid,
+    'Transporte terrestre', 'per_group', 1, v.cost_amount, v.cost_amount, 'usd'::currency,
+    case when v.travel_date < current_date then 'confirmed' else 'accrued' end
+from demo_seed_rows v;
+insert into cash_register (id, organization_id, name, code, currency, status, branch_id) values
+  (md5('demo:' || ('reg:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Caja Bávaro', 'CJ-BAV', 'usd', 'active', md5('demo:' || ('branch:1'))::uuid),
+  (md5('demo:' || ('reg:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Caja Marina', 'CJ-MAR', 'usd', 'active', md5('demo:' || ('branch:2'))::uuid);
+insert into cash_session (id, organization_id, cash_register_id, opening_amount, sales_total, status,
+    opened_at, closed_at, currency, exchange_rate) values
+  (md5('demo:' || ('csess:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('reg:1'))::uuid, 200, 0, 'closed',
+     (now() - interval '2 days')::timestamptz, (now() - interval '2 days' + interval '9 hours')::timestamptz, 'usd', 1),
+  (md5('demo:' || ('csess:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('reg:1'))::uuid, 200, 0, 'open',
+     date_trunc('day', now()) + interval '7 hours', NULL, 'usd', 1);
+insert into cash_movement (id, organization_id, cash_session_id, payment_id, movement_type, amount,
+    currency, concept, movement_at)
+select md5('demo:' || ('cmov:' || v.n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('csess:1'))::uuid, md5('demo:' || ('pay:' || v.n))::uuid,
+    'sale', v.paid, 'usd'::currency, 'Venta ' || v.n, (v.travel_date - 2)::timestamptz
+from demo_seed_rows v where v.paid > 0 and (v.n % 5) not in (0, 1) and (v.n % 5) = 2;
+insert into expense (id, organization_id, category_id, supplier_id, concept, amount, currency,
+    expense_date, payment_method, status, ncf, ncf_type, supplier_rnc, itbis_amount, goods_service_type)
+select md5('demo:' || ('exp:' || n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'),
+    md5('demo:' || ('exc:' || (1 + (n % 3))))::uuid, md5('demo:' || ('sup:' || (1 + (n % 4))))::uuid,
+    (array['Diésel flota','Repuestos van','Comisión OTA','Peajes','Lavado vehículos',
+           'Aceite y filtros','Combustible catamarán','Cargo pasarela','Mantenimiento buggies',
+           'Uniformes guías','Agua y hielo','Publicidad redes'])[1 + ((n - 1) % 12)],
+    (array[1200,450,890,120,80,340,600,210,520,300,90,450])[1 + ((n - 1) % 12)],
+    'usd'::currency, (current_date - (n * 2))::date,
+    (array['cash','transfer','card']::payment_method[])[1 + (n % 3)], 'approved',
+    'B01' || lpad(n::text, 8, '0'), 'b01', '13' || lpad(n::text, 7, '0'),
+    round((array[1200,450,890,120,80,340,600,210,520,300,90,450])[1 + ((n - 1) % 12)] * 0.18, 2), '09'
 from generate_series(1, 12) as n;
-insert into notification (id, organization_id, title, message, notification_type, link, read_status)
-select md5('demo:' || ('notif:' || n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'),
-    (array['Nueva reserva','Pago recibido','Salida casi llena','Caja pendiente de aprobación','Encuesta respondida'])[1 + ((n - 1) % 5)],
-    'Detalle de la notificación ' || n, (array['booking','payment','operation','settlement','info'])[1 + ((n - 1) % 5)],
-    '/dashboard', (n % 2 = 0)
-from generate_series(1, 10) as n;
-insert into message_template (id, organization_id, key, channel, body, status) values
-  (md5('demo:' || ('mt:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'booking_confirmation', 'email', 'Hola {{nombre}}, aquí está tu voucher para {{tour}}.', 'active'),
-  (md5('demo:' || ('mt:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'pre_tour_reminder', 'whatsapp', 'Te esperamos mañana para {{tour}}. Recogida {{hora}}.', 'active');
-insert into message (id, organization_id, channel, to_address, body, status, created_at)
-select md5('demo:' || ('msg:' || n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), (array['email','whatsapp']::text[])[1 + (n % 2)],
-    'cliente' || n || '@ejemplo-demo.com', 'Confirmación de reserva RES-' || lpad(n::text, 4, '0'),
-    (array['sent','sent','queued','failed'])[1 + (n % 4)], (now() - (n || ' hours')::interval)
-from generate_series(1, 12) as n;
-insert into document (id, organization_id, title, doc_type, status) values
-  (md5('demo:' || ('doc:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Protocolo de seguridad en catamarán', 'sop', 'published'),
-  (md5('demo:' || ('doc:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Póliza de responsabilidad civil', 'insurance', 'published'),
-  (md5('demo:' || ('doc:3'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Lista de precios 2026', 'price_list', 'published');
-insert into integration (id, organization_id, name, provider, category, status, direction) values
-  (md5('demo:' || ('int:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Viator', 'viator', 'distribution', 'connected', 'inbound'),
-  (md5('demo:' || ('int:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Stripe', 'stripe', 'payments', 'connected', 'bidirectional'),
-  (md5('demo:' || ('int:3'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'WhatsApp Business', 'whatsapp', 'messaging', 'sandbox', 'outbound');
-insert into guest_case (id, organization_id, code, case_type, status, priority, channel, opened_at,
-    subject, customer_id, booking_id) values
-  (md5('demo:' || ('case:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'CASO-0001', 'complaint', 'resolved', 'medium', 'whatsapp', now() - interval '5 days', 'Retraso en la recogida', md5('demo:' || ('cust:3'))::uuid, md5('demo:' || ('book:3'))::uuid),
-  (md5('demo:' || ('case:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'CASO-0002', 'compliment', 'closed', 'low', 'email', now() - interval '9 days', 'Felicitación al guía Carlos', md5('demo:' || ('cust:5'))::uuid, md5('demo:' || ('book:5'))::uuid);
-insert into audit_log (organization_id, action, entity_type, description, occurred_at)
-select (select id from organizations where slug = 'havelgo-demo-presentaciones'),
-    (array['booking.create','payment.record','cash.close','invoice.issue','settlement.generate'])[1 + (n % 5)],
-    (array['booking','payment','cash_session','invoice','settlement'])[1 + (n % 5)],
-    'Evento de auditoría de demostración ' || n, (now() - (n || ' hours')::interval)
-from generate_series(1, 20) as n;
+insert into guest_survey (id, organization_id, booking_id, departure_id, product_id, customer_id,
+  guide_staff_id, token, status, asked_at, answered_at, nps, rating_guide, rating_transport,
+  rating_value, comment, language)
+  select md5('demo:' || ('surv:' || v.n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('book:' || v.n))::uuid, md5('demo:' || ('dep:' || v.n))::uuid,
+  md5('demo:' || ('product:' || v.prod))::uuid, md5('demo:' || ('cust:' || v.cust))::uuid, md5('demo:' || ('staff:1'))::uuid,
+  'TOK-' || lpad(v.n::text, 6, '0'),
+  'answered', (v.travel_date + 1)::timestamptz, (v.travel_date + 1)::timestamptz,
+  (array[10,9,8,10,7,9,10,6,9,8])[1 + (v.n % 10)],
+  (array[5,5,4,5,4,5,5,3,4,5])[1 + (v.n % 10)],
+  (array[5,4,4,5,3,5,4,3,5,4])[1 + (v.n % 10)],
+  (array[5,4,5,5,4,4,5,3,4,5])[1 + (v.n % 10)],
+  (array['¡Excelente día!','Muy recomendable','El guía fue genial','Repetiremos','Todo perfecto'])[1 + (v.n % 5)],
+  'es'
+  from demo_seed_rows v where v.travel_date < current_date and v.n % 2 = 0;
+insert into guest_survey (id, organization_id, booking_id, departure_id, product_id, customer_id,
+  token, status, asked_at, expires_at, language)
+  select md5('demo:' || ('survp:' || v.n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('book:' || v.n))::uuid, md5('demo:' || ('dep:' || v.n))::uuid,
+  md5('demo:' || ('product:' || v.prod))::uuid, md5('demo:' || ('cust:' || v.cust))::uuid,
+  'TOKP-' || lpad(v.n::text, 6, '0'), 'pending', now(), now() + interval '7 days', 'es'
+  from demo_seed_rows v where v.travel_date >= current_date and v.n % 3 = 0;
+drop table if exists demo_seed_rows;
+insert into inventory_item (id, organization_id, name, sku, item_type, unit, cost, price, currency,
+    min_stock, reorder_point, is_sellable, supplier_id, status) values
+  (md5('demo:' || ('inv:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Agua embotellada 500ml', 'AGUA-500', 'beverage', 'unit', 0.3, 1, 'usd', 200, 300, true, md5('demo:' || ('sup:4'))::uuid, 'active'),
+  (md5('demo:' || ('inv:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Ron Brugal (litro)', 'RON-1L', 'beverage', 'bottle', 8, 0, 'usd', 20, 30, false, md5('demo:' || ('sup:4'))::uuid, 'active'),
+  (md5('demo:' || ('inv:3'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Chaleco salvavidas', 'CHAL-01', 'spare_part', 'unit', 12, 0, 'usd', 40, 50, false, md5('demo:' || ('sup:2'))::uuid, 'active'),
+  (md5('demo:' || ('inv:4'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Camiseta souvenir', 'CAM-01', 'retail', 'unit', 4, 15, 'usd', 50, 80, true, md5('demo:' || ('sup:4'))::uuid, 'active'),
+  (md5('demo:' || ('inv:5'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Diésel (galón)', 'DIESEL', 'fuel', 'unit', 3.2, 0, 'usd', 100, 150, false, md5('demo:' || ('sup:1'))::uuid, 'active');
+insert into stock_level (id, organization_id, warehouse_id, inventory_item_id, quantity)
+select md5('demo:' || ('stk:' || n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('wh:1'))::uuid, md5('demo:' || ('inv:' || n))::uuid,
+    (array[420,45,60,120,240])[n]
+from generate_series(1, 5) as n;

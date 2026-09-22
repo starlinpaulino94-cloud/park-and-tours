@@ -204,7 +204,7 @@ supabase/seed/demo_presentation.sql
 
 Ábrelo, cópialo entero, pégalo en **SQL Editor** de Supabase y ejecútalo.
 
-> **Si el editor corta el pegado** (archivos grandes dan «syntax error at end of input»), usa la versión en tres partes: `demo_1_base.sql`, `demo_2_ventas.sql` y `demo_3_extras.sql`, ejecutadas **en ese orden**. Hacen lo mismo, en trozos que el editor sí traga enteros. Tarda
+> **El editor de Supabase corta los pegados grandes** («syntax error at end of input»). Por eso la siembra viene troceada en `supabase/seed/demo_partes/demo_01.sql` … `demo_13.sql`: ejecútalos **en orden**, del 01 al 13, cada uno entero. Son sentencias planas (sin funciones ni bloques `do`) de <8 KB que el editor traga sin cortar. El último imprime el recuento. Tarda
 unos segundos y al final imprime un recuento por módulo. Carga sobre la empresa
 `havelgo-demo-presentaciones`, que es donde aterrizas; si no existe, la crea.
 

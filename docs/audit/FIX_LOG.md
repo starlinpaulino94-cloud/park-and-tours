@@ -776,3 +776,29 @@ daba error: los tres producían números equivocados en silencio.
 - **Nota de despliegue:** requiere 0068 aplicada y el código desplegado. Hasta
   entonces, ver una empresa distinta a la principal se hace con
   principal + re-login.
+
+### AUD-M19 — 42 módulos de la demo salían vacíos (P1) — CERRADA
+- **Cómo apareció:** con la demo cargada y visible, muchas secciones seguían
+  vacías: Tickets, Quién trajo al cliente, Metas, Bonos, Membresías, Activos,
+  RR.HH., Liquidaciones, Contabilidad, Mantenimiento, Incidencias…
+- **La raíz:** el sembrador SQL llenaba ~58 tablas de las ~85 que el sistema
+  usa. Faltaban 42.
+- **Solución:** una sección nueva en `supabase/seed/demo_presentation.sql` que
+  llena 40 de esas 42 tablas, enlazadas a las entidades ya sembradas
+  (reservas, vendedores, salidas, personal, activos): contabilidad
+  (currency_rate, ledger_account/entry, accounting_period), catálogo profundo
+  (product_cost, product_bundle_item, plantillas), membresías, red de ventas
+  (seller_link, seller_goal, seller_bonus, commission_rule), cotizaciones con
+  opciones y líneas, extras, tickets de acceso, exenciones, lista de espera,
+  calendario de pagos, movimientos de tarjeta regalo, arqueos, liquidaciones y
+  cuentas por pagar, nómina, activos y mantenimiento, incidencias y acciones,
+  bitácora de atracciones, acuses, aprobaciones y salud del sistema.
+- **Dos que NO se siembran, a propósito:** `seller_attribution` y
+  `commission_adjustment` son históricos INMUTABLES (trigger append-only:
+  ni update ni delete), y sus claves foráneas en cascada bloquearían el borrado
+  de vendedores/comisiones al re-sembrar. Sembrarlos rompería la idempotencia de
+  la demo. Se llenan solos con el uso real (un QR escaneado, un ajuste hecho).
+- **La guarda:** probado en dos pasadas contra Postgres con todas las
+  migraciones (idempotente), y los 13 trozos planos regenerados corren en orden
+  en CI. Auditoría final: 83 de 85 tablas de `SEED_TABLES` con datos; las 2
+  restantes son las append-only, por diseño.

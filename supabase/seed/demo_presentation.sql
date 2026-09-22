@@ -3,7 +3,7 @@
 --
 -- ¿EL EDITOR CORTA EL PEGADO? («syntax error at end of input».) Este archivo es
 -- grande; usa la versión en tres partes en esta misma carpeta:
---   demo_1_base.sql  ->  demo_2_ventas.sql  ->  demo_3_extras.sql
+--   demo_partes/demo_01.sql ... demo_13.sql (en orden)
 -- ejecutadas EN ESE ORDEN. Hacen exactamente lo mismo.
 --
 -- Carga una empresa de demostración COMPLETA: catálogo, clientes, ventas,
@@ -67,14 +67,15 @@ declare
   t text;
   faltan text[] := '{}';
   orden text[] := array[
+    'system_incident', 'job_run', 'approval_request', 'document_ack', 'attraction_log', 'incident_action', 'incident', 'inspection', 'work_order', 'payroll_line', 'payroll_run', 'payable', 'settlement', 'cash_count', 'gift_card_movement', 'payment_schedule', 'waitlist_entry', 'waiver', 'access_ticket', 'booking_extra', 'quote_line', 'quote_option', 'commission_rule', 'seller_bonus', 'seller_goal', 'seller_link', 'certification', 'attendance', 'maintenance_plan', 'asset', 'membership', 'membership_plan', 'inspection_template', 'waiver_template', 'product_bundle_item', 'product_cost', 'ledger_entry', 'accounting_period', 'ledger_account', 'currency_rate',
     'audit_log','system_incident','job_run','integration','notification','message',
     'message_template','approval_request','task','document_ack','document','attraction_log',
     'guest_survey','guest_case','incident_action','incident','inspection','work_order',
     'payroll_line','payroll_run','ledger_entry','payable','seller_bonus','settlement',
-    'commission_adjustment','commission','stock_movement','purchase_order_line','purchase_order',
+    'commission','stock_movement','purchase_order_line','purchase_order',
     'expense','cash_count','cash_movement','cash_session','cash_register',
     'gift_card_movement','gift_card','ncf_sequence','invoice_line','invoice','receivable',
-    'payment','payment_schedule','seller_attribution','waitlist_entry','pickup','waiver',
+    'payment','payment_schedule','waitlist_entry','pickup','waiver',
     'access_ticket','voucher','participant','booking_cost','booking_extra','booking','sales_order',
     'crm_activity','lead','quote_line','quote_option','quote','seller_goal','commission_rule','promotion',
     'stock_level','inventory_item','certification','attendance','shift','pickup_route',
@@ -654,6 +655,263 @@ from generate_series(1, 20) as n;
 
 -- La tabla temporal ya cumplió su función.
 drop table if exists demo_seed_rows;
+
+-- ── LOS MÓDULOS QUE FALTABAN ────────────────────────────────────────────────
+-- Contabilidad, catálogo profundo, membresías, activos, RR.HH., liquidaciones,
+-- tickets, atribución, metas y bonos, mantenimiento e incidencias. Todo cuelga
+-- de las entidades ya sembradas (reservas, vendedores, salidas, personal).
+
+-- Contabilidad base
+insert into currency_rate (id, organization_id, currency_from, currency_to, rate, rate_date) values
+  (pg_temp.d('fx:1'), pg_temp.org(), 'usd', 'dop', 59.5, current_date);
+
+insert into ledger_account (id, organization_id, code, name, account_type, normal_side, is_postable, currency, status) values
+  (pg_temp.d('la:1'), pg_temp.org(), '1100', 'Caja y bancos', 'asset', 'debit', true, 'usd', 'active'),
+  (pg_temp.d('la:2'), pg_temp.org(), '1200', 'Cuentas por cobrar', 'asset', 'debit', true, 'usd', 'active'),
+  (pg_temp.d('la:3'), pg_temp.org(), '2100', 'Cuentas por pagar', 'liability', 'credit', true, 'usd', 'active'),
+  (pg_temp.d('la:4'), pg_temp.org(), '2200', 'ITBIS por pagar', 'liability', 'credit', true, 'usd', 'active'),
+  (pg_temp.d('la:5'), pg_temp.org(), '4100', 'Ingresos por excursiones', 'revenue', 'credit', true, 'usd', 'active'),
+  (pg_temp.d('la:6'), pg_temp.org(), '5100', 'Costo de operación', 'expense', 'debit', true, 'usd', 'active'),
+  (pg_temp.d('la:7'), pg_temp.org(), '5200', 'Comisiones de venta', 'expense', 'debit', true, 'usd', 'active'),
+  (pg_temp.d('la:8'), pg_temp.org(), '5300', 'Nómina', 'expense', 'debit', true, 'usd', 'active');
+
+insert into accounting_period (id, organization_id, period, status) values
+  (pg_temp.d('ap:1'), pg_temp.org(), to_char(current_date, 'YYYY-MM'), 'open'),
+  (pg_temp.d('ap:2'), pg_temp.org(), to_char(current_date - interval '1 month', 'YYYY-MM'), 'closed');
+
+insert into ledger_entry (id, organization_id, entry_code, line_no, posted_at, period, ledger_account_id, debit, credit, currency, source_type, memo)
+select pg_temp.d('le:' || n), pg_temp.org(), 'AS-' || lpad(n::text, 4, '0'), 1, (current_date - (n % 20))::timestamptz,
+    to_char(current_date, 'YYYY-MM'),
+    case when n % 2 = 0 then pg_temp.d('la:1') else pg_temp.d('la:5') end,
+    case when n % 2 = 0 then (500 + n * 7) else 0 end,
+    case when n % 2 = 0 then 0 else (500 + n * 7) end,
+    'usd', 'sale', 'Asiento de demostración ' || n
+from generate_series(1, 20) as n;
+
+-- Catálogo profundo: costes, un paquete, plantillas
+insert into product_cost (id, organization_id, product_id, supplier_id, concept, cost_type, amount, currency, status)
+select pg_temp.d('pcost:' || n), pg_temp.org(), pg_temp.d('product:' || n), pg_temp.d('sup:1'),
+    'Costo operativo', 'per_person', (array[38,32,54,28,40,22,44,49,20,34,60,36])[n], 'usd', 'active'
+from generate_series(1, 12) as n;
+
+insert into product_bundle_item (id, organization_id, bundle_id, product_id, sort_order) values
+  (pg_temp.d('pbi:1'), pg_temp.org(), pg_temp.d('product:1'), pg_temp.d('product:2'), 1),
+  (pg_temp.d('pbi:2'), pg_temp.org(), pg_temp.d('product:1'), pg_temp.d('product:7'), 2);
+
+insert into waiver_template (id, organization_id, name, version, language, body, status) values
+  (pg_temp.d('wt:1'), pg_temp.org(), 'Exención tirolesa y aventura', 1, 'es', 'El participante declara estar en condiciones físicas...', 'active'),
+  (pg_temp.d('wt:2'), pg_temp.org(), 'Exención actividades acuáticas', 1, 'es', 'El participante reconoce los riesgos del mar...', 'active');
+
+insert into inspection_template (id, organization_id, name, code, category, checklist, status) values
+  (pg_temp.d('it:1'), pg_temp.org(), 'Inspección diaria de buggy', 'INS-BUGGY', 'safety', '["frenos","luces","cinturones","llantas"]'::jsonb, 'active'),
+  (pg_temp.d('it:2'), pg_temp.org(), 'Inspección de catamarán', 'INS-CATA', 'safety', '["chalecos","motor","radio","botiquín"]'::jsonb, 'active');
+
+-- Membresías / pases anuales
+insert into membership_plan (id, organization_id, name, code, plan_type, price, currency, duration_days, visits_included, status) values
+  (pg_temp.d('mp:1'), pg_temp.org(), 'Pase Anual Aventura', 'PASE-ANUAL', 'annual_pass', 299, 'usd', 365, 12, 'active'),
+  (pg_temp.d('mp:2'), pg_temp.org(), 'Pase Familiar Temporada', 'PASE-FAM', 'family', 499, 'usd', 180, 30, 'active');
+
+insert into membership (id, organization_id, code, status, starts_at, ends_at, amount_paid, currency, membership_plan_id, customer_id)
+select pg_temp.d('mem:' || n), pg_temp.org(), 'MEM-' || lpad(n::text, 4, '0'), 'active',
+    (now() - (n * 5 || ' days')::interval), (now() + interval '300 days'),
+    case when n % 2 = 0 then 499 else 299 end, 'usd',
+    case when n % 2 = 0 then pg_temp.d('mp:2') else pg_temp.d('mp:1') end, pg_temp.d('cust:' || n)
+from generate_series(1, 6) as n;
+
+-- Red de ventas: enlaces/QR, atribución, metas, bonos
+insert into seller_link (id, organization_id, seller_id, slug, name, channel, status)
+select pg_temp.d('slink:' || n), pg_temp.org(), pg_temp.d('seller:' || n),
+    'vende-' || n || '-' || substr(md5(n::text), 1, 6), 'Enlace de ' || (array['Génesis','Ariel','Wendy','Frank'])[n],
+    (array['qr','link','whatsapp','qr'])[n], 'active'
+from generate_series(1, 4) as n;
+
+
+
+insert into seller_goal (id, organization_id, name, seller_id, period, period_from, period_to, target_bookings, target_sales, currency, status)
+select pg_temp.d('goal:' || n), pg_temp.org(), 'Meta mensual', pg_temp.d('seller:' || n),
+    'monthly', date_trunc('month', current_date)::date, (date_trunc('month', current_date) + interval '1 month' - interval '1 day')::date,
+    20, (array[25000,25000,20000,15000])[n], 'usd', 'active'
+from generate_series(1, 4) as n;
+
+insert into seller_bonus (id, organization_id, seller_id, goal_id, description, amount, currency, payout_kind, status, awarded_at)
+select pg_temp.d('sbon:' || n), pg_temp.org(), pg_temp.d('seller:' || n), pg_temp.d('goal:' || n),
+    'Bono por meta de ' || to_char(current_date - interval '1 month', 'YYYY-MM'), (array[500,500,300,200])[n], 'usd',
+    case when n = 4 then 'in_kind' else 'cash' end, case when n % 2 = 0 then 'paid' else 'approved' end,
+    (now() - interval '5 days')
+from generate_series(1, 4) as n;
+
+insert into commission_rule (id, organization_id, name, beneficiary_type, calc_type, value, priority, currency, status) values
+  (pg_temp.d('crule:1'), pg_temp.org(), 'Vendedor interno 8%', 'seller', 'percentage', 8, 1, 'usd', 'active'),
+  (pg_temp.d('crule:2'), pg_temp.org(), 'Concierge de hotel 12%', 'seller', 'percentage', 12, 2, 'usd', 'active'),
+  (pg_temp.d('crule:3'), pg_temp.org(), 'Tour center 15%', 'partner', 'percentage', 15, 3, 'usd', 'active');
+
+
+
+-- Cotizaciones: opciones y líneas
+insert into quote_option (id, organization_id, quote_id, name, is_recommended, subtotal, total, created_at)
+select pg_temp.d('qopt:' || q || ':' || o), pg_temp.org(), pg_temp.d('quote:' || q),
+    (array['Opción estándar','Opción premium'])[o], o = 2, (array[2136,2560])[o], (array[1936,2360])[o], now()
+from generate_series(1, 2) as q, generate_series(1, 2) as o;
+
+insert into quote_line (id, organization_id, quote_id, option_id, description, quantity, unit_price, line_total, product_id, line_type, sort_order)
+select pg_temp.d('qline:' || q || ':' || o), pg_temp.org(), pg_temp.d('quote:' || q), pg_temp.d('qopt:' || q || ':' || o),
+    'Excursión en grupo', 24, 89, 2136, pg_temp.d('product:1'), 'service', 1
+from generate_series(1, 2) as q, generate_series(1, 2) as o;
+
+-- Extras vendidos en reservas
+insert into booking_extra (id, organization_id, booking_id, extra_id, name, price_type, quantity, unit_price, total_amount, currency)
+select pg_temp.d('bext:' || n), pg_temp.org(), pg_temp.d('book:' || n), pg_temp.d('extra:1'),
+    'Barra libre premium', 'per_person', 2, 15, 30, 'usd'
+from generate_series(1, 20) as n;
+
+-- Tickets de acceso (uno por reserva)
+insert into access_ticket (id, organization_id, code, ticket_type, status, valid_from, valid_to, entries_allowed,
+    issued_at, holder_name, price, currency, booking_id, customer_id, product_id, order_id)
+select pg_temp.d('tk:' || n), pg_temp.org(), 'TK-' || lpad(n::text, 6, '0'), 'single_use',
+    case when (date_trunc('day', now()) + ((n - 30) || ' days')::interval)::date < current_date then 'redeemed' else 'active' end,
+    (date_trunc('day', now()) + ((n - 30) || ' days')::interval)::date,
+    (date_trunc('day', now()) + ((n - 30) || ' days')::interval)::date, 1,
+    (now() - (n || ' hours')::interval), 'Titular ' || n, (array[89,75,120,65,95,55,99,110])[1 + ((n - 1) % 8)], 'usd',
+    pg_temp.d('book:' || n), pg_temp.d('cust:' || (1 + ((n - 1) % 40))), pg_temp.d('product:' || (1 + ((n - 1) % 8))), pg_temp.d('order:' || n)
+from generate_series(1, 60) as n;
+
+-- Exenciones firmadas (en actividades de aventura)
+insert into waiver (id, organization_id, signature_name, waiver_template_id, participant_id, customer_id, booking_id, signed_at, status, channel)
+select pg_temp.d('wv:' || n), pg_temp.org(), 'Titular ' || n, pg_temp.d('wt:1'),
+    pg_temp.d('part:' || n || ':1'), pg_temp.d('cust:' || (1 + ((n - 1) % 40))), pg_temp.d('book:' || n),
+    (now() - (n || ' hours')::interval), 'signed', 'kiosk'
+from generate_series(1, 20) as n;
+
+-- Lista de espera en una salida futura llena
+insert into waitlist_entry (id, organization_id, departure_id, customer_id, contact_name, contact_phone, seller_id, pax, status, offered_at, offer_expires_at)
+select pg_temp.d('wl:' || n), pg_temp.org(), pg_temp.d('dep:' || (40 + n)), pg_temp.d('cust:' || n),
+    'Interesado ' || n, '+1 809 555 90' || lpad(n::text, 2, '0'), pg_temp.d('seller:' || (1 + (n % 4))),
+    2, (array['waiting','waiting','offered','waiting','converted'])[1 + (n % 5)],
+    case when n % 5 = 2 then now() else null end, case when n % 5 = 2 then now() + interval '1 day' else null end
+from generate_series(1, 5) as n;
+
+-- Calendario de pagos (depósito + saldo por orden)
+insert into payment_schedule (id, organization_id, order_id, sequence, kind, due_date, amount, currency, status)
+select pg_temp.d('psch:' || n || ':1'), pg_temp.org(), pg_temp.d('order:' || n), 1, 'deposit',
+    (date_trunc('day', now()) + ((n - 33) || ' days')::interval)::date, 50, 'usd'::currency, 'paid'
+from generate_series(1, 60) as n
+union all
+select pg_temp.d('psch:' || n || ':2'), pg_temp.org(), pg_temp.d('order:' || n), 2, 'balance',
+    (date_trunc('day', now()) + ((n - 30) || ' days')::interval)::date, 50, 'usd',
+    case when (date_trunc('day', now()) + ((n - 30) || ' days')::interval)::date < current_date then 'paid' else 'pending' end
+from generate_series(1, 60) as n;
+
+-- Movimientos de tarjeta regalo
+insert into gift_card_movement (id, organization_id, gift_card_id, movement_type, amount, balance_after, moved_at) values
+  (pg_temp.d('gcm:1'), pg_temp.org(), pg_temp.d('gc:1'), 'issue', 100, 100, now() - interval '20 days'),
+  (pg_temp.d('gcm:2'), pg_temp.org(), pg_temp.d('gc:2'), 'issue', 200, 200, now() - interval '40 days'),
+  (pg_temp.d('gcm:3'), pg_temp.org(), pg_temp.d('gc:2'), 'redeem', -125, 75, now() - interval '10 days');
+
+-- Arqueos de caja (apertura y cierre)
+insert into cash_count (id, organization_id, cash_session_id, currency, kind, counted_total, expected_total, difference, counted_at) values
+  (pg_temp.d('cc:1'), pg_temp.org(), pg_temp.d('csess:1'), 'usd', 'open', 200, 200, 0, now() - interval '2 days'),
+  (pg_temp.d('cc:2'), pg_temp.org(), pg_temp.d('csess:1'), 'usd', 'close', 1850, 1850, 0, now() - interval '2 days' + interval '9 hours'),
+  (pg_temp.d('cc:3'), pg_temp.org(), pg_temp.d('csess:2'), 'usd', 'open', 200, 200, 0, date_trunc('day', now()) + interval '7 hours');
+
+-- Liquidaciones (proveedor y vendedores) + cuenta por pagar
+insert into settlement (id, organization_id, code, beneficiary_type, supplier_id, seller_id, period_from, period_to,
+    base_total, commission_total, services_total, paid_total, pending_total, currency, status, beneficiary_name) values
+  (pg_temp.d('setl:1'), pg_temp.org(), 'LIQ-0001', 'supplier', pg_temp.d('sup:1'), null,
+    (current_date - 14)::date, current_date, 3200, 0, 3200, 0, 3200, 'usd', 'pending', 'Transporte del Este SRL'),
+  (pg_temp.d('setl:2'), pg_temp.org(), 'LIQ-0002', 'seller', null, pg_temp.d('seller:1'),
+    (current_date - 30)::date, current_date, 25000, 2000, 0, 2000, 0, 'usd', 'paid', 'Génesis Mora');
+
+insert into payable (id, organization_id, settlement_id, supplier_id, concept, amount, balance, currency, status, issue_date, due_date) values
+  (pg_temp.d('pay1:1'), pg_temp.org(), pg_temp.d('setl:1'), pg_temp.d('sup:1'), 'Liquidación semanal de transporte', 3200, 3200, 'usd', 'pending', current_date, (current_date + 7)::date);
+
+-- Nómina
+insert into payroll_run (id, organization_id, code, period_start, period_end, period_type, status, currency,
+    gross_amount, deductions_amount, net_amount, staff_count) values
+  (pg_temp.d('pr:1'), pg_temp.org(), 'NOM-' || to_char(current_date, 'YYYY-MM'),
+    date_trunc('month', current_date)::date, (date_trunc('month', current_date) + interval '1 month' - interval '1 day')::date,
+    'monthly', 'approved', 'usd', 190000, 21000, 169000, 6);
+
+insert into payroll_line (id, organization_id, payroll_run_id, staff_id, staff_name, gross_amount, deductions_amount, net_amount, currency)
+select pg_temp.d('pl:' || n), pg_temp.org(), pg_temp.d('pr:1'), pg_temp.d('staff:' || n),
+    (array['Carlos Medina','Yohan Peña','Rafael Guzmán','Miguel Santana','Laura Objío','Denny Castro'])[n],
+    (array[32000,34000,28000,28000,28000,40000])[n], round((array[32000,34000,28000,28000,28000,40000])[n] * 0.11), 
+    round((array[32000,34000,28000,28000,28000,40000])[n] * 0.89), 'usd'
+from generate_series(1, 6) as n;
+
+-- Activos, mantenimiento, RR.HH.
+insert into asset (id, organization_id, name, code, asset_type, operational_status, criticality, status, zone_id, vehicle_id) values
+  (pg_temp.d('ast:1'), pg_temp.org(), 'Catamarán Sirena', 'AST-CAT', 'boat', 'in_service', 'high', 'active', pg_temp.d('zone:1'), pg_temp.d('veh:3')),
+  (pg_temp.d('ast:2'), pg_temp.org(), 'Flota de buggies', 'AST-BUG', 'buggy', 'in_service', 'medium', 'active', pg_temp.d('zone:1'), pg_temp.d('veh:5')),
+  (pg_temp.d('ast:3'), pg_temp.org(), 'Tirolesa Anamuya', 'AST-ZIP', 'ride', 'maintenance', 'high', 'active', pg_temp.d('zone:1'), null),
+  (pg_temp.d('ast:4'), pg_temp.org(), 'Bus Mercedes 45', 'AST-BUS', 'vehicle', 'in_service', 'medium', 'active', null, pg_temp.d('veh:1')),
+  (pg_temp.d('ast:5'), pg_temp.org(), 'Generador eléctrico', 'AST-GEN', 'facility', 'in_service', 'low', 'active', null, null);
+
+insert into maintenance_plan (id, organization_id, name, trigger_type, interval_days, status, asset_id, next_due_at) values
+  (pg_temp.d('mplan:1'), pg_temp.org(), 'Servicio de motor catamarán', 'calendar', 30, 'active', pg_temp.d('ast:1'), now() + interval '12 days'),
+  (pg_temp.d('mplan:2'), pg_temp.org(), 'Revisión de buggies', 'meter_hours', 15, 'active', pg_temp.d('ast:2'), now() + interval '5 days'),
+  (pg_temp.d('mplan:3'), pg_temp.org(), 'Inspección de tirolesa', 'calendar', 7, 'active', pg_temp.d('ast:3'), now() + interval '2 days');
+
+insert into attendance (id, organization_id, attendance_date, clock_in, clock_out, status, method, staff_id)
+select pg_temp.d('att:' || n), pg_temp.org(), (current_date - (n % 7))::date,
+    (date_trunc('day', now()) - ((n % 7) || ' days')::interval + interval '7 hours'),
+    (date_trunc('day', now()) - ((n % 7) || ' days')::interval + interval '16 hours'),
+    (array['present','present','late','present','present','excused'])[1 + (n % 6)], 'qr',
+    pg_temp.d('staff:' || (1 + ((n - 1) % 6)))
+from generate_series(1, 18) as n;
+
+insert into certification (id, organization_id, name, cert_type, issuer, issued_at, expires_at, status, staff_id) values
+  (pg_temp.d('cert:1'), pg_temp.org(), 'Primeros auxilios', 'first_aid', 'Cruz Roja', current_date - 200, current_date + 165, 'valid', pg_temp.d('staff:1')),
+  (pg_temp.d('cert:2'), pg_temp.org(), 'Salvavidas', 'lifeguard', 'Marina de Guerra', current_date - 100, current_date + 265, 'valid', pg_temp.d('staff:2')),
+  (pg_temp.d('cert:3'), pg_temp.org(), 'Licencia de conducir categoría 3', 'driving_license', 'INTRANT', current_date - 300, current_date + 30, 'expiring', pg_temp.d('staff:3')),
+  (pg_temp.d('cert:4'), pg_temp.org(), 'Manejo de montacargas', 'forklift', 'INFOTEP', current_date - 400, current_date - 5, 'expired', pg_temp.d('staff:4'));
+
+-- Mantenimiento e incidencias
+insert into work_order (id, organization_id, code, title, order_type, priority, status, opened_at, asset_id, maintenance_plan_id) values
+  (pg_temp.d('wo:1'), pg_temp.org(), 'OT-0001', 'Cambio de aceite catamarán', 'preventive', 'medium', 'done', now() - interval '6 days', pg_temp.d('ast:1'), pg_temp.d('mplan:1')),
+  (pg_temp.d('wo:2'), pg_temp.org(), 'OT-0002', 'Reparar freno buggy #4', 'corrective', 'high', 'in_progress', now() - interval '2 days', pg_temp.d('ast:2'), null),
+  (pg_temp.d('wo:3'), pg_temp.org(), 'OT-0003', 'Inspección anual tirolesa', 'inspection_followup', 'urgent', 'open', now() - interval '1 day', pg_temp.d('ast:3'), pg_temp.d('mplan:3')),
+  (pg_temp.d('wo:4'), pg_temp.org(), 'OT-0004', 'Mantenimiento generador', 'preventive', 'low', 'assigned', now(), pg_temp.d('ast:5'), null);
+
+insert into inspection (id, organization_id, signature_name, performed_at, result, score, inspection_template_id, asset_id) values
+  (pg_temp.d('insp:1'), pg_temp.org(), 'Denny Castro', now() - interval '1 day', 'pass', 98, pg_temp.d('it:2'), pg_temp.d('ast:1')),
+  (pg_temp.d('insp:2'), pg_temp.org(), 'Rafael Guzmán', now() - interval '2 days', 'pass_with_observations', 82, pg_temp.d('it:1'), pg_temp.d('ast:2')),
+  (pg_temp.d('insp:3'), pg_temp.org(), 'Denny Castro', now() - interval '3 days', 'fail', 55, pg_temp.d('it:1'), pg_temp.d('ast:3'));
+
+insert into incident (id, organization_id, code, occurred_at, reported_at, severity, incident_type, status, title, description, attraction_id) values
+  (pg_temp.d('inc:1'), pg_temp.org(), 'INC-0001', now() - interval '4 days', now() - interval '4 days', 'minor', 'near_miss', 'resolved', 'Casi caída en muelle', 'Pasajero resbaló al abordar, sin lesión.', pg_temp.d('attr:1')),
+  (pg_temp.d('inc:2'), pg_temp.org(), 'INC-0002', now() - interval '9 days', now() - interval '9 days', 'moderate', 'illness', 'closed', 'Mareo en catamarán', 'Pasajera con mareo, atendida con botiquín.', null);
+
+insert into incident_action (id, organization_id, incident_id, action, status, priority) values
+  (pg_temp.d('inca:1'), pg_temp.org(), pg_temp.d('inc:1'), 'Colocar cinta antideslizante en el muelle', 'done', 'high'),
+  (pg_temp.d('inca:2'), pg_temp.org(), pg_temp.d('inc:2'), 'Reponer pastillas de mareo en botiquín', 'done', 'medium');
+
+insert into attraction_log (id, organization_id, attraction_id, event_type, from_status, to_status, reason, logged_at)
+select pg_temp.d('alog:' || n), pg_temp.org(), pg_temp.d('attr:' || (1 + (n % 2))),
+    'status_change', 'open', (array['paused','open','maintenance','open'])[1 + (n % 4)],
+    'Registro operativo ' || n, (now() - (n || ' hours')::interval)
+from generate_series(1, 8) as n;
+
+-- Plataforma: acuses, aprobaciones, salud del sistema
+insert into document_ack (id, organization_id, document_id, version_acked, acknowledged_at)
+select pg_temp.d('dack:' || n), pg_temp.org(), pg_temp.d('doc:' || (1 + (n % 3))), 1, (now() - (n || ' days')::interval)
+from generate_series(1, 6) as n;
+
+insert into approval_request (id, organization_id, code, action_type, status, requested_at, amount, currency, reason) values
+  (pg_temp.d('appr:1'), pg_temp.org(), 'APR-0001', 'discount_over_limit', 'pending', now() - interval '2 hours', 150, 'usd', 'Descuento de 15% a grupo de boda'),
+  (pg_temp.d('appr:2'), pg_temp.org(), 'APR-0002', 'refund', 'approved', now() - interval '1 day', 89, 'usd', 'Reembolso por cancelación de cliente'),
+  (pg_temp.d('appr:3'), pg_temp.org(), 'APR-0003', 'purchase_order', 'pending', now() - interval '5 hours', 566, 'usd', 'Compra de combustible');
+
+insert into job_run (id, organization_id, job, trigger, started_at, finished_at, status, summary)
+select pg_temp.d('job:' || n), pg_temp.org(),
+    (array['expire-holds','sweep-surveys','settle-suppliers','send-reminders','close-cash'])[1 + ((n - 1) % 5)],
+    'cron', (now() - (n || ' hours')::interval), (now() - (n || ' hours')::interval + interval '3 seconds'),
+    case when n % 7 = 0 then 'failed' else 'ok' end, jsonb_build_object('mensaje','Procesado correctamente','filas', n)
+from generate_series(1, 10) as n;
+
+insert into system_incident (id, organization_id, fingerprint, source, message, level, occurrences, first_seen_at, last_seen_at, status) values
+  (pg_temp.d('si:1'), pg_temp.org(), 'octo-timeout-001', 'octo-connector', 'Timeout al confirmar reserva OTA', 'warning', 3, now() - interval '2 days', now() - interval '5 hours', 'acknowledged'),
+  (pg_temp.d('si:2'), pg_temp.org(), 'stripe-webhook-002', 'stripe', 'Webhook recibido sin firma válida', 'error', 1, now() - interval '1 day', now() - interval '1 day', 'open');
+
 
 -- ── RECUENTO ─────────────────────────────────────────────────────────────
 -- Cuenta tolerante: 0 si la tabla no existe (base por detrás de migraciones),
