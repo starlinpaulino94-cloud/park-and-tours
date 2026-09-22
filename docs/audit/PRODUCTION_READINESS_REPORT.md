@@ -1,6 +1,17 @@
 # PRODUCTION_READINESS_REPORT.md — Park & Tours
 
-> **Fase 29/30 — Informe de preparación para producción**, evaluado contra la arquitectura objetivo (Supabase + Vercel) y el estado actual (Totalum + Cloudflare).
+> ## ⚠️ DOCUMENTO HISTÓRICO — NO describe el sistema actual
+>
+> Se escribió el **20 de agosto de 2026**, cuando Totalum todavía era la fuente
+> de verdad y Supabase el destino de una migración pendiente. Esa migración se
+> hizo: a **2026-09-22**, `grep -ri totalum src/` devuelve **cero**, Supabase es
+> el único backend y la RLS cubre 114 de 115 tablas.
+>
+> Se conserva porque cuenta POR QUÉ se migró y qué se decidió por el camino, que
+> sigue siendo útil. Para saber si el sistema está listo hoy, el documento vivo
+> es **[`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md)**.
+
+> **Fase 29/30 — Informe de preparación para producción**, evaluado contra la arquitectura objetivo (Supabase + Vercel) y el estado de entonces (Totalum + Cloudflare).
 > Fecha: 2026-08-20. Complementa la auditoría funcional previa (`AUDIT_REPORT.md`, `VALIDATION.md`, ya remediada en `main`).
 
 ## Respuestas directas
