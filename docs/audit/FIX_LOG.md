@@ -512,3 +512,50 @@ daba error: los tres producían números equivocados en silencio.
   tiene que ver es el fallo original, no «no se pudo anular». Hay prueba propia.
 - **Mutación:** cuatro, cuatro muertas (sin red, código inventado, la rota
   emitida, y la compensación tapando el error).
+
+### AUD-M11 — El 606/607 se declaraba con el mes de UTC (P1 fiscal) — CERRADA
+- **Cómo apareció:** primeras pruebas de `dgii-service.ts`. `dgii.ts` —el
+  formato— estaba probado entero; la REUNIÓN de los datos no.
+- **Dos defectos, los dos sistemáticos:**
+  1. **El mes se calculaba en UTC.** `${month}-01T00:00:00.000Z` con una
+     operadora en Santo Domingo (UTC−4) desplaza el mes cuatro horas: una
+     excursión vendida a las 21:00 del 30 de septiembre en el mostrador de un
+     hotel —que es cuando más se vende— se declaraba en **octubre**. Y no es
+     solo el fin de mes: la misma cuenta escribía la fecha del día SIGUIENTE en
+     toda venta posterior a las 20:00.
+  2. **El rango era cerrado por los dos lados.** Terminaba en el primer instante
+     del mes siguiente con `lte`, así que ese instante caía en los dos meses. En
+     el 606 era peor: `expense_date` es una fecha, y `lte` contra el día 1 del
+     mes siguiente metía **cada gasto del día 1 en el mes anterior además del
+     suyo**. No un borde improbable: cada primero de mes.
+- **Archivos:** `src/lib/dgii-service.ts`.
+- **Solución:** `monthRange(month, tz)` resuelve la medianoche local a instante
+  UTC con las ayudas que ya existían (`companyTimeZone`, `zoneOffsetMs`), el
+  rango pasa a ser semiabierto (`gte`/`lt`), y la fecha que va al archivo se
+  convierte al día de calendario de la empresa antes de formatearla.
+- **Mutación:** cuatro, cuatro muertas.
+
+### AUD-M12 — Al proveedor se le podía pagar dos veces el mismo viaje (P0) — CERRADA
+- **Cómo apareció:** una prueba de concurrencia sobre
+  `generateSupplierSettlement`, simulando dos liquidaciones a la vez.
+- **La raíz:** el servicio releía cada devengo antes de reclamarlo y decidía en
+  la APLICACIÓN. Eso estrecha la ventana y no la cierra: entre la lectura y la
+  escritura cabe otra liquidación. Comprobado — la segunda pisaba el enlace de
+  la primera **y contaba el importe igual**, así que el mismo viaje salía en dos
+  liquidaciones y al transportista se le pagaba dos veces. La diferencia se
+  descubre cuadrando el banco, semanas después.
+- **Archivos:** `src/lib/supplier-settlement-service.ts`.
+- **Solución:** la condición viaja DENTRO de la escritura —
+  `update … where id = ? and status in (…)`— y lo que se cuenta es la fila que
+  la base devuelve, no la que se leyó antes. Sin transacciones, es lo único que
+  cierra la ventana: el desempate lo resuelve Postgres, que es donde se puede.
+- **Una guarda de una ola anterior, reescrita:** exigía
+  `CLAIMABLE.has(fresh.status)`, o sea la implementación vieja, y saltó al
+  sustituirla por una más fuerte. Es el mismo caso que AUD-M01: una guarda que
+  fija el código en vez de la regla acaba protegiendo el defecto. Ahora afirma
+  la regla.
+- **Mutación:** cuatro, y una sobrevivió — quitar el filtro por empresa del
+  reclamo no rompía nada, igual que en la ola 13. Se cerró extendiendo la guarda
+  de código del filtro de inquilino a este servicio, aunque use el cliente con
+  sesión: ahí la RLS es la barrera de verdad, pero el día que alguien lo cambie
+  por la llave de servicio el filtro ya tiene que estar.

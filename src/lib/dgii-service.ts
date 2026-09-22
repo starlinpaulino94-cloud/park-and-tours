@@ -1,5 +1,6 @@
 import "server-only";
 import { tenantQuery, type TenantContext } from "@/lib/tenant";
+import { companyTimeZone, zonedParts, zoneOffsetMs } from "@/lib/time";
 import {
   line606, line607, line608, buildFile, fileName,
   purchaseProblems, saleProblems, voidProblems, totalsOf,
@@ -38,11 +39,59 @@ export interface DgiiReport {
   excluded: number;
 }
 
-const monthRange = (month: string) => {
-  const from = new Date(`${month}-01T00:00:00.000Z`);
-  const to = new Date(from);
-  to.setUTCMonth(to.getUTCMonth() + 1);
+/**
+ * ────────────────────────────────────────────────────────────────────────────
+ * EL MES SE CUENTA EN LA ZONA DE LA EMPRESA, NO EN UTC
+ *
+ * Esto se calculaba con `${month}-01T00:00:00.000Z`, y con una operadora en
+ * Santo Domingo —UTC−4— eso desplaza el mes cuatro horas. Una excursión vendida
+ * a las 21:00 del 30 de septiembre en el mostrador de un hotel ocurre, en UTC,
+ * el 1 de octubre: se declaraba en octubre. Y no es un caso de fin de mes, es la
+ * misma cuenta que escribía la fecha del día SIGUIENTE en toda venta posterior
+ * a las 20:00 — que es cuando más se vende.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * Y EL RANGO ES SEMIABIERTO
+ *
+ * Terminaba en el primer instante del mes siguiente y comparaba con `lte`, así
+ * que ese instante caía en los dos meses. La DGII cruza sus totales: una venta
+ * declarada dos veces es una diferencia que hay que explicar. `from` incluido,
+ * `to` excluido, como cualquier rango de calendario.
+ */
+const monthRange = (month: string, tz: string) => {
+  const [year, mon] = month.split("-").map(Number);
+  const instante = (y: number, m: number) => {
+    // La medianoche local del día 1, resuelta a instante UTC. Se refina una vez
+    // porque el desfase puede cambiar entre la referencia y la medianoche —un
+    // cambio de horario de verano— y aquí un error de una hora cambia el mes.
+    const pared = Date.UTC(y, m - 1, 1, 0, 0, 0);
+    const primera = new Date(pared - zoneOffsetMs(new Date(pared), tz));
+    return new Date(pared - zoneOffsetMs(primera, tz));
+  };
+  const from = instante(year, mon);
+  const to = mon === 12 ? instante(year + 1, 1) : instante(year, mon + 1);
   return { from: from.toISOString(), to: to.toISOString() };
+};
+
+/**
+ * El día LOCAL de un instante, que es el que va en la declaración.
+ *
+ * `dgiiDate` formatea en UTC, así que hay que darle ya la fecha de calendario
+ * de la empresa. Con el instante crudo, una venta de las 21:00 se escribe con
+ * la fecha del día siguiente.
+ */
+const localDay = (value: unknown, tz: string): string | null => {
+  if (!value) return null;
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return null;
+  const p = zonedParts(date, tz);
+  return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
+};
+
+/** El primer día del mes siguiente, para acotar una columna de tipo fecha. */
+const nextMonthDay = (month: string): string => {
+  const [year, mon] = month.split("-").map(Number);
+  return mon === 12 ? `${year + 1}-01-01` : `${year}-${String(mon + 1).padStart(2, "0")}-01`;
 };
 
 const refId = (value: unknown): string | null =>
@@ -85,10 +134,11 @@ async function paymentBreakdown(companyId: string, orderIds: string[]) {
 }
 
 async function load607(ctx: TenantContext & { companyId: string }, month: string): Promise<DgiiRow[]> {
-  const { from, to } = monthRange(month);
+  const tz = companyTimeZone(ctx.company as { timezone?: string | null } | null);
+  const { from, to } = monthRange(month, tz);
   const invoices = await tenantQuery<Record<string, unknown>>(ctx.companyId, "invoice", {
     _filter: {
-      issued_at: { gte: from, lte: to },
+      issued_at: { gte: from, lt: to },
       // Solo lo EMITIDO: un borrador no se declara, y una factura anulada se
       // declara por su nota de crédito, que es otra fila con su propio NCF.
       status: { nin: ["draft", "cancelled"] },
@@ -112,7 +162,8 @@ async function load607(ctx: TenantContext & { companyId: string }, month: string
       ncf: invoice.ncf as string,
       ncfModified: (invoice.credit_note_of_ncf as string) || null,
       customerTaxId: invoice.customer_tax_id as string,
-      issuedAt: invoice.issued_at as string,
+      // El día de calendario de la empresa, no el de UTC.
+      issuedAt: localDay(invoice.issued_at, tz),
       // Una operadora vende servicios; los bienes se declararían aparte si
       // algún día se venden (una tienda de recuerdos, por ejemplo).
       services: subtotal,
@@ -143,10 +194,19 @@ async function load607(ctx: TenantContext & { companyId: string }, month: string
 /* ---------------------------------------------------------------- 606 */
 
 async function load606(ctx: TenantContext & { companyId: string }, month: string): Promise<DgiiRow[]> {
-  const { from, to } = monthRange(month);
+  /**
+   * `expense_date` es una FECHA, no un instante: no tiene zona horaria y no
+   * hay que convertirla. Lo que sí hay que hacer es acotarla bien.
+   *
+   * Se comparaba con `lte` contra el primer día del mes SIGUIENTE, así que
+   * todo gasto fechado el día 1 se declaraba dos veces: en su mes y en el
+   * anterior. No era un borde improbable — era cada primero de mes.
+   */
+  const desde = `${month}-01`;
+  const hasta = nextMonthDay(month);
   const expenses = await tenantQuery<Record<string, unknown>>(ctx.companyId, "expense", {
     _filter: {
-      expense_date: { gte: from.slice(0, 10), lte: to.slice(0, 10) },
+      expense_date: { gte: desde, lt: hasta },
       // Un gasto rechazado no es un gasto: declararlo sería declarar algo que
       // la propia empresa decidió que no cuenta.
       status: { nin: ["rejected"] },
@@ -213,10 +273,11 @@ async function load606(ctx: TenantContext & { companyId: string }, month: string
  * septiembre va en el 608 de agosto.
  */
 async function load608(ctx: TenantContext & { companyId: string }, month: string): Promise<DgiiRow[]> {
-  const { from, to } = monthRange(month);
+  const tz = companyTimeZone(ctx.company as { timezone?: string | null } | null);
+  const { from, to } = monthRange(month, tz);
   const invoices = await tenantQuery<Record<string, unknown>>(ctx.companyId, "invoice", {
     _filter: {
-      issued_at: { gte: from, lte: to },
+      issued_at: { gte: from, lt: to },
       status: "voided",
     },
     _sort: { issued_at: "asc" },
@@ -226,7 +287,7 @@ async function load608(ctx: TenantContext & { companyId: string }, month: string
   return invoices.map((inv) => {
     const voided = {
       ncf: (inv.ncf as string) || null,
-      issuedAt: (inv.issued_at as string) || null,
+      issuedAt: localDay(inv.issued_at, tz),
       reasonCode: (inv.void_reason_code as string) || DEFAULT_VOID_REASON,
     };
     const problems = voidProblems(voided);
