@@ -4373,6 +4373,7 @@ describe("el camino del dinero no se contradice a sí mismo", () => {
   const AMANO: Record<string, string> = {
     "src/app/api/reports/collections/route.ts": "estados de ORDEN: una orden no puede estar parcialmente reembolsada",
     "src/lib/membego-benefits.ts": "estados de ORDEN",
+    "src/lib/facturacion-automatica.ts": "estados de ORDEN: el enum de `sales_order` no tiene partially_refunded, y lo que se decide aquí es si una ORDEN saldada se factura",
   };
 
   it("la lista de estados de RESERVA se escribe una sola vez", () => {
@@ -4410,8 +4411,13 @@ describe("el camino del dinero no se contradice a sí mismo", () => {
       // `ctx.orderStatus`, `CLOSED_ORDER` y `row.order?.status`, y un `\border\b`
       // no casa con ninguno. Lo que se comprueba es que el código de alrededor
       // esté hablando de órdenes, no la ortografía del identificador.
+      //
+      // Y en los dos idiomas: los módulos de dominio de este repositorio se
+      // escriben en castellano (`OrdenParaFacturar`), así que exigir la palabra
+      // inglesa comprobaba el idioma del identificador en vez de lo que dice
+      // comprobar.
       const alrededor = src.slice(Math.max(0, lista!.index - 600), lista!.index + 800);
-      expect(alrededor, `${archivo}: la lista no se aplica a ninguna orden`).toMatch(/order/i);
+      expect(alrededor, `${archivo}: la lista no se aplica a ninguna orden`).toMatch(/orders?|[oó]rdenes?/i);
     }
   });
 

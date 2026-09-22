@@ -8,6 +8,8 @@ import { postPayment } from "@/lib/ledger-events";
 import { resolveExchangeRate } from "@/lib/currency";
 import { newPaymentReference } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
+import { issueInvoice } from "@/lib/invoice-service";
+import { decidirFactura, explicarDecision } from "@/lib/facturacion-automatica";
 import { notify } from "@/lib/notify-service";
 import { notifyPaymentReceived } from "@/lib/messaging/events";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -286,7 +288,71 @@ export async function POST(req: NextRequest) {
     // El cobro ya está registrado. El recibo sale en cuanto el cajero reciba su
     // respuesta, sin que la caja espere al proveedor de correo.
     flushOutboxAfterResponse(ctx.company, ctx.companyId);
-    return ok(payment);
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * LA FACTURA SALE SOLA AL QUEDAR SALDADA LA VENTA
+     *
+     * El sistema sabía facturar desde siempre —`invoice-service.ts` emite con
+     * su NCF, su ITBIS y su secuencia—, pero NADIE lo llamaba: se cobraba y no
+     * salía comprobante. Toda la máquina fiscal montada y sin enchufar.
+     *
+     * El tipo de NCF lo decide el cliente, no el cajero: con RNC va crédito
+     * fiscal (B01) porque necesita deducirse el ITBIS; sin él, consumo (B02).
+     * Eso ya lo resuelve `ncfTypeFor` dentro del servicio.
+     *
+     * MEJOR ESFUERZO, COMO LA CONTABILIDAD DE ARRIBA. Si la secuencia de NCF
+     * está agotada o el perfil fiscal falta, el dinero ENTRÓ igual: tumbar el
+     * cobro por no poder emitir el comprobante convierte un problema
+     * administrativo en un descuadre de caja. Se registra el fallo, se devuelve
+     * en la respuesta para que la pantalla lo diga, y la factura se emite a
+     * mano cuando haya secuencia.
+     */
+    let factura: { id: string; ncf: string | null } | null = null;
+    let facturaError: string | null = null;
+
+    if (orderId) {
+      // Los totales se releen: `syncOrderTotals` acaba de actualizarlos y la
+      // decisión depende de si la venta quedó saldada CON este pago.
+      const actualizada = await tenantFindOne<Order>(ctx.companyId, "order", orderId).catch(() => null);
+      const decision = decidirFactura(actualizada, body.payment_type || "payment");
+
+      if (decision.facturar) {
+        try {
+          const emitida = await issueInvoice(ctx, { orderId });
+          factura = {
+            id: String(emitida.invoice._id),
+            ncf: (emitida.invoice.ncf as string) ?? null,
+          };
+          await writeAudit({
+            companyId: ctx.companyId, userId: ctx.userId,
+            action: "invoice_issued",
+            entityType: "invoice", entityId: factura.id,
+            description: `Factura ${factura.ncf ?? factura.id} emitida al saldarse ${actualizada?.order_number ?? orderId}`,
+            metadata: { ncf: factura.ncf, order: orderId, automatica: true },
+          });
+        } catch (err) {
+          // Una orden ya facturada devuelve 409: no es un fallo, es que no
+          // había nada que hacer. El resto sí hay que contarlo.
+          const status = (err as { status?: number })?.status;
+          facturaError = err instanceof Error ? err.message : String(err);
+          if (status !== 409) {
+            console.error("[payments] no se pudo emitir la factura:", err);
+            await writeAudit({
+              companyId: ctx.companyId, userId: ctx.userId,
+              action: "invoice_issue_failed",
+              entityType: "order", entityId: orderId,
+              description: `El cobro se registró pero la factura no salió: ${facturaError}`,
+              severity: "warning",
+              metadata: { order: orderId, payment: payment._id },
+            }).catch(() => {});
+          }
+        }
+      } else {
+        console.log(`[payments] sin factura: ${explicarDecision(decision)}`);
+      }
+    }
+
+    return ok({ ...payment, factura, factura_error: facturaError });
   } catch (err) {
     return fail(err);
   }

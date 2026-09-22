@@ -1181,3 +1181,53 @@ daba error: los tres producían números equivocados en silencio.
   quitarle las cifras tabulares a `.tf-num`, volver a importar una familia
   decorativa, que OCTO vuelva a decir agotado, y que un hueco vuelva a contar
   como cero.
+
+### AUD-M30 — La facturación estaba montada entera y sin enchufar
+- **Qué pasaba:** «el sistema no da facturas». Y era literal: `invoice-service.ts`
+  sabía emitir con su NCF, su ITBIS y su secuencia; `/api/invoices/:id/pdf`
+  sacaba el comprobante; `ncfTypeFor` ya elegía B01 con RNC y B02 sin él. Pero
+  **nadie llamaba a nada de eso**: se cobraba y no salía factura. La máquina
+  fiscal completa, sin un solo cable conectado.
+- **Lo que se añade:** la emisión automática al quedar SALDADA la venta, con el
+  tipo de NCF decidido por el cliente y no por el cajero.
+
+- **POR QUÉ AL SALDARSE Y NO AL PRIMER ABONO.** Un NCF consume secuencia, se
+  declara en el 607, y deshacerlo exige una nota de crédito que consume OTRO.
+  Facturar en el primer abono de una venta que luego se cancela deja dos
+  comprobantes quemados y un 607 que hay que explicar. Esperar a que quede
+  saldada no pierde ninguna factura —quien paga completo la recibe en el acto—
+  y evita el desperdicio. La regla vive en un módulo puro y probado, no dentro
+  de la ruta: el día que el negocio decida otra cosa, se cambia en un sitio con
+  pruebas que dicen qué se está cambiando.
+
+- **Y NUNCA TUMBA UN COBRO.** Si la secuencia está agotada o falta el perfil
+  fiscal, el dinero ENTRÓ igual: tumbar el cobro por no poder emitir el
+  comprobante convierte un problema administrativo en un **descuadre de caja**
+  —el cliente pagó, el cajero tiene el efectivo y el sistema dice que no pasó
+  nada—. Va en mejor esfuerzo, como la contabilidad de esa misma ruta, y el
+  fallo se registra (`invoice_issue_failed`) y se devuelve en la respuesta.
+  Hay una guarda que lee la ruta y comprueba que el `catch` no relanza.
+
+- **El NCF se enseña en el acto**, con el botón de imprimir en el mismo aviso.
+  Es el momento en que el cliente está delante; obligar al cajero a buscar la
+  factura en otra pantalla significa, en la práctica, que no se entrega.
+
+- **El importe en letras** (`monto-en-letras.ts`). Una cifra en números se
+  altera cambiando un dígito; en letras hay que reescribir la línea entera —por
+  eso lo llevan los cheques y por eso se espera en una factura dominicana—.
+  Escrito con sus trampas probadas: «dieciséis» y no «diez y seis», «cien» pero
+  «ciento uno», «quinientos/setecientos/novecientos», «mil» y nunca «un mil»
+  pero sí «veintiún mil», «un millón» en singular. **La prueba cazó un fallo mío
+  real**: el reemplazo de la apócope corría en el orden equivocado y dejaba
+  «VEINTIUN» sin tilde.
+
+- **Dos guardas ajenas saltaron y las dos tenían razón:** la bitácora exigía
+  traducir la acción nueva (`invoice_issue_failed` habría salido en el papel con
+  su nombre técnico), y la del camino del dinero preguntaba si mi lista de
+  estados era de ORDEN o de RESERVA. Lo segundo destapó que esa guarda
+  comprobaba el IDIOMA del identificador (`/order/i`) en vez de lo que dice
+  comprobar; ahora acepta los dos, y el módulo dice explícitamente sobre qué
+  entidad decide.
+- **Mutación:** cinco, las cinco muertas — que el `catch` relance, facturar en
+  el primer abono, facturar una devolución, truncar los centavos por separado
+  («CERO CON 100/100»), y devolver el fallo de la apócope.

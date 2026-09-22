@@ -356,7 +356,10 @@ export default function PosPage() {
       return;
     }
     setBusy(true);
-    const res = await api.post("/api/payments", {
+    const res = await api.post<{
+      factura?: { id: string; ncf: string | null } | null;
+      factura_error?: string | null;
+    }>("/api/payments", {
       order_id: payFor.order._id,
       amount,
       method: payMethod,
@@ -368,7 +371,37 @@ export default function PosPage() {
       toast.error(res.error?.message || "No se pudo registrar el cobro");
       return;
     }
-    toast.success("Cobro registrado");
+
+    /**
+     * El NCF se enseña EN EL ACTO, con el botón para imprimirlo.
+     *
+     * Es el momento en que el cliente está delante. Decir solo «cobro
+     * registrado» obliga al cajero a irse a buscar la factura a otra pantalla
+     * mientras el cliente espera, y en la práctica eso significa que no se
+     * entrega.
+     *
+     * Y si la factura NO salió —secuencia de NCF agotada, perfil fiscal sin
+     * configurar—, se dice con todas las letras. El cobro está registrado; lo
+     * que falta es el comprobante, y quien está en el mostrador es el único que
+     * puede resolverlo antes de que el cliente se vaya.
+     */
+    const factura = res.data?.factura;
+    if (factura) {
+      toast.success(`Cobro registrado · Factura ${factura.ncf ?? ""}`.trim(), {
+        duration: 10_000,
+        action: {
+          label: "Imprimir",
+          onClick: () => window.open(`/api/invoices/${factura.id}/pdf`, "_blank"),
+        },
+      });
+    } else if (res.data?.factura_error) {
+      toast.warning("Cobro registrado, pero la factura no salió", {
+        description: res.data.factura_error,
+        duration: 12_000,
+      });
+    } else {
+      toast.success("Cobro registrado");
+    }
     setPayFor(null);
     setBenefitTotal(null);
     setPayReceived("");

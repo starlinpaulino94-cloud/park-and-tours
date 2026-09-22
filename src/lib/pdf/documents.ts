@@ -9,6 +9,7 @@ import { documentBrand, type CompanyBranding, type DocumentKind } from "@/lib/br
 import { fetchLogo } from "@/lib/pdf/logo";
 import { APP_URL } from "@/lib/stripe";
 import type { ManifestRow, PickupStop, PaxSummary } from "@/lib/manifest";
+import { montoEnLetras } from "@/lib/monto-en-letras";
 
 /**
  * Los tres documentos que la empresa entrega.
@@ -481,6 +482,14 @@ export async function buildInvoicePdf(
     money(invoice.tax)
   );
   pdf.row("Total", money(invoice.total), { strong: true });
+
+  // El importe en letras, justo debajo del total y no al final del documento:
+  // es la línea con la que se comprueba la cifra, y separarlas obliga a buscar.
+  // Una cifra en números se altera cambiando un dígito; en letras hay que
+  // reescribir la línea entera. Por eso lo llevan los cheques y por eso se
+  // espera en una factura formal.
+  pdf.block("Importe en letras", montoEnLetras(invoice.total, currency));
+
   if ((invoice.paid_amount ?? 0) > 0) {
     pdf.row("Pagado", money(invoice.paid_amount));
     pdf.row("Saldo", money(invoice.balance));
