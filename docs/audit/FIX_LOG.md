@@ -745,3 +745,34 @@ daba error: los tres producían números equivocados en silencio.
   36 facturas igual, encuestas=0).
 - **Nota para el usuario:** el aviso es la señal de que hay migraciones
   pendientes, que la app también necesita. Queda escrito en la guía.
+
+### AUD-M18 — El selector de empresa no cambiaba el panel ni la RLS (P1) — CERRADA
+- **Cómo apareció:** cargada la demo, al cambiar a esa empresa con el selector el
+  panel daba «dashboard organization is outside your tenant» y todos los módulos
+  seguían vacíos.
+- **La raíz:** el selector (0014) guardaba la empresa elegida en una cookie y
+  reresolvía la membresía por petición. Eso alcanza a `tenantQuery` (llave de
+  servicio + filtro explícito por empresa), pero NO a lo que lee por sesión y
+  RLS: `dashboard_summary` compara la empresa pedida contra `app.current_org_id()`,
+  que lee el `org_id` del **JWT** —fijado en el login a partir de la membresía
+  principal—. La cookie cambiaba; el token, no. Split-brain.
+- **Archivos:** `supabase/migrations/0068_active_workspace.sql` (nuevo),
+  `supabase/tests/active_workspace.test.sql` (nuevo),
+  `src/app/api/workspace/route.ts`, `src/components/tf/org-context.tsx`,
+  `scripts/migration-checks.mjs`.
+- **Solución:** la empresa activa se guarda por persona (`user_active_workspace`)
+  y el enganche del token la PREFIERE sobre la principal —solo si sigue habiendo
+  una membresía activa ahí—. La ruta de cambio la persiste con la llave de
+  servicio, y el cliente refresca la sesión (`auth.refreshSession()`) tras el
+  cambio para que el enganche reemita el `org_id`. Así RLS, el panel y
+  `tenantQuery` quedan alineados sin cerrar sesión.
+- **La red de seguridad, probada contra Postgres:** el enganche, llamado como lo
+  llama GoTrue, pone la empresa activa; si la membresía en esa empresa se
+  desactiva, el token vuelve solo a la principal; y al borrar la selección,
+  también. Cuatro aserciones.
+- **El enganche es SECURITY DEFINER, y sigue siéndolo:** 0068 repite los dos
+  atributos (`security definer`, `set search_path`) y su propia comprobación,
+  porque omitirlos es exactamente lo que tumbó el login en 0063.
+- **Nota de despliegue:** requiere 0068 aplicada y el código desplegado. Hasta
+  entonces, ver una empresa distinta a la principal se hace con
+  principal + re-login.

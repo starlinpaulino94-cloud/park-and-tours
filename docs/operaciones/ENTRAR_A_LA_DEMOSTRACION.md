@@ -39,6 +39,25 @@ comisiones que nadie cobró. Media hora operando ahí creyendo que es la de verd
 —cobrar, cerrar caja, cancelar una salida— es un daño que no se deshace tirando
 de un hilo.
 
+### El cambio alcanza también al panel y a la RLS (0068)
+
+Al principio el selector solo cambiaba una cookie. Eso bastaba para lo que se lee
+con la llave de servicio y filtro por empresa, pero NO para el panel ni para nada
+que filtre por RLS: esos leen la empresa del **token**, que se fijaba en el login.
+Resultado: cambiabas de empresa y el panel seguía en la anterior, con
+«dashboard organization is outside your tenant» y los módulos vacíos.
+
+Desde 0068 la empresa activa se guarda por persona y el **enganche del token la
+pone en el JWT**: al cambiar de empresa, el cliente refresca la sesión y el
+`org_id` del token pasa a la empresa elegida. Así RLS y el panel la respetan sin
+cerrar sesión. Y con una garantía: el enganche solo acepta la empresa activa si
+la persona **sigue teniendo una membresía activa ahí**; si la pierde, el token
+vuelve solo a la principal.
+
+> Requiere la migración **0068** aplicada y este código desplegado. Mientras
+> tanto, para ver una empresa distinta a la principal, sigue valiendo hacerla
+> principal y volver a entrar.
+
 ### Qué lo hace seguro
 
 | | |

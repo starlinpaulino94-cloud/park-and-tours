@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0021-0066 tienen que haber creado.
+ * El inventario de lo que las migraciones 0021-0068 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -451,6 +451,16 @@ export const MIGRATION_CHECKS = [
       ["organizations", ["review_url"]],
       // La baja del cliente, que la encuesta tiene que respetar.
       ["customer", ["survey_opt_out"]],
+    ],
+  },
+  {
+    migration: "0068 — empresa activa en el token",
+    // Guarda qué empresa eligió cada persona en el selector, para que el
+    // enganche del token la ponga en el JWT y RLS/el panel respeten el cambio
+    // sin cerrar sesión.
+    tables: ["user_active_workspace"],
+    columns: [
+      ["user_active_workspace", ["user_id", "organization_id", "updated_at"]],
     ],
   },
 ];
