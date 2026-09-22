@@ -245,12 +245,41 @@ on conflict (user_id, organization_id) do update
 commit;
 ```
 
-**Antes de `commit`, comprueba.** Si el `insert` dice `INSERT 0 0`, uno de los
-dos `select` volvió vacío —correo mal escrito o slug que no existe— y no se hizo
-nada. Los slugs que hay:
+### «Success. No rows returned» NO quiere decir que haya funcionado
+
+Es lo que el editor contesta a ese bloque **en los dos casos**: un `update` y un
+`insert` sin `returning` no devuelven filas ni cuando cambian algo ni cuando no.
+Y el editor de Supabase tampoco enseña el contador (`INSERT 0 1`) que sí saca
+`psql`. O sea que ese mensaje no distingue «hecho» de «no encontró ni el correo
+ni la empresa».
+
+Así que la comprobación va aparte. Pega esto después:
+
+```sql
+select
+  case when m.is_primary then '★' else ' ' end as aterriza,
+  org.name as empresa, org.slug, m.role as rol, m.status as membresia
+from organization_memberships m
+join organizations org on org.id = m.organization_id
+join auth.users u      on u.id  = m.user_id
+where lower(u.email) = lower('demopresentaciones@havelgo.com')
+order by m.is_primary desc, org.name;
+```
+
+- **Sale la empresa que querías, con la ★** → hecho.
+- **Cero filas, o falta esa empresa** → uno de los dos `select` del bloque 3
+  volvió vacío. El correo está mal escrito, o el slug no existe. Los slugs que
+  hay son estos:
 
 ```sql
 select name, slug, kind, status from organizations where kind = 'tenant' order by name;
+```
+
+Y para confirmar que el correo es exactamente el que está en la base —mayúsculas
+incluidas, aunque la búsqueda no las mire—:
+
+```sql
+select email from auth.users order by created_at desc limit 20;
 ```
 
 > `is_primary = true` mueve **dónde aterriza esa persona al entrar**. Si el
