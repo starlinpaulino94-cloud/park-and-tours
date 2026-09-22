@@ -117,6 +117,9 @@ Dice a qué proyecto de Supabase está apuntando, si la cuenta existe **ahí**, 
 su email está confirmado, si está bloqueada, y a qué empresas pertenece con qué
 rol — con la de aterrizaje marcada. **Solo lee**: no cambia una sola fila.
 
+¿Sin terminal? Lo mismo, bloque a bloque, para pegar en el editor SQL de
+Supabase: **[Arreglar un acceso desde el editor SQL](./DESDE_EL_EDITOR_SQL.md)**.
+
 Si falta algo, el propio comprobador imprime la orden que lo arregla:
 
 ```bash

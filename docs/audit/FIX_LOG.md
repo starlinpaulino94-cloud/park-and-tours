@@ -596,3 +596,42 @@ daba error: los tres producían números equivocados en silencio.
   —exigía darlo de alta a mano en Supabase Auth—. Ninguna orden del repositorio
   la crea hoy, así que en un proyecto que no la tenga no hay contraseña que
   valga. Queda escrito en `docs/operaciones/ENTRAR_A_LA_DEMOSTRACION.md`.
+
+### AUD-M14 — El diagnóstico existía solo para quien tuviera terminal — CERRADA
+- **Cómo apareció:** «quiero hacer todo eso en el editor de SQL de Supabase, no
+  en la terminal». Una herramienta de diagnóstico que exige un entorno de
+  desarrollo montado no está disponible el día que hace falta, que es
+  precisamente el día en que alguien no puede entrar.
+- **Archivos:** `docs/operaciones/DESDE_EL_EDITOR_SQL.md` (nuevo),
+  `supabase/tests/sql_playbook.test.sql` (nuevo),
+  `supabase/tests/00_supabase_stub.sql` (las columnas de GoTrue que el cuaderno
+  consulta, más `auth.identities`).
+- **Lo que sí se puede desde SQL, y se documenta:** ver si la cuenta existe en
+  ESTE proyecto y en qué estado, a qué empresas pertenece y dónde aterriza, dar
+  o corregir una membresía, y confirmar un email.
+- **Lo que NO, y por qué se dice en vez de improvisarlo:** crear la cuenta o
+  ponerle contraseña. El hash vive en `auth.users` pero quien lo interpreta es
+  GoTrue, que además lleva identidades, sesiones y auditoría propias: escribirlo
+  a mano cambia la mitad que se ve y deja la otra como estaba, y una cuenta a
+  medias que parece funcionar falla después y en otro sitio. El camino sin
+  terminal es *Authentication → Users*, dos clics. El atajo en SQL queda escrito
+  con lo que se está aceptando al usarlo, incluido que la clave se queda en el
+  historial del editor.
+- **Y sembrar la demostración tampoco:** son catálogo, reservas, cobros y
+  contabilidad con dependencias entre sí. Lo que sí contesta el cuaderno es si
+  **ya está sembrada**, que es la pregunta que de verdad se tenía.
+- **La guarda, que es lo que separa esto de un apunte:** el cuaderno **se
+  ejecuta** en cada CI contra un Postgres real con todas las migraciones. No
+  solo que corra: que buscar el correo en mayúsculas encuentre la cuenta, que la
+  ★ sea la misma empresa que elegiría el enganche del token, que el bloque de
+  membresía no borre la de la empresa real ni duplique al repetirlo, que un slug
+  inexistente no escriba nada, y que el segundo primario choque contra
+  `memberships_one_primary` — que es el motivo de que el bloque vaya en dos
+  sentencias y en ese orden.
+- **Mutación:** cuatro. Tres muertas a la primera. **La cuarta no mordió**: la
+  idempotencia del bloque 4 se comprobaba comparando la fecha antes y después, y
+  `now()` devuelve el reloj de la TRANSACCIÓN — la prueba entera es una sola, así
+  que las dos pasadas escribían el mismo instante y la aserción pasaba también
+  sin el `coalesce`. En el editor cada bloque es su propia transacción y ahí sí
+  diferirían: la aserción cómoda era justo la que no servía donde importa. Se
+  reescribió midiendo `row_count`, y entonces mordió.
