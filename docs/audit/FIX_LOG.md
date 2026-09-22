@@ -698,3 +698,50 @@ daba error: los tres producían números equivocados en silencio.
   secreto del CI es una llave de servicio sobre la operación de verdad. Anotado
   como **CI-001** en el informe de preparación; se cierra con un proyecto aparte
   para CI, no con más código.
+
+### AUD-M17 — La empresa de demostración estaba vacía (P1) — CERRADA
+- **Cómo apareció:** «no hay ni un solo dato demo, quiero que todos los módulos
+  tengan datos». Al entrar a la empresa demo no se veía nada — el peor efecto
+  para una presentación, porque parece que el sistema está vacío.
+- **La raíz, doble:** (1) la empresa donde aterriza la cuenta,
+  `havelgo-demo-presentaciones`, es la del sembrador VIEJO y nunca tuvo datos;
+  el sembrador nuevo (`scripts/demo/*.mjs`) llena una empresa distinta —hermana
+  de la real—. (2) Ese sembrador es JavaScript con la llave de servicio y lee de
+  la base entre inserciones: no se puede correr desde el editor SQL, que es como
+  trabaja quien monta la demostración.
+- **Archivos:** `supabase/seed/demo_presentation.sql` (nuevo, 648 líneas),
+  `scripts/db-test.sh`, `docs/operaciones/ENTRAR_A_LA_DEMOSTRACION.md`.
+- **Solución:** un sembrador **SQL** pegable en el editor de Supabase, que carga
+  la empresa demo completa —85 tablas, todos los módulos: catálogo, clientes,
+  ventas, cobros, facturas con NCF, comisiones, operación, caja, almacén y
+  plataforma—. Idempotente (borra lo suyo y resiembra), con ids deterministas
+  (`md5('demo:...')::uuid`) para enlazar módulos, y con los importes cuadrando
+  entre sí: el total de una orden es la suma de sus reservas, los pagos no
+  superan lo facturado, la comisión sale del total. Se validó columna a columna
+  contra el esquema real (enums, checks, claves únicas, referencias de
+  inquilino).
+- **La guarda:** `scripts/db-test.sh` lo ejecuta contra un Postgres con todas
+  las migraciones, y lo corre **dos veces** — la segunda comprueba que de verdad
+  es idempotente, porque si dejara restos chocaría contra una clave única. Una
+  migración que cambie una tabla que el sembrador llena pone el CI rojo en vez
+  de fallar delante de un cliente.
+- **Un detalle del esquema, de paso:** `sales_order.branch_id` y
+  `booking.branch_id` referencian `organizations` (una sucursal es un nodo org),
+  mientras que `departure.branch_id` y `shift.branch_id` referencian `branch`.
+  No es un error, pero es una inconsistencia que costó una iteración descubrir.
+
+### AUD-M17b — El sembrador reventaba si la base iba por detrás de las migraciones
+- **Cómo apareció:** al pegar el sembrador en un proyecto real:
+  `ERROR: relation "guest_survey" does not exist`. Esa tabla es de la 0067; el
+  proyecto no la tenía aplicada. El CI no lo vio porque aplica todas.
+- **Solución:** el sembrador se volvió tolerante a un esquema por detrás. El
+  borrado salta las tablas ausentes y las reporta; las inserciones de
+  `guest_survey` van dentro de un `IF to_regclass(...) IS NOT NULL` —el SQL
+  estático de una rama no tomada no se planifica, así que una tabla ausente no
+  rompe el sembrado—; y el recuento cuenta con una función que devuelve 0 si la
+  tabla falta. En vez de reventar a mitad, avisa qué falta y carga el resto.
+- **Se probó en los dos escenarios:** esquema completo (siembra las 25 encuestas,
+  sin avisos) y esquema sin `guest_survey` (dos avisos, carga las 60 reservas y
+  36 facturas igual, encuestas=0).
+- **Nota para el usuario:** el aviso es la señal de que hay migraciones
+  pendientes, que la app también necesita. Queda escrito en la guía.

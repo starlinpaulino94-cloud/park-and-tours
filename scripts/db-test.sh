@@ -58,6 +58,20 @@ for t in "$ROOT"/supabase/tests/*.test.sql; do
   fi
 done
 
+# ── El sembrador de demostración, ejecutado DOS VECES ───────────────────────
+# Es lo que se pega en el editor de Supabase para cargar una empresa demo
+# completa. Se ejecuta contra el esquema real por dos razones: que no envejezca
+# cuando una migración cambie una tabla, y —corriéndolo dos veces— que sea de
+# verdad idempotente, que es lo que promete. Si dejara restos, la segunda pasada
+# chocaría contra una clave única y el CI se pondría rojo.
+for seed in "$ROOT"/supabase/seed/demo_presentation.sql; do
+  [ -e "$seed" ] || { echo "✘ falta $seed"; fail=1; continue; }
+  echo "→ sembrador de demostración (1ª pasada)"
+  if ! psql_run -f "$seed" >/dev/null; then echo "✘ el sembrador no corre contra el esquema actual"; fail=1; continue; fi
+  echo "→ sembrador de demostración (2ª pasada — idempotencia)"
+  if ! psql_run -f "$seed" >/dev/null; then echo "✘ el sembrador no es idempotente: la 2ª pasada falló"; fail=1; fi
+done
+
 # ── Los cuadernos de SQL, ejecutados ────────────────────────────────────────
 # Lo que se le entrega a alguien para que lo pegue en el editor de Supabase se
 # ejecuta aquí primero. Los correos y slugs de los ejemplos no existen, así que
