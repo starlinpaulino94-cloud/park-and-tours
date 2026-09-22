@@ -5,6 +5,8 @@ import { decidableFilter } from "@/lib/approvals";
 import { branchFilterFor } from "@/lib/branch-scope";
 import { searchFilterFor } from "@/lib/search";
 import { TenantError, type TenantContext } from "@/lib/tenant";
+import { limitesConsulta, normalizarPeriodo } from "@/lib/report";
+import { companyTimeZone } from "@/lib/time";
 
 /**
  * El filtro de un listado, en UN solo sitio.
@@ -43,15 +45,29 @@ export function buildListFilter(
     filter[field] = value.includes(",") ? { in: value.split(",") } : value;
   }
 
-  // Rango de fechas sobre cualquier campo.
+  /**
+   * Rango de fechas sobre cualquier campo.
+   *
+   * ──────────────────────────────────────────────────────────────────────────
+   * EL ÚLTIMO DÍA SE CAÍA, Y NO SE NOTABA
+   *
+   * Antes esto mandaba `lte: new Date(to)`, o sea la MEDIANOCHE del último día.
+   * «Hasta el 30» dejaba fuera el 30 entero: cada listado y cada exportación
+   * con rango perdía su última jornada, en silencio. Y el corte iba en UTC, así
+   * que una venta de las 21:00 en Santo Domingo se contaba en el día siguiente.
+   *
+   * Ahora el rango es SEMIABIERTO y los cortes son la medianoche de la EMPRESA:
+   * `desde <= t < día siguiente al hasta`. Dos reportes consecutivos se tocan
+   * sin solaparse, y nada se cuenta dos veces ni se pierde. La regla vive en
+   * `report.ts`, con sus pruebas.
+   */
   const dateField = sp.get("dateField");
   const from = sp.get("from");
   const to = sp.get("to");
   if (dateField && (from || to)) {
-    const range: Record<string, string> = {};
-    if (from) range.gte = new Date(from).toISOString();
-    if (to) range.lte = new Date(to).toISOString();
-    filter[dateField] = range;
+    const tz = companyTimeZone(ctx.company as { timezone?: string | null } | null);
+    const periodo = normalizarPeriodo(from, to, new Date(), tz);
+    filter[dateField] = limitesConsulta(periodo, tz);
   }
 
   // Aprobaciones: «solo las que puedo decidir» reutiliza la misma función de

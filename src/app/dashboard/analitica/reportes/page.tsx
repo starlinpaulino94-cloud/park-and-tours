@@ -10,6 +10,13 @@ import { Card } from "@/components/ui/card";
  */
 const REPORTS: { group: string; items: { href: string; label: string; description: string; icon: string }[] }[] = [
   {
+    group: "Actividad",
+    items: [
+      { href: "/dashboard/reportes/actividad", label: "Bitácora de actividad", icon: "ScrollText",
+        description: "Todo lo que se hizo en un período: quién, qué y sobre qué. Imprimible." },
+    ],
+  },
+  {
     group: "Comercial",
     items: [
       { href: "/dashboard/rentabilidad", label: "Rentabilidad por producto", icon: "TrendingUp",

@@ -831,3 +831,37 @@ daba error: los tres producían números equivocados en silencio.
   una lectura con verbo POST).
 - **Mutación:** dos, dos muertas — quitar la auditoría de la creación, y dejar
   la edición sin decir qué campos cambiaron.
+
+### AUD-M21 — Todo reporte con rango de fechas perdía su último día (P0) — CERRADA
+- **Cómo apareció:** construyendo el marco de reportes. El filtro de los
+  listados mandaba `lte: new Date("2026-09-30")`, que es la **medianoche** del
+  30: «hasta el 30» dejaba fuera el 30 entero.
+- **El alcance:** no era una pantalla. `buildListFilter` es el filtro de TODOS
+  los listados y de TODAS las exportaciones a CSV. Cada reporte con rango de
+  fechas venía perdiendo una jornada, en silencio, y el archivo se veía bien.
+  Y el corte iba en UTC: una venta de las 21:00 en Santo Domingo se contaba en
+  el día siguiente — el mismo defecto que hubo que corregir en el 606/607.
+- **Archivos:** `src/lib/report.ts` (nuevo, dominio puro), `src/lib/erp-query.ts`.
+- **Solución:** rango **semiabierto** con los cortes en la medianoche de la
+  **empresa**: `desde <= t < día siguiente al hasta`. Dos reportes consecutivos
+  se tocan sin solaparse: nada se pierde ni se cuenta dos veces.
+- **Mutación:** dos, las dos muertas — volver al corte cerrado (caen 4 pruebas)
+  y volver a cortar en UTC (caen 3).
+
+### AUD-M22 — El marco de reportes y la bitácora de actividad
+- **Qué se añade:** `ReportShell`, el marco común de todo reporte: período en la
+  URL (se comparte por enlace y el botón de atrás funciona), atajos, impresión y
+  CSV. El encabezado impreso lleva empresa, reporte y período; el pie, cuándo se
+  generó. Una hoja sin eso no se puede archivar.
+- **La bitácora** (`/dashboard/reportes/actividad`): todo lo que se hizo en un
+  período, con resumen por módulo arriba —quien firma necesita el volumen antes
+  que el detalle— y el detalle debajo. No es la pantalla de Auditoría con otro
+  nombre: aquélla sirve para BUSCAR un evento, ésta para CERRAR un período.
+- **60 acciones salían en el papel con su nombre técnico.** La guarda recorre
+  cada `writeAudit` del código y exige su texto en castellano: si mañana alguien
+  añade una acción y no la traduce, el CI lo para antes de que
+  `octo_hold_extended` acabe en un archivador.
+- **El resumen tiene desempate alfabético**, y eso es una decisión: sin él, dos
+  módulos con el mismo total bailan de sitio entre dos impresiones del MISMO
+  período, y dos copias dejan de poder compararse línea a línea.
+- **Mutación:** una más, muerta — quitar el desempate.

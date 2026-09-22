@@ -4145,6 +4145,7 @@ describe("cada pantalla dice cómo se crea lo que enseña", () => {
     "/dashboard/equipo/acuses": "acuses de lectura: los firma quien lee",
     "/dashboard/analitica/ocupacion": "previsión: se calcula de las salidas",
     "/dashboard/analitica/reportes": "informes: se calculan",
+    "/dashboard/reportes/actividad": "bitácora: la escribe el sistema en cada acción y es inmutable; un botón de «nuevo evento» sería justo lo que una auditoría no puede permitir",
     "/dashboard/analitica/cohortes": "cohortes: se calculan",
     "/dashboard/rentabilidad": "márgenes: se calculan de ventas y costes",
     "/dashboard/distribucion/matriz": "vista cruzada de disponibilidad ya existente",
