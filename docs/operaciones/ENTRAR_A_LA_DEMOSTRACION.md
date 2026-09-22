@@ -172,6 +172,52 @@ problema de la cuenta: es esto.
 
 ---
 
+## Cargar la demostración con datos
+
+Entrar a la empresa demo y no ver nada es peor que no entrar: parece que el
+sistema está vacío. Para llenarla —catálogo, clientes, ventas, cobros, facturas,
+comisiones, operación, caja, almacén y plataforma— hay un sembrador SQL que se
+pega en el editor de Supabase:
+
+```
+supabase/seed/demo_presentation.sql
+```
+
+Ábrelo, cópialo entero, pégalo en **SQL Editor** de Supabase y ejecútalo. Tarda
+unos segundos y al final imprime un recuento por módulo. Carga sobre la empresa
+`havelgo-demo-presentaciones`, que es donde aterrizas; si no existe, la crea.
+
+Lo que deja cargado, aproximadamente:
+
+| Módulo | Filas |
+| --- | --- |
+| Productos (tours) y modalidades | 12 + 24 |
+| Clientes | 40 |
+| Salidas (pasadas y futuras) | 60 |
+| Reservas con su rastro (pagos, vouchers, participantes) | 60 |
+| Facturas con NCF | 36 |
+| Comisiones de vendedor | 60 |
+| Costes de proveedor, gastos 606, cuentas por cobrar | sí |
+| Leads, cotizaciones, encuestas NPS respondidas | sí |
+| Caja, almacén, tareas, notificaciones, auditoría | sí |
+
+**Se puede ejecutar las veces que quieras.** Empieza borrando lo que sembró la
+vez anterior (solo de la empresa demo) y vuelve a sembrar: dos ejecuciones dejan
+el mismo resultado, no el doble. Y no toca tu operación real — todo cuelga de la
+empresa demo, que la RLS mantiene aparte.
+
+Los importes **cuadran entre módulos**: el total de una orden es la suma de sus
+reservas, los pagos no superan lo facturado, y la comisión sale del total de la
+venta. No son filas sueltas: es una operación coherente, que es lo que hace
+creíble una demostración.
+
+> Igual que el resto de SQL de esta guía, el sembrador **se ejecuta en CI** —dos
+> veces, para comprobar que de verdad es idempotente— contra un Postgres con
+> todas las migraciones. Si una migración cambia una tabla que llena, el CI se
+> pone rojo en vez de fallar delante de un cliente.
+
+---
+
 ## Lo que NO cambió
 
 - Tu empresa real no se toca nunca. La demo es una empresa aparte, con
@@ -192,5 +238,6 @@ problema de la cuenta: es esto.
 | La ruta del cambio | `POST /api/workspace` |
 | El selector y la banda | `src/components/tf/app-shell.tsx` |
 | El sembrador y las cuentas | `scripts/seed-demo-presentation.mjs` |
+| Cargar la demo con datos (SQL) | `supabase/seed/demo_presentation.sql` |
 | Por qué una cuenta no entra | `npm run check:account` |
 | Qué se le dice a quien no entra | `src/lib/auth-errors.ts` |

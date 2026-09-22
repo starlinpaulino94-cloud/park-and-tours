@@ -698,3 +698,34 @@ daba error: los tres producían números equivocados en silencio.
   secreto del CI es una llave de servicio sobre la operación de verdad. Anotado
   como **CI-001** en el informe de preparación; se cierra con un proyecto aparte
   para CI, no con más código.
+
+### AUD-M17 — La empresa de demostración estaba vacía (P1) — CERRADA
+- **Cómo apareció:** «no hay ni un solo dato demo, quiero que todos los módulos
+  tengan datos». Al entrar a la empresa demo no se veía nada — el peor efecto
+  para una presentación, porque parece que el sistema está vacío.
+- **La raíz, doble:** (1) la empresa donde aterriza la cuenta,
+  `havelgo-demo-presentaciones`, es la del sembrador VIEJO y nunca tuvo datos;
+  el sembrador nuevo (`scripts/demo/*.mjs`) llena una empresa distinta —hermana
+  de la real—. (2) Ese sembrador es JavaScript con la llave de servicio y lee de
+  la base entre inserciones: no se puede correr desde el editor SQL, que es como
+  trabaja quien monta la demostración.
+- **Archivos:** `supabase/seed/demo_presentation.sql` (nuevo, 648 líneas),
+  `scripts/db-test.sh`, `docs/operaciones/ENTRAR_A_LA_DEMOSTRACION.md`.
+- **Solución:** un sembrador **SQL** pegable en el editor de Supabase, que carga
+  la empresa demo completa —85 tablas, todos los módulos: catálogo, clientes,
+  ventas, cobros, facturas con NCF, comisiones, operación, caja, almacén y
+  plataforma—. Idempotente (borra lo suyo y resiembra), con ids deterministas
+  (`md5('demo:...')::uuid`) para enlazar módulos, y con los importes cuadrando
+  entre sí: el total de una orden es la suma de sus reservas, los pagos no
+  superan lo facturado, la comisión sale del total. Se validó columna a columna
+  contra el esquema real (enums, checks, claves únicas, referencias de
+  inquilino).
+- **La guarda:** `scripts/db-test.sh` lo ejecuta contra un Postgres con todas
+  las migraciones, y lo corre **dos veces** — la segunda comprueba que de verdad
+  es idempotente, porque si dejara restos chocaría contra una clave única. Una
+  migración que cambie una tabla que el sembrador llena pone el CI rojo en vez
+  de fallar delante de un cliente.
+- **Un detalle del esquema, de paso:** `sales_order.branch_id` y
+  `booking.branch_id` referencian `organizations` (una sucursal es un nodo org),
+  mientras que `departure.branch_id` y `shift.branch_id` referencian `branch`.
+  No es un error, pero es una inconsistencia que costó una iteración descubrir.
