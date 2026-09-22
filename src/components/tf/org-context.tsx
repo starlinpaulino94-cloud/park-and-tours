@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { supabaseBrowser } from "@/lib/supabase/client";
+import { verificarCambioDeEmpresa, type VeredictoCambio } from "@/lib/token-claims";
 
 /**
  * Contexto organizacional del panel: empresa actual y sucursal activa.
@@ -47,6 +48,27 @@ interface OrgValue {
 const OrgContext = createContext<OrgValue | null>(null);
 
 const STORAGE_KEY = "tf:active-branch";
+
+/**
+ * Refresca la sesión y dice si el token nuevo aterrizó en la empresa elegida.
+ *
+ * Un fallo de red al refrescar se trata igual que un token que no cambió: en
+ * los dos casos el usuario NO está en la empresa que pidió, y eso es lo único
+ * que quien llama necesita saber.
+ */
+async function refrescarYComprobar(empresaElegida: string): Promise<VeredictoCambio> {
+  try {
+    const { data, error } = await supabaseBrowser().auth.refreshSession();
+    if (error || !data.session) {
+      console.error("[org] no se pudo refrescar la sesión:", error);
+      return "sin_token";
+    }
+    return verificarCambioDeEmpresa(data.session.access_token, empresaElegida);
+  } catch (err) {
+    console.error("[org] no se pudo refrescar la sesión:", err);
+    return "sin_token";
+  }
+}
 
 export function OrgProvider({
   companyName, companyType, children,
@@ -123,10 +145,36 @@ export function OrgProvider({
      * refresca la sesión para que el enganche (0068) reemita el `org_id`, y
      * recién entonces se recarga. Sin este refresco, la cookie diría la empresa
      * nueva y el JWT seguiría en la vieja —que es justo el fallo que esto cierra—.
+     *
+     * ──────────────────────────────────────────────────────────────────────
+     * POR QUÉ NO BASTA CON LLAMAR A `refreshSession()`
+     *
+     * `refreshSession()` NO LANZA cuando falla: devuelve `{ error }`. Envuelto
+     * en un try/catch, un refresco fallido no se notaba y se recargaba igual,
+     * dejando la cookie en la empresa nueva y el token en la vieja. O sea,
+     * devolviendo al usuario al mismísimo fallo que la 0068 vino a cerrar, y sin
+     * una sola pista de por qué.
+     *
+     * Por eso se mira el `error`, y además se COMPRUEBA que el token nuevo trae
+     * de verdad la empresa elegida. Eso último también caza dos cosas que no son
+     * culpa del código: que el enganche no esté activado en el proyecto de
+     * Supabase, y que la 0068 no esté aplicada.
      */
     if (res.data?.reloadSession) {
-      try { await supabaseBrowser().auth.refreshSession(); }
-      catch (err) { console.error("[org] no se pudo refrescar la sesión:", err); }
+      const veredicto = await refrescarYComprobar(id);
+      if (veredicto !== "ok") {
+        // Se DESHACE el cambio. Dejar la cookie apuntando a una empresa que el
+        // token no reconoce es peor que no cambiar: el panel queda roto y no hay
+        // forma de que el usuario entienda por qué. Volver a la empresa de
+        // siempre es un estado coherente y explicable.
+        await api.post("/api/workspace", { stop: true }).catch(() => {});
+        console.error(`[org] el token no aterrizó en la empresa elegida: ${veredicto}`);
+        throw new Error(
+          veredicto === "empresa_distinta"
+            ? "No se pudo cambiar de empresa: tu sesión sigue en la anterior. Cierra sesión y vuelve a entrar."
+            : "No se pudo renovar tu sesión para cambiar de empresa. Inténtalo de nuevo o cierra sesión y vuelve a entrar.",
+        );
+      }
     }
     window.location.assign("/dashboard");
   }, []);

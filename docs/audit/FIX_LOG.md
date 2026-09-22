@@ -1015,3 +1015,34 @@ daba error: los tres producían números equivocados en silencio.
 - **Mutación:** tres, las tres muertas — cambiar la copia sin tocar la
   migración, juntar el `create table` con el bloque de la función, y volver la
   verificación muda.
+
+### AUD-M26 — El cambio de empresa se daba por bueno sin comprobar nada
+- **Cómo apareció:** revisando de punta a punta el camino del selector después
+  de aplicar la 0068 en producción. La base estaba bien; el cliente no.
+- **EL FALLO:** `supabase.auth.refreshSession()` **no lanza** cuando falla:
+  devuelve `{ error }`. El código lo envolvía en un `try/catch` y recargaba
+  igual. Un refresco fallido —token de refresco rotado, un corte de red— no se
+  notaba: la cookie quedaba en la empresa nueva y el JWT en la vieja. Es decir,
+  el usuario volvía **al mismísimo fallo que la 0068 vino a cerrar**
+  («dashboard organization is outside your tenant», módulos vacíos), y encima
+  indistinguible de que la migración no estuviera aplicada.
+- **Qué se hace ahora:** se mira el `error`, y además se **comprueba que el
+  token nuevo trae de verdad la empresa elegida**, leyendo su `org_id`. La
+  comparación es válida porque el enganche emite `coalesce(tenant_org_id, id)` y
+  `workspacesOf` lista `tenant_org_id || id`: las dos puntas ya coincidían.
+- **Y si no aterriza, se DESHACE el cambio.** Dejar la cookie apuntando a una
+  empresa que el token no reconoce es peor que no cambiar: la pantalla queda
+  rota sin que el usuario pueda entender por qué. Volver a la empresa de siempre
+  es un estado coherente, y el mensaje dice qué hacer.
+- **Efecto secundario útil:** esa comprobación también caza dos cosas que no son
+  culpa del código —que el enganche no esté activado en el proyecto de Supabase,
+  y que la 0068 no esté aplicada— y las convierte en un mensaje claro en vez de
+  en una pantalla vacía.
+- **La lectura del token no verifica firma y no pretende hacerlo:** de eso se
+  encarga Supabase. Es una comprobación de COHERENCIA, y devuelve `null` ante
+  cualquier token raro en vez de lanzar, porque quien llama solo está decidiendo
+  si enseñar un aviso.
+- **Mutación:** cinco, las cinco muertas — volver al `try/catch` que se traga el
+  error, no deshacer el cambio, dar por bueno un token ilegible, no comparar la
+  empresa, y decodificar con `atob` sin reconstruir el UTF-8 (que parte los
+  acentos).
