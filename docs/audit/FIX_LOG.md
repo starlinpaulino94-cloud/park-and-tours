@@ -559,3 +559,40 @@ daba error: los tres producían números equivocados en silencio.
   de código del filtro de inquilino a este servicio, aunque use el cliente con
   sesión: ahí la RLS es la barrera de verdad, pero el día que alguien lo cambie
   por la llave de servicio el filtro ya tiene que estar.
+
+### AUD-M13 — El mensaje de la puerta afirmaba una causa que nadie le dijo (P2) — CERRADA
+- **Cómo apareció:** una cuenta de demostración que no entraba. El formulario
+  contestaba *«Email o contraseña incorrectos para este ambiente. Verifica que
+  la cuenta exista en este proyecto»*, y eso mandó a revisar la base de datos
+  cuando el servidor no había dicho nada de la base de datos.
+- **La raíz:** Supabase contesta `invalid_credentials` a **tres** situaciones
+  —la cuenta no existe aquí, la contraseña no es esa, la cuenta quedó en otro
+  proyecto— y las junta a propósito: separarlas en la respuesta convertiría el
+  formulario en un buscador de correos existentes. La pantalla elegía una de las
+  tres y la daba por cierta. En el caso corriente, una contraseña mal tecleada,
+  el mensaje manda a buscar el problema donde no está.
+- **Y lo demás llegaba crudo:** email sin confirmar, cuenta bloqueada, límite de
+  intentos y servidor inalcanzable salían con el texto del proveedor, en inglés.
+  El peor de los cuatro es el último: sin red no hay respuesta, y enseñar
+  «contraseña incorrecta» ahí hace que alguien cambie una que estaba bien.
+- **Archivos:** `src/lib/auth-errors.ts` (nuevo), `src/lib/auth-client.ts`
+  (reenvía `code` y `status`, no solo el texto), `src/app/login/page.tsx`,
+  `src/app/register/page.tsx`, `scripts/check-account.mjs` (nuevo).
+- **Solución, en dos mitades.** La pantalla dice lo único que sabe —«no
+  coinciden»— y ofrece lo único que se puede hacer sin adivinar: restablecerla.
+  Lo que **no** es ambiguo sí se distingue, porque ocultarlo no protege nada y
+  deja a la persona probando contraseñas correctas. Y la otra mitad: la pantalla
+  puede dejar de adivinar porque ahora hay dónde mirar de verdad —
+  `npm run check:account -- --email=…` dice a qué proyecto apunta el despliegue,
+  si la cuenta existe **ahí**, si su email está confirmado, si está bloqueada y a
+  qué empresas pertenece con qué rol. Corre con credenciales, no delante de un
+  desconocido, y **solo lee**: un comprobador que además escribe es uno que nadie
+  se atreve a ejecutar cuando hace falta.
+- **Mutación:** cuatro, cuatro muertas — volver a traducir en la pantalla,
+  saltarse el traductor en el registro, devolver el mensaje que adivina, y hacer
+  que el comprobador escriba.
+- **De paso, un cabo suelto del sembrador viejo:** `demopresentaciones@havelgo.com`
+  venía escrita en el código del sembrador anterior, que **no creaba el usuario**
+  —exigía darlo de alta a mano en Supabase Auth—. Ninguna orden del repositorio
+  la crea hoy, así que en un proyecto que no la tenga no hay contraseña que
+  valga. Queda escrito en `docs/operaciones/ENTRAR_A_LA_DEMOSTRACION.md`.

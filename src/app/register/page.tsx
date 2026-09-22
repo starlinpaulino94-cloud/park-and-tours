@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import Link from "next/link";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { describeAuthError } from "@/lib/auth-errors";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -46,8 +47,11 @@ export default function RegisterPage() {
       });
 
       if (result.error) {
+        // El texto del proveedor llega en inglés y cambia entre versiones; el
+        // que se enseña sale del mismo traductor que el de la pantalla de
+        // acceso, para que las dos digan lo mismo del mismo fallo.
         console.error(result.error);
-        setError(result.error.message || "No se pudo crear la cuenta. Puede que el email ya esté en uso.");
+        setError(describeAuthError(result.error)?.message || "No se pudo crear la cuenta.");
         setLoading(false);
         return;
       }
@@ -57,7 +61,7 @@ export default function RegisterPage() {
       window.location.href = "/dashboard";
     } catch (err: any) {
       console.error("Registration error:", err);
-      setError(err.message || "No se pudo crear la cuenta. Puede que el email ya esté en uso.");
+      setError(describeAuthError({ message: err?.message })?.message || "No se pudo crear la cuenta.");
       setLoading(false);
     }
   };

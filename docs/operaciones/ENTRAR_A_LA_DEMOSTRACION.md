@@ -98,6 +98,48 @@ una membresía por error.
 
 ---
 
+## Si una cuenta no entra
+
+El formulario dice lo mismo a tres cosas distintas:
+
+- la cuenta **no existe** en este proyecto de Supabase;
+- la cuenta existe y **la contraseña no es esa**;
+- la cuenta existía en **otro proyecto** — el de antes de una migración.
+
+Las junta a propósito: distinguirlas ahí convertiría la pantalla de acceso en un
+buscador de correos. Quien administra sí puede mirar, y para eso está:
+
+```bash
+npm run check:account -- --email=persona@empresa.com
+```
+
+Dice a qué proyecto de Supabase está apuntando, si la cuenta existe **ahí**, si
+su email está confirmado, si está bloqueada, y a qué empresas pertenece con qué
+rol — con la de aterrizaje marcada. **Solo lee**: no cambia una sola fila.
+
+Si falta algo, el propio comprobador imprime la orden que lo arregla:
+
+```bash
+node scripts/migrate/onboard-user.mjs --email=persona@empresa.com \
+  --org=<slug-de-la-empresa> --role=owner --password='<clave>'
+```
+
+Ese script crea la cuenta si no existe, le repone la contraseña si existe, la
+deja con el email confirmado y le asegura la membresía. Ojo con una cosa: pone
+esa empresa como **primaria** y le quita la marca a las demás, así que pásale el
+slug de donde quieres que aterrice.
+
+### `demopresentaciones@havelgo.com`
+
+Esa cuenta es del sembrador **viejo**, que traía una empresa fija escrita en el
+código y **no creaba el usuario**: exigía que ya estuviera dado de alta a mano en
+Supabase Auth. Hoy ninguna orden del repositorio la crea, así que si el proyecto
+al que apunta el despliegue no la tiene, no hay contraseña que valga.
+
+Las de ahora son las tres de arriba, `demo@…demo.local`, y se crean solas.
+
+---
+
 ## Lo que NO cambió
 
 - Tu empresa real no se toca nunca. La demo es una empresa aparte, con
@@ -118,3 +160,5 @@ una membresía por error.
 | La ruta del cambio | `POST /api/workspace` |
 | El selector y la banda | `src/components/tf/app-shell.tsx` |
 | El sembrador y las cuentas | `scripts/seed-demo-presentation.mjs` |
+| Por qué una cuenta no entra | `npm run check:account` |
+| Qué se le dice a quien no entra | `src/lib/auth-errors.ts` |

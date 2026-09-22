@@ -4576,3 +4576,77 @@ describe("la llave de servicio se salta la RLS: el filtro lo pone el código", (
     }
   });
 });
+
+describe("la puerta de entrada", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * LA ÚNICA PANTALLA QUE VE QUIEN NO HA ENTRADO
+   *
+   * Y por tanto la única pista que tiene. El mensaje que había afirmaba una
+   * causa que el servidor no dice —«verifica que la cuenta exista en este
+   * proyecto»— cuando `invalid_credentials` significa igualmente que la
+   * contraseña está mal tecleada. Todo lo demás llegaba crudo y en inglés.
+   *
+   * El traductor vive en un solo sitio para que las tres pantallas de identidad
+   * digan lo mismo del mismo fallo, y para que se pueda probar sin navegador.
+   */
+  const PANTALLAS = ["src/app/login/page.tsx", "src/app/register/page.tsx"];
+
+  it("ninguna pantalla traduce los errores por su cuenta", () => {
+    /**
+     * La forma de volver al defecto es escribir otra vez un `if` con el texto
+     * del proveedor en la pantalla. Cada copia envejece por separado: el día
+     * que Supabase cambie el texto, una dice una cosa y la otra otra.
+     */
+    const offenders: string[] = [];
+    for (const dir of ["src/app", "src/components"]) {
+      for (const file of walk(path.join(ROOT, dir))) {
+        if (!/\.tsx?$/.test(file)) continue;
+        const src = readFileSync(file, "utf8");
+        if (/Invalid login credentials|Email not confirmed|User is banned/.test(src)) {
+          offenders.push(path.relative(ROOT, file).replace(/\\/g, "/"));
+        }
+      }
+    }
+    expect(offenders, "el texto del proveedor solo se reconoce en src/lib/auth-errors.ts").toEqual([]);
+  });
+
+  it("y todas pasan por el traductor", () => {
+    for (const pantalla of PANTALLAS) {
+      const src = read(pantalla);
+      expect(src, `${pantalla} enseña el fallo sin traducir`).toContain("describeAuthError");
+      // El `.message` del proveedor puesto directamente en la alerta es
+      // exactamente lo que el traductor existe para evitar.
+      expect(src, `${pantalla} sigue pintando el texto crudo`).not.toMatch(
+        /setError\(\s*(result\.)?error\.message/
+      );
+    }
+  });
+
+  it("el mensaje de credenciales no afirma dónde está el problema", () => {
+    /**
+     * La regla, no la implementación: da igual cómo se escriba el texto,
+     * mientras no mande a buscar el fallo a un sitio que el servidor no ha
+     * señalado. Quien administra tiene `npm run check:account`, que sí puede
+     * mirar porque corre con credenciales y no delante de un desconocido.
+     */
+    const src = read("src/lib/auth-errors.ts");
+    const textos = [...src.matchAll(/message:\s*"([^"]+)"/g)].map((m) => m[1]);
+    expect(textos.length, "hay mensajes que revisar").toBeGreaterThan(4);
+    for (const t of textos) {
+      expect(t, `este mensaje adivina la causa: «${t}»`).not.toMatch(/este proyecto|este ambiente/i);
+    }
+  });
+
+  it("el comprobador de cuentas existe y solo lee", () => {
+    /**
+     * Es la otra mitad del arreglo: la pantalla deja de adivinar porque hay
+     * dónde mirar de verdad. Si el comprobador escribiera, sería un comprobador
+     * que nadie ejecuta cuando hace falta —justo cuando algo ya va mal—.
+     */
+    const src = read("scripts/check-account.mjs");
+    expect(JSON.parse(read("package.json")).scripts["check:account"]).toBeTruthy();
+    expect(src).not.toMatch(/\.(insert|update|upsert|delete)\(/);
+    expect(src, "listar usuarios es una lectura; crearlos no").not.toMatch(/admin\.(createUser|updateUserById|deleteUser)/);
+  });
+});

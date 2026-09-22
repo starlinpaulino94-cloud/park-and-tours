@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import Link from "next/link";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { describeAuthError } from "@/lib/auth-errors";
 
 function LoginForm() {
   const router = useRouter();
@@ -50,13 +51,11 @@ function LoginForm() {
         password,
       });
 
-      // Check if login was successful
       if (result.error) {
-        setError(
-          result.error.message === "Invalid login credentials"
-            ? "Email o contraseña incorrectos para este ambiente. Verifica que la cuenta exista en este proyecto."
-            : result.error.message || "No se pudo iniciar sesión. Revisa tus credenciales."
-        );
+        // El detalle crudo queda en la consola para quien administra; a quien
+        // está delante se le enseña lo que se sabe, no una causa inventada.
+        console.error("Login error:", result.error);
+        setError(describeAuthError(result.error)?.message || "No se pudo iniciar sesión.");
         setLoading(false);
         return;
       }
@@ -67,8 +66,10 @@ function LoginForm() {
         window.location.href = redirect;
       }, 300);
     } catch (err: any) {
+      // Aquí no hubo respuesta: red caída, o el cliente sin configurar. El
+      // mensaje del navegador («Failed to fetch») no le dice nada a nadie.
       console.error("Login error:", err);
-      setError(err.message || "No se pudo iniciar sesión. Revisa tus credenciales.");
+      setError(describeAuthError({ message: err?.message })?.message || "No se pudo iniciar sesión.");
       setLoading(false);
     }
   };
