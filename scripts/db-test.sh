@@ -81,6 +81,13 @@ for part in demo_1_base demo_2_ventas demo_3_extras; do
   if ! psql_run -f "$pf" >/dev/null; then echo "✘ la parte $part no corre contra el esquema actual"; fail=1; fi
 done
 
+# Y los trozos pequeños (los que se pegan sin que el editor los trunque), en orden.
+for pf in "$ROOT"/supabase/seed/demo_partes/demo_*.sql; do
+  [ -e "$pf" ] || continue
+  echo "→ sembrador de demostración por trozos: $(basename "$pf")"
+  if ! psql_run -f "$pf" >/dev/null; then echo "✘ el trozo $(basename "$pf") no corre"; fail=1; fi
+done
+
 # ── Los cuadernos de SQL, ejecutados ────────────────────────────────────────
 # Lo que se le entrega a alguien para que lo pegue en el editor de Supabase se
 # ejecuta aquí primero. Los correos y slugs de los ejemplos no existen, así que
