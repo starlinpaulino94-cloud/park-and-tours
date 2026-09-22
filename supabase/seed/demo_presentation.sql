@@ -1,6 +1,11 @@
 -- ============================================================================
 -- SEMBRADOR DE DEMOSTRACIÓN — para el editor SQL de Supabase.
 --
+-- ¿EL EDITOR CORTA EL PEGADO? («syntax error at end of input».) Este archivo es
+-- grande; usa la versión en tres partes en esta misma carpeta:
+--   demo_1_base.sql  ->  demo_2_ventas.sql  ->  demo_3_extras.sql
+-- ejecutadas EN ESE ORDEN. Hacen exactamente lo mismo.
+--
 -- Carga una empresa de demostración COMPLETA: catálogo, clientes, ventas,
 -- cobros, facturas, comisiones, operación, caja, almacén y plataforma. Sirve
 -- para presentarle el producto a un cliente sin tocar ninguna operación real.
