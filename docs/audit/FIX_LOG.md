@@ -474,3 +474,41 @@ daba error: los tres producían números equivocados en silencio.
   comprobación es por función: prohibido en la que toca a personas reales,
   permitido solo en la que crea las cuentas de demostración. Comprobado con una
   mutación.
+
+### AUD-M10 — Un NCF consumido y no usado desaparecía (P0 fiscal) — CERRADA
+- **Cómo apareció:** al escribir las primeras pruebas de `invoice-service.ts`,
+  351 líneas sin ninguna. La función de la base (`public.next_ncf`) SÍ estaba
+  probada —avanza de uno en uno, se agota y vence—; lo que no había probado
+  nadie es qué hace la APLICACIÓN con el número una vez que lo tiene.
+- **La raíz:** `next_ncf` consume el número de forma atómica, así que en cuanto
+  vuelve está gastado para siempre. Todo lo que va después —el código único, la
+  fila de la factura, cada línea del desglose— podía fallar, y entonces quedaba
+  un HUECO en la secuencia.
+- **Y el hueco no se podía justificar.** El 608 se arma leyendo facturas con
+  estado `voided`; un número que nunca llegó a ser factura no aparece ahí, ni en
+  el 606, ni en el 607. La DGII cruza el rango autorizado con lo declarado y ese
+  número faltante no lo explica nadie tres meses después. **Lo peor es que la
+  propia migración 0037 lo nombra**, entre los tres fallos que viene a evitar:
+  «un número que se salta hay que justificarlo en el 606/607».
+- **Dos defectos más, encontrados por las mismas pruebas:**
+  1. Las líneas se escriben DESPUÉS de la factura, una a una y sin red. Si
+     fallaba la segunda, quedaba un comprobante **emitido** —con su NCF, en el
+     607, con su total— cuyo desglose mentía. La 0037 también lo dice: «una
+     factura sin líneas no se puede sostener ante una inspección».
+  2. Y esa factura rota **bloqueaba la orden**: la comprobación de «ya tiene
+     factura» la encontraba viva, así que la caja no podía volver a facturar esa
+     venta — y para desbloquearla habría que emitir una nota de crédito contra
+     un comprobante que el cliente nunca recibió. Este no lo había previsto: lo
+     destapó la tercera prueba.
+- **Archivos:** `src/lib/invoice-service.ts`.
+- **Solución:** todo lo posterior a consumir el número va dentro de una red. Si
+  algo falla, `declareBurnedNcf` deja el número DECLARADO como comprobante
+  anulado con el código **09 — «Errores en secuencia de NCF»**, que es el de la
+  lista oficial que describe exactamente esto. Entonces el 608 lo recoge solo,
+  sin tabla nueva ni migración. Si la factura ya existía se anula ESA, que de
+  paso desbloquea la orden.
+- **No tapa el error de verdad:** la compensación es el mejor esfuerzo y no
+  relanza. Con la base caída no hay dónde dejar el rastro, y lo que el cajero
+  tiene que ver es el fallo original, no «no se pudo anular». Hay prueba propia.
+- **Mutación:** cuatro, cuatro muertas (sin red, código inventado, la rota
+  emitida, y la compensación tapando el error).

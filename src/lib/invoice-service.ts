@@ -12,6 +12,9 @@ import {
 } from "@/lib/invoicing";
 import { VOID_REASONS, DEFAULT_VOID_REASON } from "@/lib/dgii";
 
+/** «Errores en secuencia de NCF»: el código del 608 para un número gastado. */
+const NCF_SEQUENCE_ERROR = "09";
+
 /**
  * La emisión de un comprobante fiscal.
  *
@@ -139,7 +142,24 @@ export async function issueInvoice(
   const sequence = await consumeNcf(companyId, ncfType);
   const ncf = formatNcf(ncfType, sequence.number);
 
-  const invoice = await tenantCreate<Record<string, unknown>>(companyId, "invoice", {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * DESDE AQUÍ, EL NÚMERO YA ESTÁ GASTADO
+   *
+   * `next_ncf` lo consume de forma atómica: en cuanto vuelve, ese NCF no se
+   * puede devolver a la secuencia. Si algo de lo que sigue falla, queda un
+   * HUECO — y un hueco hay que justificarlo, porque la DGII cruza los rangos
+   * que te autorizó con los que declaraste.
+   *
+   * El 608 se arma leyendo facturas con estado `voided`. Así que la forma de
+   * que un número gastado quede explicado es que EXISTA como comprobante
+   * anulado, con el código 09 («Errores en secuencia de NCF»), que es
+   * exactamente lo que pasó. Sin eso, el número desaparece: no está en el 606,
+   * ni en el 607, ni en el 608, y tres meses después no hay quien lo explique.
+   */
+  let invoice: Record<string, unknown>;
+  try {
+    invoice = await tenantCreate<Record<string, unknown>>(companyId, "invoice", {
     number: await uniqueCode(companyId, "invoice", "number", () => newDocumentNumber("FAC")),
     ncf,
     ncf_type: ncfType,
@@ -169,26 +189,49 @@ export async function issueInvoice(
     exchange_rate: Number(order.exchange_rate) || 1,
     efac_status: electronic ? "pending" : "not_applicable",
     notes: input.notes || undefined,
-    issued_by: ctx.userId,
-    user: ctx.userId,
-  });
-
-  for (const [index, line] of draftLines.entries()) {
-    const amounts = lineAmounts(line as InvoiceLineInput, false);
-    await tenantCreate(companyId, "invoice_line", {
-      invoice: invoice._id,
-      description: line.description,
-      quantity: line.quantity,
-      unit_price: line.unit_price,
-      discount: line.discount,
-      tax_rate: line.tax_rate,
-      tax_amount: amounts.tax_amount,
-      total: amounts.total,
-      is_exempt: line.is_exempt,
-      booking: line.booking,
-      product: line.product,
-      sort_order: index * 10,
+      issued_by: ctx.userId,
+      user: ctx.userId,
     });
+
+    /**
+     * El desglose, y por qué también va dentro de la red.
+     *
+     * Las líneas se escriben DESPUÉS de la factura, una a una. Si falla la
+     * tercera de cinco, queda un comprobante EMITIDO —con su NCF, en el 607,
+     * con su total— cuyo desglose miente. La 0037 lo dice: una factura sin
+     * líneas no se sostiene ante una inspección ni se puede reimprimir.
+     *
+     * Y hay algo peor, que apareció al probarlo: esa factura rota BLOQUEA la
+     * orden. La comprobación de «ya tiene factura» la encuentra viva, así que
+     * la caja no puede volver a facturar esa venta — y para desbloquearla
+     * habría que emitir una nota de crédito contra un comprobante que el
+     * cliente nunca recibió.
+     */
+    for (const [index, line] of draftLines.entries()) {
+      const amounts = lineAmounts(line as InvoiceLineInput, false);
+      await tenantCreate(companyId, "invoice_line", {
+        invoice: invoice._id,
+        description: line.description,
+        quantity: line.quantity,
+        unit_price: line.unit_price,
+        discount: line.discount,
+        tax_rate: line.tax_rate,
+        tax_amount: amounts.tax_amount,
+        total: amounts.total,
+        is_exempt: line.is_exempt,
+        booking: line.booking,
+        product: line.product,
+        sort_order: index * 10,
+      });
+    }
+  } catch (err) {
+    await declareBurnedNcf(companyId, ctx.userId, {
+      ncf, ncfType, orderId: input.orderId,
+      invoiceId: (invoice! as Record<string, unknown> | undefined)?._id as string | undefined,
+      expiresAt: sequence.expiresAt,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
   }
 
   await writeAudit({
@@ -200,6 +243,89 @@ export async function issueInvoice(
   });
 
   return { invoice, lines: draftLines.length };
+}
+
+/**
+ * DEJA DECLARADO UN NÚMERO QUE SE GASTÓ Y NO LLEGÓ A SER COMPROBANTE.
+ *
+ * No se puede devolver a la secuencia —`next_ncf` ya la avanzó— así que lo
+ * único honesto es que ese número EXISTA como comprobante anulado. Entonces el
+ * 608 lo recoge solo, porque se arma leyendo las facturas con estado `voided`,
+ * y la DGII puede cruzar el rango autorizado con lo declarado sin encontrarse
+ * un agujero.
+ *
+ * El código 09 es «Errores en secuencia de NCF»: el de la lista oficial que
+ * describe exactamente esto. Inventarse otro sería declarar mal a propósito.
+ *
+ * Dos caminos, según hasta dónde se llegó:
+ *
+ *  · la fila de la factura ya existía (falló el desglose) → se anula ESA, y de
+ *    paso deja de bloquear la orden, que si no se queda sin poder facturarse;
+ *  · no llegó a existir (falló la propia factura) → se escribe una mínima, que
+ *    solo está para sostener el número.
+ *
+ * Es el mejor esfuerzo y no relanza: el error que viene detrás es el que el
+ * cajero tiene que ver. Si ni esto se puede escribir, queda en el registro con
+ * el número delante, para poder justificarlo a mano.
+ */
+async function declareBurnedNcf(
+  companyId: string,
+  userId: string | undefined,
+  burn: {
+    ncf: string;
+    ncfType: string;
+    orderId?: string | null;
+    invoiceId?: string | null;
+    expiresAt?: string | null;
+    reason: string;
+  }
+): Promise<void> {
+  const nota = `NCF consumido sin comprobante: ${burn.reason}`.slice(0, 500);
+  try {
+    if (burn.invoiceId) {
+      await tenantUpdate(companyId, "invoice", burn.invoiceId, {
+        status: "voided",
+        voided_at: new Date().toISOString(),
+        void_reason: nota,
+        void_reason_code: NCF_SEQUENCE_ERROR,
+        balance: 0,
+      });
+    } else {
+      await tenantCreate(companyId, "invoice", {
+        number: await uniqueCode(companyId, "invoice", "number", () => newDocumentNumber("FAC")),
+        ncf: burn.ncf,
+        ncf_type: burn.ncfType,
+        ncf_expires_at: burn.expiresAt ?? undefined,
+        series: burn.ncf.slice(0, 3),
+        invoice_type: "sale",
+        status: "voided",
+        issued_at: new Date().toISOString(),
+        voided_at: new Date().toISOString(),
+        void_reason: nota,
+        void_reason_code: NCF_SEQUENCE_ERROR,
+        order: burn.orderId || undefined,
+        customer_name: "Comprobante no emitido",
+        subtotal: 0, discount: 0, tax: 0, tax_rate: 0, total: 0, balance: 0,
+        issued_by: userId,
+        user: userId,
+      });
+    }
+  } catch (err) {
+    console.error(`[factura] el NCF ${burn.ncf} se consumió y NO se pudo dejar declarado:`, err);
+  }
+
+  try {
+    await writeAudit({
+      companyId, userId,
+      action: "invoice_ncf_burned",
+      entityType: "invoice", entityId: burn.invoiceId ?? burn.ncf,
+      severity: "warning",
+      description: `El NCF ${burn.ncf} se consumió sin llegar a emitirse y queda anulado para el 608`,
+      metadata: { ncf: burn.ncf, ncf_type: burn.ncfType, reason: burn.reason },
+    });
+  } catch {
+    // La bitácora no puede tapar el error de verdad.
+  }
 }
 
 /**
