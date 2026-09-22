@@ -211,6 +211,20 @@ reservas, los pagos no superan lo facturado, y la comisión sale del total de la
 venta. No son filas sueltas: es una operación coherente, que es lo que hace
 creíble una demostración.
 
+### Si tu base va por detrás de las migraciones
+
+El sembrador es tolerante: si una tabla no existe todavía (porque tu proyecto no
+tiene aplicada la migración que la crea), la **omite y sigue**, y te avisa con un
+`WARNING` nombrando la tabla que faltó. Carga todo lo demás igual.
+
+Eso es una pista, no un adorno: significa que hay migraciones pendientes, y que
+esa parte de la app tampoco funciona hasta aplicarlas. Por ejemplo, si ves
+`guest_survey no existe (falta la migración 0067)`, las encuestas no se sembraron
+**y** la pantalla de «La voz del cliente» no funciona en la app. Para ponerlo al
+día, aplica los archivos de `supabase/migrations/` posteriores al último que
+tengas, en orden, pegándolos en el editor SQL. Luego vuelve a correr el
+sembrador y esta vez sí carga esa parte.
+
 > Igual que el resto de SQL de esta guía, el sembrador **se ejecuta en CI** —dos
 > veces, para comprobar que de verdad es idempotente— contra un Postgres con
 > todas las migraciones. Si una migración cambia una tabla que llena, el CI se

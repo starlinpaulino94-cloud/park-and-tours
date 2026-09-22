@@ -60,6 +60,7 @@ create or replace function pg_temp.org() returns uuid
 do $$
 declare
   t text;
+  faltan text[] := '{}';
   orden text[] := array[
     'audit_log','system_incident','job_run','integration','notification','message',
     'message_template','approval_request','task','document_ack','document','attraction_log',
@@ -81,8 +82,18 @@ declare
   ];
 begin
   foreach t in array orden loop
-    execute format('delete from %I where organization_id = pg_temp.org()', t);
+    -- Una base por detrás de las migraciones no tiene todas las tablas. En vez
+    -- de reventar con «relation ... does not exist», se salta la que falte y se
+    -- reporta al final: es la señal de que hay migraciones pendientes.
+    if to_regclass('public.' || t) is not null then
+      execute format('delete from %I where organization_id = pg_temp.org()', t);
+    else
+      faltan := array_append(faltan, t);
+    end if;
   end loop;
+  if array_length(faltan, 1) > 0 then
+    raise warning 'Tu base va por detrás de las migraciones. Estas tablas no existen y se OMITEN: %. Aplica las migraciones pendientes para que la demo (y la app) las tengan.', array_to_string(faltan, ', ');
+  end if;
 end $$;
 
 -- ── CIMIENTOS ─────────────────────────────────────────────────────────────
@@ -590,28 +601,38 @@ insert into guest_case (id, organization_id, code, case_type, status, priority, 
   (pg_temp.d('case:1'), pg_temp.org(), 'CASO-0001', 'complaint', 'resolved', 'medium', 'whatsapp', now() - interval '5 days', 'Retraso en la recogida', pg_temp.d('cust:3'), pg_temp.d('book:3')),
   (pg_temp.d('case:2'), pg_temp.org(), 'CASO-0002', 'compliment', 'closed', 'low', 'email', now() - interval '9 days', 'Felicitación al guía Carlos', pg_temp.d('cust:5'), pg_temp.d('book:5'));
 
--- Encuestas: respondidas para salidas pasadas (con NPS y notas), pendientes para las próximas.
-insert into guest_survey (id, organization_id, booking_id, departure_id, product_id, customer_id,
-    guide_staff_id, token, status, asked_at, answered_at, nps, rating_guide, rating_transport,
-    rating_value, comment, language)
-select pg_temp.d('surv:' || v.n), pg_temp.org(), pg_temp.d('book:' || v.n), pg_temp.d('dep:' || v.n),
-    pg_temp.d('product:' || v.prod), pg_temp.d('cust:' || v.cust), pg_temp.d('staff:1'),
-    'TOK-' || lpad(v.n::text, 6, '0'),
-    'answered', (v.travel_date + 1)::timestamptz, (v.travel_date + 1)::timestamptz,
-    (array[10,9,8,10,7,9,10,6,9,8])[1 + (v.n % 10)],
-    (array[5,5,4,5,4,5,5,3,4,5])[1 + (v.n % 10)],
-    (array[5,4,4,5,3,5,4,3,5,4])[1 + (v.n % 10)],
-    (array[5,4,5,5,4,4,5,3,4,5])[1 + (v.n % 10)],
-    (array['¡Excelente día!','Muy recomendable','El guía fue genial','Repetiremos','Todo perfecto'])[1 + (v.n % 5)],
-    'es'
-from v where v.travel_date < current_date and v.n % 2 = 0;
+do $$
+begin
+  -- guest_survey es de la migración 0067; si la base va por detrás no existe,
+  -- y el SQL estático dentro de un IF no tomado ni se planifica, así que no
+  -- rompe el sembrado. Lo demás se carga igual.
+  if to_regclass('public.guest_survey') is not null then
+  -- Encuestas: respondidas para salidas pasadas (con NPS y notas), pendientes para las próximas.
+  insert into guest_survey (id, organization_id, booking_id, departure_id, product_id, customer_id,
+      guide_staff_id, token, status, asked_at, answered_at, nps, rating_guide, rating_transport,
+      rating_value, comment, language)
+  select pg_temp.d('surv:' || v.n), pg_temp.org(), pg_temp.d('book:' || v.n), pg_temp.d('dep:' || v.n),
+      pg_temp.d('product:' || v.prod), pg_temp.d('cust:' || v.cust), pg_temp.d('staff:1'),
+      'TOK-' || lpad(v.n::text, 6, '0'),
+      'answered', (v.travel_date + 1)::timestamptz, (v.travel_date + 1)::timestamptz,
+      (array[10,9,8,10,7,9,10,6,9,8])[1 + (v.n % 10)],
+      (array[5,5,4,5,4,5,5,3,4,5])[1 + (v.n % 10)],
+      (array[5,4,4,5,3,5,4,3,5,4])[1 + (v.n % 10)],
+      (array[5,4,5,5,4,4,5,3,4,5])[1 + (v.n % 10)],
+      (array['¡Excelente día!','Muy recomendable','El guía fue genial','Repetiremos','Todo perfecto'])[1 + (v.n % 5)],
+      'es'
+  from v where v.travel_date < current_date and v.n % 2 = 0;
 
-insert into guest_survey (id, organization_id, booking_id, departure_id, product_id, customer_id,
-    token, status, asked_at, expires_at, language)
-select pg_temp.d('survp:' || v.n), pg_temp.org(), pg_temp.d('book:' || v.n), pg_temp.d('dep:' || v.n),
-    pg_temp.d('product:' || v.prod), pg_temp.d('cust:' || v.cust),
-    'TOKP-' || lpad(v.n::text, 6, '0'), 'pending', now(), now() + interval '7 days', 'es'
-from v where v.travel_date >= current_date and v.n % 3 = 0;
+  insert into guest_survey (id, organization_id, booking_id, departure_id, product_id, customer_id,
+      token, status, asked_at, expires_at, language)
+  select pg_temp.d('survp:' || v.n), pg_temp.org(), pg_temp.d('book:' || v.n), pg_temp.d('dep:' || v.n),
+      pg_temp.d('product:' || v.prod), pg_temp.d('cust:' || v.cust),
+      'TOKP-' || lpad(v.n::text, 6, '0'), 'pending', now(), now() + interval '7 days', 'es'
+  from v where v.travel_date >= current_date and v.n % 3 = 0;
+  else
+    raise warning 'guest_survey no existe (falta la migración 0067): se omiten las encuestas.';
+  end if;
+end $$;
 
 insert into audit_log (organization_id, action, entity_type, description, occurred_at)
 select pg_temp.org(),
@@ -624,25 +645,36 @@ from generate_series(1, 20) as n;
 drop table if exists v;
 
 -- ── RECUENTO ─────────────────────────────────────────────────────────────
+-- Cuenta tolerante: 0 si la tabla no existe (base por detrás de migraciones),
+-- en vez de romper el recuento con «relation ... does not exist».
+create or replace function pg_temp.cnt(tbl text) returns bigint
+  language plpgsql stable as $fn$
+declare n bigint;
+begin
+  if to_regclass('public.' || tbl) is null then return 0; end if;
+  execute format('select count(*) from %I where organization_id = pg_temp.org()', tbl) into n;
+  return n;
+end $fn$;
+
 -- Lo que quedó cargado, por módulo. Es lo que se ve en pantalla al entrar.
 select modulo, filas from (values
-  ('catálogo (productos)',   (select count(*) from product          where organization_id = pg_temp.org())),
-  ('modalidades',            (select count(*) from product_modality where organization_id = pg_temp.org())),
-  ('clientes',               (select count(*) from customer         where organization_id = pg_temp.org())),
-  ('proveedores',            (select count(*) from supplier          where organization_id = pg_temp.org())),
-  ('vendedores',             (select count(*) from seller            where organization_id = pg_temp.org())),
-  ('salidas',                (select count(*) from departure         where organization_id = pg_temp.org())),
-  ('reservas',               (select count(*) from booking           where organization_id = pg_temp.org())),
-  ('pagos',                  (select count(*) from payment           where organization_id = pg_temp.org())),
-  ('facturas (NCF)',         (select count(*) from invoice           where organization_id = pg_temp.org())),
-  ('cuentas por cobrar',     (select count(*) from receivable        where organization_id = pg_temp.org())),
-  ('comisiones',             (select count(*) from commission        where organization_id = pg_temp.org())),
-  ('costes de proveedor',    (select count(*) from booking_cost      where organization_id = pg_temp.org())),
-  ('gastos (606)',           (select count(*) from expense           where organization_id = pg_temp.org())),
-  ('leads',                  (select count(*) from lead              where organization_id = pg_temp.org())),
-  ('cotizaciones',           (select count(*) from quote             where organization_id = pg_temp.org())),
-  ('encuestas',              (select count(*) from guest_survey      where organization_id = pg_temp.org())),
-  ('tareas',                 (select count(*) from task              where organization_id = pg_temp.org())),
-  ('artículos de almacén',   (select count(*) from inventory_item    where organization_id = pg_temp.org()))
+  ('catálogo (productos)',   pg_temp.cnt('product')),
+  ('modalidades',            pg_temp.cnt('product_modality')),
+  ('clientes',               pg_temp.cnt('customer')),
+  ('proveedores',            pg_temp.cnt('supplier')),
+  ('vendedores',             pg_temp.cnt('seller')),
+  ('salidas',                pg_temp.cnt('departure')),
+  ('reservas',               pg_temp.cnt('booking')),
+  ('pagos',                  pg_temp.cnt('payment')),
+  ('facturas (NCF)',         pg_temp.cnt('invoice')),
+  ('cuentas por cobrar',     pg_temp.cnt('receivable')),
+  ('comisiones',             pg_temp.cnt('commission')),
+  ('costes de proveedor',    pg_temp.cnt('booking_cost')),
+  ('gastos (606)',           pg_temp.cnt('expense')),
+  ('leads',                  pg_temp.cnt('lead')),
+  ('cotizaciones',           pg_temp.cnt('quote')),
+  ('encuestas',              pg_temp.cnt('guest_survey')),
+  ('tareas',                 pg_temp.cnt('task')),
+  ('artículos de almacén',   pg_temp.cnt('inventory_item'))
 ) as t(modulo, filas)
 order by modulo;

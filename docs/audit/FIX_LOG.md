@@ -729,3 +729,19 @@ daba error: los tres producían números equivocados en silencio.
   `booking.branch_id` referencian `organizations` (una sucursal es un nodo org),
   mientras que `departure.branch_id` y `shift.branch_id` referencian `branch`.
   No es un error, pero es una inconsistencia que costó una iteración descubrir.
+
+### AUD-M17b — El sembrador reventaba si la base iba por detrás de las migraciones
+- **Cómo apareció:** al pegar el sembrador en un proyecto real:
+  `ERROR: relation "guest_survey" does not exist`. Esa tabla es de la 0067; el
+  proyecto no la tenía aplicada. El CI no lo vio porque aplica todas.
+- **Solución:** el sembrador se volvió tolerante a un esquema por detrás. El
+  borrado salta las tablas ausentes y las reporta; las inserciones de
+  `guest_survey` van dentro de un `IF to_regclass(...) IS NOT NULL` —el SQL
+  estático de una rama no tomada no se planifica, así que una tabla ausente no
+  rompe el sembrado—; y el recuento cuenta con una función que devuelve 0 si la
+  tabla falta. En vez de reventar a mitad, avisa qué falta y carga el resto.
+- **Se probó en los dos escenarios:** esquema completo (siembra las 25 encuestas,
+  sin avisos) y esquema sin `guest_survey` (dos avisos, carga las 60 reservas y
+  36 facturas igual, encuestas=0).
+- **Nota para el usuario:** el aviso es la señal de que hay migraciones
+  pendientes, que la app también necesita. Queda escrito en la guía.
