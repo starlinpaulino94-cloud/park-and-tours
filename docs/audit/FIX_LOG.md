@@ -984,3 +984,34 @@ daba error: los tres producían números equivocados en silencio.
   como entrado, que una devolución sume, ocupación cero en vez de «sin cupo»,
   declarar cuadre sin ninguna caja cerrada, quitar el encabezado impreso de una
   pantalla, quitar su botón de imprimir, y escribir un encabezado propio.
+
+### AUD-M25 — La 0068, partida para el editor de Supabase
+- **Por qué hace falta una copia:** el editor SQL de Supabase no es psql. Trunca
+  los pegados largos, añade por su cuenta un `enable row level security` al ver
+  un `create table` —y si eso cae dentro de un bloque `$$`, revienta con
+  «unterminated dollar-quoted string»—, y ante una comprobación que no falla
+  deja «Success. No rows returned», que no distingue «funcionó» de «no se
+  comprobó nada».
+- **Cómo queda partida:** parte 1 la tabla, la RLS, las políticas y el trigger
+  (sin un solo `$$`, para que la inyección del editor no tenga dónde caer);
+  parte 2 la función, con etiqueta `$hook$` en vez de `$$`; parte 3 una
+  verificación que **devuelve ocho filas legibles** en vez de un bloque mudo.
+  Ninguna pasa de 8 KB.
+- **Probado de verdad, no supuesto:** se levanta un Postgres 16 efímero, se
+  aplican todas las migraciones SALVO la 0068, se corren las tres partes por
+  separado —como las corre una persona— y después las pruebas de
+  comportamiento que ya existían (`active_workspace.test.sql`,
+  `auth_hook.test.sql`). Pasan las dos.
+- **Y la verificación se probó al revés:** con la parte 2 sin aplicar, la fila 7
+  dice «FALTA — sigue la versión vieja». Es la fila que importa: las 5, 6 y 8
+  siguen diciendo OK porque el enganche de 0063 ya las cumplía, así que sin esa
+  fila la tabla daría el visto bueno a una base donde la 0068 no está.
+- **La guarda:** una copia es una copia, y el día que alguien toque la migración
+  la copia pasa a ser una instrucción equivocada que alguien pegará en su base
+  de producción creyendo que es la buena. `editor-sql.test.ts` compara el cuerpo
+  de la función carácter a carácter (salvo la etiqueta del dólar), y además
+  rechaza órdenes de psql, tablas temporales, archivos de más de 8 KB y mezclar
+  un `create table` con un bloque `$$`.
+- **Mutación:** tres, las tres muertas — cambiar la copia sin tocar la
+  migración, juntar el `create table` con el bloque de la función, y volver la
+  verificación muda.
