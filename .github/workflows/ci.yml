@@ -32,29 +32,84 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      - name: Build
-        run: npm run build
-        env:
-          # Build-time only; runtime secrets are injected by the hosting platform.
-          NEXT_TELEMETRY_DISABLED: "1"
-          DISABLE_OPENNEXT: "true"
-          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-          NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
-
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
-      - name: E2E — Mi día responsive
+      # ══════════════════════════════════════════════════════════════════════
+      # EL E2E CORRE CONTRA SU PROPIA BASE, NO CONTRA LA DE VERDAD (CI-001)
+      #
+      # Hasta aquí, este paso recibía la URL y la LLAVE DE SERVICIO del proyecto
+      # de producción. Cada pull request creaba y mantenía la empresa
+      # `e2e-tenant` en la base real y reescribía la contraseña de la cuenta de
+      # pruebas. Eso ya causó un incidente: una cuenta que una persona usaba
+      # dejó de dejarle entrar, en silencio, porque alguien abrió un PR.
+      #
+      # Acotarlo con cuidado no arregla la categoría del problema. Mientras el
+      # CI tenga una llave de servicio sobre la operación de verdad, cualquier
+      # fallo escribe en los datos del negocio, y de ahí no se vuelve con un
+      # `git revert`. La única forma de que no pueda pasar es que el CI no tenga
+      # con qué.
+      #
+      # Ahora cada corrida levanta su propia pila, aplica las migraciones desde
+      # cero y se la lleva la basura al terminar. De regalo, el E2E prueba
+      # TAMBIÉN que las migraciones levantan un sistema utilizable desde cero,
+      # que antes no lo comprobaba nadie.
+      # ══════════════════════════════════════════════════════════════════════
+      - name: Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Levantar Supabase local (migraciones desde cero)
+        run: supabase start
+
+      # Las llaves las genera la CLI al arrancar. NO son secretos: solo abren
+      # unos contenedores que viven lo que dura este job. Se leen aquí en vez de
+      # copiarlas a mano para que no haya que tocar este fichero cuando la CLI
+      # cambie de llaves.
+      # `-o env` emite `CLAVE="valor"`. En $GITHUB_ENV las comillas viajarían
+      # DENTRO del valor, así que la URL acabaría siendo `"http://…"` con
+      # comillas y nada conectaría. Se quitan aquí.
+      - name: Tomar las llaves de la pila local
+        run: supabase status -o env | tr -d '"' >> "$GITHUB_ENV"
+
+      # EL BUILD VA AQUÍ, Y NO ANTES, POR UNA RAZÓN QUE NO SE VE.
+      #
+      # Las variables `NEXT_PUBLIC_*` no se leen en tiempo de ejecución: Next las
+      # INCRUSTA en el paquete del navegador al compilar. Compilando antes con la
+      # URL de producción, el navegador del E2E habría iniciado sesión contra
+      # producción por mucho que el servidor tuviera la local en su entorno —el
+      # cambio entero no habría servido de nada, y en silencio.
+      #
+      # Compilando aquí, lo que el navegador lleva dentro es la pila local.
+      - name: Build (con la pila local incrustada)
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          DISABLE_OPENNEXT: "true"
+          NEXT_PUBLIC_SUPABASE_URL: ${{ env.API_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ env.ANON_KEY }}
+          NEXT_PUBLIC_APP_URL: http://localhost:3100
+
+      - name: E2E contra la pila local
         run: npm run test:e2e
         env:
-          E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
-          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
-          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SUPABASE_USE_RLS: ${{ secrets.SUPABASE_USE_RLS }}
-          NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+          # Una cuenta inventada, en una base que se destruye en unos minutos.
+          # No hay secreto que filtrar ni cuenta de nadie que pisar.
+          E2E_EMAIL: e2e@e2e.invalid
+          E2E_PASSWORD: e2e-local-only-password
+          NEXT_PUBLIC_SUPABASE_URL: ${{ env.API_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ env.ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ env.SERVICE_ROLE_KEY }}
+          # En true a propósito: el E2E tiene que ejercitar las MISMAS políticas
+          # que corren en producción. Con la RLS apagada, el CI daría por buenas
+          # consultas que allí devuelven vacío.
+          SUPABASE_USE_RLS: "true"
+          NEXT_PUBLIC_APP_URL: http://localhost:3100
+
+      - name: Apagar Supabase local
+        if: always()
+        run: supabase stop --no-backup
 
       # QUÉ HABÍA EN LA PANTALLA CUANDO FALLÓ.
       #

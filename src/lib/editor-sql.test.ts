@@ -51,12 +51,28 @@ describe("las copias para el editor de Supabase", () => {
       : [];
     expect(partes.length, "no hay copias para el editor").toBeGreaterThan(0);
 
-    // Cada copia se llama 00NN_… y tiene que corresponder a una migración real.
+    /**
+     * Aquí viven dos cosas distintas, y la regla no es la misma para las dos:
+     *
+     *  · Las COPIAS de una migración (`00NN_…`), que tienen que decir
+     *    exactamente lo mismo que ella.
+     *  · Los scripts de MANTENIMIENTO (`limpieza_…`), que no copian nada: hacen
+     *    un trabajo puntual contra una base que ya existe.
+     *
+     * Exigirle una migración detrás a un script de limpieza sería pedirle que
+     * sea lo que no es. Lo que SÍ comparten —y se comprueba abajo para todos—
+     * es tener que pasar por el editor de Supabase sin romperse.
+     */
+    const copias = partes.filter((f) => /^\d{4}_/.test(f));
+    const mantenimiento = partes.filter((f) => !/^\d{4}_/.test(f));
+
+    const sinNombreClaro = mantenimiento.filter((f) => !/^[a-z][a-z0-9_]*\.sql$/.test(f));
+    expect(sinNombreClaro, "scripts con nombres que no dicen qué hacen").toEqual([]);
+
     const huerfanas: string[] = [];
     const numeros = new Set<string>();
-    for (const parte of partes) {
-      const n = /^(\d{4})_/.exec(parte)?.[1];
-      if (!n) { huerfanas.push(`${parte}: el nombre no empieza por el número de migración`); continue; }
+    for (const parte of copias) {
+      const n = /^(\d{4})_/.exec(parte)![1];
       numeros.add(n);
       const migracion = readdirSync(MIGRACIONES).find((f) => f.startsWith(`${n}_`));
       if (!migracion) huerfanas.push(`${parte}: no existe la migración ${n}`);
@@ -123,7 +139,12 @@ describe("las copias para el editor de Supabase", () => {
       const sql = sinComentarios(readFileSync(`${EDITOR}/${v}`, "utf8"));
       expect(sql, `${v}: la verificación tiene que ser un select`).toMatch(/^\s*(with|select)\b/mi);
       expect(sql, `${v}: sin bloques do $$, que no enseñan nada en el editor`).not.toMatch(/\bdo\s+\$/i);
-      expect(sql, `${v}: cada fila tiene que decir si falta algo`).toMatch(/FALTA/);
+      // Tiene que poder decir que algo va MAL, con la palabra que toque según
+      // lo que verifique: una migración que no se aplicó «FALTA»; una empresa
+      // que debía irse «SIGUE AHÍ». Una verificación cuyas filas solo saben
+      // decir OK no es una verificación.
+      expect(sql, `${v}: ninguna fila sabe decir que algo va mal`)
+        .toMatch(/FALTA|SIGUE AHÍ|HAY |NO se|no deberia/);
     }
   });
 });

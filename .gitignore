@@ -90,3 +90,7 @@ screenshots/
 
 # ETL backups — customer data, never commit
 scripts/migrate/backup/
+
+# Residuos de la CLI de Supabase (no son del proyecto).
+supabase/.temp/
+supabase/.branches/

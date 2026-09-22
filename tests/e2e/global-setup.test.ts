@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fakeDb, type FakeDb } from "@/test/fake-tenant";
 import { fakeSupabase } from "@/test/fake-supabase";
+import { clasificarDestino, mensajeDestinoProhibido } from "./global-setup";
 
 /**
  * EL ARRANQUE DEL E2E NO SE APROPIA DE LA CUENTA DE NADIE.
@@ -70,7 +71,10 @@ beforeEach(() => {
   db = proyecto();
   creados.length = 0;
   claves.length = 0;
-  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://proyecto.supabase.co";
+  // Una pila local: el arranque se niega a escribir en un proyecto remoto, y
+  // esa negativa salta ANTES que la comprobación de la cuenta —a propósito—,
+  // así que con una URL remota estas pruebas no llegarían a lo que miden.
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "http://127.0.0.1:54321";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "no-se-mira";
   process.env.E2E_EMAIL = "demopresentaciones@havelgo.com";
   process.env.E2E_PASSWORD = "clave-del-e2e";
@@ -158,5 +162,73 @@ describe("la cuenta del E2E", () => {
     expect(claves).toEqual([]);
     expect(creados).toEqual([]);
     expect(membresias()).toEqual([]);
+  });
+});
+
+describe("el destino del arranque tiene que ser desechable", () => {
+  it("una pila local se reconoce", () => {
+    for (const url of [
+      "http://127.0.0.1:54321", "http://localhost:54321",
+      "http://host.docker.internal:54321", "http://kong:8000",
+    ]) {
+      expect(clasificarDestino(url), url).toBe("desechable");
+    }
+  });
+
+  it("un proyecto remoto se RECHAZA por defecto", () => {
+    /**
+     * Denegar por defecto. Durante meses esto escribió en el proyecto de
+     * producción en cada pull request, y nada lo impedía porque nada lo
+     * preguntaba.
+     */
+    expect(clasificarDestino("https://abcdefgh.supabase.co")).toBe("remoto_prohibido");
+    expect(clasificarDestino("https://abcdefgh.supabase.co", "false")).toBe("remoto_prohibido");
+    expect(clasificarDestino("https://abcdefgh.supabase.co", "1")).toBe("remoto_prohibido");
+    expect(clasificarDestino("https://abcdefgh.supabase.co", "yes")).toBe("remoto_prohibido");
+  });
+
+  it("solo una persona escribiendo E2E_ALLOW_REMOTE=true lo abre", () => {
+    expect(clasificarDestino("https://abcdefgh.supabase.co", "true")).toBe("remoto_permitido");
+    expect(clasificarDestino("https://abcdefgh.supabase.co", "TRUE")).toBe("remoto_permitido");
+  });
+
+  it("una URL ilegible tampoco pasa", () => {
+    // Si no se sabe a dónde apunta, no se escribe.
+    for (const url of [undefined, "", "no-es-una-url", "supabase.co"]) {
+      expect(clasificarDestino(url as string | undefined), String(url)).toBe("ilegible");
+    }
+  });
+
+  it("el mensaje dice qué pasa, por qué y cuál es la salida", () => {
+    const texto = mensajeDestinoProhibido("https://abcdefgh.supabase.co", "remoto_prohibido");
+    expect(texto).toContain("abcdefgh.supabase.co");
+    expect(texto).toContain("REESCRIBE contraseñas");
+    expect(texto).toContain("supabase start");
+    expect(texto).toContain("E2E_ALLOW_REMOTE=true");
+  });
+});
+
+describe("contra un proyecto remoto no se escribe NI UNA fila", () => {
+  it("se niega antes de tocar nada", async () => {
+    /**
+     * No basta con que falle: tiene que fallar ANTES de escribir.
+     *
+     * Es la misma lección que la comprobación de la cuenta. Un arranque que
+     * crea la empresa, crea el usuario y LUEGO se da cuenta de que la base era
+     * la de producción ya ha escrito en la base de producción. La comprobación
+     * después del daño no es una comprobación.
+     */
+    process.env.NEXT_PUBLIC_SUPABASE_URL = "https://proyecto.supabase.co";
+    delete process.env.E2E_ALLOW_REMOTE;
+
+    await expect(globalSetup()).rejects.toThrow(/proyecto remoto/i);
+
+    expect(claves, "ni una contraseña reescrita").toEqual([]);
+    expect(creados, "ni un usuario creado").toEqual([]);
+    expect(membresias(), "ni una membresía").toEqual([]);
+    expect(
+      db.rows("organizations").filter((o) => o._id !== E2E_ORG),
+      "ni una empresa creada",
+    ).toEqual([]);
   });
 });
