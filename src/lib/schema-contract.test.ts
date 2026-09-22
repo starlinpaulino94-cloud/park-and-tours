@@ -9,6 +9,7 @@ import path from "node:path";
 import { DEFAULT_FIELD_ALIASES, TABLE_FIELD_ALIASES } from "@/lib/supabase/query-translator";
 import { IMPORT_TARGETS } from "@/lib/import";
 import { RESOURCES } from "@/lib/resources";
+import { REPORTES } from "@/lib/reportes";
 import {
   RELATION_RESOURCE, TABLE_RELATION_RESOURCE, USER_REF_FIELDS, childForeignKey,
 } from "@/lib/supabase/expand";
@@ -977,5 +978,75 @@ describe("el sembrador de demostración escribe columnas que existen", () => {
   it("una coma dentro de un texto no parte la fila", () => {
     const keys = payloadsOf(`insert("customer", { first_name: "Ana, la de recepción", last_name: "Pérez" });`);
     expect(keys[0].keys).toEqual(["first_name", "last_name"]);
+  });
+});
+
+describe("los reportes del registro piden columnas que existen", () => {
+  /** La tabla real del recurso: `order` vive en `sales_order`. */
+  const tablaDe = (recurso: string) => {
+    const declarada = RESOURCES[recurso]?.table;
+    return TABLE_MAP[declarada ?? recurso] ?? declarada ?? recurso;
+  };
+
+  it("cada campo de fecha es una columna real de su tabla", () => {
+    /**
+     * `campoFecha` mal escrito no falla al compilar: falla cuando alguien abre
+     * el reporte y PostgREST rechaza el filtro entero. O peor, si el nombre
+     * existiera en otra tabla, acotaría por lo que no es.
+     */
+    const rotos: string[] = [];
+    for (const r of REPORTES) {
+      if (!RESOURCES[r.recurso]) continue; // lo cubre la guarda del propio registro
+      const tabla = tablaDe(r.recurso);
+      const columnas = SCHEMA.get(tabla);
+      if (!columnas) { rotos.push(`${r.slug}: tabla ${tabla} desconocida`); continue; }
+      if (!columnas.has(r.campoFecha)) rotos.push(`${r.slug}: ${tabla}.${r.campoFecha}`);
+    }
+    expect(rotos, "reportes que acotan por una columna que no existe").toEqual([]);
+  });
+
+  it("cada columna que se imprime existe en la tabla", () => {
+    /**
+     * Una columna inventada no revienta: sale vacía. El reporte se imprime con
+     * una raya en todas las filas y nadie sabe si es que no hay dato o que la
+     * columna está mal — y una hoja firmada con una columna muerta es peor que
+     * no tenerla.
+     *
+     * Las columnas con `desde` son relaciones: la columna real es la clave
+     * ajena (`customer` → `customer_id`), con los mismos alias que usa el
+     * traductor.
+     */
+    const rotas: string[] = [];
+    for (const r of REPORTES) {
+      if (!RESOURCES[r.recurso]) continue;
+      const tabla = tablaDe(r.recurso);
+      const columnas = SCHEMA.get(tabla);
+      if (!columnas) continue;
+      for (const c of r.columnas) {
+        const real = c.desde
+          ? (TABLE_FIELD_ALIASES[tabla]?.[c.clave] ?? DEFAULT_FIELD_ALIASES[c.clave] ?? `${c.clave}_id`)
+          : c.clave;
+        if (!columnas.has(real)) rotas.push(`${r.slug}: ${tabla}.${real} (columna "${c.titulo}")`);
+      }
+    }
+    expect(rotas, "columnas de reporte que no existen en la tabla").toEqual([]);
+  });
+
+  it("toda columna de relación la trae expandida su recurso", () => {
+    // Sin el expand, la relación llega como id y la celda imprimiría el UUID.
+    const sinExpandir: string[] = [];
+    for (const r of REPORTES) {
+      const def = RESOURCES[r.recurso];
+      if (!def) continue;
+      for (const c of r.columnas) {
+        if (!c.desde) continue;
+        const expand = (def.expand ?? {}) as Record<string, unknown>;
+        const expandOne = ((def as { expandOne?: Record<string, unknown> }).expandOne ?? {});
+        if (!(c.clave in expand) && !(c.clave in expandOne)) {
+          sinExpandir.push(`${r.slug}: ${r.recurso}.${c.clave}`);
+        }
+      }
+    }
+    expect(sinExpandir, "relaciones que el recurso no expande (saldría el id)").toEqual([]);
   });
 });

@@ -153,6 +153,7 @@ export const COMPANY_EXPORT_AREAS: CompanyExportArea[] = [
       gift_card: "gift-cards",
       gift_card_movement: "gift-cards-movimientos",
       guest_case: "casos-de-huesped",
+      guest_survey: "encuestas",
       message: "mensajes",
       message_template: "plantillas-de-mensaje",
     },

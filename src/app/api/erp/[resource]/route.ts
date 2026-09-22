@@ -5,6 +5,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { assertModule, assertWithinLimit } from "@/lib/plan-service";
+import { writeAudit } from "@/lib/audit";
 import { notificationForCreate } from "@/lib/notify";
 import { notify } from "@/lib/notify-service";
 import { buildListFilter, buildListSort } from "@/lib/erp-query";
@@ -135,6 +136,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ res
         vars: aviso.vars,
       });
     }
+
+    /**
+     * La creación por pantalla genérica TAMBIÉN queda en la bitácora.
+     *
+     * El borrado se anotaba desde el principio y la edición no; crear tampoco.
+     * O sea que la mayor parte de lo que se registra a diario —un cliente, un
+     * proveedor, un activo, un gasto— no dejaba rastro de quién lo hizo. Un
+     * registro de auditoría con huecos no sirve para lo que existe: reconstruir
+     * qué pasó. Se anotan los campos enviados, no sus valores, para no duplicar
+     * datos personales en una tabla que nadie puede borrar.
+     */
+    await writeAudit({
+      companyId: ctx.companyId,
+      userId: ctx.userId,
+      action: "record_created",
+      entityType: def.table,
+      entityId: (created as Record<string, unknown>)?._id as string | undefined,
+      description: `${ctx.email} creó un registro en ${def.table}`,
+      metadata: { campos: Object.keys(payload) },
+    });
 
     console.log(`[api] ${ctx.email} creó ${def.table}`);
     return ok(created);

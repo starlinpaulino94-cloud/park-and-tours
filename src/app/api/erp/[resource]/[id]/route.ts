@@ -89,6 +89,25 @@ export async function PUT(req: NextRequest, { params }: Params) {
     await assertPayloadAssignable(ctx.companyId, def.table, payload);
 
     const updated = await tenantUpdate(ctx.companyId, def.table, id, payload);
+
+    /**
+     * La edición, anotada con QUÉ campos cambiaron.
+     *
+     * Sin esto, entre un registro creado y el mismo registro borrado no había
+     * forma de saber que alguien le cambió el precio, el estado o el titular.
+     * Se guardan los nombres de los campos, no los valores: basta para
+     * reconstruir la secuencia sin copiar datos del cliente a una tabla
+     * inmutable.
+     */
+    await writeAudit({
+      companyId: ctx.companyId,
+      userId: ctx.userId,
+      action: "record_updated",
+      entityType: def.table,
+      entityId: id,
+      description: `${ctx.email} editó un registro de ${def.table}`,
+      metadata: { campos: Object.keys(payload) },
+    });
     console.log(`[api] ${ctx.email} actualizó ${def.table}/${id}`);
     return ok(updated);
   } catch (err) {

@@ -689,6 +689,23 @@ export const RESOURCES: Record<string, ResourceDef> = {
     writeRole: "operations",
     module: "operations",
   },
+  /**
+   * Las encuestas se responden desde una página pública y se leen desde «La voz
+   * del cliente». Se registran aquí SOLO PARA LEER, que es lo que permite
+   * listarlas, acotarlas por período, imprimirlas y exportarlas como cualquier
+   * otro reporte. `writable: []` es la garantía de que una nota no se puede
+   * editar desde el CRUD genérico: una opinión corregida a mano deja de ser una
+   * opinión.
+   */
+  guest_survey: {
+    table: "guest_survey",
+    search: ["comment"],
+    expand: { product: true, customer: true, guide_staff: true },
+    sort: { answeredAt: "desc" },
+    writable: [],
+    writeRole: "manager",
+  },
+
   audit_log: {
     table: "audit_log",
     search: ["action", "description", "entity_type"],
@@ -1444,6 +1461,8 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
   // `/api/erp/integration` y ver la configuración de cada conector. El menú no
   // es la barrera; esta tabla sí.
   audit_log: "admin", integration: "admin", ncf_sequence: "admin",
+  // La opinión de un huésped es dato comercial sensible: no es para el mostrador.
+  guest_survey: "manager",
   accounting_period: "manager",
   // La nómina es el dato más sensible que guarda una empresa pequeña: lo que
   // cobra cada compañero. Sin esto, cualquier usuario del inquilino podía

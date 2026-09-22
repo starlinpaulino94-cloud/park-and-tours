@@ -3,6 +3,7 @@ import { requireTenantWrite, requireAtLeast } from "@/lib/tenant";
 import { changeAssetStatus, type AssetStatus } from "@/lib/asset-impact";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { assertSameOriginMutation } from "@/lib/csrf";
+import { writeAudit } from "@/lib/audit";
 
 /**
  * POST /api/assets/:id/status — changes an asset's operational status and
@@ -32,6 +33,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (!body.dryRun) {
       console.log(`[api] ${ctx.email} cambió el activo ${id} a ${body.status}`);
     }
+    await writeAudit({
+      companyId: ctx.companyId, userId: ctx.userId,
+      action: "asset_status_changed", entityType: "asset", entityId: id,
+      description: `${ctx.email} cambió el estado de un activo a ${body.status}`,
+      severity: "warning",
+      metadata: { estado: body.status },
+    });
     return ok(impact);
   } catch (err) {
     return fail(err);

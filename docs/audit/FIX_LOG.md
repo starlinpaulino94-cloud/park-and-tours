@@ -802,3 +802,216 @@ daba error: los tres producían números equivocados en silencio.
   migraciones (idempotente), y los 13 trozos planos regenerados corren en orden
   en CI. Auditoría final: 83 de 85 tablas de `SEED_TABLES` con datos; las 2
   restantes son las append-only, por diseño.
+
+### AUD-M20 — Casi todo lo que se registra a diario no dejaba rastro (P1) — CERRADA
+- **Cómo apareció:** «ninguna acción que se realice dentro del sistema debe
+  quedar sin reporte». Al medirlo: de 95 rutas que cambian datos, **27 no
+  escribían en la bitácora**, ni por sí mismas ni a través de un servicio.
+- **La raíz, y era la peor posible:** el CRUD genérico —por donde pasa la
+  mayoría de lo que se registra un día normal: clientes, proveedores, activos,
+  gastos— anotaba el **borrado** desde el principio, pero **no la creación ni la
+  edición**. O sea que la pantalla de Auditoría parecía completa y no lo era,
+  que es peor que no tenerla.
+- **Archivos:** el CRUD genérico (`erp/[resource]` POST y `[id]` PUT), y once
+  rutas más: caja, inventario, asientos contables y su reversión, plan de
+  cuentas, estado de activos y de atracciones, generación de salidas, subida de
+  archivos, y los caminos sin sesión —encuesta respondida y baja, reservas de
+  OTA (confirmar/extender/cancelar), webhooks de MembeGo y Stripe—.
+- **Dónde va la anotación:** en la ruta cuando hay sesión; **dentro del
+  servicio** cuando no la hay (encuestas, OCTO), porque es quien conoce la
+  empresa. Una encuesta la contesta alguien sin cuenta: si no se anota ahí, no
+  se anota en ningún sitio.
+- **Qué se guarda de una edición:** los NOMBRES de los campos que cambiaron, no
+  sus valores. «Alguien editó la reserva» no reconstruye nada; «cambió precio y
+  titular» sí. Y no se copian datos del cliente a una tabla que nadie puede
+  borrar.
+- **La guarda:** toda ruta mutante audita o delega en un servicio que audita.
+  Las ocho excepciones van con su motivo escrito (un cálculo de precio no es una
+  acción; marcar avisos como leídos sería ruido; la disponibilidad de la OTA es
+  una lectura con verbo POST).
+- **Mutación:** dos, dos muertas — quitar la auditoría de la creación, y dejar
+  la edición sin decir qué campos cambiaron.
+
+### AUD-M21 — Todo reporte con rango de fechas perdía su último día (P0) — CERRADA
+- **Cómo apareció:** construyendo el marco de reportes. El filtro de los
+  listados mandaba `lte: new Date("2026-09-30")`, que es la **medianoche** del
+  30: «hasta el 30» dejaba fuera el 30 entero.
+- **El alcance:** no era una pantalla. `buildListFilter` es el filtro de TODOS
+  los listados y de TODAS las exportaciones a CSV. Cada reporte con rango de
+  fechas venía perdiendo una jornada, en silencio, y el archivo se veía bien.
+  Y el corte iba en UTC: una venta de las 21:00 en Santo Domingo se contaba en
+  el día siguiente — el mismo defecto que hubo que corregir en el 606/607.
+- **Archivos:** `src/lib/report.ts` (nuevo, dominio puro), `src/lib/erp-query.ts`.
+- **Solución:** rango **semiabierto** con los cortes en la medianoche de la
+  **empresa**: `desde <= t < día siguiente al hasta`. Dos reportes consecutivos
+  se tocan sin solaparse: nada se pierde ni se cuenta dos veces.
+- **Mutación:** dos, las dos muertas — volver al corte cerrado (caen 4 pruebas)
+  y volver a cortar en UTC (caen 3).
+
+### AUD-M22 — El marco de reportes y la bitácora de actividad
+- **Qué se añade:** `ReportShell`, el marco común de todo reporte: período en la
+  URL (se comparte por enlace y el botón de atrás funciona), atajos, impresión y
+  CSV. El encabezado impreso lleva empresa, reporte y período; el pie, cuándo se
+  generó. Una hoja sin eso no se puede archivar.
+- **La bitácora** (`/dashboard/reportes/actividad`): todo lo que se hizo en un
+  período, con resumen por módulo arriba —quien firma necesita el volumen antes
+  que el detalle— y el detalle debajo. No es la pantalla de Auditoría con otro
+  nombre: aquélla sirve para BUSCAR un evento, ésta para CERRAR un período.
+- **60 acciones salían en el papel con su nombre técnico.** La guarda recorre
+  cada `writeAudit` del código y exige su texto en castellano: si mañana alguien
+  añade una acción y no la traduce, el CI lo para antes de que
+  `octo_hold_extended` acabe en un archivador.
+- **El resumen tiene desempate alfabético**, y eso es una decisión: sin él, dos
+  módulos con el mismo total bailan de sitio entre dos impresiones del MISMO
+  período, y dos copias dejan de poder compararse línea a línea.
+- **Mutación:** una más, muerta — quitar el desempate.
+
+### AUD-M23 — Veintidós reportes imprimibles por fecha, de un registro
+- **Qué pedía el negocio:** que cualquier cosa que el sistema haga se pueda
+  imprimir acotada a un período. Convertir cada pantalla operativa en reporte
+  habría sido invasivo —son pantallas con acciones, no documentos— y habría
+  dejado veinte selectores de fecha distintos.
+- **Lo que se hizo:** un **registro** (`src/lib/reportes.ts`) donde cada reporte
+  es un dato —tabla, campo de fecha, columnas, qué se suma— y **una sola
+  pantalla** (`/dashboard/reportes/[slug]`) que los pinta todos. El período, la
+  impresión, el CSV y los totales son literalmente el mismo código en los
+  veintidós, así que no pueden divergir. El índice sale del registro, no de una
+  lista a mano: añadir un reporte basta para que aparezca.
+- **Lo que NO entra en el registro:** el 606/607, la antigüedad de saldos, la
+  rentabilidad. Ésos CALCULAN, no listan, y tienen su propio servicio.
+
+- **Un documento que trae la primera página no es un documento.** El listado del
+  ERP pagina de 200 en 200. Para una pantalla está bien; para una hoja que dice
+  «Ventas de septiembre» y trae 200 de 340, no: el total del pie parece correcto
+  y está mal. La pantalla pide las páginas que hagan falta hasta juntar el
+  período, con tope duro de 2.000 filas — y al llegar al tope **lo dice en el
+  papel** y manda al CSV, en vez de imprimir un total incompleto con cara de
+  completo.
+
+- **`partially_paid` en una hoja firmada.** Las columnas de estado salían con la
+  clave cruda de la base. Una hoja que hay que traducir mentalmente no es un
+  reporte. Ahora el registro declara qué columnas son enum y `textoCelda` las
+  traduce; una que nadie haya traducido se humaniza («algo muy raro») antes que
+  imprimir el identificador. La guarda recorre el registro y exige `etiqueta` en
+  los quince campos que en este sistema siempre son enum.
+
+- **FALLO REAL, de los que no dan error:** la bitácora pedía
+  `_limit=200&_sort=occurred_at:desc`. La ruta `/api/erp/:recurso` lee `limit` y
+  `sort` —sin guion bajo—, así que los **ignoraba en silencio**: el reporte
+  salía con 50 eventos, en el orden por defecto, con toda la pinta de estar
+  completo. El guion bajo es la forma interna de `tenantQuery`, no la de la URL,
+  y confundirlas no rompe nada visible. La guarda ahora recorre las pantallas y
+  rechaza cualquier parámetro `_*` en una URL; en el servidor sigue siendo
+  correcto, porque allí se le habla directo a `tenantQuery`.
+
+- **Tres guardas ajenas saltaron al registrar `guest_survey` como recurso**, y
+  las tres tenían razón: el expand declaraba `guide_staff` sin destino (la
+  encuesta nombra al guía por su papel, no por su tabla), y las encuestas no
+  salían en «llévate tus datos» — la opinión de un huésped es suya y tiene que
+  ir en el ZIP. Se registra de **solo lectura** (`writable: []`): una valoración
+  corregida a mano deja de ser una valoración.
+
+- **Una columna inventada no revienta: sale vacía.** El reporte se imprimiría
+  con una raya en todas las filas y nadie sabría si es que no hay dato o que la
+  columna está mal. Tres guardas nuevas cruzan el registro contra el esquema
+  reconstruido de las migraciones: el campo de fecha existe, cada columna
+  existe (resolviendo los alias, `customer` → `customer_id`) y toda relación la
+  expande su recurso, para que la celda no acabe imprimiendo un UUID. La
+  primera ya atrapó algo al escribirla: `order` vive en la tabla `sales_order`.
+
+- **Mutación:** ocho, las ocho muertas — volver a `_limit` en la URL, dejar una
+  columna `status` sin `etiqueta`, que `textoCelda` deje de traducir, que un
+  vacío imprima cero en vez de raya, quitar el enlace del índice, y torcer el
+  campo de fecha, una columna y una relación del registro.
+
+### AUD-M24 — Los documentos que se firman: cierre del día, contables y fiscales
+- **Qué faltaba:** el sistema calculaba estados financieros, la declaración de
+  la DGII y la antigüedad de saldos, pero **ninguna de esas pantallas se podía
+  imprimir**. Un estado de resultados que solo existe en un navegador no es un
+  documento contable, y un 606 que solo se baja como TXT no se puede archivar:
+  el archivo de la DGII es texto plano con barras, ilegible para quien tiene
+  que cuadrarlo antes de enviarlo y para quien lo busca un año después.
+- **El cierre del día no existía en absoluto.** Se reconstruía abriendo cinco
+  pantallas y apuntando en un cuaderno, que es exactamente donde se pierde.
+
+- **Cinco copias del encabezado impreso, evitadas a tiempo.** Lo que convierte
+  una hoja en documento —empresa, título, período, pie, firmas— vive ahora en
+  `hoja-impresa.tsx`, y lo usan los cinco. Con cinco copias, a los seis meses
+  tres dicen la empresa y dos no. Dos guardas: ninguna pantalla de
+  `/dashboard/reportes` puede quedarse sin encabezado impreso ni sin forma de
+  imprimirse, y ninguna puede escribirse el suyo por su cuenta.
+
+- **EL FALLO QUE UNA GUARDA AJENA ATRAPÓ.** La primera versión del cierre
+  contaba como dinero entrado «todo cobro que no esté rechazado». La vista
+  financiera de la migración 0023 —la que alimenta el panel— cuenta solo los
+  `completed` y **resta** los de tipo `refund` y `credit_note`. Con las dos
+  reglas conviviendo, el cierre del martes y el panel del martes daban cifras
+  distintas del mismo día, y no hay forma de saber cuál creer. Se adoptó la
+  regla de la vista, y una guarda nueva **lee la migración** y falla si dejan de
+  decir lo mismo.
+
+- **El fondo de apertura no es venta del día.** Sin restarlo del contado, TODA
+  caja que abra con dinero parece tener un sobrante exactamente igual a su
+  fondo. Un aviso que sale todos los días se aprende a ignorar, y el día que el
+  descuadre es real nadie lo mira.
+
+- **«Sin cupo» no es «0 % de ocupación»**, y «nadie contó la caja» no es «la
+  caja cuadra». Las dos son afirmaciones que el documento no puede hacer, y las
+  dos están probadas. El cierre dice explícitamente *Sin contar* y *ninguna caja
+  se cerró: nadie contó* — que es peor que un descuadre, porque un descuadre al
+  menos se ve.
+
+- **El período de lo contable son MESES, y se dice.** El libro mayor se cierra
+  por períodos `AAAA-MM`. Un selector de días encima de eso sería una mentira
+  cómoda: pedirías «del 1 al 15» y recibirías septiembre entero con cara de
+  quincena. Los estados financieros llevan selector de meses y el papel dice
+  qué períodos contables entran. La antigüedad de saldos, al revés, no lleva
+  período ninguno: un saldo no ocurre en un día, se arrastra — lleva **fecha de
+  corte**, y sin ella la hoja es inservible a la semana siguiente.
+
+- **Lo que queda fuera se imprime.** En el 606/607/608, una factura sin NCF o
+  sin RNC no entra en el archivo. Si la hoja solo enseñara lo declarado, el
+  contador cuadraría contra un total incompleto sin enterarse. Salen aparte,
+  nombradas y con lo que hay que arreglarles.
+
+- **El libro diario entra en el registro** con una idea nueva: `cuadre`. Dos
+  totales que TIENEN que coincidir. Antes el debe y el haber salían uno al lado
+  del otro y quedaba en que alguien los restara de cabeza; ahora la hoja dice
+  «cuadra» o «DESCUADRA en X». La tolerancia es de un centavo, porque gritar por
+  el redondeo de doscientas líneas entrena a ignorar el aviso.
+
+- **Mutación:** ocho, las ocho muertas — no restar el fondo, contar `authorized`
+  como entrado, que una devolución sume, ocupación cero en vez de «sin cupo»,
+  declarar cuadre sin ninguna caja cerrada, quitar el encabezado impreso de una
+  pantalla, quitar su botón de imprimir, y escribir un encabezado propio.
+
+### AUD-M25 — La 0068, partida para el editor de Supabase
+- **Por qué hace falta una copia:** el editor SQL de Supabase no es psql. Trunca
+  los pegados largos, añade por su cuenta un `enable row level security` al ver
+  un `create table` —y si eso cae dentro de un bloque `$$`, revienta con
+  «unterminated dollar-quoted string»—, y ante una comprobación que no falla
+  deja «Success. No rows returned», que no distingue «funcionó» de «no se
+  comprobó nada».
+- **Cómo queda partida:** parte 1 la tabla, la RLS, las políticas y el trigger
+  (sin un solo `$$`, para que la inyección del editor no tenga dónde caer);
+  parte 2 la función, con etiqueta `$hook$` en vez de `$$`; parte 3 una
+  verificación que **devuelve ocho filas legibles** en vez de un bloque mudo.
+  Ninguna pasa de 8 KB.
+- **Probado de verdad, no supuesto:** se levanta un Postgres 16 efímero, se
+  aplican todas las migraciones SALVO la 0068, se corren las tres partes por
+  separado —como las corre una persona— y después las pruebas de
+  comportamiento que ya existían (`active_workspace.test.sql`,
+  `auth_hook.test.sql`). Pasan las dos.
+- **Y la verificación se probó al revés:** con la parte 2 sin aplicar, la fila 7
+  dice «FALTA — sigue la versión vieja». Es la fila que importa: las 5, 6 y 8
+  siguen diciendo OK porque el enganche de 0063 ya las cumplía, así que sin esa
+  fila la tabla daría el visto bueno a una base donde la 0068 no está.
+- **La guarda:** una copia es una copia, y el día que alguien toque la migración
+  la copia pasa a ser una instrucción equivocada que alguien pegará en su base
+  de producción creyendo que es la buena. `editor-sql.test.ts` compara el cuerpo
+  de la función carácter a carácter (salvo la etiqueta del dólar), y además
+  rechaza órdenes de psql, tablas temporales, archivos de más de 8 KB y mezclar
+  un `create table` con un bloque `$$`.
+- **Mutación:** tres, las tres muertas — cambiar la copia sin tocar la
+  migración, juntar el `create table` con el bloque de la función, y volver la
+  verificación muda.

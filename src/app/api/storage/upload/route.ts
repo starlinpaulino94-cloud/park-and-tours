@@ -9,6 +9,7 @@ import { TenantError } from "@/lib/tenant";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { RESOURCES } from "@/lib/resources";
 import { assertWithinLimit, addStorageUsage } from "@/lib/plan-service";
+import { writeAudit } from "@/lib/audit";
 
 /**
  * POST /api/storage/upload  (M4)
@@ -56,6 +57,12 @@ export async function POST(req: NextRequest) {
       ? await publicUrl(bucketKey, path)
       : await signedUrl(bucketKey, path, 600);
 
+    await writeAudit({
+      companyId: ctx.companyId, userId: ctx.userId,
+      action: "file_uploaded", entityType: resource.table, entityId: id,
+      description: `${ctx.email} subió un archivo a ${entity}`,
+      metadata: { bucket: BUCKETS[bucketKey], ruta: path },
+    });
     return ok({ path, bucket: BUCKETS[bucketKey], url });
   } catch (err) {
     return fail(err);
