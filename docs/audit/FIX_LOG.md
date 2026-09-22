@@ -1104,3 +1104,34 @@ daba error: los tres producían números equivocados en silencio.
   `major_version = 16` y la sección `[inbucket]`, ya deprecada—, y el YAML del CI
   se parsea en las pruebas. Pero la **primera corrida de verdad es la primera
   ejecución del CI**, y conviene mirarla.
+
+### AUD-M28 — Limpiar la empresa `e2e-tenant` que el CI dejó en producción
+- **De dónde sale:** cerrada CI-001, el CI ya no toca la base real, pero la
+  empresa que creó durante meses sigue ahí. Se le da al usuario un guion para
+  el editor SQL, en tres partes.
+- **LO QUE SE DESCUBRIÓ AL PROBARLO, Y QUE CAMBIÓ EL GUION ENTERO.** La primera
+  suposición era que las 101 claves ajenas en `RESTRICT` bloquearían un borrado
+  peligroso. **Falso.** Probándolo contra un Postgres de verdad, el `delete`
+  directo funcionó: hay **15 tablas en CASCADE** —`api_key`,
+  `organization_relationships`, `membego_*`, `allotment`, `commission_rule`,
+  `price_rule`…— que desaparecen sin avisar, y `audit_log` va en **SET NULL**,
+  así que su rastro no se borra pero queda huérfano.
+- Por eso el inventario dejó de ser un paso opcional: es el único sitio donde se
+  ve qué se va a llevar por delante un borrado que Postgres NO va a frenar.
+- **Cuatro cerrojos, los cuatro probados:** el `slug`, la marca
+  `metadata->>'purpose' = 'e2e'` que le puso el arranque del E2E, unos
+  `not exists` sobre las tablas en cascada que sí importan, y las 101 en
+  `RESTRICT` que bloquean si hubiera datos de negocio.
+- **Probado contra Postgres 16 real, con producción simulada** —la empresa del
+  E2E y una empresa de verdad al lado—: la del E2E se borra, la real queda
+  intacta, las membresías no quedan huérfanas. Y los tres casos en que NO debe
+  borrar: sin la marca `purpose` (0 filas), con una llave de API (0 filas), y
+  con un cliente dentro (Postgres lo bloquea con el error de clave ajena).
+- **La guarda de `supabase/editor/` se afinó:** ahora distingue las COPIAS de
+  una migración —que deben decir lo mismo que ella— de los scripts de
+  MANTENIMIENTO, que no copian nada. Y la regla de la verificación pasó de
+  exigir la palabra «FALTA» a exigir que sepa decir que algo va mal con la
+  palabra que corresponda: una empresa que debía irse dice «SIGUE AHÍ».
+- **Mutación:** tres, las tres muertas — una verificación que solo sabe decir
+  OK, el borrado sin el cerrojo de `purpose` (y entonces **sí** borra una
+  empresa que no es la del E2E), y un script con un nombre que no dice qué hace.
