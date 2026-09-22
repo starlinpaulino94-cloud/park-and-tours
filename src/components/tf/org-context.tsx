@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
+import { supabaseBrowser } from "@/lib/supabase/client";
 
 /**
  * Contexto organizacional del panel: empresa actual y sucursal activa.
@@ -111,10 +112,21 @@ export function OrgProvider({
    * es suya y la apunte.
    */
   const switchWorkspace = useCallback(async (id: string) => {
-    const res = await api.post("/api/workspace", { company_id: id });
+    const res = await api.post<{ reloadSession?: boolean }>("/api/workspace", { company_id: id });
     if (!res.ok) {
       console.error("[org] no se pudo cambiar de empresa:", res.error);
       throw new Error(res.error?.message || "No se pudo cambiar de empresa");
+    }
+    /**
+     * El cambio de empresa solo alcanza a lo que lee por RLS y al panel si el
+     * TOKEN lleva la nueva empresa. La ruta ya guardó la empresa activa; aquí se
+     * refresca la sesión para que el enganche (0068) reemita el `org_id`, y
+     * recién entonces se recarga. Sin este refresco, la cookie diría la empresa
+     * nueva y el JWT seguiría en la vieja —que es justo el fallo que esto cierra—.
+     */
+    if (res.data?.reloadSession) {
+      try { await supabaseBrowser().auth.refreshSession(); }
+      catch (err) { console.error("[org] no se pudo refrescar la sesión:", err); }
     }
     window.location.assign("/dashboard");
   }, []);

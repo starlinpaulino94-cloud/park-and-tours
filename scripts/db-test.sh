@@ -74,13 +74,6 @@ done
 
 # Y la versión en tres partes, ejecutada EN ORDEN (es la que se usa cuando el
 # editor de Supabase trunca el pegado grande). Debe dejar el mismo resultado.
-for part in demo_1_base demo_2_ventas demo_3_extras; do
-  pf="$ROOT/supabase/seed/$part.sql"
-  [ -e "$pf" ] || { echo "✘ falta $pf"; fail=1; continue; }
-  echo "→ sembrador de demostración por partes: $part"
-  if ! psql_run -f "$pf" >/dev/null; then echo "✘ la parte $part no corre contra el esquema actual"; fail=1; fi
-done
-
 # Y los trozos pequeños (los que se pegan sin que el editor los trunque), en orden.
 for pf in "$ROOT"/supabase/seed/demo_partes/demo_*.sql; do
   [ -e "$pf" ] || continue

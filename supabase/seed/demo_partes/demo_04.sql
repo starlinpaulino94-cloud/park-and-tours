@@ -1,106 +1,52 @@
--- SEMBRADOR DEMO - TROZO 04 de 08. Ejecutar EN ORDEN, del 01 al 08.
+-- SEMBRADOR DEMO - TROZO 04 de 13. Ejecutar EN ORDEN del 01 al 13.
 -- Pegar entero (Ctrl+A, Run). Requiere la migracion 0067 aplicada.
 
-insert into vehicle (id, organization_id, supplier_id, name, plate, vehicle_type, capacity, status) values
-  (md5('demo:' || ('veh:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('sup:1'))::uuid, 'Bus Mercedes 45', 'A123456', 'bus',       45, 'available'),
-  (md5('demo:' || ('veh:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('sup:1'))::uuid, 'Minibús Sprinter', 'A234567', 'minibus',  19, 'available'),
-  (md5('demo:' || ('veh:3'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('sup:2'))::uuid, 'Catamarán Sirena', 'BOAT-01', 'catamaran',60, 'available'),
-  (md5('demo:' || ('veh:4'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('sup:1'))::uuid, 'Van Hiace',        'A345678', 'van',      14, 'available'),
-  (md5('demo:' || ('veh:5'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('sup:1'))::uuid, 'Flota Buggies (8)','BUGGY',   'buggy',    16, 'in_service');
-insert into attraction (id, organization_id, name, code, zone_id, attraction_type, operational_status,
-    capacity_hour, duration_min, status) values
-  (md5('demo:' || ('attr:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Hoyo Azul', 'HOYO', md5('demo:' || ('zone:1'))::uuid, 'adventure', 'open', 120, 45, 'active'),
-  (md5('demo:' || ('attr:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Tirolesa Anamuya', 'ZIP', md5('demo:' || ('zone:1'))::uuid, 'adventure', 'open', 60, 90, 'active');
-insert into departure (id, organization_id, product_id, departure_at, departure_time, capacity,
-    booked_pax, cutoff_hours, meeting_point, status, branch_id)
-select
-  md5('demo:' || ('dep:' || n))::uuid,
-  (select id from organizations where slug = 'havelgo-demo-presentaciones'),
-  md5('demo:' || ('product:' || (1 + ((n - 1) % 8))))::uuid,
-  (date_trunc('day', now()) + ((n - 30) || ' days')::interval + (case when n % 2 = 0 then interval '8 hours' else interval '13 hours' end)),
-  case when n % 2 = 0 then '08:00' else '13:00' end,
-  (array[40,35,16,24,30,45,120,30])[1 + ((n - 1) % 8)],
-  0,
-  4,
-  'Recogida en lobby',
-  case when (n - 30) < 0 then 'completed' else 'available' end,
-  md5('demo:' || ('branch:1'))::uuid
-from generate_series(1, 60) as n;
-insert into departure_resource (id, organization_id, departure_id, vehicle_id, staff_id, resource_role,
-    pax_assigned, cost, currency, status)
-select md5('demo:' || ('depres:' || n || ':v'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('dep:' || n))::uuid,
-    md5('demo:' || ('veh:' || (1 + (n % 5))))::uuid, NULL, 'vehicle', 0,
-    (array[180,180,320,140,160,180,420,160])[1 + ((n - 1) % 8)], 'usd'::currency,
-    case when (n - 30) < 0 then 'confirmed' else 'planned' end
-from generate_series(1, 60) as n
+-- Modalidades: adulto y niño por producto.
+insert into product_modality (id, organization_id, product_id, code, name, modality_type, price, cost,
+    currency, min_pax, max_pax, age_from, age_to, status, sort_order)
+select md5('demo:' || ('mod:' || n || ':ad'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('product:' || n))::uuid,
+    'AD-' || n, 'Adulto', 'per_pax', (array[89,75,120,65,95,55,99,110,45,79,130,85])[n],
+    (array[38,32,54,28,40,22,44,49,20,34,60,36])[n], 'usd'::currency, 1, 40, 12, 99, 'active', 1
+from generate_series(1, 12) as n
 union all
-select md5('demo:' || ('depres:' || n || ':g'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('dep:' || n))::uuid,
-    NULL, md5('demo:' || ('staff:' || (1 + (n % 2))))::uuid, 'guide', 0, 45, 'usd'::currency,
-    case when (n - 30) < 0 then 'confirmed' else 'planned' end
-from generate_series(1, 60) as n;
-insert into pickup_route (id, organization_id, departure_id, zone_id, vehicle_id, guide_id, name,
-    start_time, pax_total, stops_count, status)
-select md5('demo:' || ('route:' || n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('dep:' || (30 + n)))::uuid,
-    md5('demo:' || ('zone:' || (1 + (n % 3))))::uuid, md5('demo:' || ('veh:' || (1 + (n % 5))))::uuid, md5('demo:' || ('staff:1'))::uuid,
-    'Ruta ' || to_char(now() + (n || ' days')::interval, 'DD/MM'),
-    '06:30', 0, (2 + (n % 4)), 'planned'
-from generate_series(1, 10) as n;
-insert into shift (id, organization_id, role_label, shift_date, starts_at, ends_at, status, staff_id,
-    hourly_rate, currency)
-select md5('demo:' || ('shift:' || n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'),
-    (array['Guía','Guía','Chofer','Chofer','Fotógrafo','Coordinador'])[1 + ((n - 1) % 6)],
-    (current_date + ((n % 7) || ' days')::interval)::date,
-    (date_trunc('day', now()) + (n % 7 || ' days')::interval + interval '7 hours'),
-    (date_trunc('day', now()) + (n % 7 || ' days')::interval + interval '16 hours'),
-    'published',
-    md5('demo:' || ('staff:' || (1 + ((n - 1) % 6))))::uuid,
-    6, 'usd'::currency
-from generate_series(1, 18) as n;
-drop table if exists demo_seed_rows;
-create table demo_seed_rows as
-with base as (
-  select
-    n,
-    1 + ((n - 1) % 8) as prod,
-    1 + ((n - 1) % 40) as cust,
-    1 + ((n - 1) % 4) as seller,
-    (date_trunc('day', now()) + ((n - 30) || ' days')::interval)::date as travel_date,
-    2 + (n % 3) as adults,
-    (n % 2) as children,
-    (array[89,75,120,65,95,55,99,110])[1 + ((n - 1) % 8)]::numeric as price,
-    (array[38,32,54,28,40,22,44,49])[1 + ((n - 1) % 8)]::numeric as unit_cost
-  from generate_series(1, 60) as n
-), calc as (
-  select b.*,
-    (b.adults + b.children) as pax_total,
-    (b.price * b.adults + round(b.price * 0.6) * b.children) as gross,
-    case when b.n % 4 = 0 then round((b.price * b.adults + round(b.price * 0.6) * b.children) * 0.10) else 0 end as discount,
-    (b.unit_cost * (b.adults + b.children)) as cost_amount
-  from base b
-), money as (
-  select c.*,
-    (c.gross - c.discount) as total,
-    case c.n % 5 when 0 then 0
-                 when 1 then round((c.gross - c.discount) * 0.5)
-                 else (c.gross - c.discount) end as paid
-  from calc c
-)
-select
-  m.*,
-  (m.travel_date < current_date) as pasada,
-  case
-    when m.paid = 0 then 'pending_payment'
-    when m.paid < m.total then 'partially_paid'
-    when m.travel_date < current_date then 'completed'
-    else 'paid'
-  end as estado,
-  (array['web','walk_in','ota','phone','agency','direct','whatsapp','tour_center'])[1 + (m.n % 8)] as canal
-from money m;
-alter table demo_seed_rows enable row level security;
-insert into sales_order (id, organization_id, order_number, customer_id, seller_id, channel, status,
-    currency, exchange_rate, subtotal, discount_total, tax_total, total, paid_total, balance, order_date)
-select md5('demo:' || ('order:' || v.n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'ORD-' || lpad(v.n::text, 4, '0'),
-    md5('demo:' || ('cust:' || v.cust))::uuid, md5('demo:' || ('seller:' || v.seller))::uuid, v.canal::sales_channel, v.estado,
-    'usd'::currency, 1, v.gross, v.discount, 0, v.total, v.paid, v.total - v.paid,
-    (v.travel_date - 3)::date
-from demo_seed_rows v;
+select md5('demo:' || ('mod:' || n || ':ni'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('product:' || n))::uuid,
+    'NI-' || n, 'Niño', 'per_pax', round((array[89,75,120,65,95,55,99,110,45,79,130,85])[n] * 0.6),
+    round((array[38,32,54,28,40,22,44,49,20,34,60,36])[n] * 0.6), 'usd'::currency, 0, 40, 3, 11, 'active', 2
+from generate_series(1, 12) as n;
+-- Reglas de precio de temporada alta para los tres primeros.
+insert into price_rule (id, organization_id, product_id, name, status)
+select md5('demo:' || ('pr:' || n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('product:' || n))::uuid,
+    'Temporada alta (dic-abr)', 'active'
+from generate_series(1, 3) as n;
+-- Extras vendibles.
+insert into product_extra (id, organization_id, product_id, name, price_type, price, cost, currency,
+    is_required, max_quantity, status, sort_order) values
+  (md5('demo:' || ('extra:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('product:1'))::uuid, 'Barra libre premium', 'per_person', 15, 5, 'usd', false, 10, 'active', 1),
+  (md5('demo:' || ('extra:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('product:3'))::uuid, 'Fotos y video del tour', 'per_booking', 25, 8, 'usd', false, 1, 'active', 1),
+  (md5('demo:' || ('extra:3'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('product:7'))::uuid, 'Almuerzo buffet en la isla', 'per_person', 18, 9, 'usd', false, 20, 'active', 1);
+-- ── PERSONAS Y TERCEROS ─────────────────────────────────────────────────────
+insert into supplier (id, organization_id, name, supplier_type, tax_id, contact_name, email, phone,
+    currency, payment_terms_days, tax_regime, status) values
+  (md5('demo:' || ('sup:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Transporte del Este SRL', 'transport', '131111111', 'Manuel Reyes', 'ops@transporteste.do', '+1 809 555 2001', 'usd', 15, 'company', 'active'),
+  (md5('demo:' || ('sup:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Catamaranes Caribe',      'boat',      '131222222', 'Lucía Fermín', 'reservas@catcaribe.do', '+1 809 555 2002', 'usd', 30, 'company', 'active'),
+  (md5('demo:' || ('sup:3'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Parque Scape Cap Cana',   'park',      '131333333', 'Pedro Núñez', 'grupos@scapecapcana.do', '+1 809 555 2003', 'usd', 7, 'company', 'active'),
+  (md5('demo:' || ('sup:4'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Restaurante Isla Buffet', 'restaurant','131444444', 'Ana Belén', 'eventos@islabuffet.do', '+1 809 555 2004', 'usd', 15, 'company', 'active');
+insert into hotel (id, organization_id, zone_id, name, category, pickup_point, pickup_offset_min, status) values
+  (md5('demo:' || ('hotel:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('zone:1'))::uuid, 'Meliá Punta Cana', '5_star', 'Lobby principal', 15, 'active'),
+  (md5('demo:' || ('hotel:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('zone:1'))::uuid, 'Riu Bambú', '5_star', 'Recepción', 20, 'active'),
+  (md5('demo:' || ('hotel:3'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('zone:2'))::uuid, 'Dreams La Romana', '5_star', 'Entrada lobby', 25, 'active'),
+  (md5('demo:' || ('hotel:4'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('zone:3'))::uuid, 'Excellence El Carmen', '5_star', 'Lobby', 20, 'active'),
+  (md5('demo:' || ('hotel:5'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('zone:1'))::uuid, 'Hard Rock Punta Cana', '5_star', 'Puerta A', 15, 'active');
+-- Staff: guías, choferes, fotógrafo, coordinador.
+insert into staff (id, organization_id, full_name, staff_type, languages, phone, daily_rate, currency,
+    salary_type, base_salary, applies_social_security, hire_date, status) values
+  (md5('demo:' || ('staff:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Carlos Medina',  'guide',        array['es','en'],        '+1 809 555 3101', 45, 'usd', 'monthly', 32000, true, date '2024-02-01', 'active'),
+  (md5('demo:' || ('staff:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Yohan Peña',     'guide',        array['es','en','fr'],   '+1 809 555 3102', 45, 'usd', 'monthly', 34000, true, date '2023-11-15', 'active'),
+  (md5('demo:' || ('staff:3'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Rafael Guzmán',  'driver',       array['es'],             '+1 809 555 3103', 40, 'usd', 'monthly', 28000, true, date '2024-05-20', 'active'),
+  (md5('demo:' || ('staff:4'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Miguel Santana', 'driver',       array['es','en'],        '+1 809 555 3104', 40, 'usd', 'monthly', 28000, true, date '2025-01-10', 'active'),
+  (md5('demo:' || ('staff:5'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Laura Objío',    'photographer', array['es','en'],        '+1 809 555 3105', 35, 'usd', 'daily',    NULL, false, date '2025-03-01', 'active'),
+  (md5('demo:' || ('staff:6'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Denny Castro',   'coordinator',  array['es','en'],        '+1 809 555 3106', 50, 'usd', 'monthly', 40000, true, date '2023-06-01', 'active');
+-- Tipos de vendedor y equipo comercial.
+insert into seller_type (id, organization_id, name, description, status) values
+  (md5('demo:' || ('stype:1'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Interno', 'Personal de oficina y kioscos', 'active'),
+  (md5('demo:' || ('stype:2'))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), 'Concierge de hotel', 'Comisión por referido', 'active');

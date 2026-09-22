@@ -745,3 +745,60 @@ daba error: los tres producían números equivocados en silencio.
   36 facturas igual, encuestas=0).
 - **Nota para el usuario:** el aviso es la señal de que hay migraciones
   pendientes, que la app también necesita. Queda escrito en la guía.
+
+### AUD-M18 — El selector de empresa no cambiaba el panel ni la RLS (P1) — CERRADA
+- **Cómo apareció:** cargada la demo, al cambiar a esa empresa con el selector el
+  panel daba «dashboard organization is outside your tenant» y todos los módulos
+  seguían vacíos.
+- **La raíz:** el selector (0014) guardaba la empresa elegida en una cookie y
+  reresolvía la membresía por petición. Eso alcanza a `tenantQuery` (llave de
+  servicio + filtro explícito por empresa), pero NO a lo que lee por sesión y
+  RLS: `dashboard_summary` compara la empresa pedida contra `app.current_org_id()`,
+  que lee el `org_id` del **JWT** —fijado en el login a partir de la membresía
+  principal—. La cookie cambiaba; el token, no. Split-brain.
+- **Archivos:** `supabase/migrations/0068_active_workspace.sql` (nuevo),
+  `supabase/tests/active_workspace.test.sql` (nuevo),
+  `src/app/api/workspace/route.ts`, `src/components/tf/org-context.tsx`,
+  `scripts/migration-checks.mjs`.
+- **Solución:** la empresa activa se guarda por persona (`user_active_workspace`)
+  y el enganche del token la PREFIERE sobre la principal —solo si sigue habiendo
+  una membresía activa ahí—. La ruta de cambio la persiste con la llave de
+  servicio, y el cliente refresca la sesión (`auth.refreshSession()`) tras el
+  cambio para que el enganche reemita el `org_id`. Así RLS, el panel y
+  `tenantQuery` quedan alineados sin cerrar sesión.
+- **La red de seguridad, probada contra Postgres:** el enganche, llamado como lo
+  llama GoTrue, pone la empresa activa; si la membresía en esa empresa se
+  desactiva, el token vuelve solo a la principal; y al borrar la selección,
+  también. Cuatro aserciones.
+- **El enganche es SECURITY DEFINER, y sigue siéndolo:** 0068 repite los dos
+  atributos (`security definer`, `set search_path`) y su propia comprobación,
+  porque omitirlos es exactamente lo que tumbó el login en 0063.
+- **Nota de despliegue:** requiere 0068 aplicada y el código desplegado. Hasta
+  entonces, ver una empresa distinta a la principal se hace con
+  principal + re-login.
+
+### AUD-M19 — 42 módulos de la demo salían vacíos (P1) — CERRADA
+- **Cómo apareció:** con la demo cargada y visible, muchas secciones seguían
+  vacías: Tickets, Quién trajo al cliente, Metas, Bonos, Membresías, Activos,
+  RR.HH., Liquidaciones, Contabilidad, Mantenimiento, Incidencias…
+- **La raíz:** el sembrador SQL llenaba ~58 tablas de las ~85 que el sistema
+  usa. Faltaban 42.
+- **Solución:** una sección nueva en `supabase/seed/demo_presentation.sql` que
+  llena 40 de esas 42 tablas, enlazadas a las entidades ya sembradas
+  (reservas, vendedores, salidas, personal, activos): contabilidad
+  (currency_rate, ledger_account/entry, accounting_period), catálogo profundo
+  (product_cost, product_bundle_item, plantillas), membresías, red de ventas
+  (seller_link, seller_goal, seller_bonus, commission_rule), cotizaciones con
+  opciones y líneas, extras, tickets de acceso, exenciones, lista de espera,
+  calendario de pagos, movimientos de tarjeta regalo, arqueos, liquidaciones y
+  cuentas por pagar, nómina, activos y mantenimiento, incidencias y acciones,
+  bitácora de atracciones, acuses, aprobaciones y salud del sistema.
+- **Dos que NO se siembran, a propósito:** `seller_attribution` y
+  `commission_adjustment` son históricos INMUTABLES (trigger append-only:
+  ni update ni delete), y sus claves foráneas en cascada bloquearían el borrado
+  de vendedores/comisiones al re-sembrar. Sembrarlos rompería la idempotencia de
+  la demo. Se llenan solos con el uso real (un QR escaneado, un ajuste hecho).
+- **La guarda:** probado en dos pasadas contra Postgres con todas las
+  migraciones (idempotente), y los 13 trozos planos regenerados corren en orden
+  en CI. Auditoría final: 83 de 85 tablas de `SEED_TABLES` con datos; las 2
+  restantes son las append-only, por diseño.
