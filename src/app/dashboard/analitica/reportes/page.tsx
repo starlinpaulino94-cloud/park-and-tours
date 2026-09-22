@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { requireTenant } from "@/lib/tenant";
+import { requireTenant, atLeast } from "@/lib/tenant";
+import type { AppRole } from "@/lib/auth";
 import { gruposDeReportes } from "@/lib/reportes";
 import { PageHeader } from "@/components/tf/page-header";
 import { Icon } from "@/components/tf/icon";
@@ -27,10 +28,28 @@ const ICONO_GRUPO: Record<string, string> = {
   "Almacén": "Layers3", Equipo: "UserRoundCheck", "Huésped": "Star",
 };
 
-const REPORTS: { group: string; items: { href: string; label: string; description: string; icon: string }[] }[] = [
+/**
+ * `rol` es el mínimo que la API del documento exige.
+ *
+ * Sin esto, el índice ofrece tarjetas que llevan a un «No tienes permisos»:
+ * quien opera la jornada ve «Estados financieros», lo abre y se come un 403.
+ * Ofrecer una puerta cerrada es peor que no ofrecerla — hace pensar que el
+ * sistema está roto, no que el permiso no alcanza.
+ */
+type Item = { href: string; label: string; description: string; icon: string; rol?: AppRole };
+
+const REPORTS: { group: string; items: Item[] }[] = [
   {
-    group: "Actividad",
+    group: "Documentos que se firman",
     items: [
+      { href: "/dashboard/reportes/cierre-del-dia", label: "Cierre del día", icon: "ClipboardCheck",
+        description: "Qué operó, qué se vendió, qué entró y si la caja cuadra. Con líneas de firma.", rol: "operations" },
+      { href: "/dashboard/reportes/estados-financieros", label: "Estados financieros", icon: "Scale",
+        description: "Estado de resultados y balance general por meses contables. Avisa si no cuadra.", rol: "manager" },
+      { href: "/dashboard/reportes/declaracion-dgii", label: "Declaración DGII (606/607/608)", icon: "Landmark",
+        description: "La declaración del mes, legible, con lo que queda fuera y por qué.", rol: "manager" },
+      { href: "/dashboard/reportes/antiguedad-saldos", label: "Antigüedad de saldos", icon: "ArrowDownToLine",
+        description: "Lo que se debe y desde cuándo, por tramo. Foto del momento, con su fecha de corte.", rol: "manager" },
       { href: "/dashboard/reportes/actividad", label: "Bitácora de actividad", icon: "ScrollText",
         description: "Todo lo que se hizo en un período: quién, qué y sobre qué. Imprimible." },
     ],
@@ -88,7 +107,8 @@ const REPORTS: { group: string; items: { href: string; label: string; descriptio
 ];
 
 export default async function ReportsPage() {
-  await requireTenant();
+  const ctx = await requireTenant();
+  const puede = (item: Item) => !item.rol || atLeast(ctx.role, item.rol);
 
   return (
     <div className="space-y-7">
@@ -129,7 +149,9 @@ export default async function ReportsPage() {
         ))}
       </section>
 
-      {REPORTS.map((section) => (
+      {REPORTS.map((section) => ({ ...section, items: section.items.filter(puede) }))
+        .filter((section) => section.items.length > 0)
+        .map((section) => (
         <section key={section.group} className="space-y-3">
           <h2 className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
             {section.group}

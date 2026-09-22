@@ -5,7 +5,7 @@ import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Icon } from "@/components/tf/icon";
-import { useOrg } from "@/components/tf/org-context";
+import { CabeceraDocumento, EncabezadoImpreso, PieImpreso } from "@/components/tf/hoja-impresa";
 import {
   atajos, etiquetaPeriodo, normalizarPeriodo, companyTimeZone, type Periodo,
 } from "@/lib/report";
@@ -53,8 +53,6 @@ export function ReportShell({
   const router = useRouter();
   const pathname = usePathname();
   const sp = useSearchParams();
-  const { companyName } = useOrg();
-
   const tz = companyTimeZone(null);
   const periodo = useMemo(
     () => normalizarPeriodo(sp.get("from"), sp.get("to"), new Date(), tz),
@@ -77,24 +75,17 @@ export function ReportShell({
 
   return (
     <div className="space-y-5">
-      {/* Encabezado de pantalla */}
-      <header className="no-print flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Reporte</p>
-          <h1 className="truncate text-2xl font-bold tracking-tight">{titulo}</h1>
-          {descripcion && <p className="mt-1 text-sm text-muted-foreground">{descripcion}</p>}
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {csvHref && (
+      <CabeceraDocumento
+        titulo={titulo}
+        descripcion={descripcion}
+        acciones={
+          csvHref ? (
             <Button asChild variant="outline" className="gap-1.5">
               <a href={csvHref}><Icon name="Download" className="size-4" />CSV</a>
             </Button>
-          )}
-          <Button className="gap-1.5" onClick={() => window.print()}>
-            <Icon name="Printer" className="size-4" />Imprimir
-          </Button>
-        </div>
-      </header>
+          ) : null
+        }
+      />
 
       {/* Selector de período */}
       <section className="no-print flex flex-wrap items-end gap-3 rounded-lg border border-border bg-muted/30 p-3">
@@ -132,19 +123,12 @@ export function ReportShell({
         {filtros}
       </section>
 
-      {/* Encabezado que SOLO sale en el papel: lo que convierte la hoja en documento */}
-      <header className="print-only mb-4 border-b border-black/20 pb-3">
-        <p className="text-[13px] font-semibold">{companyName}</p>
-        <h1 className="text-[17px] font-bold">{titulo}</h1>
-        <p className="text-[12px]">Período: {etiquetaPeriodo(periodo)}</p>
-      </header>
+      <EncabezadoImpreso titulo={titulo} periodo={`Período: ${etiquetaPeriodo(periodo)}`} />
 
       {resumen}
       {children}
 
-      <footer className="print-only mt-4 border-t border-black/20 pt-2 text-[10px]">
-        Generado el {new Date().toLocaleString("es-DO")} · {companyName}
-      </footer>
+      <PieImpreso />
     </div>
   );
 }

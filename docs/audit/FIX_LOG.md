@@ -923,3 +923,64 @@ daba error: los tres producían números equivocados en silencio.
   columna `status` sin `etiqueta`, que `textoCelda` deje de traducir, que un
   vacío imprima cero en vez de raya, quitar el enlace del índice, y torcer el
   campo de fecha, una columna y una relación del registro.
+
+### AUD-M24 — Los documentos que se firman: cierre del día, contables y fiscales
+- **Qué faltaba:** el sistema calculaba estados financieros, la declaración de
+  la DGII y la antigüedad de saldos, pero **ninguna de esas pantallas se podía
+  imprimir**. Un estado de resultados que solo existe en un navegador no es un
+  documento contable, y un 606 que solo se baja como TXT no se puede archivar:
+  el archivo de la DGII es texto plano con barras, ilegible para quien tiene
+  que cuadrarlo antes de enviarlo y para quien lo busca un año después.
+- **El cierre del día no existía en absoluto.** Se reconstruía abriendo cinco
+  pantallas y apuntando en un cuaderno, que es exactamente donde se pierde.
+
+- **Cinco copias del encabezado impreso, evitadas a tiempo.** Lo que convierte
+  una hoja en documento —empresa, título, período, pie, firmas— vive ahora en
+  `hoja-impresa.tsx`, y lo usan los cinco. Con cinco copias, a los seis meses
+  tres dicen la empresa y dos no. Dos guardas: ninguna pantalla de
+  `/dashboard/reportes` puede quedarse sin encabezado impreso ni sin forma de
+  imprimirse, y ninguna puede escribirse el suyo por su cuenta.
+
+- **EL FALLO QUE UNA GUARDA AJENA ATRAPÓ.** La primera versión del cierre
+  contaba como dinero entrado «todo cobro que no esté rechazado». La vista
+  financiera de la migración 0023 —la que alimenta el panel— cuenta solo los
+  `completed` y **resta** los de tipo `refund` y `credit_note`. Con las dos
+  reglas conviviendo, el cierre del martes y el panel del martes daban cifras
+  distintas del mismo día, y no hay forma de saber cuál creer. Se adoptó la
+  regla de la vista, y una guarda nueva **lee la migración** y falla si dejan de
+  decir lo mismo.
+
+- **El fondo de apertura no es venta del día.** Sin restarlo del contado, TODA
+  caja que abra con dinero parece tener un sobrante exactamente igual a su
+  fondo. Un aviso que sale todos los días se aprende a ignorar, y el día que el
+  descuadre es real nadie lo mira.
+
+- **«Sin cupo» no es «0 % de ocupación»**, y «nadie contó la caja» no es «la
+  caja cuadra». Las dos son afirmaciones que el documento no puede hacer, y las
+  dos están probadas. El cierre dice explícitamente *Sin contar* y *ninguna caja
+  se cerró: nadie contó* — que es peor que un descuadre, porque un descuadre al
+  menos se ve.
+
+- **El período de lo contable son MESES, y se dice.** El libro mayor se cierra
+  por períodos `AAAA-MM`. Un selector de días encima de eso sería una mentira
+  cómoda: pedirías «del 1 al 15» y recibirías septiembre entero con cara de
+  quincena. Los estados financieros llevan selector de meses y el papel dice
+  qué períodos contables entran. La antigüedad de saldos, al revés, no lleva
+  período ninguno: un saldo no ocurre en un día, se arrastra — lleva **fecha de
+  corte**, y sin ella la hoja es inservible a la semana siguiente.
+
+- **Lo que queda fuera se imprime.** En el 606/607/608, una factura sin NCF o
+  sin RNC no entra en el archivo. Si la hoja solo enseñara lo declarado, el
+  contador cuadraría contra un total incompleto sin enterarse. Salen aparte,
+  nombradas y con lo que hay que arreglarles.
+
+- **El libro diario entra en el registro** con una idea nueva: `cuadre`. Dos
+  totales que TIENEN que coincidir. Antes el debe y el haber salían uno al lado
+  del otro y quedaba en que alguien los restara de cabeza; ahora la hoja dice
+  «cuadra» o «DESCUADRA en X». La tolerancia es de un centavo, porque gritar por
+  el redondeo de doscientas líneas entrena a ignorar el aviso.
+
+- **Mutación:** ocho, las ocho muertas — no restar el fondo, contar `authorized`
+  como entrado, que una devolución sume, ocupación cero en vez de «sin cupo»,
+  declarar cuadre sin ninguna caja cerrada, quitar el encabezado impreso de una
+  pantalla, quitar su botón de imprimir, y escribir un encabezado propio.

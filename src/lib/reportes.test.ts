@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   REPORTES, reportePorSlug, gruposDeReportes, valorCrudo, sumaColumna, totalesDe, monedaDe,
-  textoCelda, esNumerica,
+  textoCelda, esNumerica, cuadreDe, TOLERANCIA_CUADRE,
 } from "@/lib/reportes";
 import { RESOURCES } from "@/lib/resources";
 
@@ -260,5 +260,129 @@ describe("todo reporte del registro se puede abrir", () => {
     const indice = readFileSync("src/app/dashboard/analitica/reportes/page.tsx", "utf8");
     expect(indice).toContain("gruposDeReportes()");
     expect(indice).toContain("/dashboard/reportes/${r.slug}");
+  });
+});
+
+describe("el cuadre de un libro", () => {
+  const diario = REPORTES.find((r) => r.slug === "libro-diario")!;
+
+  it("un libro cuadrado lo dice", () => {
+    const filas = [{ debit: 100, credit: 0 }, { debit: 0, credit: 100 }];
+    expect(cuadreDe(filas, diario)).toMatchObject({ debe: 100, haber: 100, cuadra: true });
+  });
+
+  it("un descuadre real se señala con su diferencia", () => {
+    /**
+     * Es lo más importante que una hoja de libro diario puede decir. Dejarlo a
+     * que alguien reste de cabeza dos totales impresos es no decirlo.
+     */
+    const filas = [{ debit: 100, credit: 0 }, { debit: 0, credit: 85 }];
+    const c = cuadreDe(filas, diario)!;
+    expect(c.cuadra).toBe(false);
+    expect(c.diferencia).toBe(15);
+  });
+
+  it("un residuo de redondeo de un centavo NO es un descuadre", () => {
+    // Los importes son numeric(14,2): sumar doscientas líneas deja residuos que
+    // no son un descuadre. Gritar por un centavo entrena a ignorar el aviso.
+    const filas = [{ debit: 100, credit: 0 }, { debit: 0, credit: 99.99 }];
+    expect(cuadreDe(filas, diario)!.cuadra).toBe(true);
+    expect(TOLERANCIA_CUADRE).toBe(0.01);
+  });
+
+  it("dos centavos SÍ lo son", () => {
+    const filas = [{ debit: 100, credit: 0 }, { debit: 0, credit: 99.98 }];
+    expect(cuadreDe(filas, diario)!.cuadra).toBe(false);
+  });
+
+  it("un reporte sin cuadre declarado no inventa uno", () => {
+    expect(cuadreDe([{ total: 5 }], reportePorSlug("ventas")!)).toBeNull();
+  });
+
+  it("las dos columnas del cuadre se enseñan y se suman", () => {
+    /**
+     * Si el debe y el haber no salieran en el pie, el lector vería el veredicto
+     * («descuadra en 15») sin los sumandos con los que comprobarlo.
+     */
+    const problemas: string[] = [];
+    for (const r of REPORTES) {
+      if (!r.cuadre) continue;
+      const columnas = new Set(r.columnas.map((c) => c.clave));
+      const totales = new Set(r.totales ?? []);
+      for (const clave of [r.cuadre.debe, r.cuadre.haber]) {
+        if (!columnas.has(clave)) problemas.push(`${r.slug}: ${clave} no se enseña`);
+        if (!totales.has(clave)) problemas.push(`${r.slug}: ${clave} no se totaliza`);
+      }
+      expect(r.cuadre.etiqueta.length, r.slug).toBeGreaterThan(3);
+    }
+    expect(problemas, "cuadres sin sus sumandos a la vista").toEqual([]);
+  });
+});
+
+describe("toda hoja de reportes se puede archivar", () => {
+  it("cada pantalla de /dashboard/reportes lleva encabezado impreso y se puede imprimir", async () => {
+    /**
+     * UNA HOJA SIN ENCABEZADO NO SE PUEDE ARCHIVAR.
+     *
+     * Dentro de seis meses alguien la encuentra en una carpeta y no sabe de qué
+     * empresa es, de qué documento ni de qué período. Es exactamente lo que
+     * `hoja-impresa.tsx` viene a resolver, y la única forma de que siga
+     * resuelto es que una pantalla nueva no pueda saltárselo.
+     *
+     * Se aceptan las dos vías: las piezas compartidas directamente, o
+     * `ReportShell`, que ya las usa.
+     */
+    const { readFileSync, readdirSync, existsSync } = await import("node:fs");
+    const raiz = "src/app/dashboard/reportes";
+
+    const paginas: string[] = [];
+    for (const entrada of readdirSync(raiz, { withFileTypes: true })) {
+      if (!entrada.isDirectory()) continue;
+      const pagina = `${raiz}/${entrada.name}/page.tsx`;
+      if (existsSync(pagina)) paginas.push(pagina);
+    }
+    expect(paginas.length, "no se encontró ninguna pantalla de reportes").toBeGreaterThan(3);
+
+    const mudas: string[] = [];
+    const sinImprimir: string[] = [];
+    for (const pagina of paginas) {
+      const fuente = readFileSync(pagina, "utf8");
+      // Se busca el USO en el JSX, no el import: quitar la etiqueta y dejar el
+      // import es exactamente cómo se rompe esto sin querer, y con `includes`
+      // a secas la guarda no se enteraba.
+      const conMarco = /<ReportShell[\s>]/.test(fuente);
+      if (!conMarco && !/<EncabezadoImpreso[\s/>]/.test(fuente)) mudas.push(pagina);
+      if (!conMarco && !/<CabeceraDocumento[\s/>]/.test(fuente) && !fuente.includes("window.print()")) {
+        sinImprimir.push(pagina);
+      }
+    }
+    expect(mudas, "hojas que saldrían sin empresa, documento ni período").toEqual([]);
+    expect(sinImprimir, "reportes sin forma de imprimirse").toEqual([]);
+  });
+
+  it("el encabezado impreso se escribe en UN solo sitio", async () => {
+    /**
+     * Antes había dos copias del mismo encabezado y venían tres más. Cinco
+     * copias es garantía de que a los seis meses tres digan la empresa y dos
+     * no, y de que el día que haya que añadir el RNC solo se añada en una.
+     *
+     * Lo que se comprueba: ninguna pantalla escribe su propio bloque impreso
+     * con el nombre de la empresa dentro. Quien lo necesite, que use la pieza.
+     */
+    const { readFileSync } = await import("node:fs");
+    const { execSync } = await import("node:child_process");
+    const archivos = execSync(
+      "grep -rl 'print-only' src/app src/components --include=*.tsx || true",
+      { encoding: "utf8" },
+    ).split("\n").filter(Boolean);
+
+    const copias = archivos.filter((archivo) => {
+      if (archivo.endsWith("hoja-impresa.tsx")) return false;
+      const fuente = readFileSync(archivo, "utf8");
+      // Un bloque `print-only` que además nombra a la empresa es un encabezado
+      // o un pie propios: justo lo que no puede haber por duplicado.
+      return fuente.includes("print-only") && /companyName/.test(fuente);
+    });
+    expect(copias, "encabezados o pies impresos escritos por su cuenta").toEqual([]);
   });
 });

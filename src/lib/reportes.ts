@@ -44,6 +44,14 @@ export interface DefinicionReporte {
   columnas: ColumnaReporte[];
   /** Columnas numéricas que se suman al pie. */
   totales?: string[];
+  /**
+   * Dos totales que TIENEN que coincidir (debe y haber).
+   *
+   * Un libro diario impreso cuyo debe no iguala al haber está descuadrado, y
+   * eso es lo más importante que la hoja puede decir. Sin esto, los dos totales
+   * salen uno al lado del otro y queda en que alguien los reste de cabeza.
+   */
+  cuadre?: { debe: string; haber: string; etiqueta: string };
 }
 
 export const REPORTES: DefinicionReporte[] = [
@@ -238,6 +246,23 @@ export const REPORTES: DefinicionReporte[] = [
       { clave: "amount", titulo: "Importe", tipo: "dinero" },
     ],
     totales: ["amount"],
+  },
+
+  {
+    slug: "libro-diario", titulo: "Libro diario", grupo: "Dinero",
+    descripcion: "Cada línea de asiento del período, con su cuenta, su origen y su cuadre.",
+    recurso: "ledger_entry", campoFecha: "posted_at",
+    columnas: [
+      { clave: "posted_at", titulo: "Fecha", tipo: "fechaHora" },
+      { clave: "entry_code", titulo: "Asiento" },
+      { clave: "ledger_account", titulo: "Cuenta", desde: "name" },
+      { clave: "memo", titulo: "Concepto" },
+      { clave: "source_type", titulo: "Origen", tipo: "etiqueta" },
+      { clave: "debit", titulo: "Debe", tipo: "dinero" },
+      { clave: "credit", titulo: "Haber", tipo: "dinero" },
+    ],
+    totales: ["debit", "credit"],
+    cuadre: { debe: "debit", haber: "credit", etiqueta: "Debe y haber del período" },
   },
 
   // ── Operación ─────────────────────────────────────────────────────────────
@@ -464,6 +489,33 @@ export function totalesDe(
   const out: Record<string, number> = {};
   for (const clave of def.totales ?? []) out[clave] = sumaColumna(filas, clave);
   return out;
+}
+
+/**
+ * El cuadre del período: si los dos totales que deben coincidir, coinciden.
+ *
+ * La tolerancia es de un centavo porque los importes son `numeric(14,2)` y
+ * sumar doscientas líneas puede dejar un residuo de redondeo que no es un
+ * descuadre real. Más de eso SÍ lo es, y la hoja tiene que decirlo.
+ */
+export interface Cuadre {
+  debe: number;
+  haber: number;
+  diferencia: number;
+  cuadra: boolean;
+}
+
+export const TOLERANCIA_CUADRE = 0.01;
+
+export function cuadreDe(
+  filas: Record<string, unknown>[],
+  def: DefinicionReporte,
+): Cuadre | null {
+  if (!def.cuadre) return null;
+  const debe = sumaColumna(filas, def.cuadre.debe);
+  const haber = sumaColumna(filas, def.cuadre.haber);
+  const diferencia = Math.round((debe - haber) * 100) / 100;
+  return { debe, haber, diferencia, cuadra: Math.abs(diferencia) <= TOLERANCIA_CUADRE };
 }
 
 /** La moneda del reporte: la de las filas si coinciden, y si no, la de la empresa. */

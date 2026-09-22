@@ -8,7 +8,7 @@ import { ReportShell } from "@/components/tf/report-shell";
 import { Icon } from "@/components/tf/icon";
 import { formatMoney, formatNumber } from "@/lib/format";
 import {
-  esNumerica, monedaDe, reportePorSlug, textoCelda, totalesDe,
+  cuadreDe, esNumerica, monedaDe, reportePorSlug, textoCelda, totalesDe,
   type DefinicionReporte,
 } from "@/lib/reportes";
 
@@ -104,6 +104,7 @@ function Reporte({ def }: { def: DefinicionReporte }) {
 
   const moneda = useMemo(() => monedaDe(filas), [filas]);
   const totales = useMemo(() => totalesDe(filas, def), [filas, def]);
+  const cuadre = useMemo(() => cuadreDe(filas, def), [filas, def]);
   const incompleto = total > filas.length;
 
   return (
@@ -114,6 +115,26 @@ function Reporte({ def }: { def: DefinicionReporte }) {
       recursoCsv={def.recurso}
       resumen={
         filas.length > 0 ? (
+          <>
+          {/* El cuadre SÍ se imprime: en un libro diario es lo más importante
+              que la hoja puede decir, y dejarlo a que alguien reste de cabeza
+              dos totales impresos es no decirlo. */}
+          {cuadre && (
+            <p
+              className={`print-block rounded-md border px-3 py-2 text-[13px] ${
+                cuadre.cuadra
+                  ? "border-emerald-500/40 bg-emerald-500/10"
+                  : "border-destructive/50 bg-destructive/10 font-semibold"
+              }`}
+            >
+              {def.cuadre!.etiqueta}:{" "}
+              {cuadre.cuadra
+                ? `cuadra — ${formatMoney(cuadre.debe, moneda)} a cada lado.`
+                : `DESCUADRA en ${formatMoney(Math.abs(cuadre.diferencia), moneda)} ` +
+                  `(debe ${formatMoney(cuadre.debe, moneda)}, haber ${formatMoney(cuadre.haber, moneda)}). ` +
+                  `Si el período está recortado, el descuadre puede ser del recorte y no de los libros.`}
+            </p>
+          )}
           <section className="print-block grid grid-cols-2 gap-2 sm:grid-cols-4">
             <div className="rounded-lg border border-border px-3 py-2 print-plain">
               <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Registros</p>
@@ -134,6 +155,7 @@ function Reporte({ def }: { def: DefinicionReporte }) {
               );
             })}
           </section>
+          </>
         ) : null
       }
     >
