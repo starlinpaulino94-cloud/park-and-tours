@@ -29,7 +29,7 @@ export function ResourcePage<T extends { _id: string }>({
   resource, eyebrow, title, description, columns, fields, filters, fixedFilters,
   searchPlaceholder = "Buscar…", createLabel = "Nuevo registro",
   emptyTitle, emptyDescription, emptyIcon, canWrite = true,
-  extraActions, renderSummary, onRowClick, pageSize = 50, initialSort, embedded = false,
+  extraActions, rowActions, renderSummary, onRowClick, pageSize = 50, initialSort, embedded = false,
 }: {
   resource: string;
   eyebrow?: string;
@@ -51,6 +51,15 @@ export function ResourcePage<T extends { _id: string }>({
   emptyIcon?: string;
   canWrite?: boolean;
   extraActions?: React.ReactNode;
+  /**
+   * Acciones propias de CADA fila, antes de editar y eliminar.
+   *
+   * Existe para lo que no es un campo del formulario: «crear cuenta e invitar»
+   * a un vendedor son tres pasos en dos pantallas, y el que decide si esa
+   * persona ve sus ventas —vincular la cuenta— es justo el que se olvida.
+   * Sacarlo a la fila lo pone donde se nota que falta.
+   */
+  rowActions?: (row: T) => React.ReactNode;
   renderSummary?: (rows: T[], total: number) => React.ReactNode;
   onRowClick?: (row: T) => void;
   pageSize?: number;
@@ -168,6 +177,7 @@ export function ResourcePage<T extends { _id: string }>({
     align: "right",
     render: (row) => (
       <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+        {rowActions?.(row)}
         <Button variant="ghost" size="icon" className="size-8" aria-label="Editar"
           onClick={() => { setEditing(row as Record<string, any>); setFormOpen(true); }}>
           <Icon name="Pencil" className="size-3.5" />

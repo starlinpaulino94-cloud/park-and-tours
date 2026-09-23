@@ -302,9 +302,25 @@ export async function getSupabaseTenantContext(): Promise<TenantContext | null> 
   if (!ctx) return null;
   if (mfaPending) ctx.mfaPending = true;
 
-  // Solo para el rango que se acota por ella: para todos los demás el dato no
-  // se usa, y consultarlo sería una ida a la base por petición a cambio de nada.
-  if (ctx.role === "seller") ctx.sellerId = await loadSellerId(ctx.companyId!, user.id);
+  /**
+   * La ficha de vendedor, para todo el personal interno.
+   *
+   * El rol `seller` la necesita porque su ámbito se acota por ella. Los rangos
+   * de arriba la necesitan por otra razón: en una operadora pequeña el gerente
+   * y el dueño TAMBIÉN venden, y sin este dato su apartado propio no existiría
+   * —o peor, existiría vacío—. No les acota nada (`sellerScopeApplies` solo
+   * mira al rango más bajo): les da su propia vista sin quitarles el ERP.
+   *
+   * Cuesta una consulta indexada por petición para el personal interno. Se
+   * salta para el socio B2B, que no tiene ficha, y para el superadministrador
+   * —incluso mientras impersona—: quien entra a mirar una empresa ajena no es
+   * ningún vendedor de ella, así que no aterriza en el apartado de nadie ni se
+   * le acota lo que ve, que es justo para lo que sirve impersonar (y queda
+   * auditado).
+   */
+  if (ctx.role !== "partner" && ctx.role !== "superadmin") {
+    ctx.sellerId = await loadSellerId(ctx.companyId!, user.id);
+  }
 
   if (ctx.role === "superadmin") {
     const target = (await cookies()).get(IMPERSONATION_COOKIE)?.value;

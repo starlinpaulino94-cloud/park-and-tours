@@ -1468,3 +1468,50 @@ daba error: los tres producían números equivocados en silencio.
   cero en vez de borrar, dejar de bajar por las expansiones, tratar toda ficha
   como «la propia», que la exportación deje de recortar mientras la pantalla sí,
   y volver a escribir mal el campo de la modalidad.
+
+### Fase 1.4 — la identidad del vendedor deja de depender de que alguien se acuerde
+- **El paso que se olvida siempre.** Dar de alta a un vendedor eran tres pasos
+  en dos pantallas: crear la ficha en Vendedores, invitar la cuenta en
+  Configuración → Equipo, y volver a la ficha a vincularla. El tercero es el
+  que decide si esa persona ve sus ventas o no ve ninguna, **no falla si se
+  olvida y no avisa**: el vendedor entra y se encuentra un sistema vacío. Ahora
+  `POST /api/sellers/invite` hace los tres de una vez, y la fila de quien no
+  tiene cuenta ofrece el botón justo donde se nota que falta.
+- **Pide rango de administración, y no es un descuido.** La ficha la crea
+  gerencia, pero esto hace dos cosas que gerencia no puede hacer por separado:
+  crear una cuenta de acceso y escribir `seller.user_id`, que
+  `field-write-role.ts` reserva a administración.
+- **`team-invite.ts`: lo que las dos altas hacen igual, en un solo sitio.** Lo
+  escribía entera `/api/team/invite`. Copiado, la divergencia es cuestión de
+  tiempo y se nota en lo peor —el tope del plan comprobado en un camino y no en
+  el otro, o una invitación que no queda en la bitácora—. El orden también es
+  la política: el tope del plan ANTES de tocar Supabase Auth (al revés quedaría
+  una cuenta creada sin membresía, invisible en el equipo e imposible de volver
+  a invitar porque el correo ya existiría) y la membresía nace **pendiente**,
+  porque una invitación no es un acceso.
+- **`ctx.sellerId` para todo el personal interno, no solo para el rango bajo.**
+  En una operadora pequeña el gerente y el dueño también venden: sin este dato
+  su apartado propio no existiría, o peor, existiría vacío. No les acota nada
+  —`sellerScopeApplies` solo mira al rango más bajo—, les da su vista. Se salta
+  para el socio y para el superadministrador **incluso mientras impersona**:
+  quien entra a mirar una empresa ajena no es vendedor de ella, así que no
+  aterriza en el apartado de nadie ni se le acota lo que ve, que es justo para
+  lo que sirve impersonar (y queda auditado).
+- **`/api/me` devuelve `sellerId`.** El shell decidía a dónde llevar a cada
+  quien mirando solo el rol, y con eso no se puede: son TRES estados —gerente
+  que vende, vendedor con ficha, vendedor sin ficha— y solo este dato los
+  distingue. Al tercero hay que decírselo, no mandarlo a una pantalla en blanco.
+- **El backfill se PROPONE, no se aplica.** `supabase/editor/vinculo_vendedores_*`
+  empareja por correo y devuelve filas para revisar una por una. El correo no es
+  identidad: se teclea en dos sitios, se reutiliza y cambia. Un emparejamiento
+  automático que acierte el 95 % significa que **a una persona de cada veinte le
+  aparecen las ventas —y la comisión— de otra**, y eso no se descubre leyendo un
+  registro: se descubre el día de pago. No llevan número de migración porque no
+  son copia de ninguna; una guarda ajena lo exigía y tenía razón.
+- **Mutación:** ocho, seis muertas a la primera. Las dos que no:
+  - el tope del plan comprobado DESPUÉS de crear la cuenta — y la causa era, por
+    **cuarta vez en esta rama**, que `indexOf` encontraba el nombre de la
+    función en su línea de `import`. Ahora hay un helper (`cuerpoDe`) que quita
+    la cabecera antes de comparar posiciones, y está escrito por qué;
+  - la membresía invitada naciendo activa: esa propiedad **nunca había tenido
+    guarda**, ni antes de extraer el servicio. Ahora la tiene.

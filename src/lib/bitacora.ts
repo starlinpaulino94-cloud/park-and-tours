@@ -133,6 +133,7 @@ export const ACCION: Record<string, string> = {
   task_completed: "Tarea completada",
   team_member_created: "Miembro del equipo creado",
   team_member_invited: "Miembro del equipo invitado",
+  seller_account_linked: "Cuenta de acceso vinculada a un vendedor",
   team_member_updated: "Miembro del equipo editado",
   year_closed: "Cierre de año",
 };

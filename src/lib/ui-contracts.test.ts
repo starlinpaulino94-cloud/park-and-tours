@@ -19,6 +19,16 @@ const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
  *  declaran el suyo; este es el de los que no. */
 const sinComentariosDe = (rel: string) =>
   read(rel).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+/**
+ * El fichero SIN su cabecera de `import`.
+ *
+ * Para comparar el ORDEN de dos llamadas. Sin quitar los imports, `indexOf`
+ * encuentra el nombre de la función en la línea que la importa y la guarda pasa
+ * dijera lo que dijera el cuerpo. Ha mordido cuatro veces en esta rama; existe
+ * para que no muerda una quinta.
+ */
+const cuerpoDe = (rel: string) =>
+  sinComentariosDe(rel).replace(/^\s*import[\s\S]*?from\s+"[^"]+";\s*$/gm, "");
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -1871,7 +1881,10 @@ describe("las cuentas del equipo", () => {
     expect(team).toMatch(/assertRole\(ctx, body\.role \|\| "seller"\)/);
     expect(team).toMatch(/assertRole\(ctx, body\.role\)/);
     const invite = read("src/app/api/team/invite/route.ts");
-    expect(invite).toMatch(/roleDecision\(ctx\.role, body\.role \|\| "seller"\)/);
+    // La decisión de rol vive en el servicio que comparten las DOS altas
+    // (equipo y vendedores): copiada, una de las dos se quedaría sin ella.
+    expect(read("src/lib/team-invite.ts")).toMatch(/roleDecision\(ctx\.role, input\.role \|\| "seller"\)/);
+    expect(invite).toMatch(/inviteTeamMember\(\{/);
   });
 
   it("la invitación nace PENDIENTE: un correo no es un acceso", () => {
@@ -1936,7 +1949,23 @@ describe("las cuentas del equipo", () => {
   it("la invitación reserva plaza del plan", () => {
     // Si no contara, un plan de cinco aceptaría veinte invitaciones y el tope
     // saltaría delante de alguien que ya recibió el correo.
-    expect(read("src/app/api/team/invite/route.ts")).toMatch(/assertWithinLimit\(ctx, "max_users"\)/);
+    // Y se comprueba en el servicio compartido, así que el alta de vendedores
+    // —que crea cuenta igual— no puede saltárselo por haber nacido después.
+    const servicio = read("src/lib/team-invite.ts");
+    expect(servicio).toMatch(/assertWithinLimit\(ctx, "max_users"\)/);
+    // Antes de tocar Supabase Auth: al revés quedaría una cuenta creada sin
+    // membresía, invisible en el equipo e imposible de volver a invitar.
+    const cuerpo = cuerpoDe("src/lib/team-invite.ts");
+    expect(cuerpo.indexOf("assertWithinLimit")).toBeLessThan(cuerpo.indexOf("inviteUserByEmail"));
+    /**
+     * Y la membresía nace PENDIENTE. Solo las activas resuelven inquilino, así
+     * que una invitación sin aceptar no abre ninguna puerta: si el correo acaba
+     * en la bandeja equivocada, quien lo reciba no entra a nada.
+     */
+    expect(cuerpo).toMatch(/status: "pending"/);
+    for (const ruta of ["src/app/api/team/invite/route.ts", "src/app/api/sellers/invite/route.ts"]) {
+      expect(read(ruta), ruta).toMatch(/inviteTeamMember\(\{/);
+    }
     expect(read("src/lib/plan-service.ts")).toMatch(/\.in\("status", \["active", "pending"\]\)/);
   });
 });
@@ -2264,7 +2293,7 @@ describe("el alcance por sucursal", () => {
     const team = read("src/app/api/team/route.ts");
     expect(team).toMatch(/branch_id: branchId/);
     expect(team).toMatch(/patch\.branch_id/);
-    expect(read("src/app/api/team/invite/route.ts")).toMatch(/branch_id: \(body\.branch/);
+    expect(read("src/lib/team-invite.ts")).toMatch(/branch_id: \(input\.branch \|\| ""\)\.trim\(\) \|\| null/);
   });
 
   it("el listado y su exportación aplican el MISMO corte", () => {
@@ -2424,6 +2453,36 @@ describe("el alcance por sucursal", () => {
     expect(conCargador, "ninguna ruta usa el cargador").toBeGreaterThan(5);
   });
 
+  it("la cuenta y el vínculo se crean en una sola operación", () => {
+    /**
+     * Dar de alta a un vendedor eran tres pasos en dos pantallas: ficha,
+     * invitación y vínculo. El tercero es el que decide si esa persona ve sus
+     * ventas o no ve ninguna, y es el que se olvida —no falla, no avisa, y el
+     * vendedor entra a un sistema vacío—.
+     */
+    const ruta = sinComentariosDe("src/app/api/sellers/invite/route.ts");
+    // Pide administración: crea una cuenta Y escribe la llave de identidad.
+    expect(ruta).toMatch(/requireAtLeast\(ctx, "admin"\)/);
+    expect(ruta).toMatch(/inviteTeamMember\(\{/);
+    expect(ruta).toMatch(/assertSellerUserLinkable\(ctx\.companyId, \{ user: invitado\.userId \}, sellerId\)/);
+    // El vínculo va DESPUÉS de invitar: al revés quedaría una ficha apuntando a
+    // una cuenta que no existe.
+    // Se comparan las LLAMADAS: los `import` del principio harían pasar esta
+    // guarda dijera lo que dijera el cuerpo. (Tercera vez que muerde el mismo
+    // detalle; queda escrito para no repetirlo.)
+    const cuerpoRuta = cuerpoDe("src/app/api/sellers/invite/route.ts");
+    expect(cuerpoRuta.indexOf("inviteTeamMember({")).toBeLessThan(cuerpoRuta.indexOf("tenantUpdate<Seller>"));
+    // Y queda en la bitácora, con su texto en castellano.
+    expect(ruta).toMatch(/action: "seller_account_linked"/);
+    expect(read("src/lib/bitacora.ts")).toMatch(/seller_account_linked:/);
+
+    // La pantalla lo ofrece justo donde se nota que falta: en la fila de quien
+    // no tiene cuenta.
+    const pantalla = read("src/app/dashboard/vendedores/page.tsx");
+    expect(pantalla).toMatch(/rowActions=\{\(s: any\) => \(s\.user \|\| s\.user_id \? null :/);
+    expect(pantalla).toMatch(/api\.post<[^>]*>\("\/api\/sellers\/invite"/);
+  });
+
   it("el recorte de columnas se aplica en los TRES sitios que sirven filas", () => {
     /**
      * Listado, detalle y exportación. Dejar uno sin migrar es el fallo que
@@ -2480,7 +2539,17 @@ describe("el alcance por sucursal", () => {
      */
     const auth = read("src/lib/supabase/auth-context.ts");
     expect(auth).toMatch(/\.eq\("user_id", userId\)/);
-    expect(auth).toMatch(/ctx\.role === "seller"\) ctx\.sellerId = await loadSellerId/);
+    /**
+     * Se resuelve para TODO el personal interno, no solo para el rango más
+     * bajo: en una operadora pequeña el gerente y el dueño también venden, y
+     * sin este dato su apartado propio no existiría. No les acota nada
+     * —`sellerScopeApplies` solo mira al rango más bajo—, les da su vista.
+     *
+     * Y se salta para el socio y para el superadministrador, incluso mientras
+     * impersona: quien entra a mirar una empresa ajena no es vendedor de ella.
+     */
+    expect(auth).toMatch(/ctx\.role !== "partner" && ctx\.role !== "superadmin"/);
+    expect(auth).toMatch(/ctx\.sellerId = await loadSellerId\(ctx\.companyId!, user\.id\)/);
     // Y el panel usa ESE dato, no una segunda consulta que pueda discrepar.
     expect(read("src/app/api/dashboard/route.ts")).toMatch(/ctx\.sellerId \?\? null/);
   });

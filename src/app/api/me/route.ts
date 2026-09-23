@@ -24,6 +24,16 @@ export async function GET() {
       user: {
         id: ctx.userId, email: ctx.email, name: ctx.name,
         role: ctx.role, partnerId: ctx.partnerId,
+        /**
+         * Quién es esta persona COMO VENDEDOR, o null.
+         *
+         * El shell decidía a dónde llevar a cada quien mirando solo el rol, y
+         * con eso no se puede: un gerente que además vende tiene su apartado y
+         * su ERP, y un usuario con rol de vendedor SIN ficha vinculada no tiene
+         * ventas que enseñar —hay que decírselo, no mandarlo a una pantalla en
+         * blanco—. Son tres estados, no dos, y solo este dato los distingue.
+         */
+        sellerId: ctx.sellerId ?? null,
       },
       companyId: ctx.companyId,
       company: ctx.company,
