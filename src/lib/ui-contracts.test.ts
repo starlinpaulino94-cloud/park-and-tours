@@ -1676,7 +1676,7 @@ describe("integración con MembeGo", () => {
   });
 
   it("el estado de la membresía es una columna con dominio cerrado", () => {
-    const sql = read("supabase/migrations/0068_membego_membership_status.sql");
+    const sql = read("supabase/migrations/0077_membego_membership_status.sql");
     expect(sql).toMatch(/add column if not exists membership_status/);
     expect(sql).toMatch(/check \(membership_status in \('active', 'cancelled', 'expired'\)\)/);
     // El SQL va ANTES del despliegue, así que tiene que poder correrse dos
