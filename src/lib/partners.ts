@@ -53,6 +53,11 @@ export const PARTNER_RELATIONSHIP_COLUMNS: Record<string, string> = {
    * otra. Lo declara la operadora al pactar.
    */
   payment_mode: "payment_mode",
+  /**
+   * Y quién cobra al turista (0082). También del contrato, y por eso aquí: la
+   * misma agencia puede cobrar ella con una operadora y no con otra.
+   */
+  collection_mode: "collection_mode",
 };
 
 /**

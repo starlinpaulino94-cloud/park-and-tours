@@ -18,6 +18,7 @@ import { formatDate } from "@/lib/format";
 import { ensureSchedule, refreshAllocation } from "@/lib/schedule-service";
 import { creditCheck, holdUntil } from "@/lib/collections";
 import { esPrepago } from "@/lib/monedero-socio";
+import { modoDeCobro, type ModoDeCobro } from "@/lib/modo-de-cobro";
 import { assertSaldo, descontarVenta } from "@/lib/monedero-service";
 import { accrueBookingCosts, cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { reserveForSale, stockableOffers } from "@/lib/stock-commitment-service";
@@ -466,8 +467,9 @@ export async function createOrderWithBookings(
    * cuando hay vendedor: la venta directa, que es la mitad de las que se
    * registran, no paga nada.
    */
+  let fichaDelVendedor: Record<string, unknown> | null = null;
   if (attributedSeller) {
-    const [fichaDelVendedor] = await tenantQuery<Record<string, unknown>>(companyId, "seller", {
+    [fichaDelVendedor] = await tenantQuery<Record<string, unknown>>(companyId, "seller", {
       _filter: { _id: attributedSeller }, _limit: 1,
     });
     const desajuste = desajusteDeAtribucion(fichaDelVendedor ?? null, input.partner_id ?? null);
@@ -571,6 +573,17 @@ export async function createOrderWithBookings(
    * comprobación y el cobro, y entonces se cobraría sin haber comprobado.
    */
   let prepago = false;
+  /** La relación comercial del socio, para decidir el modo de cobro abajo. */
+  let relacionDelSocio: { collection_mode?: string | null } | null = null;
+  /**
+   * Y con qué modo de cobro se cierra ESTA venta (0082).
+   *
+   * Se sella en la orden porque un contrato que cambie entre la venta y el
+   * cobro dejaría el dinero movido bajo un modo y la liquidación calculada con
+   * otro — la misma lección que la cancelación del monedero, que mira el libro
+   * y no el contrato de hoy.
+   */
+  let modoDelCobro: ModoDeCobro = "operator_collects";
 
   // ---- límite de crédito del socio (0039) --------------------------------
   // `credit_limit` llevaba desde la migración 0002 sin que nada lo mirara: se
@@ -581,6 +594,7 @@ export async function createOrderWithBookings(
     const creditTerms = (await tenantQuery<Partner>(companyId, "partner", {
       _filter: { _id: input.partner_id }, _limit: 1,
     }))[0];
+    relacionDelSocio = (creditTerms ?? null) as { collection_mode?: string | null } | null;
 
     /**
      * ── EL SALDO PREPAGO (0080) ──────────────────────────────────────────
@@ -633,8 +647,22 @@ export async function createOrderWithBookings(
     }
   }
 
+  /**
+   * El modo con el que se cierra esta venta (0082), decidido con las dos
+   * declaraciones y no con una: el contrato del socio manda sobre la ficha del
+   * vendedor, o un vendedor de un tour center retendría de un dinero que la
+   * operadora nunca va a ver pasar.
+   */
+  modoDelCobro = modoDeCobro({
+    relacion: relacionDelSocio,
+    vendedor: fichaDelVendedor as { collection_mode?: string | null } | null,
+  });
+
   const order = await tenantCreate<Order>(companyId, "order", {
     order_number: await uniqueCode(companyId, "order", "order_number", newOrderNumber),
+    // Se sella y no se toca: lo que manda es lo que pasó, no lo que se pacta
+    // después.
+    collection_mode: modoDelCobro,
     customer: input.customer_id,
     // La sucursal de quien vende, salvo que la venta diga otra. Sin esto, la
     // venta del tour center nacía sin sucursal y el corte por punto de venta

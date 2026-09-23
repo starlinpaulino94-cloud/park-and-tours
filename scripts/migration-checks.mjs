@@ -480,6 +480,18 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0082 — quién se queda el dinero entre la venta y el servicio",
+    // El sistema solo conocía un modo: paga todo el cliente al operador. Los
+    // otros dos —cobra el punto de venta y debe el neto; el vendedor retiene su
+    // comisión— se parecen en la pantalla de cobro y se distinguen un mes
+    // después, cuando alguien intenta cuadrar quién tiene el dinero.
+    columns: [
+      ["organization_relationships", ["collection_mode"]],
+      ["seller", ["collection_mode"]],
+      ["sales_order", ["collection_mode"]],
+    ],
+  },
+  {
     migration: "0081 — de quién es el dinero de cada caja",
     // Las tres tablas de caja llevaban sucursal y usuario, y nada más: no había
     // forma de decir «esta caja es del mostrador del tour center Coral». Y

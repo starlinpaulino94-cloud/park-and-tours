@@ -2641,3 +2641,48 @@ Y la tabla dice dos cosas más que no se preguntaban:
   denegadas — la guarda buscaba entonces en las definiciones de recursos, donde
   el nombre sí aparece.
 - **Mutación: diecisiete, las diecisiete muertas.**
+
+### Fase 7.3 — tres modos de cobro, y el sistema solo conocía uno
+- **El único que existía era «paga todo el cliente al operador».** Los otros dos
+  —cobra el punto de venta y debe el neto; el vendedor retiene su comisión y el
+  cliente paga el resto al subir— se parecen bastante en la pantalla de cobro y
+  se distinguen un mes después, cuando alguien intenta cuadrar qué se cobró,
+  quién lo tiene y a quién se le debe.
+- **Se declara en TRES sitios, y cada uno tiene su motivo.** Los dos primeros
+  son del CONTRATO con el tour center —la misma agencia puede cobrar ella con
+  una operadora y no con otra—, así que van en la relación, al lado de
+  `pricing_model` (0078) y `payment_mode` (0080). El tercero es de la PERSONA:
+  un promotor retiene y el cajero del mostrador no, trabajando los dos para la
+  misma operadora.
+- **Y la VENTA guarda el que se le aplicó.** Es la lección de la cancelación del
+  monedero (6.6): un contrato que cambia entre la venta y el cobro dejaría el
+  dinero movido bajo un modo y la liquidación calculada con otro, y nadie sabría
+  cuál de los dos fue el que pasó. No es escribible por CRUD — editable, se
+  podría reescribir a posteriori dónde estuvo el dinero de una venta liquidada.
+- **El contrato del socio gana a la ficha del vendedor, que es el orden
+  contrario al que parece.** Un vendedor de un tour center que retiene puede
+  existir, pero mientras el contrato diga que cobra el punto de venta, el dinero
+  es del mostrador y no suyo: dejar que su ficha gane haría que retuviera de un
+  dinero que la operadora nunca va a ver pasar.
+- **`pos_collects` no cabe en una ficha de persona**, y el `check` de la base lo
+  impide: el punto de venta es el tour center, no el vendedor. Ofrecerlo en su
+  ficha invitaría a declarar ahí algo que luego decide el contrato, y las dos
+  declaraciones acabarían discrepando.
+- **La comisión retenida nunca pasa del total.** Con una comisión mal
+  configurada —un porcentaje de más, una regla fija por encima del precio— el
+  vendedor retendría más de lo que cobró y el cliente subiría a la guagua con
+  saldo NEGATIVO: con dinero a devolver por una excursión que aún no ha hecho.
+- **Lo desconocido es «paga el cliente al operador»**, en las tres columnas. Es
+  lo que el sistema hace hoy con absolutamente todas las ventas; nacer en otro
+  modo cambiaría de golpe, el día del despliegue, dónde está el dinero de todo
+  lo que ya existe. La venta admite nulo a propósito: rellenar un histórico con
+  un modo que nadie declaró sería afirmar algo sobre ventas viejas que nadie
+  comprobó.
+- **Dos guardas no mordían.** Una rebanaba el recurso de la venta desde
+  `  order: {`, que sale ANTES en el fichero como expansión de otro recurso —la
+  guarda leía cincuenta líneas por encima del recurso que quería mirar y daba
+  por buena una lista de escribibles que ni había visto. La otra no existía: un
+  campo del formulario que el recurso no acepta se rellena, se guarda sin
+  quejarse y no cambia nada, que es el mismo silencio de `authorized_products`
+  antes de 6.1.
+- **Mutación: catorce, las catorce muertas.**

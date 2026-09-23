@@ -121,6 +121,20 @@ export default function PartnersPage() {
             { value: "credit", label: "A crédito (vende ahora, paga después)" },
             { value: "prepaid", label: "Prepago (ingresa y va gastando)" },
           ] },
+        /**
+         * Y QUIÉN COBRA al turista. Va junto a la forma de pago porque son las
+         * dos mitades de la misma pregunta —quién tiene el dinero y cuándo— y
+         * declararlas lejos una de otra es cómo se pactan dos cosas que no
+         * encajan.
+         */
+        { name: "collection_mode", label: "Quién cobra al turista", type: "select",
+          defaultValue: "operator_collects",
+          help: "Con «cobra el punto de venta», su efectivo no pasa por tu caja y te debe el neto.",
+          options: [
+            { value: "operator_collects", label: "El cliente paga todo al operador" },
+            { value: "pos_collects", label: "Cobra el punto de venta y debe el neto" },
+            { value: "seller_retains", label: "Su vendedor retiene la comisión; el cliente paga el resto al subir" },
+          ] },
         { name: "credit_limit", label: "Límite de crédito", type: "number" },
         { name: "credit_days", label: "Días de crédito", type: "number" },
         { name: "contract_from", label: "Contrato desde", type: "date" },

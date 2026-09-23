@@ -114,6 +114,15 @@ export const RESOURCES: Record<string, ResourceDef> = {
       "user", "partner", "branch", "code", "first_name", "last_name", "email", "phone", "whatsapp",
       "seller_role", "commission_pct", "monthly_goal", "max_discount_pct", "currency", "photo_url",
       "hire_date", "status", "notes", "supervisor", "seller_type",
+      /**
+       * Si esta persona retiene su comisión en el acto (0082).
+       *
+       * Escribible con rango `manager`, como el resto de la ficha: decidir que
+       * un promotor cobra su parte en la playa es una decisión comercial, no
+       * una de caja. Lo que NO se puede tocar por aquí es el modo con el que se
+       * cerró una venta ya hecha — ése vive en la orden y no es escribible.
+       */
+      "collection_mode",
     ],
     numeric: ["commission_pct", "monthly_goal", "max_discount_pct"],
     dates: ["hire_date"],

@@ -7113,4 +7113,112 @@ describe("el socio que integra por API", () => {
     expect(mov).toMatch(/const dueno = duenoDeLaCaja\(session\)/);
     expect(mov, "el socio no puede venir del cuerpo").not.toMatch(/body\.partner_id/);
   });
+
+  /* ═══════════════════════ Fase 7.3 · los tres modos de cobro */
+
+  it("LO DESCONOCIDO ES «PAGA EL CLIENTE AL OPERADOR»", () => {
+    /**
+     * Es lo que el sistema hace hoy con ABSOLUTAMENTE todas las ventas. Nacer
+     * en cualquier otro modo cambiaría de golpe, el día del despliegue, dónde
+     * está el dinero de todo lo que ya existe: el efectivo de la operadora
+     * pasaría a contarse como deuda del punto de venta, o la comisión de cada
+     * vendedor aparecería como ya cobrada sin que nadie le haya dado un peso.
+     */
+    const dominio = cuerpoDe("src/lib/modo-de-cobro.ts");
+    expect(dominio).toMatch(/\?\? "operator_collects"/);
+    const sql = read("supabase/migrations/0082_collection_mode.sql").replace(/^\s*--.*$/gm, "");
+    expect((sql.match(/default 'operator_collects'/g) || []).length, "las dos declaraciones")
+      .toBe(2);
+  });
+
+  it("el contrato del socio gana a la ficha del vendedor", () => {
+    /**
+     * Es el orden contrario al que parece. Un vendedor de un tour center que
+     * retiene puede existir, pero mientras el contrato diga que cobra el punto
+     * de venta, el dinero es del mostrador y no suyo: dejar que su ficha gane
+     * haría que retuviera de un dinero que la operadora nunca va a ver pasar.
+     */
+    const dominio = cuerpoDe("src/lib/modo-de-cobro.ts");
+    const i = dominio.indexOf("export function modoDeCobro");
+    const cuerpo = dominio.slice(i, i + 400);
+    expect(cuerpo).toMatch(/const delSocio = limpio\(contrato\?\.relacion\?\.collection_mode\)/);
+    expect(cuerpo, "el contrato tiene que mandar primero").toMatch(/if \(delSocio\) return delSocio;/);
+  });
+
+  it("«cobra el punto de venta» NO se declara en una ficha de vendedor", () => {
+    /**
+     * El punto de venta es el tour center, no la persona. Ofrecerlo en su ficha
+     * invitaría a declarar ahí algo que luego decide el contrato, y las dos
+     * declaraciones acabarían discrepando.
+     */
+    const sql = read("supabase/migrations/0082_collection_mode.sql").replace(/^\s*--.*$/gm, "");
+    const i = sql.indexOf("alter table seller");
+    expect(i, "no se declara en la ficha").toBeGreaterThan(-1);
+    const bloque = sql.slice(i, i + 400);
+    expect(bloque).toMatch(/check \(collection_mode in \('operator_collects','seller_retains'\)\)/);
+    expect(bloque, "pos_collects no cabe en una persona").not.toMatch(/pos_collects/);
+  });
+
+  it("LA VENTA GUARDA EL MODO QUE SE LE APLICÓ", () => {
+    /**
+     * Es la lección de la cancelación del monedero (6.6): un contrato que
+     * cambie entre la venta y el cobro dejaría el dinero movido bajo un modo y
+     * la liquidación calculada con otro, y nadie sabría cuál de los dos pasó.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    const iOrden = servicio.indexOf('tenantCreate<Order>(companyId, "order"');
+    expect(iOrden, "no se crea la orden").toBeGreaterThan(-1);
+    expect(servicio.slice(iOrden, iOrden + 400), "la venta nace sin modo")
+      .toMatch(/collection_mode: modoDelCobro,/);
+    // Y se decide ANTES de escribirla, con las dos declaraciones.
+    const iModo = servicio.indexOf("modoDelCobro = modoDeCobro({");
+    expect(iModo, "no se decide el modo").toBeGreaterThan(-1);
+    expect(iModo).toBeLessThan(iOrden);
+    expect(servicio.slice(iModo, iModo + 220)).toMatch(/relacion: relacionDelSocio/);
+    expect(servicio.slice(iModo, iModo + 220)).toMatch(/vendedor: fichaDelVendedor/);
+  });
+
+  it("y el modo de una venta ya hecha no se edita por CRUD", () => {
+    // Lo que manda es lo que pasó. Editable, se podría reescribir a posteriori
+    // dónde estuvo el dinero de una venta ya liquidada.
+    const recursos = sinComentariosDe("src/lib/resources.ts");
+    /**
+     * `\n  order: {` con el salto de línea delante, y no `  order: {` a secas:
+     * la expansión `order: { _limit: 50, … }` de otro recurso sale ANTES en el
+     * fichero con la misma indentación, y la rebanada acababa en su llave —
+     * cincuenta líneas por encima del recurso que se quería mirar. La guarda
+     * daba por buena una lista de escribibles que ni siquiera había leído.
+     */
+    const i = recursos.indexOf("\n  order: {\n");
+    expect(i, "no se encuentra el recurso de la venta").toBeGreaterThan(-1);
+    const bloque = recursos.slice(i, recursos.indexOf("\n  },", i));
+    expect(bloque, "la rebanada llega a los escribibles").toMatch(/writable:/);
+    expect(bloque, "el modo de la venta no puede ser escribible").not.toMatch(/collection_mode/);
+  });
+
+  it("y el del vendedor SÍ se puede declarar", () => {
+    /**
+     * Un campo en el formulario que el recurso no acepta es un campo que se
+     * rellena, se guarda sin quejarse y no cambia nada: `sanitizePayload`
+     * descarta lo que no está en `writable`. Es el mismo silencio de
+     * `authorized_products` antes de 6.1.
+     */
+    const recursos = sinComentariosDe("src/lib/resources.ts");
+    const i = recursos.indexOf("\n  seller: {\n");
+    expect(i, "no se encuentra el recurso del vendedor").toBeGreaterThan(-1);
+    const bloque = recursos.slice(i, recursos.indexOf("\n  },", i));
+    expect(bloque, "el modo del vendedor no llegaría a guardarse")
+      .toMatch(/"collection_mode"/);
+  });
+
+  it("los dos modos se declaran en su ficha, cada uno en la suya", () => {
+    // Un modo que no se puede declarar es una columna muerta, que es de lo que
+    // venimos en esta fase entera.
+    expect(cuerpoDe("src/app/dashboard/partners/page.tsx"))
+      .toMatch(/name: "collection_mode"[\s\S]{0,400}?pos_collects/);
+    expect(cuerpoDe("src/app/dashboard/vendedores/page.tsx"))
+      .toMatch(/name: "collection_mode"[\s\S]{0,400}?seller_retains/);
+    // Y llegan a la relación comercial, que es donde vive el del socio.
+    expect(cuerpoDe("src/lib/partners.ts")).toMatch(/collection_mode: "collection_mode"/);
+  });
 });

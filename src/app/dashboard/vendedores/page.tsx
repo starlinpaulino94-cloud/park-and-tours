@@ -129,6 +129,22 @@ export default function SellersPage() {
         { name: "supervisor", label: "Supervisor", type: "reference", resource: "seller",
           optionLabel: (s: any) => [s.first_name, s.last_name].filter(Boolean).join(" ") },
         { name: "commission_pct", label: "Comisión estándar", type: "number", suffix: "%" },
+        /**
+         * Y si la retiene en el acto (0082). Justo debajo de la comisión, que
+         * es de lo que se retiene: verlas separadas es cómo se declara una
+         * retención sobre un porcentaje que nadie fijó.
+         *
+         * Aquí no aparece «cobra el punto de venta»: el punto de venta es el
+         * tour center, no la persona, y ofrecerlo invitaría a declarar en la
+         * ficha algo que luego decide el contrato.
+         */
+        { name: "collection_mode", label: "Cobro en la calle", type: "select",
+          defaultValue: "operator_collects",
+          help: "Con «retiene», se queda su comisión al vender y el cliente paga el resto al subir.",
+          options: [
+            { value: "operator_collects", label: "El cliente paga todo al operador" },
+            { value: "seller_retains", label: "Retiene su comisión como depósito" },
+          ] },
         { name: "monthly_goal", label: "Meta mensual", type: "number" },
         { name: "max_discount_pct", label: "Descuento máximo autorizado", type: "number", suffix: "%" },
         { name: "currency", label: "Moneda", type: "select", options: CURRENCY_OPTIONS },
