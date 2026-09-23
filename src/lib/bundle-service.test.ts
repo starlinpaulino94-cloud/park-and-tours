@@ -230,3 +230,57 @@ describe("el paquete no se ofrece donde no se puede vender", () => {
       .toMatch(/disabled=\{!bundlePlan \|\| !!bundlePlan\.blocker/);
   });
 });
+
+describe("el paquete de demostración resuelve", () => {
+  /**
+   * Comprueba la FORMA de los datos que siembra `supabase/editor/demo_paquete.sql`.
+   *
+   * No basta con que las filas existan: las duraciones y el margen tienen que
+   * dejar un itinerario sin conflictos. Saona dura 10 h y sale a las 8 —acaba a
+   * las 18— así que encadenarla con otra actividad el MISMO día chocaría. Van
+   * en días distintos justamente por eso, y esto lo fija: si mañana alguien
+   * mueve un `day_offset` del guion, esta prueba lo dice.
+   */
+  const COMBO = "prod-combo";
+  const HOYO = "prod-hoyo";
+
+  beforeEach(() => {
+    db = fakeDb({
+      product: [
+        { _id: COMBO, organization_id: EMPRESA, name: "Gran Combo Punta Cana", is_bundle: true, bundle_buffer_minutes: 45 },
+        { _id: SAONA, organization_id: EMPRESA, name: "Isla Saona Clásica", duration_hours: 10 },
+        { _id: BUGGY, organization_id: EMPRESA, name: "Buggies Doble Aventura", duration_hours: 4 },
+        { _id: HOYO, organization_id: EMPRESA, name: "Hoyo Azul y Scape Park", duration_hours: 5 },
+      ],
+      product_bundle_item: [
+        { _id: "c-1", organization_id: EMPRESA, bundle: COMBO, product: SAONA, day_offset: 0, sort_order: 1 },
+        { _id: "c-2", organization_id: EMPRESA, bundle: COMBO, product: BUGGY, day_offset: 1, sort_order: 2 },
+        { _id: "c-3", organization_id: EMPRESA, bundle: COMBO, product: HOYO, day_offset: 2, sort_order: 3 },
+      ],
+      // Diez días de salidas, como las que crea el guion.
+      departure: [1, 2, 3, 4].flatMap((d) => [
+        { _id: `s-${d}`, organization_id: EMPRESA, product: SAONA, departure_at: `2026-10-0${d}T12:00:00.000Z`, capacity: 120, booked_pax: 0, pending_pax: 0, status: "available" },
+        { _id: `b-${d}`, organization_id: EMPRESA, product: BUGGY, departure_at: `2026-10-0${d}T13:00:00.000Z`, capacity: 16, booked_pax: 0, pending_pax: 0, status: "available" },
+        { _id: `h-${d}`, organization_id: EMPRESA, product: HOYO, departure_at: `2026-10-0${d}T13:00:00.000Z`, capacity: 30, booked_pax: 0, pending_pax: 0, status: "available" },
+      ]),
+    });
+    sb = fakeSupabase(db);
+  });
+
+  it("arma los tres días sin conflictos", async () => {
+    const plan = await planBundle(ctx(), { bundleId: COMBO, startDay: "2026-10-01", pax: 2 });
+    expect(plan!.blocker, "el combo de demostración no se puede vender").toBeNull();
+    expect(plan!.blocks).toHaveLength(3);
+    // Una actividad por día, en el orden del paquete.
+    expect(plan!.blocks.map((b) => b.productName)).toEqual([
+      "Isla Saona Clásica", "Buggies Doble Aventura", "Hoyo Azul y Scape Park",
+    ]);
+  });
+
+  it("el cupo del buggy (16) es el que limita el grupo", async () => {
+    // El dato que hace la demo interesante: el paquete no cabe para 20 aunque
+    // Saona tenga 120 plazas. Es la restricción real de un combo.
+    const plan = await planBundle(ctx(), { bundleId: COMBO, startDay: "2026-10-01", pax: 20 });
+    expect(plan!.blocker).toBeTruthy();
+  });
+});
