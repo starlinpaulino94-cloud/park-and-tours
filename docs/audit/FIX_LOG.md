@@ -2253,3 +2253,29 @@ daba error: los tres producían números equivocados en silencio.
   salido en el archivo — y nadie lo habría notado, porque el socio no sabe qué
   columnas debería tener y quien las declaró no vuelve a mirar.
 - **Mutación: ocho, las ocho muertas.**
+
+---
+
+## La medición del conteo de plan — hecha (2026-09-23)
+
+`supabase/editor/medir_usuarios_antes_de_activar_el_conteo.sql`, ejecutada en
+producción antes de desplegar el arreglo de 4.5. Resultado:
+
+| operadora | plan | tope | antes | ahora | efecto |
+| --- | --- | --- | --- | --- | --- |
+| Platform Admin | — | — | 2 | 2 | sin tope declarado |
+| Havelgo Demo Tours | — | — | 1 | 1 | sin tope declarado |
+
+**Ninguna operadora se pasa: el arreglo se puede desplegar sin avisar a nadie.**
+Queda cerrado el «no es opcional» que este registro dejó escrito en 4.5.
+
+Y la tabla dice dos cosas más que no se preguntaban:
+
+- **`antes` y `ahora` coinciden en las dos**, o sea que hoy no hay NINGUNA
+  membresía colgando de una organización de socio. Es exactamente lo que
+  describía 4.1 —«ningún tour center podía entrar»— visto desde los datos: el
+  hueco que 4.1 cerró no llegó a producir un solo usuario de portal.
+- **Ninguna de las dos tiene plan asignado**, así que `max_users` es nulo y el
+  techo no existe todavía. El conteo corregido no limitará nada hasta que se
+  asigne un plan; conviene volver a correr esta consulta el día que se asigne,
+  porque entonces sí puede haber una operadora por encima.
