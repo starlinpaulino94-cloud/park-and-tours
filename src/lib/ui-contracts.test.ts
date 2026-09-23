@@ -6110,3 +6110,56 @@ describe("la cartera propia del tour center", () => {
     expect(cte, "el where no esconde las directas").not.toMatch(/and o\.partner_id is not null/);
   });
 });
+
+describe("el portal deja de ser solo lectura", () => {
+  it("la pantalla no decide precio, cupo ni crédito", () => {
+    /**
+     * Las tres cosas vienen del servidor: el neto del motor de precios con el
+     * canal `b2b_portal`, las plazas del catálogo, y el crédito lo vuelve a
+     * comprobar la venta con los documentos abiertos al escribir. Lo que se
+     * pinta es un espejo — uno que decidiera por su cuenta sería la segunda
+     * verdad que se desincroniza sola, y aquí eso es prometerle una plaza a un
+     * cliente que ya no existe.
+     */
+    const pantalla = sinComentariosDe("src/app/portal/reservar/page.tsx");
+    expect(pantalla, "el precio sale del catálogo").toMatch(/p\.price\?\.unit_price \?\? 0/);
+    expect(pantalla, "no hay tarifa escrita a mano").not.toMatch(/resolvePrice|price_rule|margin/);
+    // El total es una suma de lo que mandó el servidor, no una fórmula con
+    // descuentos ni comisiones inventadas en el navegador.
+    expect(pantalla).toMatch(/l\.unit_price \* \(l\.adults \+ l\.children\)/);
+  });
+
+  it("y no manda el socio en el cuerpo de la venta", () => {
+    /**
+     * Lo pone el servidor desde el contexto. Mandarlo daría la impresión de que
+     * la pantalla lo decide, y el día que alguien cambiara ese valor en la
+     * petición se descubriría que no servía de nada — o, peor, que sí.
+     */
+    const pantalla = sinComentariosDe("src/app/portal/reservar/page.tsx");
+    const envio = pantalla.slice(pantalla.indexOf('api.post<{ order'), pantalla.indexOf("setConfirmando(false)"));
+    expect(envio).not.toMatch(/partner_id/);
+    // Ni el precio: un `unit_price_override` desde el portal sería «pon tú el
+    // precio». La ruta lo borra igual; esto es para que no se intente.
+    expect(envio).not.toMatch(/unit_price|override/);
+  });
+
+  it("el crédito que se enseña se llama estimación y no bloquea", () => {
+    // El saldo vivo cambia con cada cobro y quien decide es el servidor al
+    // escribir. Un veto aquí haría que el socio dejara de vender por un número
+    // viejo; el aviso le dice dónde está sin decidir por él.
+    const pantalla = cuerpoDe("src/app/portal/reservar/page.tsx");
+    expect(pantalla, "se calcula el exceso").toMatch(/Math\.max\(total - credito\.credit_available, 0\)/);
+    // Y el botón de confirmar no lo mira.
+    const boton = pantalla.slice(pantalla.indexOf("disabled={confirmando"));
+    expect(boton.slice(0, 120)).not.toMatch(/exceso/);
+  });
+
+  it("y la venta del socio sigue sin poder saltarse su crédito", () => {
+    // Estaba desde antes y es lo que hace que el aviso de arriba pueda ser solo
+    // un aviso. Se sujeta aquí para que no se caiga al abrir el portal a vender.
+    expect(cuerpoDe("src/app/api/orders/route.ts"))
+      .toMatch(/if \(esDeSocio\(ctx\)\) delete body\.allow_over_credit/);
+    expect(cuerpoDe("src/app/api/orders/route.ts"))
+      .toMatch(/if \(esDeSocio\(ctx\) && ctx\.partnerId\) body\.partner_id = ctx\.partnerId/);
+  });
+});

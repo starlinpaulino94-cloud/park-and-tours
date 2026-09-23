@@ -2151,3 +2151,30 @@ daba error: los tres producían números equivocados en silencio.
   dentro de las expansiones de otros recursos. Un `not.toMatch` sobre el trozo
   equivocado siempre pasa. Ahora se ancla en su `table`.
 - **Mutación: diez, las diez muertas.**
+
+### Fase 5.3b — el portal reserva
+- **`/portal/reservar`**: el catálogo con el neto del socio, las plazas reales,
+  su crédito disponible y su propia cartera de clientes, en una pantalla.
+- **Lo que la pantalla NO hace, que es la parte que importa:** no calcula
+  precios, no comprueba cupo y no decide si el crédito llega. El neto lo da el
+  motor de precios con el canal `b2b_portal`, las plazas las da el catálogo, y
+  el crédito lo vuelve a comprobar la venta con los documentos abiertos en el
+  momento de escribir. Lo que se pinta es un **espejo**; uno que decidiera por
+  su cuenta sería la segunda verdad que se desincroniza sola, y aquí eso es
+  prometerle una plaza a un cliente que ya no existe.
+- **El aviso de crédito no bloquea.** El saldo vivo cambia con cada cobro y
+  quien decide es el servidor al escribir; un veto en pantalla haría que el
+  socio dejara de vender por un número viejo. Y sigue sin poder saltárselo: la
+  ruta le borra `allow_over_credit` desde antes, y eso es lo que permite que el
+  aviso sea solo un aviso.
+- **Tampoco manda el socio ni el precio en el cuerpo.** Los pone el servidor.
+  Mandarlos daría la impresión de que la pantalla lo decide, y el día que
+  alguien cambiara ese valor en la petición se descubriría que no servía de
+  nada — o, peor, que sí.
+- **Y una guarda vieja cazó un error nuevo en el acto**: escribí
+  `available_pax ?? 0` al pintar las plazas. La regla que nació de una captura
+  del usuario —un cupo que nadie ha calculado no es un agotado— saltó en la
+  primera ejecución. Pasa por `plazasParaMostrar`, que dice «cupo sin definir»
+  en vez de un cero rojo que le diría al tour center que no puede vender una
+  salida vacía.
+- **Mutación: seis, las seis muertas.**
