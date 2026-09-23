@@ -97,8 +97,25 @@ enabled = false
 [realtime]
 enabled = false
 
+# EN TRUE PORQUE LAS MIGRACIONES LO NECESITAN, no porque el E2E suba ficheros.
+#
+# Con el servicio apagado, la pila local ni siquiera crea el esquema `storage`.
+# Y `0016_storage.sql` empieza insertando en `storage.buckets`, así que la
+# migración revienta con «relation "storage.buckets" does not exist» y
+# `supabase start` no llega a levantar. Apagarlo no ahorraba un contenedor:
+# impedía que las migraciones se aplicaran.
+#
+# Nadie lo había visto porque el CI no pasaba del paso de bajar las imágenes:
+# se quedaba antes, contra el límite de peticiones del registro. Arreglado eso,
+# esto es lo primero que aparece.
+#
+# La alternativa —hacer que `0016` tolere que no exista el esquema— se descarta
+# a propósito: dejaría el CI aplicando un juego de migraciones DISTINTO del de
+# producción, y perdería justo lo que esta pila viene a dar («el E2E prueba
+# TAMBIÉN que las migraciones levantan un sistema utilizable desde cero»). Un
+# CI que aplica otras migraciones no comprueba las de verdad.
 [storage]
-enabled = false
+enabled = true
 
 # El buzón de correo local: no se levanta, y por eso el arranque del E2E crea la
 # cuenta ya confirmada en vez de esperar un correo que nadie va a leer.
