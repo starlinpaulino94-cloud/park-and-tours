@@ -6011,3 +6011,102 @@ describe("/portal/vendedores", () => {
     expect(ruta, "no arma su propio ámbito de socio").not.toMatch(/partnerScopeFor|PARTNER_OWNED/);
   });
 });
+
+describe("la cartera propia del tour center", () => {
+  it("`customer` entra como PROPIA del socio, no como compartida", () => {
+    /**
+     * Sin `customer` en su ámbito el socio no podía terminar una venta —la
+     * orden exige cliente—. Con él compartido habría visto la cartera ENTERA
+     * de la operadora: nombres, teléfonos y correos, a la vista de sus
+     * revendedores. Es la misma trampa que con `seller`, con datos personales
+     * de terceros dentro.
+     */
+    const recursos = sinComentariosDe("src/lib/resources.ts");
+    const propias = recursos.slice(
+      recursos.indexOf("const PARTNER_OWNED_TABLES"),
+      recursos.indexOf("const PARTNER_SHARED_TABLES"));
+    const compartidas = recursos.slice(
+      recursos.indexOf("const PARTNER_SHARED_TABLES"),
+      recursos.indexOf("export type PartnerScope"));
+    expect(propias, "propia").toMatch(/"customer"/);
+    expect(compartidas, "y nunca compartida").not.toMatch(/"customer"/);
+  });
+
+  /**
+   * El bloque del recurso `customer`, delimitado por su `table`.
+   *
+   * `"  customer: {"` a secas no vale: esa misma cadena aparece antes dentro de
+   * las expansiones de otros recursos, así que el corte salía de un sitio que
+   * no era y una comprobación de «esto NO aparece» pasaba por mirar donde no
+   * había nada. Un `not.toMatch` sobre el trozo equivocado siempre pasa.
+   */
+  const bloqueDeCliente = () => {
+    const recursos = sinComentariosDe("src/lib/resources.ts");
+    const i = recursos.indexOf('customer: {\n    table: "customer"');
+    expect(i, "no se encontró el recurso customer").toBeGreaterThan(-1);
+    return recursos.slice(i, recursos.indexOf('lead: {\n    table: "lead"'));
+  };
+
+  it("y de quién es un cliente no se escribe desde el formulario", () => {
+    // Con `partner` en la lista blanca, un tour center daría de alta clientes
+    // a nombre de otro —o de la operadora— y se los quitaría de la cartera.
+    const bloque = bloqueDeCliente();
+    expect(bloque.slice(bloque.indexOf("writable"))).not.toMatch(/"partner"/);
+  });
+
+  it("el alta del portal sella el socio desde el contexto", () => {
+    const ruta = cuerpoDe("src/app/api/portal/customers/route.ts");
+    expect(ruta, "solo el socio").toMatch(/if \(!esDeSocio\(ctx\) \|\| !ctx\.partnerId\)[\s\S]{0,120}throw/);
+    expect(ruta, "el sello").toMatch(/payload\.partner_id = ctx\.partnerId/);
+    // Y por lista blanca: el cuerpo no puede traer campos que nadie declaró.
+    expect(ruta, "lista blanca").toMatch(/for \(const campo of CAMPOS\)/);
+    expect(ruta, "y no se copia el cuerpo entero").not.toMatch(/\.\.\.body/);
+  });
+
+  it("el socio ve la ficha del cliente, no su historial con la operadora", () => {
+    /**
+     * `customer.expandOne` arrastra órdenes, reservas y oportunidades: todo lo
+     * que esa persona le ha comprado nunca a la operadora, incluido lo que
+     * compró por otro canal. Y apoyarse en que la RLS filtre esas expansiones
+     * no vale — la capa de datos habla por el rol de servicio cuando la RLS
+     * está apagada, y entonces no filtra nadie.
+     */
+    expect(bloqueDeCliente()).toMatch(/expandOnePartner: \{ hotel: true \}/);
+    const detalle = cuerpoDe("src/app/api/erp/[resource]/[id]/route.ts");
+    expect(detalle).toMatch(/\(esDeSocio\(ctx\) && def\.expandOnePartner\)/);
+  });
+
+  it("la migración 0075 pone la política en la MISMA entrega", () => {
+    /**
+     * El riesgo transversal del plan: cada tabla que se abre a un actor nuevo
+     * necesita su política en la misma fase. Aquí es más fuerte todavía — sin
+     * ella la aplicación filtraría por socio y la BASE diría que ese socio
+     * puede leer la cartera entera, y una política que contradice a la
+     * aplicación es la que alguien cita cuando se discute qué pasó.
+     *
+     * `seller` va en el mismo saco: 5.1 la abrió al socio en la aplicación y
+     * dejó la política como estaba. Se salda aquí.
+     */
+    const sql = read("supabase/migrations/0075_partner_customers.sql");
+    expect(sql, "la columna").toMatch(/add column if not exists partner_id/);
+    expect(sql, "las dos tablas").toMatch(/array\['customer', 'seller'\]/);
+    expect(sql, "y la política por socio").toMatch(/app\.can_read_partner\(partner_id\)/);
+  });
+
+  it("y el relleno no se inventa dueños", () => {
+    /**
+     * Sin relleno, la política le esconde al socio los clientes de sus PROPIAS
+     * reservas: hoy ve el nombre en cada una y mañana vería un hueco. Con un
+     * relleno ambicioso le regalaría clientes que también compraron por otro
+     * canal. Solo cuando no hay ninguna duda.
+     */
+    const sql = read("supabase/migrations/0075_partner_customers.sql");
+    expect(sql, "un único socio").toMatch(/having count\(distinct o\.partner_id\) = 1/);
+    expect(sql, "y ninguna compra directa")
+      .toMatch(/count\(\*\) filter \(where o\.partner_id is null\) = 0/);
+    // Y no se filtran las órdenes sin socio en el `where`: filtrarlas sacaría
+    // del grupo justo las que hacen ambiguo el caso.
+    const cte = sql.slice(sql.indexOf("with unico as"), sql.indexOf("group by o.customer_id"));
+    expect(cte, "el where no esconde las directas").not.toMatch(/and o\.partner_id is not null/);
+  });
+});

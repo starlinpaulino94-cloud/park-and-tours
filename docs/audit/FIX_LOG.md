@@ -2113,3 +2113,41 @@ daba error: los tres producían números equivocados en silencio.
   faltaba el caso del socio en blanco, que da un mensaje distinto («es de otro
   tour center» cuando no eligió ninguno) y manda a quien vende a buscar cuál es
   el otro.
+
+### Fase 5.3a — la cartera propia del tour center
+- **Lo que bloqueaba la venta desde el portal, y no era la venta.** `POST
+  /api/orders` acepta al socio desde hace tiempo y le fuerza su `partner_id`.
+  Lo que no podía era **terminar**: exige `customer_id`, y el socio no tenía
+  forma de crear ni de buscar un cliente. `customer` no estaba en su ámbito
+  —lo habría visto entero, que es la cartera de la operadora con teléfonos y
+  correos— y el CRUD genérico le deniega toda escritura. La pieza que faltaba
+  era una columna: de quién es cada cliente.
+- **Migración 0075**: `customer.partner_id`, su índice, y **la política en la
+  misma entrega**. Aquí es más fuerte que el riesgo transversal del plan: sin
+  ella la aplicación filtraría por socio y la BASE diría que ese socio puede
+  leer la cartera entera — y una política que contradice a la aplicación es la
+  que alguien cita el día que se discute qué pasó.
+- **`seller` va en el mismo saco, y es deuda de 5.1**: aquella ola la abrió al
+  socio en la aplicación y dejó la política como estaba. Se salda aquí.
+- **El relleno no se inventa dueños.** Sin relleno, la política le esconde al
+  socio los clientes de sus PROPIAS reservas: hoy ve el nombre en cada una y
+  mañana vería un hueco. Con un relleno ambicioso le regalaría clientes que
+  también compraron por otro canal. Solo se asigna cuando **todas** las compras
+  del cliente son de un mismo socio y **ninguna** es directa — y las directas no
+  se filtran en el `where`, porque filtrarlas sacaría del grupo justo los casos
+  ambiguos y el `having` los daría por inexistentes.
+- **El alta la sella el servidor.** `customer.partner_id` no está en la lista
+  blanca de escritura de nadie; la ruta del portal lo pone desde el contexto. Si
+  viniera del cuerpo, un tour center daría de alta clientes a nombre de otro y
+  se los quitaría de la cartera al siguiente. Y por lista blanca de campos, no
+  copiando el cuerpo.
+- **El socio ve la ficha, no el historial.** `customer.expandOne` arrastra
+  órdenes, reservas y oportunidades: todo lo que esa persona le ha comprado
+  nunca a la operadora, por cualquier canal. Se declara una expansión propia
+  para el socio en vez de confiar en que la RLS filtre — la capa de datos habla
+  por el rol de servicio cuando la RLS está apagada, y entonces no filtra nadie.
+- **Y una guarda que pasaba por mirar donde no había nada**: el trozo del
+  recurso `customer` se cortaba buscando `"  customer: {"`, que aparece antes
+  dentro de las expansiones de otros recursos. Un `not.toMatch` sobre el trozo
+  equivocado siempre pasa. Ahora se ancla en su `table`.
+- **Mutación: diez, las diez muertas.**
