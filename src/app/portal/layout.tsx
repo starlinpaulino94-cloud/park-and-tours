@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation";
-import { getTenantContext, tenantQuery, tenantCount, esDeSocio } from "@/lib/tenant";
+import {
+  getTenantContext, tenantQuery, tenantCount, esDeSocio, esDeProveedor, esInterno,
+} from "@/lib/tenant";
 import { inboxFilter } from "@/lib/notify";
 import { SideShell } from "@/components/tf/side-shell";
 import { PORTAL_NAV } from "@/lib/nav";
@@ -17,6 +19,12 @@ export default async function PortalLayout({ children }: { children: React.React
   const ctx = await getTenantContext();
   if (!ctx) redirect("/login");
   if (!ctx.companyId) redirect("/onboarding");
+  /**
+   * Y el proveedor no entra aquí. Este portal es el del tour center: vende,
+   * cobra y ve su catálogo y sus liquidaciones, y nada de eso es del
+   * transportista. Se le manda al suyo en vez de dejarle una pantalla a medias.
+   */
+  if (esDeProveedor(ctx)) redirect("/proveedor");
 
   /**
    * El socio apagado ve una explicación, no un portal roto.
@@ -43,7 +51,13 @@ export default async function PortalLayout({ children }: { children: React.React
     }
   }
 
-  const isStaff = !esDeSocio(ctx);
+  /**
+   * `esInterno` y no `!esDeSocio`: con el proveedor (0084) la negación dejó de
+   * querer decir «es de la operadora». Un transportista que llegara aquí se
+   * habría etiquetado como personal interno y le habríamos ofrecido el enlace
+   * de vuelta al ERP.
+   */
+  const isStaff = esInterno(ctx);
 
   /**
    * Las no leídas de su buzón, con la MISMA función que la bandeja.

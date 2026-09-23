@@ -801,6 +801,18 @@ export const QUICK_ACTIONS: NavItem[] = [
 /* Navegaciones planas (portal B2B y panel de plataforma)                      */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * El portal del PROVEEDOR (0084).
+ *
+ * Nace con una sola entrada a propósito: sus servicios, su hoja de ruta y su
+ * estado de cuenta llegan en las entregas siguientes, y una navegación llena de
+ * enlaces a pantallas que no existen es peor que una corta.
+ */
+export const PROVEEDOR_NAV: NavItem[] = [
+  { id: "prov-inicio", href: "/proveedor", label: "Mi ficha", icon: "Truck",
+    description: "Lo que la operadora tiene registrado de ti." },
+];
+
 export const PORTAL_NAV: NavItem[] = [
   { id: "p-resumen", href: "/portal", label: "Resumen", icon: "LayoutDashboard", description: "Tu actividad y saldo." },
   { id: "p-catalogo", href: "/portal/catalogo", label: "Catálogo", icon: "Ticket", description: "Qué puedes vender hoy." },
@@ -837,14 +849,16 @@ export const LEGACY_HUB_REDIRECTS: Record<string, string> = {
 /* Visibilidad                                                                */
 /* -------------------------------------------------------------------------- */
 
-const ROLE_RANK: Record<string, number> = {
-  superadmin: 100, owner: 90, admin: 80, manager: 60,
-  operations: 40, cashier: 40, seller: 20, partner: 10,
-};
-
-export function rankOf(role?: string): number {
-  return ROLE_RANK[role || ""] ?? 0;
-}
+/**
+ * El rango sale de `roles.ts`, que es el único sitio donde vive.
+ *
+ * Aquí había una copia de la misma tabla. Copiada, así que coincidía; separada,
+ * así que el día que alguien añadiera un rol coincidirían dos de tres — y una
+ * discrepancia entre el rango del menú y el de los permisos enseña una entrada
+ * que lleva a un 403, o peor, esconde una pantalla que la ruta sí sirve.
+ */
+import { rankOf } from "@/lib/roles";
+export { rankOf };
 
 interface Gated {
   minRole?: string;

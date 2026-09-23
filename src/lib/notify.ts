@@ -527,9 +527,8 @@ export function dedupeKeyFor(event: NotifyEventKey, input: DedupeInput = {}): st
 
 /* ------------------------------------------------------------- el alcance */
 
-const ROLE_RANK: Record<string, number> = {
-  superadmin: 100, owner: 90, admin: 80, manager: 60, operations: 40, cashier: 40, seller: 20, partner: 10,
-};
+// El rango sale de `roles.ts`. Aquí había la tercera copia de la misma tabla.
+import { rankOf } from "@/lib/roles";
 
 /**
  * Los destinos que alcanza quien tiene este rol.
@@ -541,8 +540,8 @@ const ROLE_RANK: Record<string, number> = {
 const AUDIENCES: AudienceRole[] = ["owner", "admin", "manager", "operations", "cashier", "seller"];
 
 export function audienceRolesFor(role: string): AudienceRole[] {
-  const rank = ROLE_RANK[role] ?? 0;
-  return AUDIENCES.filter((candidate) => ROLE_RANK[candidate] <= rank);
+  const rank = rankOf(role);
+  return AUDIENCES.filter((candidate) => rankOf(candidate) <= rank);
 }
 
 /** Quien pregunta por su bandeja. */

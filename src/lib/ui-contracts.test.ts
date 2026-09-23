@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import path from "node:path";
 import { PORTAL_NAV } from "@/lib/nav";
+import { rankOf } from "@/lib/roles";
 
 /**
  * Contratos de código fuente.
@@ -6371,8 +6372,19 @@ describe("la exportación del socio", () => {
      * varias veces en esta rama.
      */
     const ruta = cuerpoDe("src/app/api/export/[resource]/route.ts");
-    expect(ruta).toMatch(/const columnasDelSocio = esDeSocio\(ctx\) \? columnasParaSocio\(resource\) : null/);
-    expect(ruta).toMatch(/if \(esDeSocio\(ctx\) && !columnasDelSocio\) \{[\s\S]{0,260}throw new TenantError/);
+    /**
+     * Y la pregunta es «es de FUERA», no «es de un socio».
+     *
+     * Mientras el socio fue el único actor externo las dos frases coincidían.
+     * Con el proveedor (0084), `esDeSocio(ctx)` pasó a dejar fuera a un actor
+     * externo más — y ese caía en la rama de la operadora y se llevaba el juego
+     * de columnas INTERNO.
+     */
+    expect(ruta).toMatch(/const deFuera = !esInterno\(ctx\)/);
+    expect(ruta).toMatch(/const columnasDelSocio = deFuera \? columnasParaSocio\(resource\) : null/);
+    expect(ruta).toMatch(/if \(deFuera && !columnasDelSocio\) \{[\s\S]{0,260}throw new TenantError/);
+    expect(ruta, "la lista blanca no puede volver a preguntar solo por el socio")
+      .not.toMatch(/esDeSocio\(ctx\)/);
     // Y la lista llega al exportador: comprobar que se calcula y no usarla
     // sería la forma más silenciosa de que esto no hiciera nada.
     expect(ruta).toMatch(/fields: columnasDelSocio \?\? undefined/);
@@ -6382,7 +6394,11 @@ describe("la exportación del socio", () => {
     // La regla es para el actor externo. Aplicarla dentro rompería la promesa
     // de «llévate tus datos», que es de lo que trata esa pantalla.
     const ruta = cuerpoDe("src/app/api/export/[resource]/route.ts");
-    expect(ruta).toMatch(/esDeSocio\(ctx\) \? columnasParaSocio/);
+    expect(ruta).toMatch(/deFuera \? columnasParaSocio/);
+    // `esInterno` es una afirmación, no la negación de otra cosa: preguntarlo
+    // en positivo es lo que hace que el significado no cambie cuando llegue el
+    // cuarto actor.
+    expect(cuerpoDe("src/lib/tenant.ts")).toMatch(/export function esInterno\(/);
   });
 
   it("la lista blanca manda sobre las claves de los datos", () => {
@@ -7440,5 +7456,162 @@ describe("el socio que integra por API", () => {
     // consola del navegador.
     const pantalla = cuerpoDe("src/app/dashboard/mi-espacio/turno/page.tsx");
     expect(pantalla).not.toMatch(/\.filter\([^)]*seller/);
+  });
+
+  /* ════════ Fase 8.1 · el rango en un sitio y el tercer actor externo */
+
+  it("EL RANGO VIVE EN UN SOLO SITIO", () => {
+    /**
+     * Había TRES tablas idénticas: `tenant.ts` decidía los permisos, `nav.ts`
+     * qué entradas de menú se ven y `notify.ts` a quién alcanza un aviso.
+     * Copiadas, así que coincidían; separadas, así que el día que alguien
+     * añadiera un rol coincidirían dos de tres.
+     *
+     * Y la discrepancia no se ve: un rol que en `tenant` está por debajo del
+     * vendedor y en `nav` por encima enseña un menú que lleva a un 403. Al
+     * revés es peor — esconde una pantalla que la ruta sí sirve.
+     */
+    for (const modulo of ["src/lib/tenant.ts", "src/lib/nav.ts", "src/lib/notify.ts"]) {
+      expect(cuerpoDe(modulo), `${modulo} tiene su propia tabla de rango`)
+        .not.toMatch(/ROLE_RANK: Record</);
+    }
+    // Y la única declara los nueve, con los externos abajo.
+    const roles = cuerpoDe("src/lib/roles.ts");
+    expect(roles).toMatch(/export const ROLE_RANK: Record<AppRole, number>/);
+    expect(rankOf("supplier"), "el proveedor va por debajo del socio")
+      .toBeLessThan(rankOf("partner"));
+    expect(rankOf("partner")).toBeLessThan(rankOf("seller"));
+  });
+
+  it("UN ROL DESCONOCIDO NO SE ASCIENDE A VENDEDOR", () => {
+    /**
+     * EL HALLAZGO DE ESTA OLA, Y ES EL QUE EL PLAN MANDABA BUSCAR.
+     *
+     * La lista de roles válidos se escribía a mano en `auth-context`, y lo que
+     * hacía con lo que no reconocía NO era rechazarlo: lo convertía en
+     * `seller`. Añadir el rol de proveedor a la base sin acordarse de esa línea
+     * no lo habría dejado fuera — lo habría ASCENDIDO al rango 20, el que abre
+     * las veintiuna rutas que exigen vendedor: cotizar, cobrar, cancelar y
+     * reprogramar.
+     *
+     * Ahora la lista sale de la tabla de rango y lo desconocido cae al último.
+     */
+    const auth = cuerpoDe("src/lib/supabase/auth-context.ts");
+    expect(auth, "la lista de roles no puede escribirse a mano")
+      .toMatch(/const VALID_ROLES = new Set<AppRole>\(ROLES\);/);
+    expect(auth, "lo desconocido no puede caer en vendedor")
+      .toMatch(/: ROLES\[ROLES\.length - 1\]\) as AppRole;/);
+    expect(auth).not.toMatch(/\? claims\.app_role : "seller"/);
+  });
+
+  it("el proveedor se reconoce por su IDENTIFICADOR, no por el nombre del rol", () => {
+    /**
+     * El aislamiento del socio se escribió primero comparando el nombre y costó
+     * una fase entera (4.2) sacarlo de veintinueve sitios. El del proveedor
+     * nace con la regla buena.
+     */
+    const tenant = cuerpoDe("src/lib/tenant.ts");
+    expect(tenant).toMatch(/export function esDeProveedor\(/);
+    expect(tenant).toMatch(/return Boolean\(ctx\.supplierId\) \|\| ctx\.role === "supplier";/);
+    // Y su vigencia se comprueba en CADA petición, fallando cerrado: lo que
+    // hay al otro lado son datos personales de terceros.
+    const auth = cuerpoDe("src/lib/supabase/auth-context.ts");
+    expect(auth).toMatch(/if \(ctx\.supplierId\) \{[\s\S]{0,200}?if \(!sigue\) ctx\.supplierId = null;/);
+    /**
+     * La rebanada termina donde termina la función, no a setecientos
+     * caracteres: abierta, llegaba hasta `loadPartnerMembership` y daba por
+     * buena una comprobación que estaba en la función de al lado.
+     */
+    const i = auth.indexOf("async function supplierSigueActivo");
+    expect(i, "no se comprueba que la ficha siga siendo suya").toBeGreaterThan(-1);
+    const cuerpo = auth.slice(i, auth.indexOf("\n}", i));
+    expect(cuerpo).toMatch(/catch \{\s*return false;/);
+    expect(cuerpo, "y tiene que seguir siendo SU ficha").toMatch(/\.eq\("user_id", userId\)/);
+    expect(cuerpo, "y de esta empresa").toMatch(/\.eq\("organization_id", orgId\)/);
+    expect(cuerpo, "y activa").toMatch(/\.eq\("status", "active"\)/);
+  });
+
+  it("«no es socio» ya no quiere decir «es interno»", () => {
+    /**
+     * Con tres actores la negación dejó de servir: `!esDeSocio(ctx)` pasó de
+     * «es de la operadora» a «es de la operadora O es un proveedor». Los dos
+     * sitios donde esa frase decidía algo están corregidos, y preguntar en
+     * positivo es lo que hace que no cambie de significado con el cuarto.
+     */
+    const tenant = cuerpoDe("src/lib/tenant.ts");
+    const iInterno = tenant.indexOf("export function esInterno(");
+    expect(iInterno, "no existe la pregunta en positivo").toBeGreaterThan(-1);
+    // Y descarta a LOS DOS. Con solo el socio, «interno» volvería a ser la
+    // negación de otra cosa con un nombre nuevo.
+    expect(tenant.slice(iInterno, tenant.indexOf("\n}", iInterno)))
+      .toMatch(/return !esDeSocio\(ctx\) && !esDeProveedor\(ctx\);/);
+    for (const [fichero, patron] of [
+      ["src/lib/field-projection.ts", /if \(esInterno\(ctx\)\) return porRango;/],
+      ["src/app/portal/layout.tsx", /const isStaff = esInterno\(ctx\);/],
+      ["src/app/api/export/[resource]/route.ts", /const deFuera = !esInterno\(ctx\)/],
+    ] as [string, RegExp][]) {
+      expect(cuerpoDe(fichero), `${fichero} sigue decidiendo por la negación`).toMatch(patron);
+    }
+  });
+
+  it("el portal B2B no es el del proveedor", () => {
+    // Un transportista que llegara ahí se habría etiquetado como personal
+    // interno y le habríamos ofrecido el enlace de vuelta al ERP.
+    expect(cuerpoDe("src/app/portal/layout.tsx"))
+      .toMatch(/if \(esDeProveedor\(ctx\)\) redirect\("\/proveedor"\);/);
+  });
+
+  it("y la ficha del VENDEDOR también tiene que ser suya", () => {
+    /**
+     * Esta guarda no existía, y lo destapó una mutación que apuntaba a otra
+     * cosa: el texto que se quería romper en la función del proveedor aparecía
+     * ANTES, idéntico, en `loadSellerId`, así que el mutador rompió esa y las
+     * pruebas pasaron igual.
+     *
+     * Sin `user_id`, esa consulta devuelve la PRIMERA ficha de vendedor activa
+     * de la empresa y se la cuelga a quien sea: sus ventas, sus comisiones y su
+     * ámbito. Lleva ahí desde la fase 1 sin nada que la sujete.
+     */
+    const auth = cuerpoDe("src/lib/supabase/auth-context.ts");
+    const i = auth.indexOf("async function loadSellerId");
+    expect(i, "no se carga la ficha del vendedor").toBeGreaterThan(-1);
+    const cuerpo = auth.slice(i, auth.indexOf("\n}", i));
+    expect(cuerpo, "la ficha se colgaría a cualquiera").toMatch(/\.eq\("user_id", userId\)/);
+    expect(cuerpo).toMatch(/\.eq\("organization_id", orgId\)/);
+    expect(cuerpo).toMatch(/\.eq\("status", "active"\)/);
+    // Y acotada al socio, o a las fichas internas: una ficha con socio NO es
+    // del personal de la operadora.
+    expect(cuerpo).toMatch(/partnerId \? q\.eq\("partner_id", partnerId\) : q\.is\("partner_id", null\)/);
+  });
+
+  it("una cuenta, una ficha de proveedor", () => {
+    /**
+     * Sin el índice, dos fichas con el mismo usuario dejan al sistema eligiendo
+     * una —la que devuelva la consulta— y esa elección decide qué servicios ve
+     * y a quién se le paga. Es el mismo índice que 0069 puso sobre el vendedor.
+     */
+    const sql = read("supabase/migrations/0084_supplier_identity.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/create unique index if not exists supplier_user_once_idx/);
+    expect(sql, "parcial: `user_id` nulo es lo normal y dos nulos no chocan")
+      .toMatch(/where user_id is not null/);
+  });
+
+  it("el enganche del token conserva `security definer`", () => {
+    /**
+     * `create or replace` NO conserva los atributos que no se repiten. Sin
+     * `definer` el enganche corre como `supabase_auth_admin`, se le aplica la
+     * RLS, su política llama a `auth.uid()` —esquema al que ese rol no accede—
+     * y GoTrue devuelve 500: NADIE obtiene sesión. Es lo que arregló 0063, y
+     * esta migración lo reescribe entero.
+     */
+    const sql = read("supabase/migrations/0084_supplier_identity.sql").replace(/^\s*--.*$/gm, "");
+    const i = sql.indexOf("create or replace function app.custom_access_token_hook");
+    expect(i, "no se reescribe el enganche").toBeGreaterThan(-1);
+    const cabecera = sql.slice(i, sql.indexOf("as $hook$", i));
+    expect(cabecera).toMatch(/security definer/);
+    expect(cabecera).toMatch(/set search_path = public, app/);
+    // Y la ficha se busca acotada a la empresa de la membresía: sin ese filtro,
+    // una ficha de otra operadora con el mismo usuario entraría en el token.
+    expect(sql).toMatch(/s\.organization_id = coalesce\(m\.tenant_org_id, m\.org_id\)/);
   });
 });

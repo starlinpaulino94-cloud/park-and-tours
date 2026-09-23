@@ -2781,3 +2781,55 @@ Y la tabla dice dos cosas más que no se preguntaban:
   «abrir turno» aquí le dejaría declararse el fondo de apertura contra el que
   luego se le cuadra.
 - **Mutación: catorce, las catorce muertas.**
+
+### Fase 8.1 — el rol nuevo habría entrado como vendedor
+- **Lo que el plan mandaba hacer antes de crear el rol era auditar**, y la
+  auditoría encontró esto: `auth-context` guardaba su propia lista de roles
+  válidos, y lo que hacía con lo que no reconocía **no era rechazarlo: lo
+  convertía en `seller`**. Añadir el rol de proveedor a la base sin acordarse de
+  esa línea no lo habría dejado fuera — lo habría **ascendido al rango 20**, el
+  que abre las veintiuna rutas que exigen vendedor: cotizar, cobrar, cancelar y
+  reprogramar. Y nada habría fallado por el camino.
+- **Ahora la lista sale de la tabla de rango y lo desconocido cae al último.**
+  Si alguien se queda fuera se ve el primer día; al revés no se ve nunca. La
+  prueba que decía «cae a vendedor» decía el fallo, no el contrato.
+- **Había TRES tablas de rango**, idénticas y separadas: `tenant.ts` decidía los
+  permisos, `nav.ts` qué entradas de menú se ven y `notify.ts` a quién alcanza un
+  aviso. Copiadas, así que coincidían; separadas, así que el día que alguien
+  añadiera un rol coincidirían dos de tres. Y la discrepancia no se ve: un rol
+  que en `tenant` está por debajo del vendedor y en `nav` por encima enseña un
+  menú que lleva a un 403 — al revés, esconde una pantalla que la ruta sí sirve.
+  Viven en `roles.ts`, que es puro y lo puede importar cualquiera: esa era la
+  razón técnica de las tres copias.
+- **«No es socio» dejó de querer decir «es interno».** Con el tercer actor,
+  `!esDeSocio(ctx)` pasó de «es de la operadora» a «es de la operadora O es un
+  proveedor», y esa frase decidía en tres sitios: el recorte de campos, el
+  portal B2B y **la lista blanca de exportación** — donde un proveedor habría
+  caído en la rama de la operadora y se habría llevado el juego de columnas
+  interno. Se pregunta en positivo (`esInterno`) para que no cambie de
+  significado cuando llegue el cuarto.
+- **El proveedor se reconoce por su IDENTIFICADOR desde el primer día.** El
+  aislamiento del socio se escribió comparando el nombre del rol y costó una
+  fase entera (4.2) sacarlo de veintinueve sitios; éste nace con la regla buena.
+- **Y su vigencia se comprueba en cada petición, fallando cerrado.** Aquí importa
+  más que en el vendedor: lo que hay al otro lado son datos personales de
+  terceros — una hoja de ruta es una lista de clientes con hotel, habitación y
+  teléfono. Si un fallo de red devolviera «sigue siendo proveedor», un
+  transportista desactivado seguiría viéndolas.
+- **UNA MUTACIÓN APUNTÓ MAL Y DESTAPÓ UN HUECO REAL.** El texto que quería
+  romper en la comprobación del proveedor aparecía antes, idéntico, en
+  `loadSellerId`, así que el mutador rompió esa otra y **las pruebas pasaron
+  igual**: sin `user_id`, esa consulta devuelve la primera ficha de vendedor
+  activa de la empresa y se la cuelga a quien sea —sus ventas, sus comisiones,
+  su ámbito—. Lleva ahí desde la fase 1 sin nada que la sujete. Ahora tiene su
+  guarda.
+- **Alcance decidido, y por qué así.** `supplier.supplier_type` ya distingue
+  transporte, restaurante, embarcación, parque, guías, hotel y equipos desde
+  0009, así que servir a todos no cuesta nada más que a uno — que es lo que el
+  propio plan apuntaba al dejar la decisión abierta. Si la operadora quiere
+  limitarlo a transporte, es una línea de filtro, no un rediseño.
+- **El portal nace con su guarda en el layout**, que es la norma que el plan
+  fija para toda pantalla de actor externo, y con una sola entrada: sus
+  servicios llegan en la entrega siguiente, y un menú lleno de enlaces a
+  pantallas que no existen es peor que uno corto.
+- **Mutación: dieciocho, las dieciocho muertas.**

@@ -6,6 +6,7 @@ vi.mock("@/lib/supabase/server", () => ({ supabaseServer: vi.fn() }));
 vi.mock("@/lib/supabase/service", () => ({ supabaseService: vi.fn() }));
 
 import { decodeJwtClaims, mapClaimsToContext } from "@/lib/supabase/auth-context";
+import { ROLES, rankOf } from "@/lib/roles";
 
 function makeJwt(payload: Record<string, unknown>): string {
   const b64 = (o: unknown) =>
@@ -51,8 +52,36 @@ describe("auth-context — mapClaimsToContext", () => {
     expect(ctx?.partnerId).toBe("p9");
   });
 
-  it("falls back to seller for an unknown role (never trusts a bad claim)", () => {
+  it("un rol desconocido cae al rango MÁS BAJO, no a vendedor", () => {
+    /**
+     * Esta prueba decía `seller`, y eso era el fallo, no la prueba.
+     *
+     * La lista de roles válidos se escribía a mano aquí, y lo que hacía con lo
+     * que no reconocía no era rechazarlo: lo convertía en `seller`. Es decir,
+     * añadir un rol a la base sin acordarse de esa línea no dejaba fuera a ese
+     * actor — lo ASCENDÍA al rango 20, el que abre las veintiuna rutas que
+     * exigen vendedor. Un proveedor habría entrado a cotizar, a cobrar y a
+     * cancelar reservas, y nada habría fallado por el camino.
+     *
+     * Ahora la lista sale de la tabla de rango y lo desconocido cae al último:
+     * si alguien se queda fuera se ve el primer día; al revés no se ve nunca.
+     */
     const ctx = mapClaimsToContext({ org_id: "org1", app_role: "hacker", status: "active" }, user, null);
-    expect(ctx?.role).toBe("seller");
+    expect(ctx?.role).toBe("supplier");
+    expect(rankOf(ctx?.role), "el último de la lista es el que menos puede")
+      .toBe(Math.min(...ROLES.map((r) => rankOf(r))));
+  });
+
+  it("y el proveedor entra con su identificador, no con su nombre de rol", () => {
+    const ctx = mapClaimsToContext(
+      { org_id: "org1", app_role: "supplier", supplier_id: "s9", status: "active" }, user, null
+    );
+    expect(ctx?.role).toBe("supplier");
+    expect(ctx?.supplierId).toBe("s9");
+    // Y sin ficha no es proveedor de nadie: nulo acota a nada, no abre.
+    const sinFicha = mapClaimsToContext(
+      { org_id: "org1", app_role: "supplier", status: "active" }, user, null
+    );
+    expect(sinFicha?.supplierId).toBeNull();
   });
 });

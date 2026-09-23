@@ -1,6 +1,6 @@
 import "server-only";
 import type { AppRole } from "@/lib/auth";
-import { atLeast, esDeSocio, esAdminDeSocio } from "@/lib/tenant";
+import { atLeast, esDeSocio, esInterno, esAdminDeSocio } from "@/lib/tenant";
 import { refId } from "@/lib/types";
 import { relationResource } from "@/lib/supabase/expand";
 
@@ -105,7 +105,7 @@ export const ES_PROPIA: Record<string, (row: Record<string, unknown>, ctx: Proje
 export interface ProjectionCtx {
   role: AppRole;
   sellerId?: string | null;
-  /** Los que deciden `esDeSocio` y `esAdminDeSocio`; el contexto ya los trae. */
+  /** Los que deciden `esDeSocio`, `esDeProveedor` y `esAdminDeSocio`. */
   partnerId?: string | null;
   isPartnerMember?: boolean;
   partnerRole?: string | null;
@@ -134,7 +134,14 @@ function propiaDe(table: string, ctx: ProjectionCtx, row: Record<string, unknown
 /** Todo lo que hay que quitarle a QUIEN consulta, por los dos ejes. */
 export function camposRecortadosPara(table: string, ctx: ProjectionCtx): string[] {
   const porRango = hiddenFieldsFor(table, ctx.role);
-  if (!esDeSocio(ctx)) return porRango;
+  /**
+   * `esInterno` y no `!esDeSocio`: con el proveedor (0084) la negación dejó de
+   * querer decir «es de la operadora». Aquí un proveedor caería en el recorte
+   * por rango a secas — que hoy esconde lo suficiente porque su rango es el más
+   * bajo, pero que dejaría de hacerlo en cuanto alguien le suba el rango por
+   * cualquier motivo.
+   */
+  if (esInterno(ctx)) return porRango;
   return [...new Set([...porRango, ...(OCULTO_AL_SOCIO[table] ?? [])])];
 }
 

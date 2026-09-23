@@ -480,6 +480,14 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0084 — el proveedor entra al sistema",
+    // Tercer actor externo, mismo patrón: un identificador en su ficha, en el
+    // token para que la RLS acote, y su estado comprobado en cada petición.
+    columns: [
+      ["supplier", ["user_id"]],
+    ],
+  },
+  {
     migration: "0083 — la comisión retenida, en una sola escritura",
     // En dos pasos hay dos finales malos: si se apunta el movimiento y falla la
     // comisión, el vendedor se llevó su dinero y la comisión sigue pendiente —
