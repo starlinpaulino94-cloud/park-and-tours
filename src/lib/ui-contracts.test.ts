@@ -131,7 +131,13 @@ describe("encabezado de Mi día", () => {
 
 describe("Panel ejecutivo", () => {
   it("el encabezado solo declara el título del módulo", () => {
-    const page = read("src/app/dashboard/page.tsx");
+    /**
+     * El panel vive ahora en `_components/panel-empresa.tsx`: `page.tsx` pasó a
+     * ser un componente de SERVIDOR que decide a dónde aterriza cada quien —el
+     * rango más bajo del ERP va a su propio apartado— y que no podía serlo
+     * mientras el panel entero fuera de cliente.
+     */
+    const page = read("src/app/dashboard/_components/panel-empresa.tsx");
     expect(page).toContain('title="Panel ejecutivo"');
     expect(page).not.toContain('eyebrow="Dirección"');
     expect(page).not.toContain("Todo lo que está pasando");
@@ -139,7 +145,7 @@ describe("Panel ejecutivo", () => {
   });
 
   it("no duplica Ventas de hoy ni usa mensajes motivacionales", () => {
-    const page = read("src/app/dashboard/page.tsx");
+    const page = read("src/app/dashboard/_components/panel-empresa.tsx");
     expect(page).not.toContain("Ventas de hoy");
     expect(page).not.toContain("empujar ventas");
   });
@@ -178,7 +184,7 @@ describe("Panel ejecutivo", () => {
     expect(route).toContain("series: permissions.canViewRevenue ? asRows(summary?.series) : []");
     expect(route).toContain("by_channel: permissions.canViewRevenue ? asRows(summary?.by_channel) : []");
     // La UI no renderiza la sección de evolución/canales sin canViewRevenue.
-    const page = read("src/app/dashboard/page.tsx");
+    const page = read("src/app/dashboard/_components/panel-empresa.tsx");
     expect(page).toContain("data.permissions.canViewRevenue && (");
   });
 
@@ -223,7 +229,7 @@ describe("Panel ejecutivo", () => {
 
   it("M2 — la API y la UI exponen el efectivo por divisa", () => {
     expect(read("src/app/api/dashboard/route.ts")).toContain("cash_by_currency: permissions.canViewCash");
-    const page = read("src/app/dashboard/page.tsx");
+    const page = read("src/app/dashboard/_components/panel-empresa.tsx");
     expect(page).toContain("function cashHint");
     expect(page).toContain("cash_by_currency");
   });
@@ -1299,7 +1305,7 @@ describe("Panel ejecutivo", () => {
   });
 
   it("B1/B2/B6 — la vista persiste en la URL, filtra por rol y cancela peticiones", () => {
-    const page = read("src/app/dashboard/page.tsx");
+    const page = read("src/app/dashboard/_components/panel-empresa.tsx");
     // B1: sincroniza periodo/rankBy/filtros con la URL.
     expect(page).toContain("window.history.replaceState");
     expect(page).toContain("window.location.search");
@@ -1321,7 +1327,7 @@ describe("Panel ejecutivo", () => {
     // 'otros' es un bucket sintético del RPC, no un canal: se etiqueta en la
     // pantalla y NO en CHANNEL, que alimenta selects atados al enum
     // sales_channel y rechazaría ese valor.
-    expect(read("src/app/dashboard/page.tsx")).toContain("function channelLabel");
+    expect(read("src/app/dashboard/_components/panel-empresa.tsx")).toContain("function channelLabel");
     expect(read("src/lib/labels.ts")).not.toContain('otros: def("Otros"');
   });
 
@@ -1332,7 +1338,7 @@ describe("Panel ejecutivo", () => {
   });
 
   it("los filtros del dashboard usan opciones legibles y no campos manuales por ID", () => {
-    const page = read("src/app/dashboard/page.tsx");
+    const page = read("src/app/dashboard/_components/panel-empresa.tsx");
     expect(page).toContain("function OptionFilter");
     expect(page).toContain('/api/erp/${resource}?limit=100&includeTotal=false');
     expect(page).toContain('aria-label={label}');
@@ -2481,6 +2487,60 @@ describe("el alcance por sucursal", () => {
     const pantalla = read("src/app/dashboard/vendedores/page.tsx");
     expect(pantalla).toMatch(/rowActions=\{\(s: any\) => \(s\.user \|\| s\.user_id \? null :/);
     expect(pantalla).toMatch(/api\.post<[^>]*>\("\/api\/sellers\/invite"/);
+  });
+
+  it("las pantallas que enseñan dinero se niegan en el SERVIDOR", () => {
+    /**
+     * De 129 pantallas del panel, 5 miraban el rol en servidor y ninguna de
+     * ellas era de las que enseñan dinero. El menú esconde
+     * `/dashboard/comisiones` a quien no tiene rango; la URL, no.
+     *
+     * La guarda va en un `layout.tsx` porque las pantallas son de cliente y no
+     * pueden leer la sesión — y de paso **cubre también sus subpáginas**:
+     * `vendedores` protege metas, bonos, tipos y atribución de una vez.
+     */
+    for (const carpeta of [
+      "vendedores", "comisiones", "liquidaciones", "partners",
+      "personal", "rentabilidad", "deudas", "catalogo/costos",
+    ]) {
+      const layout = read(`src/app/dashboard/${carpeta}/layout.tsx`);
+      expect(layout, carpeta).toMatch(/export default guardedLayout\("manager"\)/);
+    }
+    // Se EXPLICA, no se redirige: un desvío silencioso hace pensar que el
+    // enlace está roto y que hay que volver a intentarlo.
+    const guarda = sinComentariosDe("src/lib/page-guard.tsx");
+    expect(guarda).toMatch(/if \(atLeast\(ctx\.role, minimo\)\) return <>\{children\}<\/>;/);
+    expect(guarda).toMatch(/EmptyState/);
+  });
+
+  it("el apartado del vendedor distingue las TRES situaciones posibles", () => {
+    /**
+     * Gerente que vende, vendedor con ficha, y cuenta sin ficha. La tercera no
+     * se distinguía: quien entraba sin ficha veía las mismas pantallas, todas
+     * vacías, sin forma de saber si es que no había vendido nada o es que el
+     * sistema no sabía quién era. Dos cosas muy distintas con la misma pinta.
+     */
+    const resumen = read("src/app/dashboard/mi-espacio/page.tsx");
+    expect(resumen).toMatch(/if \(!sellerId\) \{/);
+    expect(resumen).toMatch(/<SinFicha \/>/);
+    // Y el aviso dice QUIÉN lo arregla: quien lo lee no puede hacerlo solo.
+    const aviso = read("src/app/dashboard/mi-espacio/_components/sin-ficha.tsx");
+    expect(aviso).toMatch(/administrador/);
+    expect(aviso).toMatch(/Cuenta de acceso/);
+
+    // Las cifras salen de `/api/dashboard`, que YA fuerza el ámbito en el
+    // servidor: una ruta nueva sería un segundo sitio donde equivocarse sobre
+    // qué es «lo suyo», y los dos acabarían discrepando.
+    expect(resumen).toMatch(/api\.get<Panel>\("\/api\/dashboard/);
+    // Y la lista NO manda un filtro por vendedor desde el navegador: un filtro
+    // que decide qué ve cada quien y viaja en la dirección se puede quitar.
+    const ventas = read("src/app/dashboard/mi-espacio/ventas/page.tsx");
+    expect(ventas).toMatch(/api\.get<Venta\[\]>\(`\/api\/orders\?limit=/);
+    expect(ventas).not.toMatch(/seller=/);
+
+    // El rango más bajo aterriza en su apartado, y eso se decide en servidor.
+    const aterrizaje = sinComentariosDe("src/app/dashboard/page.tsx");
+    expect(aterrizaje).toMatch(/ctx\?\.role === "seller"\) redirect\("\/dashboard\/mi-espacio"\)/);
   });
 
   it("el recorte de columnas se aplica en los TRES sitios que sirven filas", () => {
@@ -4480,6 +4540,8 @@ describe("cada pantalla dice cómo se crea lo que enseña", () => {
     "/dashboard/reportes/actividad": "bitácora: la escribe el sistema en cada acción y es inmutable; un botón de «nuevo evento» sería justo lo que una auditoría no puede permitir",
     "/dashboard/analitica/cohortes": "cohortes: se calculan",
     "/dashboard/rentabilidad": "márgenes: se calculan de ventas y costes",
+    "/dashboard/mi-espacio": "el apartado del vendedor: es una FOTO de lo suyo —lo vendido, la comisión, la meta—; una venta se hace en el punto de venta, y la comisión y la meta las genera el sistema. Un botón de «nuevo» aquí dejaría al vendedor crearse su propia comisión",
+    "/dashboard/mi-espacio/ventas": "sus ventas ya hechas: se crean en el punto de venta, que es donde está el cliente; esta pantalla las mira, no las inventa",
     "/dashboard/distribucion/matriz": "vista cruzada de disponibilidad ya existente",
     "/dashboard/distribucion/canales": "un canal no se crea, se conecta: aparece cuando un revendedor reserva por OCTO; se habilita en Integraciones",
     "/dashboard/inicio/notificaciones": "avisos: los emite el sistema",

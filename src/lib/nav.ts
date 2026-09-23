@@ -110,6 +110,21 @@ export const WORKSPACES: Workspace[] = [
           { id: "mi-dia", href: "/dashboard/inicio/mi-dia", label: "Mi día", icon: "Sun",
             description: "Tareas, aprobaciones y avisos que te toca resolver hoy.",
             keywords: ["hoy", "pendientes", "agenda"] },
+          /**
+           * El apartado de quien vende.
+           *
+           * Sin `minRole`: lo ve todo el personal interno, porque en una
+           * operadora pequeña el gerente y el dueño TAMBIÉN venden. Lo que
+           * decide si tiene algo dentro no es el rol sino la ficha vinculada
+           * (`ctx.sellerId`), y quien no la tenga entra a una pantalla que se
+           * lo explica en vez de a una vacía.
+           */
+          { id: "mi-espacio", href: "/dashboard/mi-espacio", label: "Mi espacio", icon: "UserRound",
+            description: "Tus ventas, tu comisión y tu meta del mes.",
+            keywords: ["vendedor", "mis ventas", "comision", "mi meta"] },
+          { id: "mis-ventas", href: "/dashboard/mi-espacio/ventas", label: "Mis ventas", icon: "Receipt",
+            description: "Todo lo que has vendido, con su estado de cobro.",
+            keywords: ["vendedor", "ventas", "ordenes"] },
         ],
       },
       {

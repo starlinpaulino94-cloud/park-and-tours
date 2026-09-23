@@ -1515,3 +1515,46 @@ daba error: los tres producían números equivocados en silencio.
     la cabecera antes de comparar posiciones, y está escrito por qué;
   - la membresía invitada naciendo activa: esa propiedad **nunca había tenido
     guarda**, ni antes de extraer el servicio. Ahora la tiene.
+
+### Fase 1.5 — el apartado del vendedor, y el menú deja de ser la barrera
+- **Dónde aterriza cada quien.** Todo el mundo caía en el panel de la empresa.
+  Para quien vende a comisión eso son ocupación de salidas, canales y alertas de
+  caja —nada de lo cual es suyo— con sus tres cifras escondidas en medio. Y si
+  además su cuenta no estaba vinculada, el panel salía **vacío sin decir por
+  qué**: parece una avería y es una configuración a medio hacer. Ahora el rango
+  más bajo del ERP aterriza en `/dashboard/mi-espacio`; de `cashier` hacia
+  arriba no se desvía a nadie, y quien además vende llega por el menú.
+- **TRES situaciones, no dos.** Gerente que vende, vendedor con ficha, y cuenta
+  sin ficha. La tercera no se distinguía: las mismas pantallas, todas vacías,
+  sin forma de saber si es que no había vendido nada o es que el sistema no
+  sabía quién era. Ahora hay una pantalla que lo explica **y dice quién lo
+  arregla**, porque quien la lee no puede hacerlo solo: hace falta rango de
+  administración.
+- **Las cifras salen de `/api/dashboard`, que YA fuerza el ámbito en servidor.**
+  Montar una ruta nueva habría significado un segundo sitio donde equivocarse
+  sobre qué es «lo suyo», y los dos acabarían discrepando. La lista tampoco
+  manda un filtro por vendedor desde el navegador: un filtro que decide qué ve
+  cada quien y viaja en la dirección es un filtro que se puede quitar.
+- **`page-guard.tsx`: guardas de rol en el SERVIDOR.** De 129 pantallas, 5
+  miraban el rol, y ninguna de ellas era de las que enseñan dinero. El menú
+  esconde `/dashboard/comisiones`; la URL, no. La API sí se defiende, así que lo
+  que se veía era una pantalla rota llena de errores en vez de un «esto no es
+  para ti» — pero apoyarse en eso es apoyarse en que ninguna de las rutas que
+  esa pantalla llama tenga un hueco.
+- **Va en un `layout.tsx` y no en cada página.** Las pantallas son de cliente y
+  no pueden leer la sesión; convertir cada una en pareja servidor+cliente serían
+  dos ficheros por pantalla y un sitio más donde olvidarse. Un layout de dos
+  líneas corre en el servidor, no toca la página y **cubre sus subpáginas**:
+  `vendedores` protege metas, bonos, tipos y atribución de una vez, y una
+  pantalla nueva dentro de una carpeta protegida nace protegida.
+- **Se explica, no se redirige.** Un desvío silencioso hace pensar que el enlace
+  está roto y que hay que volver a intentarlo.
+- **Ocho carpetas protegidas**: vendedores, comisiones, liquidaciones, partners,
+  personal, rentabilidad, deudas y catálogo/costos.
+- **Guardas ajenas que saltaron**: siete del panel ejecutivo (el panel se movió
+  a `_components/panel-empresa.tsx` para que `page.tsx` pudiera ser de servidor
+  y decidir el aterrizaje) y la que exige que toda pantalla con registros diga
+  cómo se crean —las dos de Mi espacio quedan anotadas como derivadas, con su
+  motivo: una venta se hace en el punto de venta, y un botón de «nuevo» en el
+  apartado del vendedor le dejaría **crearse su propia comisión**.
+- **Mutación:** siete, las siete muertas.
