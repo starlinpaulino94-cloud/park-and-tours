@@ -1928,3 +1928,53 @@ daba error: los tres producían números equivocados en silencio.
   para la fila propia— es un no-op mientras `ES_PROPIA` no tenga entrada para
   `partner`; la regresión real es añadirla, y ésa sí muere. Se deja dicho en vez
   de contarla como muerta.
+
+### Fase 4.4b — el tour center da de alta a los suyos
+- **Lo que había:** contratar a un vendedor un martes significaba llamar a la
+  operadora para que le abriera una cuenta. Con dos operadoras, dos llamadas — y
+  mientras tanto esa persona trabaja con la cuenta de otra, que es exactamente
+  como se acaba sin saber quién vendió qué.
+- **Y algo peor, que nadie había visto:** `PUT /api/team` buscaba la membresía
+  con `.eq("organization_id", ctx.companyId)`. La de un usuario de tour center
+  cuelga de la organización del SOCIO, así que **ningún usuario de socio se
+  podía editar desde ningún sitio**: ni desactivar, ni cambiar de rol. Con la
+  persona delante en la lista —el listado sí los trae desde 4.1— y la respuesta
+  «Usuario no encontrado en esta empresa». Misma familia que el fallo de 4.1,
+  una ruta más allá.
+- **Migración 0074 — `partner_role`, y por qué una columna nueva.** Desde 0073
+  todas las personas de un socio tienen el mismo `role` por definición, así que
+  no había dónde escribir «ésta puede dar de alta a las demás». Relajar aquella
+  equivalencia para meter ahí la jerarquía sería reabrir la puerta que cierra:
+  cada rol nuevo admitido sobre una organización de socio es un rol que el
+  aislamiento tendría que volver a reconocer uno a uno. El aislamiento sigue
+  leyendo `role`, que no se mueve.
+- **El relleno deja UN administrador por socio: el más antiguo.** Sin relleno la
+  función nace apagada para todos los tour centers que ya existen; poniendo a
+  todos, un becario da de alta a quien quiera el primer día, y eso no se
+  deshace.
+- **El permiso devuelve un ÁMBITO, no un sí/no.** `ambitoDeLectura` /
+  `ambitoDeEscritura` contestan «sí, y sobre ESTA organización», y la ruta lo
+  usa como filtro de la consulta. Es la propiedad que hace que no se pueda
+  olvidar: un booleano se comprueba arriba y la consulta va sin acotar.
+- **Leer no exige administrar.** Saber quién de tu propia empresa tiene acceso
+  no es una facultad de gestión; ocultárselo solo conseguiría que las cuentas de
+  quien se fue sigan abiertas porque nadie las ve.
+- **El socio no elige ni el rol ni la organización de destino.** El rol es el
+  único que puede haber sobre su organización; la organización es la suya.
+  Pasarle `body.partner_id` dejaría que el administrador de un tour center diera
+  de alta gente en otro de la misma red cambiando un identificador.
+- **Y no puede dejar su empresa sin nadie que la administre.** Bajarse a agente
+  y desactivarse son el mismo agujero por dos caminos, y el segundo es el que se
+  olvida. La operadora podría rescatarlos, pero ése es justo el trámite que esta
+  entrega quita.
+- **Las dos columnas que parecen accesorias no lo son:** último acceso y segundo
+  factor contestan la pregunta que nadie se hace a tiempo —a quién le queda la
+  cuenta abierta sin usarla, y quién la tiene sin proteger—. Sin ellas hay que ir
+  preguntando a la gente.
+- **Y el estado del socio se consulta ahora desde la MEMBRESÍA**, no desde la
+  organización: una consulta igual que antes, y de paso más estricta, porque la
+  respuesta deja de existir cuando la membresía deja de existir. `claims.status`
+  viene del token y una membresía borrada seguía pasando hasta la renovación.
+- **Mutación: catorce, las catorce muertas.** Una no mordía —volver el listado a
+  la operadora— porque la guarda pedía que la expresión apareciera «alguna vez»
+  y la edición la seguía aportando; se cuentan las dos.

@@ -5543,9 +5543,11 @@ describe("el ciclo de vida del socio", () => {
      * que su sesión se renueve. Mismo razonamiento que la ficha de vendedor.
      */
     const auth = sinComentariosDe("src/lib/supabase/auth-context.ts");
-    expect(auth, "el cargador").toMatch(/async function loadPartnerStatus/);
+    expect(auth, "el cargador").toMatch(/async function loadPartnerMembership/);
     expect(auth, "se llama al armar el contexto")
-      .toMatch(/ctx\.partnerStatus = await loadPartnerStatus\(ctx\.partnerId\)/);
+      .toMatch(/await loadPartnerMembership\(ctx\.partnerId, user\.id\)/);
+    expect(auth, "y su respuesta llega al contexto")
+      .toMatch(/ctx\.partnerStatus = membresia\.status/);
     expect(sinComentariosDe("src/lib/tenant.ts")).toMatch(/partnerStatus\?:\s*string \| null/);
   });
 
@@ -5557,11 +5559,14 @@ describe("el ciclo de vida del socio", () => {
      * la cadena `active`.
      */
     const cuerpo = cuerpoDe("src/lib/supabase/auth-context.ts");
-    const i = cuerpo.indexOf("async function loadPartnerStatus");
+    const i = cuerpo.indexOf("async function loadPartnerMembership");
     const fn = cuerpo.slice(i, cuerpo.indexOf("async function loadClaimsFromPrimaryMembership"));
-    expect(fn, "el error de la consulta").toMatch(/if \(error\) return ""/);
-    expect(fn, "la excepción").toMatch(/catch \{\s*return ""/);
-    expect(fn, "y la fila ausente").toMatch(/\?\?\s*""/);
+    // Ninguna rama puede producir `active`: ni el error de la consulta, ni la
+    // excepción, ni la fila que no está.
+    expect(fn, "el cierre").toMatch(/const CERRADO = \{ status: "", partnerRole: null \}/);
+    expect(fn, "el error o la fila ausente").toMatch(/if \(error \|\| !data\) return CERRADO/);
+    expect(fn, "la excepción").toMatch(/catch \{\s*return CERRADO/);
+    expect(fn, "y el estado de la organización, sin inventar").toMatch(/\?\?\s*""/);
   });
 
   it("el veto se aplica en requireTenant, por donde pasa toda ruta", () => {
@@ -5646,5 +5651,94 @@ describe("el ciclo de vida del socio", () => {
     const fn = cuerpo.slice(i, i + 1400);
     expect(fn, "rol de socio sin tour center").toMatch(/rolePedido === "partner"[\s\S]{0,200}throw/);
     expect(fn, "y el cerrojo de siempre").toMatch(/role: "partner", esSocio: true/);
+  });
+});
+
+describe("el socio gestiona a su propia gente, y solo a la suya", () => {
+  it("las tres operaciones del equipo salen del mismo ámbito", () => {
+    /**
+     * Ni una sola comprueba el rol por su cuenta. Es la diferencia entre una
+     * regla y tres copias de una regla: la de listar ya se le escapó una vez
+     * —los usuarios de tour center no salían— y la de editar los dejaba fuera
+     * de toda edición con un «usuario no encontrado» delante de la persona.
+     */
+    const ruta = cuerpoDe("src/app/api/team/route.ts");
+    expect(ruta, "listar").toMatch(/const ambito = ambitoDeLectura\(ctx\)/);
+    expect((ruta.match(/const ambito = ambitoDeEscritura\(ctx\)/g) || []).length,
+      "dar de alta y editar").toBe(2);
+    // Y el rango ya no se comprueba aquí: lo decide el ámbito.
+    expect(ruta, "el rango se decide en el ámbito").not.toMatch(/requireAtLeast\(ctx,/);
+  });
+
+  it("el ámbito se usa como FILTRO, no como comprobación previa", () => {
+    /**
+     * Es la propiedad que hace que no se pueda olvidar. Un permiso booleano se
+     * comprueba arriba y luego la consulta va sin acotar; un permiso que
+     * devuelve el conjunto de organizaciones tiene que entrar en la consulta
+     * para que ésta compile.
+     */
+    const ruta = cuerpoDe("src/app/api/team/route.ts");
+    expect((ruta.match(/orgIds = \[ambito\.organizationId\]/g) || []).length,
+      "listar y editar acotan por el ámbito").toBe(2);
+    /**
+     * LAS DOS, contadas. Pedir que la expresión aparezca «alguna vez» dejaba
+     * volver a `ctx.companyId` en una de ellas y pasar por la otra: la mutación
+     * que devolvía el listado a la operadora no mordía.
+     */
+    expect((ruta.match(/\.in\("organization_id", orgIds\)/g) || []).length,
+      "el listado y la edición buscan en ese conjunto").toBe(2);
+    // Y ninguna vuelve a buscar membresías por la empresa del contexto, que es
+    // exactamente lo que dejaba a los usuarios de tour center sin edición.
+    expect(ruta.slice(ruta.indexOf("organization_memberships")),
+      "una membresía no se busca por ctx.companyId")
+      .not.toMatch(/\.eq\("organization_id", ctx\.companyId\)/);
+  });
+
+  it("el socio no elige ni el rol ni la organización de destino", () => {
+    const ruta = cuerpoDe("src/app/api/team/route.ts");
+    // El rol es el único que puede haber sobre su organización (0073), y la
+    // organización es la suya: pasarle `body.partner_id` dejaría que el
+    // administrador de un tour center diera de alta gente en otro de la red.
+    expect(ruta).toMatch(/ambito\.esSocio \? \("partner" as AppRole\) : assertRole\(ctx,/);
+    expect(ruta).toMatch(/ambito\.esSocio\s*\n?\s*\? \{ organizationId: ambito\.organizationId!/);
+  });
+
+  it("y no puede dejar su empresa sin nadie que la administre", () => {
+    // Bajarse a agente y desactivarse son el mismo agujero por dos caminos; la
+    // cuenta se hace ANTES de escribir.
+    const ruta = cuerpoDe("src/app/api/team/route.ts");
+    const i = ruta.indexOf("assertNoSeQuedaSinAdmin({");
+    expect(i, "la comprobación no está").toBeGreaterThan(-1);
+    expect(i).toBeLessThan(ruta.indexOf('.from("organization_memberships")\n        .update(patch)'));
+  });
+
+  it("la jerarquía del socio no se cuela en las membresías internas", () => {
+    /**
+     * `partner_role = 'admin'` colgando de la operadora sería un campo con
+     * valor que hoy nadie lee, esperando a que alguien lo lea algún día. Lo
+     * impide la aplicación y lo vuelve a impedir el disparador.
+     */
+    expect(cuerpoDe("src/app/api/team/route.ts"))
+      .toMatch(/destino\.esSocio \? partnerRole : null/);
+    expect(read("supabase/migrations/0074_partner_self_service.sql"))
+      .toMatch(/else\s*\n\s*new\.partner_role := null;/);
+  });
+
+  it("y el disparador escucha los cambios de esa columna", () => {
+    // Sin añadirla a la lista de columnas del disparador, subir a alguien a
+    // administrador no pasaría por la coherencia.
+    expect(read("supabase/migrations/0074_partner_self_service.sql"))
+      .toMatch(/before insert or update of role, organization_id, partner_role/);
+  });
+
+  it("el relleno deja un administrador por socio, y solo uno", () => {
+    /**
+     * Sin relleno, la función nace apagada para todos los tour centers que ya
+     * existen. Con todos de administrador, un becario da de alta a quien quiera
+     * el primer día — y eso no se deshace.
+     */
+    const sql = read("supabase/migrations/0074_partner_self_service.sql");
+    expect(sql, "el más antiguo de cada socio").toMatch(/distinct on \(m\.organization_id\)[\s\S]{0,200}order by m\.organization_id, m\.created_at asc/);
+    expect(sql, "y el resto, agente").toMatch(/else 'agent' end/);
   });
 });

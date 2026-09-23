@@ -798,6 +798,7 @@ export const PORTAL_NAV: NavItem[] = [
   { id: "p-catalogo", href: "/portal/catalogo", label: "Catálogo", icon: "Ticket", description: "Qué puedes vender hoy." },
   { id: "p-reservas", href: "/portal/reservas", label: "Mis reservas", icon: "CalendarCheck", description: "Reservas creadas por tu equipo." },
   { id: "p-liquidaciones", href: "/portal/liquidaciones", label: "Liquidaciones", icon: "FileSpreadsheet", description: "Cortes y pagos." },
+  { id: "p-equipo", href: "/portal/equipo", label: "Mi equipo", icon: "Users", description: "Quién de tu empresa tiene acceso." },
 ];
 
 export const SUPERADMIN_NAV: NavItem[] = [

@@ -34,6 +34,15 @@ export async function GET() {
          * blanco—. Son tres estados, no dos, y solo este dato los distingue.
          */
         sellerId: ctx.sellerId ?? null,
+        /**
+         * Qué manda esta persona DENTRO de su tour center.
+         *
+         * No es el rol: desde 0073 todas las personas de un socio tienen el
+         * mismo, así que el rol no distingue a quien puede dar de alta a un
+         * compañero de quien no. La pantalla necesita ese dato para no ofrecer
+         * un botón que la API va a rechazar.
+         */
+        partnerRole: ctx.partnerRole ?? null,
       },
       companyId: ctx.companyId,
       company: ctx.company,

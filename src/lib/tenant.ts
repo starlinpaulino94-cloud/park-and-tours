@@ -85,6 +85,15 @@ export interface TenantContext {
    * MEMBRESÍA, que estaba activa—. `null` para el personal interno.
    */
   partnerStatus?: string | null;
+  /**
+   * Qué manda esta persona DENTRO de su tour center: `admin` o `agent`.
+   *
+   * No es el rol de la aplicación y no participa en el aislamiento —ése sigue
+   * siendo `role` + `partnerId`—. Existe porque desde 0073 todas las personas
+   * de un socio tienen el mismo `role` por definición, así que no había dónde
+   * escribir «ésta puede dar de alta a las demás».
+   */
+  partnerRole?: string | null;
 }
 
 /** Cookie used by the audited superadmin impersonation flow. */
