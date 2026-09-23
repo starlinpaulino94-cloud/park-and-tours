@@ -2691,6 +2691,33 @@ describe("el alcance por sucursal", () => {
     expect(puerta).toMatch(/assertRateLimit\(\{ key: rateLimitKey\(req, "attr:visit"\)/);
   });
 
+  it("el catálogo que ve quien vende no lleva costes por NINGÚN camino", () => {
+    /**
+     * El plan pedía una ruta nueva (`/api/seller-portal/catalog`) para servirle
+     * al vendedor un catálogo sin coste. Al mirarlo no hacía falta: los dos
+     * caminos que ya existen están limpios, y por motivos distintos.
+     *
+     *  · `/api/pos/context` arma una LISTA BLANCA —nombra campo por campo lo
+     *    que devuelve—, así que el coste no viaja por construcción y una
+     *    columna nueva en `product` no se cuela sola.
+     *  · `/api/erp/product` lo recorta con `field-projection.ts`.
+     *
+     * Una tercera ruta habría sido un tercer sitio donde equivocarse. Esta
+     * guarda existe para que la lista blanca no se convierta en un `...p`
+     * «para no repetir campos», que es como se pierden estas cosas.
+     */
+    const pos = sinComentariosDe("src/app/api/pos/context/route.ts");
+    const catalogo = pos.slice(pos.indexOf("const catalog = products.map"), pos.indexOf("const bundleCatalog"));
+    expect(catalogo, "no se encontró el mapeo del catálogo").not.toBe("");
+    expect(catalogo, "el catálogo del punto de venta lleva el coste").not.toMatch(/base_cost/);
+    expect(catalogo, "la modalidad lleva el coste").not.toMatch(/\bcost\b/);
+    // Y sigue siendo lista blanca: nada de derramar el producto entero.
+    expect(catalogo, "el catálogo derrama el producto entero").not.toMatch(/\.\.\.p[,\s}]/);
+
+    // El del socio tampoco, que es de donde salió la regla.
+    expect(sinComentariosDe("src/app/api/portal/catalog/route.ts")).not.toMatch(/base_cost/);
+  });
+
   it("el recorte de columnas se aplica en los TRES sitios que sirven filas", () => {
     /**
      * Listado, detalle y exportación. Dejar uno sin migrar es el fallo que

@@ -1738,3 +1738,22 @@ daba error: los tres producían números equivocados en silencio.
 - En vez de duplicar nada, esas cuatro propiedades quedan **fijadas con
   guardas**, para que nadie las «optimice» creyendo que sobran. Cuatro
   mutaciones, las cuatro muertas.
+
+### Fase 3.4 (segunda mitad) — la ruta que NO hizo falta
+- El plan pedía `GET /api/seller-portal/catalog` para servirle al vendedor un
+  catálogo sin coste. **Al mirarlo, no hacía falta**: los dos caminos que ya
+  existen están limpios, y por motivos distintos.
+  · `/api/pos/context` arma una **lista blanca** —nombra campo por campo lo que
+    devuelve—, así que el coste no viaja por construcción y una columna nueva en
+    `product` no se cuela sola.
+  · `/api/erp/product` lo recorta con `field-projection.ts` (Fase 1.3).
+- Una tercera ruta habría sido **un tercer sitio donde equivocarse**. Lo que se
+  añade es la guarda que impide que la lista blanca se convierta en un `...p`
+  «para no repetir campos», que es exactamente como se pierden estas cosas.
+- **Lo que sí queda sin hacer**, y se dice en vez de darlo por cerrado: la
+  **comisión estimada por producto** en el catálogo del vendedor. Exige correr
+  el motor de comisiones por producto de forma especulativa y, sin regla
+  aplicable, es una cifra inventada — el propio plan pedía declararla
+  «estimada» por eso. Se prefiere no enseñarla a enseñar un número que el
+  vendedor va a tomar por un compromiso.
+- Mutación: tres, las tres muertas.
