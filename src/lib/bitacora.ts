@@ -110,6 +110,7 @@ export const ACCION: Record<string, string> = {
   mfa_reset: "Verificación en dos pasos restablecida",
   octo_booking_reserved: "Reserva de OTA retenida",
   payment_schedule_set: "Calendario de pagos fijado",
+  partner_terms_accepted: "Condiciones comerciales aceptadas por el socio",
   payroll_exported: "Nómina exportada",
   payroll_generated: "Nómina generada",
   plan_created: "Plan creado",

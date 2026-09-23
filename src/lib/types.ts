@@ -114,6 +114,14 @@ export interface Partner extends BaseRecord {
   status?: "active" | "inactive" | "blocked" | "pending";
   contract_from?: string; contract_to?: string;
   commercial_terms?: string; notes?: string;
+  /**
+   * Las condiciones aceptadas. Las escribe SOLO el punto donde el socio acepta
+   * (`/api/portal/terms`), nunca el CRUD de la ficha: una aceptación que la
+   * operadora puede fechar desde su propia pantalla no acredita nada.
+   */
+  terms_version?: number; terms_accepted_version?: number | null;
+  terms_accepted_at?: string | null; terms_accepted_by?: string | null;
+  terms_status?: "sin_condiciones" | "pendiente" | "aceptadas";
   parent_partner?: Ref<Partner>; authorized_products?: Product[];
 }
 

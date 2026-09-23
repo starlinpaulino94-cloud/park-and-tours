@@ -129,3 +129,38 @@ describe("partners — vista reconstruida", () => {
     expect(mergePartnerRow({ ...org, parent_org_id: "p0" }, null).parent_partner).toBe("p0");
   });
 });
+
+describe("partners — la aceptación de condiciones no viaja en el formulario", () => {
+  it("las cuatro columnas de condiciones se descartan del payload entero", () => {
+    /**
+     * NO BASTA CON QUE NO ESTÉN EN LA LISTA BLANCA DE LA RELACIÓN.
+     *
+     * El reparto tiene una rama final de cajón de sastre: todo lo que no
+     * encaja en ninguna lista cae en `metadata`. Así que sacarlas de
+     * `PARTNER_RELATIONSHIP_COLUMNS` no las bloquea —las desvía—, y quedaría
+     * una fecha de aceptación escrita por la operadora dentro de la ficha,
+     * lista para que la lea cualquiera que un día mire ahí en vez de a la
+     * relación. Se descartan, que es distinto de no guardarse en su columna.
+     */
+    const split = splitPartnerInput({
+      name: "Caribe Tour Center",
+      terms_version: 99,
+      terms_accepted_version: 99,
+      terms_accepted_at: "2020-01-01T00:00:00Z",
+      terms_accepted_by: "un-usuario-cualquiera",
+    });
+
+    expect(split.org).toEqual({ name: "Caribe Tour Center" });
+    expect(split.relationship).toEqual({});
+    expect(split.metadata, "el cajón de sastre es la vía que hay que cerrar").toEqual({});
+  });
+
+  it("y el estado de las condiciones sale de la relación, no del formulario", () => {
+    const fila = mergePartnerRow(
+      { id: "soc-1", name: "Caribe", metadata: { commercial_terms: "20%" } },
+      { terms_version: 2, terms_accepted_version: 1, terms_accepted_at: "2026-01-01T00:00:00Z" }
+    );
+    expect(fila.terms_status, "aceptó la 1 y rige la 2").toBe("pendiente");
+    expect(fila.terms_accepted_version).toBe(1);
+  });
+});

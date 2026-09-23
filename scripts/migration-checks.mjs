@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0021-0072 tienen que haber creado.
+ * El inventario de lo que las migraciones 0021-0073 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -478,6 +478,22 @@ export const MIGRATION_CHECKS = [
     // `supabase/editor/0069_parte_2_indice.sql`, que sí consulta `pg_indexes`
     // y devuelve una fila legible. Declararlo aquí sin comprobarlo habría
     // parecido una garantía sin serlo.
+  },
+  {
+    migration: "0073 — el ciclo de vida del socio",
+    // `pending` existía desde 0002 y no lo miraba nadie: el enganche del token
+    // comprueba el estado de la MEMBRESÍA, no el de la organización del socio.
+    // Estas cuatro columnas son la otra mitad —qué versión de las condiciones
+    // aceptó el socio, cuándo y quién—, separadas de la vigente para que
+    // cambiar el texto invalide la aceptación sin borrar su rastro.
+    columns: [
+      ["organization_relationships",
+        ["terms_version", "terms_accepted_version", "terms_accepted_at", "terms_accepted_by"]],
+    ],
+    // El disparador del cerrojo no se puede comprobar desde aquí: este
+    // verificador habla con PostgREST y `pg_trigger` es un catálogo. Lo hace
+    // `supabase/editor/0073_parte_2_verificacion.sql`, que además cuenta las
+    // membresías que ya lo incumplen.
   },
   {
     migration: "0072 — el ámbito del socio, por identificador",

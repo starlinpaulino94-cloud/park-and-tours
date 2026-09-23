@@ -82,7 +82,28 @@ export async function resolveMembershipOrg(
   rolePedido: AppRole
 ): Promise<DestinoMembresia> {
   const id = (partnerId || "").trim();
-  if (!id) return { organizationId: ctx.companyId, role: rolePedido, esSocio: false };
+  if (!id) {
+    /**
+     * LA OTRA MITAD DEL CERROJO, Y ESTA NO ESTABA EN NINGÚN SITIO DEL SERVIDOR.
+     *
+     * El rol de socio SIN tour center produce una persona con `role: partner`
+     * y sin identificador —el enganche del token solo lo emite cuando la
+     * organización es de tipo socio—. Y «sin identificador» es exactamente lo
+     * que `app.can_read_partner` entiende por «ve todo»: ese usuario pasa el
+     * ámbito del socio entero.
+     *
+     * El formulario de Configuración ya lo impedía, pero solo en el navegador:
+     * la API aceptaba el alta tal cual. La equivalencia es rol de socio si y
+     * solo si organización de socio, y desde 0073 también la exige la base.
+     */
+    if (rolePedido === "partner") {
+      throw new TenantError(
+        "El rol de socio exige elegir el tour center del que depende esa persona",
+        400
+      );
+    }
+    return { organizationId: ctx.companyId, role: rolePedido, esSocio: false };
+  }
 
   const { data, error } = await supabaseService()
     .from("organizations")

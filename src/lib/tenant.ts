@@ -9,6 +9,7 @@ import {
 import { getSupabaseTenantContext } from "@/lib/supabase/auth-context";
 import { subscriptionState, blockMessage } from "@/lib/plan";
 import { splitExpand, expandRows } from "@/lib/supabase/expand";
+import { vetoDeSocio } from "@/lib/partner-lifecycle";
 
 /**
  * Multi-tenant security core.
@@ -75,6 +76,15 @@ export interface TenantContext {
    * sesión, porque cerrarla obligaría a escribir la contraseña otra vez.
    */
   mfaPending?: boolean;
+  /**
+   * El estado de la organización del SOCIO, cuando quien llama es de un socio.
+   *
+   * No es `ctx.company.status`: ésa es la de la operadora. La del socio no
+   * llegaba al contexto por ningún camino, y por eso `pending`, `suspended` y
+   * `blocked` no hacían nada —el enganche del token mira el estado de la
+   * MEMBRESÍA, que estaba activa—. `null` para el personal interno.
+   */
+  partnerStatus?: string | null;
 }
 
 /** Cookie used by the audited superadmin impersonation flow. */
@@ -135,6 +145,23 @@ export async function requireTenant(): Promise<TenantContext & { companyId: stri
       "El usuario no está asociado a ninguna empresa. Contacta al administrador.",
       403
     );
+  }
+  /**
+   * El socio apagado no opera, y se le dice por qué.
+   *
+   * Va aquí, en el paso por el que entra TODA ruta, y no en cada una: el
+   * estado del socio no es una regla de una pantalla, es si esa empresa puede
+   * usar el sistema. Mismo sitio y mismo motivo que el segundo factor.
+   *
+   * Y con `code`, para que la pantalla del portal pueda distinguir «pendiente
+   * de activación» de un permiso que falta y enseñar la explicación en vez de
+   * un 403 pelado.
+   */
+  if (ctx.partnerId) {
+    const veto = vetoDeSocio(ctx.partnerStatus);
+    if (veto) {
+      throw Object.assign(new TenantError(veto.mensaje, 403), { code: "PARTNER_INACTIVE" });
+    }
   }
   return ctx as TenantContext & { companyId: string };
 }

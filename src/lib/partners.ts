@@ -20,6 +20,8 @@
  * que hacía fallar el alta entera).
  */
 
+import { estadoDeCondiciones } from "@/lib/partner-lifecycle";
+
 /** Columnas reales de `organizations` que un partner puede escribir. */
 export const PARTNER_ORG_COLUMNS = [
   "name", "slug", "legal_name", "tax_id", "email", "phone", "country", "timezone", "currency", "status",
@@ -46,8 +48,23 @@ export const PARTNER_RELATIONSHIP_COLUMNS: Record<string, string> = {
  */
 export const PARTNER_DERIVED_FIELDS = ["balance", "authorized_products"];
 
+/**
+ * Columnas de la relación que se LEEN y no se escriben nunca desde el formulario.
+ *
+ * Están fuera de `PARTNER_RELATIONSHIP_COLUMNS` a propósito, y la diferencia no
+ * es de estilo: ese mapa es la lista blanca de escritura del CRUD genérico.
+ * Metida ahí, la aceptación de las condiciones sería un campo más del cuerpo de
+ * la petición —cualquiera con acceso a la ficha del socio podría fecharla, o
+ * firmarla en nombre de otro—, y una aceptación que el propio sistema puede
+ * fabricar no acredita nada. Se escriben en un solo sitio: el punto donde el
+ * socio acepta.
+ */
+export const PARTNER_RELATIONSHIP_READONLY = [
+  "terms_version", "terms_accepted_version", "terms_accepted_at", "terms_accepted_by",
+] as const;
+
 const ORG_COLUMN_SET = new Set<string>(PARTNER_ORG_COLUMNS);
-const DERIVED_SET = new Set(PARTNER_DERIVED_FIELDS);
+const DERIVED_SET = new Set<string>([...PARTNER_DERIVED_FIELDS, ...PARTNER_RELATIONSHIP_READONLY]);
 
 /** Claves que el traductor genérico ya descarta o resuelve por su cuenta. */
 const IGNORED = new Set([
@@ -161,6 +178,17 @@ export function mergePartnerRow(
     if (field === "partner_type") continue;
     out[field] = relationship?.[column] ?? null;
   }
+  for (const column of PARTNER_RELATIONSHIP_READONLY) {
+    out[column] = relationship?.[column] ?? null;
+  }
+  /**
+   * El estado de las condiciones, calculado aquí y no en cada pantalla.
+   *
+   * Es una comparación de dos números y una fecha, y repetirla en la lista, en
+   * la ficha y en el portal es garantizar que las tres acaben discrepando —y
+   * la que discrepe será la que alguien enseñe en una discusión.
+   */
+  out.terms_status = estadoDeCondiciones(relationship ?? null);
   // `parent_org_id` apunta al inquilino salvo que el partner cuelgue de otro.
   out.parent_partner =
     orgRow.parent_org_id && orgRow.parent_org_id !== orgRow.tenant_org_id ? orgRow.parent_org_id : null;

@@ -1836,3 +1836,64 @@ daba error: los tres producían números equivocados en silencio.
 - **Mutación: trece, las trece muertas** — ocho contra las guardas de contrato
   (incluida un fichero nuevo con la comparación vieja, para probar el barrido) y
   cinco contra la prueba de conducta.
+
+### Fase 4.3 — el ciclo de vida del socio deja de ser decorativo
+- **`pending` existía y no hacía nada.** `organizations.status` admite
+  `pending`, `suspended`, `inactive` y `blocked` desde la primera migración, y
+  el formulario de socios los ofrece en su desplegable. **No los miraba nadie**:
+  el enganche del token comprueba el estado de la MEMBRESÍA, no el de la
+  organización del socio, así que un tour center marcado como pendiente —o
+  suspendido— seguía entrando al portal y reservando con normalidad. Un estado
+  que no se comprueba no es un estado: es una etiqueta.
+- **Dónde se aplica:** `requireTenant`, por donde pasa toda ruta. Mismo sitio y
+  mismo motivo que el segundo factor. Y con `code: PARTNER_INACTIVE`, para que
+  la pantalla pueda distinguir «tu empresa aún no está activa» de «no tienes
+  permiso», que son dos conversaciones con dos personas distintas.
+- **El estado va por consulta y no en el token**, como la ficha de vendedor: en
+  el token, suspender a un socio tardaría hasta una hora en surtir efecto. Una
+  consulta por clave primaria y solo para quien viene de un socio.
+- **Y el cargador falla CERRADO, que aquí no es lo mismo que en los demás.**
+  `loadSellerId` devuelve null y null ACOTA; si un fallo de red aquí devolviera
+  «activo», un socio suspendido volvería a operar con solo tirar la consulta.
+- **El portal explica en vez de romperse.** Una contraseña correcta seguida de
+  un portal que falla en cada recuadro sin decir por qué termina en una llamada
+  a la operadora para reportar una avería que no existe. El muro va **antes** de
+  consultar nada, y no ofrece ninguna acción porque no hay ninguna que dependa
+  de quien lo lee.
+- **El estado por defecto de un socio nuevo sigue siendo `active`, a propósito.**
+  El propio criterio de hecho de esta fase pide que un usuario creado con un
+  socio seleccionado entre «sin que nadie toque la base»; nacer en `pending`
+  lo incumpliría. Lo que cambia es que el estado, cuando se elige, **muerde**.
+- **Condiciones aceptadas: DOS versiones, no una fecha.** «Hay fecha de
+  aceptación» no significa «aceptó esto»: la operadora cambia el texto y la
+  firma vieja se queda acreditando otra cosa — que es justo el papel que alguien
+  sacaría en una discusión sobre una comisión. Aceptadas es
+  `terms_accepted_version = terms_version`. Y la versión sube **solo si el texto
+  cambió**: subirla en cada guardado haría llegar «las condiciones han
+  cambiado» cada vez que alguien corrige un teléfono, y a la tercera vez nadie
+  las vuelve a leer.
+- **La aceptación la escribe un solo sitio** (`POST /api/portal/terms`), la
+  firma el socio —nunca el personal interno que entra a auditar el portal, que
+  estaría firmando en nombre de otra empresa— y sella la versión **que lee el
+  servidor**, no una que mande el cliente.
+- **Y no basta con sacarla de la lista blanca.** El reparto del formulario tiene
+  una rama final de cajón de sastre: todo lo que no encaja en ninguna lista cae
+  en `metadata`. Sacar las cuatro columnas de la lista de escritura no las
+  bloqueaba, las desviaba. Se descartan, y hay una prueba que lo afirma sobre
+  los tres destinos.
+- **Migración 0073 — el cerrojo en la base, y cierra DOS puertas.** Rol de socio
+  si y solo si organización de socio. La primera mitad ya la aplicaba la
+  aplicación desde 4.1; **la segunda no estaba cerrada en ningún sitio del
+  servidor**: una membresía con rol `partner` sobre la operadora sale sin
+  identificador de socio, y «sin identificador» es exactamente lo que
+  `app.can_read_partner` entiende por «ve todo». El formulario de Configuración
+  lo impedía, pero solo en el navegador. Queda cerrado también en
+  `resolveMembershipOrg`.
+- **Y una parte 0 en el editor** que lista las membresías que ya incumplen. El
+  disparador es `before insert or update`, así que no rompe filas existentes:
+  lo que fallará es la próxima edición de una de ellas, y es mejor tener la
+  lista ahora que descubrirla el día que un administrador no pueda guardar.
+- **Mutación: dieciséis, las dieciséis muertas.** Una no mordía —quitar las
+  columnas del descarte las desviaba a `metadata` sin que ninguna guarda se
+  quejara— y se arregló con una prueba de conducta sobre el reparto, no
+  relajando nada.

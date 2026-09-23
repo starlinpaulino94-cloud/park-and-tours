@@ -5534,3 +5534,117 @@ describe("el aislamiento del socio no depende del nombre del rol", () => {
     expect(sinComentariosDe("src/lib/tenant.ts")).toMatch(/isPartnerMember\??:\s*boolean/);
   });
 });
+
+describe("el ciclo de vida del socio", () => {
+  it("el estado del socio llega al contexto, y por consulta", () => {
+    /**
+     * Como dato del token tardaría hasta una hora en surtir efecto: suspender
+     * a un tour center que está haciendo algo que no debe no puede esperar a
+     * que su sesión se renueve. Mismo razonamiento que la ficha de vendedor.
+     */
+    const auth = sinComentariosDe("src/lib/supabase/auth-context.ts");
+    expect(auth, "el cargador").toMatch(/async function loadPartnerStatus/);
+    expect(auth, "se llama al armar el contexto")
+      .toMatch(/ctx\.partnerStatus = await loadPartnerStatus\(ctx\.partnerId\)/);
+    expect(sinComentariosDe("src/lib/tenant.ts")).toMatch(/partnerStatus\?:\s*string \| null/);
+  });
+
+  it("y el cargador falla CERRADO", () => {
+    /**
+     * `loadSellerId` puede devolver null porque null ACOTA. Aquí no: si un
+     * fallo de red devolviera «activo», un socio suspendido seguiría operando
+     * con solo tirar la consulta. Ninguna rama de este cargador puede producir
+     * la cadena `active`.
+     */
+    const cuerpo = cuerpoDe("src/lib/supabase/auth-context.ts");
+    const i = cuerpo.indexOf("async function loadPartnerStatus");
+    const fn = cuerpo.slice(i, cuerpo.indexOf("async function loadClaimsFromPrimaryMembership"));
+    expect(fn, "el error de la consulta").toMatch(/if \(error\) return ""/);
+    expect(fn, "la excepción").toMatch(/catch \{\s*return ""/);
+    expect(fn, "y la fila ausente").toMatch(/\?\?\s*""/);
+  });
+
+  it("el veto se aplica en requireTenant, por donde pasa toda ruta", () => {
+    // Comprobado sobre el `throw` y no sobre la llamada: afirmar que
+    // `vetoDeSocio` aparece dejaría borrar el lanzamiento y conservar la
+    // llamada muerta. Ha mordido tres veces en esta rama.
+    const cuerpo = cuerpoDe("src/lib/tenant.ts");
+    const i = cuerpo.indexOf("export async function requireTenant");
+    const fn = cuerpo.slice(i, cuerpo.indexOf("export async function requireTenantWrite"));
+    expect(fn).toMatch(/const veto = vetoDeSocio\(ctx\.partnerStatus\)/);
+    expect(fn).toMatch(/if \(veto\)[\s\S]{0,160}throw[\s\S]{0,160}PARTNER_INACTIVE/);
+  });
+
+  it("y el portal explica antes de consultar nada", () => {
+    /**
+     * Una contraseña correcta seguida de un portal que falla en cada recuadro
+     * sin decir por qué termina en una llamada a la operadora para reportar
+     * una avería que no existe. Y el muro va ANTES de la consulta: pedir datos
+     * que no se van a dibujar es trabajo para enseñar un párrafo.
+     */
+    const layout = cuerpoDe("src/app/portal/layout.tsx");
+    expect(layout).toMatch(/if \(veto\) return <SocioSinAcceso/);
+    expect(layout.indexOf("SocioSinAcceso"))
+      .toBeLessThan(layout.indexOf("tenantQuery"));
+  });
+
+  it("la aceptación de condiciones no es un campo más de la ficha", () => {
+    /**
+     * Si `terms_accepted_*` estuviera en la lista blanca de escritura del CRUD
+     * del socio, la operadora podría fechar desde su propia pantalla una firma
+     * en nombre del tour center. Una aceptación que el sistema puede fabricar
+     * no acredita nada.
+     */
+    const partners = sinComentariosDe("src/lib/partners.ts");
+    const mapa = partners.slice(
+      partners.indexOf("PARTNER_RELATIONSHIP_COLUMNS"),
+      partners.indexOf("PARTNER_DERIVED_FIELDS"));
+    for (const campo of ["terms_version", "terms_accepted_version", "terms_accepted_at", "terms_accepted_by"]) {
+      expect(mapa, campo).not.toMatch(new RegExp(campo));
+    }
+    // Y tampoco por el camino del recurso genérico.
+    const recurso = sinComentariosDe("src/lib/resources.ts");
+    const bloque = recurso.slice(recurso.indexOf("  partner: {"), recurso.indexOf("  seller: {"));
+    expect(bloque.slice(bloque.indexOf("writable"))).not.toMatch(/terms_/);
+  });
+
+  it("acepta el socio, y sobre la versión que lee el servidor", () => {
+    const ruta = sinComentariosDe("src/app/api/portal/terms/route.ts");
+    // El personal interno entra al portal a auditar lo que el socio ve; desde
+    // ahí, aceptar sería firmar en nombre de otra empresa.
+    expect(ruta, "solo el socio").toMatch(/if \(!esDeSocio\(ctx\) \|\| !ctx\.partnerId\)[\s\S]{0,120}throw/);
+    // La versión sale de la fila, nunca del cuerpo: si viniera en la petición,
+    // un socio podría firmar una versión que ya no rige, o una que nadie ha
+    // publicado todavía.
+    expect(ruta, "la versión firmada").toMatch(/terms_accepted_version:\s*rel\.terms_version/);
+    expect(ruta, "quién firmó").toMatch(/terms_accepted_by:\s*ctx\.userId/);
+    expect(ruta, "no lee el cuerpo").not.toMatch(/req\.json\(\)/);
+  });
+
+  it("la migración 0073 exige rol de socio si y solo si organización de socio", () => {
+    /**
+     * Las dos mitades, y la segunda no estaba cerrada en ningún sitio del
+     * servidor: un rol `partner` sobre la operadora sale SIN identificador de
+     * socio, y «sin identificador» es lo que `app.can_read_partner` entiende
+     * por «ve todo».
+     */
+    const sql = read("supabase/migrations/0073_partner_lifecycle.sql");
+    expect(sql, "empleado de socio con otro rol")
+      .toMatch(/org_kind = 'partner' and new\.role <> 'partner'/);
+    expect(sql, "rol de socio sin socio")
+      .toMatch(/org_kind is distinct from 'partner' and new\.role = 'partner'/);
+    expect(sql, "y el disparador existe")
+      .toMatch(/create trigger memberships_role_matches_org/);
+    // Lee `organizations`, que tiene RLS: sin `definer`, `kind` sale nulo para
+    // quien no puede leer esa fila y el cerrojo no salta nunca.
+    expect(sql, "security definer").toMatch(/security definer/);
+  });
+
+  it("y el servidor exige la misma equivalencia al dar de alta", () => {
+    const cuerpo = cuerpoDe("src/lib/team-invite.ts");
+    const i = cuerpo.indexOf("export async function resolveMembershipOrg");
+    const fn = cuerpo.slice(i, i + 1400);
+    expect(fn, "rol de socio sin tour center").toMatch(/rolePedido === "partner"[\s\S]{0,200}throw/);
+    expect(fn, "y el cerrojo de siempre").toMatch(/role: "partner", esSocio: true/);
+  });
+});

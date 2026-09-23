@@ -231,6 +231,36 @@ async function loadSellerId(orgId: string, userId: string): Promise<string | nul
   }
 }
 
+/**
+ * EL ESTADO DE LA EMPRESA DEL SOCIO.
+ *
+ * Una consulta por clave primaria, y SOLO para quien viene de un socio: el
+ * personal interno no paga nada por esto. Va por consulta y no como dato del
+ * token por lo mismo que la ficha de vendedor: desactivar o suspender a un
+ * tour center tiene que surtir efecto en la petición siguiente, no cuando a su
+ * sesión le toque renovarse dentro de una hora.
+ *
+ * FALLA CERRADO, y aquí eso importa más que en ningún otro cargador de este
+ * fichero: `loadSellerId` devuelve null y null ACOTA, pero si un fallo de red
+ * aquí devolviera «activo», un socio suspendido seguiría operando por el
+ * simple expediente de que la consulta se cayera. Devuelve la cadena vacía,
+ * que no es `active` y por tanto veta.
+ */
+async function loadPartnerStatus(partnerId: string): Promise<string> {
+  try {
+    const sb = supabaseService();
+    const { data, error } = await sb
+      .from("organizations")
+      .select("status")
+      .eq("id", partnerId)
+      .maybeSingle();
+    if (error) return "";
+    return (data?.status as string) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 async function loadClaimsFromPrimaryMembership(userId: string): Promise<AppClaims | null> {
   try {
     const sb = supabaseService();
@@ -332,6 +362,13 @@ export async function getSupabaseTenantContext(): Promise<TenantContext | null> 
   // una consulta por petición para no encontrar nunca nada.
   if (!esDeSocio(ctx) && ctx.role !== "superadmin") {
     ctx.sellerId = await loadSellerId(ctx.companyId!, user.id);
+  }
+
+  // Se resuelve por `partnerId` y no por `esDeSocio`: lo que hay que consultar
+  // es el estado de UNA organización concreta, y sin identificador no hay
+  // ninguna a la que preguntar.
+  if (ctx.partnerId) {
+    ctx.partnerStatus = await loadPartnerStatus(ctx.partnerId);
   }
 
   if (ctx.role === "superadmin") {
