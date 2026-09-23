@@ -1714,3 +1714,27 @@ daba error: los tres producían números equivocados en silencio.
   recurso, y buscar POR slug es legítimo —es lo que se teclea de un cartel—.
   Ahora mira solo dentro de `writable`.
 - **Mutación:** once, las once muertas.
+
+### Fase 3.3 — la pantalla del enlace, y un ciclo de vida que ya estaba resuelto
+- **`/dashboard/mi-espacio/enlace`**: crear el enlace, copiarlo, descargar el
+  PNG del QR y ver el embudo de los últimos 30 días. **No tiene campo para el
+  slug**, y no es un olvido: se dice en pantalla que la dirección la genera el
+  sistema, para que nadie lo busque y crea que falta algo.
+- **EL CICLO DE VIDA YA ESTABA, Y MEJOR DE LO QUE YO LO HABÍA PLANEADO.** El
+  plan pedía un disparador que pusiera los enlaces en inactivo al desactivar la
+  ficha del vendedor. **No hace falta**: `resolveLinkBySlug` comprueba el estado
+  del VENDEDOR en cada resolución, así que desactivar la ficha deja de atribuir
+  al instante y por todos sus enlaces a la vez. Guardar además un estado por
+  fila sería una segunda fuente de verdad que puede desincronizarse —y
+  asimétrica, porque reactivar al vendedor no reactivaría los carteles—.
+- **Y el cartel impreso que sobrevive meses en un lobby no se rompe**: un slug
+  que ya no resuelve manda a la portada, igual que cualquier enlace roto, y el
+  cliente sigue pudiendo comprar. Lo que se pierde es la atribución, que es
+  justo lo que se quería perder. Un 404 habría sido peor por dos motivos: deja
+  al cliente sin comprar, y distingue los slugs que existen de los que no.
+- **El límite de tasa de `/e/[slug]` también existía ya** (120/hora), con el
+  detalle bien pensado de que topar el límite sigue llevando al cliente a
+  comprar: lo que se pierde es el registro de la visita, no la venta.
+- En vez de duplicar nada, esas cuatro propiedades quedan **fijadas con
+  guardas**, para que nadie las «optimice» creyendo que sobran. Cuatro
+  mutaciones, las cuatro muertas.

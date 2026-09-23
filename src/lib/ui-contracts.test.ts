@@ -2660,6 +2660,37 @@ describe("el alcance por sucursal", () => {
     expect(regla, "sin techo declarado no puede haber techo").toMatch(/techo == null/);
   });
 
+  it("desactivar a un vendedor apaga su enlace SIN tocar ninguna fila", () => {
+    /**
+     * EL CICLO DE VIDA YA ESTABA RESUELTO, Y MEJOR DE LO PLANEADO.
+     *
+     * El plan pedía un disparador que pusiera los enlaces en inactivo al
+     * desactivar la ficha. No hace falta: `resolveLinkBySlug` comprueba el
+     * estado del VENDEDOR en cada resolución, así que un vendedor desactivado
+     * deja de atribuir al instante y por todos sus enlaces a la vez.
+     *
+     * Guardar además un estado en cada fila sería una segunda fuente de verdad
+     * que puede quedarse desincronizada —y que sería asimétrica: reactivar al
+     * vendedor no reactivaría los carteles—. Esta guarda existe para que nadie
+     * «optimice» quitando la comprobación creyendo que sobra.
+     *
+     * Y el cartel impreso que sobrevive meses en un lobby no se rompe: un slug
+     * que ya no resuelve manda a la portada, igual que cualquier enlace roto, y
+     * el cliente sigue pudiendo comprar. Lo que se pierde es la atribución, que
+     * es justo lo que se quería perder.
+     */
+    const servicio = sinComentariosDe("src/lib/attribution-service.ts");
+    expect(servicio).toMatch(/if \(!seller \|\| seller\.status !== "active"\) return null;/);
+    expect(servicio).toMatch(/\.eq\("status", "active"\)/);
+
+    const puerta = sinComentariosDe("src/app/e/[slug]/route.ts");
+    // A la portada, no a un 404 que enseñe qué slugs valen.
+    expect(puerta).toMatch(/if \(!link\) return NextResponse\.redirect\(home, 302\);/);
+    // Y con límite de tasa, que ya existía: sin él, probar slugs ajenos mide la
+    // actividad de un competidor alojado en el mismo sistema.
+    expect(puerta).toMatch(/assertRateLimit\(\{ key: rateLimitKey\(req, "attr:visit"\)/);
+  });
+
   it("el recorte de columnas se aplica en los TRES sitios que sirven filas", () => {
     /**
      * Listado, detalle y exportación. Dejar uno sin migrar es el fallo que
@@ -4731,6 +4762,7 @@ describe("cada pantalla dice cómo se crea lo que enseña", () => {
     "/dashboard/analitica/cohortes": "cohortes: se calculan",
     "/dashboard/rentabilidad": "márgenes: se calculan de ventas y costes",
     "/dashboard/mi-espacio": "el apartado del vendedor: es una FOTO de lo suyo —lo vendido, la comisión, la meta—; una venta se hace en el punto de venta, y la comisión y la meta las genera el sistema. Un botón de «nuevo» aquí dejaría al vendedor crearse su propia comisión",
+    "/dashboard/mi-espacio/enlace": "su enlace y su QR: el enlace SÍ se crea aquí, pero con un botón propio y sin formulario de recurso —el slug no se elige, lo genera el servidor—, así que el detector de «cómo se crea esto» no lo reconoce",
     "/dashboard/mi-espacio/comisiones": "sus comisiones: las genera el devengo al confirmarse la venta y las liquida gerencia. Un botón de «nueva» aquí sería dejar que el vendedor se escriba su propia comisión, que es exactamente lo que este apartado no puede permitir",
     "/dashboard/mi-espacio/ventas": "sus ventas ya hechas: se crean en el punto de venta, que es donde está el cliente; esta pantalla las mira, no las inventa",
     "/dashboard/distribucion/matriz": "vista cruzada de disponibilidad ya existente",

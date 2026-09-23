@@ -128,6 +128,9 @@ export const WORKSPACES: Workspace[] = [
           { id: "mis-comisiones", href: "/dashboard/mi-espacio/comisiones", label: "Mis comisiones", icon: "BadgeDollarSign",
             description: "Devengada, pendiente y pagada, por fecha del servicio.",
             keywords: ["comision", "cobro", "liquidacion", "mi dinero"] },
+          { id: "mi-enlace", href: "/dashboard/mi-espacio/enlace", label: "Mi enlace y mi QR", icon: "QrCode",
+            description: "Tu enlace de venta, tu código QR y tu embudo.",
+            keywords: ["qr", "enlace", "link", "atribucion", "embudo"] },
         ],
       },
       {
