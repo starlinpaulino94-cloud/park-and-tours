@@ -2327,3 +2327,41 @@ Y la tabla dice dos cosas más que no se preguntaban:
   se usara —se podía borrar el filtro entero—, otra daba por bueno un disparador
   **renombrado** porque `..._off` contiene el nombre original, y la tercera
   aceptaba una siembra que escribe `null` donde va el socio.
+
+### Fase 6.2 — el socio a neto cobraba su margen dos veces
+- **Dos formas de trabajar con un canal externo, y son excluyentes.** A
+  **comisión**: vende al precio de tarifa y se le liquida un porcentaje. A
+  **neto**: COMPRA a un precio rebajado y revende al que quiera, con su margen
+  ya dentro del precio. El sistema soportaba las dos por separado sin saber que
+  no se suman.
+- `generateCommissionsForBooking` empujaba un beneficiario de tipo socio **en
+  cuanto la reserva tenía socio**, sin preguntar nada más. Un tour center con
+  tarifa neta cobraba su margen dos veces: una en el precio y otra en la
+  liquidación.
+- **Y no se ve el día de la venta**: las dos cifras son correctas por separado.
+  Se ve un mes después, cuando alguien compara la liquidación con el contrato —
+  que es exactamente por lo que el plan lo llamaba riesgo económico y no de
+  datos.
+- **Migración 0078**: `pricing_model` en la RELACIÓN, no en la organización,
+  porque es del contrato — la misma agencia puede trabajar a comisión con una
+  operadora y a neto con otra. Mismo sitio y mismo motivo que las condiciones
+  aceptadas de 0073.
+- **Lo desconocido es «comisión», no «neto».** Es lo que hacía el sistema con
+  todos los socios antes de que la columna existiera; entender el hueco como
+  neto les quitaría la comisión a todos de golpe el día del despliegue — el
+  mismo apagón silencioso que evita la siembra de 0077, con el signo cambiado.
+  Las filas existentes toman el valor por defecto sin tocarlas: no hay relleno.
+- **La ficha pide el modelo justo encima de la comisión estándar**, a propósito:
+  con «neto» esa casilla deja de aplicarse, y verlas juntas es lo que evita
+  rellenar las dos creyendo que se suman.
+- **Y la verificación mira dos cosas que solo se ven después**: socios a neto
+  con la comisión estándar todavía rellena —señal de que alguien la puso
+  creyendo que sumaba— y **comisiones ya generadas** a socios que ahora se
+  declaran a neto. Esas son del pasado y no se tocan —reescribir el histórico es
+  peor—, pero hay que saber que existen antes de liquidar el mes.
+- **Lo que NO se hizo, y por qué:** el plan pedía «modelo de precio **y de
+  cobro**». El de cobro son los tres modos de la Fase 7 (paga el cliente al
+  operador; cobra el punto de venta y debe el neto; el vendedor retiene su
+  comisión), y allí tendrán quién los lea. Declarar hoy una columna que nadie
+  lee es repetir exactamente el fallo que 6.1 acaba de arreglar.
+- **Mutación: siete, las siete muertas.**

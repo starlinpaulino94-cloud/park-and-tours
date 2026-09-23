@@ -4,6 +4,7 @@ import { ventaSelladaPorVendedor } from "@/lib/seller-scope";
 import { excesoDeDescuento, mensajeExceso } from "@/lib/techo-descuento";
 import { desajusteDeAtribucion } from "@/lib/atribucion-coherente";
 import { autorizadosDe, noAutorizados, mensajeNoAutorizado, type AutorizacionSocio } from "@/lib/catalogo-socio";
+import { devengaComision } from "@/lib/modelo-comercial";
 import { resolvePrice, resolveCost, billablePax } from "@/lib/pricing";
 import { assertCapacity, recalculateDeparture, OversellError } from "@/lib/availability";
 import { resolveExchangeRate } from "@/lib/currency";
@@ -1307,7 +1308,19 @@ export async function generateCommissionsForBooking(
   const baseAmount = round2((booking.gross_amount ?? 0) - (booking.discount_amount ?? 0));
 
   const beneficiaries: BeneficiaryDescriptor[] = [];
-  if (partnerRow) {
+  /**
+   * EL SOCIO A NETO NO DEVENGA COMISIÓN.
+   *
+   * Antes bastaba con que la reserva tuviera socio. Un tour center que COMPRA a
+   * precio neto ya lleva su margen dentro del precio que pagó: liquidarle
+   * además una comisión es pagárselo dos veces. Y no se ve el día de la venta
+   * —las dos cifras son correctas por separado— sino un mes después, cuando
+   * alguien compara la liquidación con el contrato.
+   *
+   * `devengaComision` entiende el hueco como «a comisión», que es lo que hacía
+   * el sistema antes de que la columna existiera.
+   */
+  if (partnerRow && devengaComision(partnerRow as { pricing_model?: string | null })) {
     beneficiaries.push({
       type: "partner",
       name: partnerRow.commercial_name || partnerRow.name || "Partner",

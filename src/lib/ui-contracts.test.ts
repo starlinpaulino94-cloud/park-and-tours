@@ -6434,3 +6434,51 @@ describe("el contrato socio–producto", () => {
       .toMatch(/api\.put\(`\/api\/erp\/partner_product\/\$\{actual\._id\}`, \{ status:/);
   });
 });
+
+describe("el modelo comercial del socio", () => {
+  it("el motor pregunta antes de empujar al socio como beneficiario", () => {
+    /**
+     * Antes bastaba con que la reserva tuviera socio. Un tour center que COMPRA
+     * a precio neto lleva su margen dentro del precio que pagó: liquidarle
+     * además una comisión es pagárselo dos veces, y no se ve el día de la venta
+     * —las dos cifras son correctas por separado— sino un mes después.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    expect(servicio).toMatch(/if \(partnerRow && devengaComision\(/);
+    expect(servicio, "el empujón incondicional ya no está")
+      .not.toMatch(/if \(partnerRow\) \{\s*beneficiaries\.push/);
+  });
+
+  it("y lo desconocido es COMISIÓN, no neto", () => {
+    /**
+     * Es lo que hacía el sistema con todos los socios antes de que la columna
+     * existiera. Entender el hueco como `net` les quitaría la comisión a todos
+     * de golpe el día del despliegue — el mismo apagón silencioso que evita la
+     * siembra de 0077, con el signo cambiado.
+     */
+    const regla = cuerpoDe("src/lib/modelo-comercial.ts");
+    expect(regla).toMatch(/partner\?\.pricing_model === "net" \? "net" : "commission"/);
+    expect(read("supabase/migrations/0078_partner_pricing_model.sql"))
+      .toMatch(/not null default 'commission'/);
+  });
+
+  it("se declara en la RELACIÓN, no en la organización", () => {
+    // Es del contrato: la misma agencia puede trabajar a comisión con una
+    // operadora y a neto con otra. Mismo sitio que las condiciones de 0073.
+    expect(read("supabase/migrations/0078_partner_pricing_model.sql"))
+      .toMatch(/alter table organization_relationships[\s\S]{0,200}pricing_model/);
+    const partners = sinComentariosDe("src/lib/partners.ts");
+    const mapa = partners.slice(
+      partners.indexOf("PARTNER_RELATIONSHIP_COLUMNS"),
+      partners.indexOf("PARTNER_DERIVED_FIELDS"));
+    expect(mapa).toMatch(/pricing_model: "pricing_model"/);
+  });
+
+  it("y la ficha del socio lo pide, junto a la comisión que deja de aplicarse", () => {
+    // Verlas juntas es lo que evita rellenar las dos creyendo que se suman.
+    const pantalla = sinComentariosDe("src/app/dashboard/partners/page.tsx");
+    const i = pantalla.indexOf('name: "pricing_model"');
+    expect(i, "la ficha no lo pide").toBeGreaterThan(-1);
+    expect(i).toBeLessThan(pantalla.indexOf('name: "default_commission_pct"'));
+  });
+});

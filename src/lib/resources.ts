@@ -80,6 +80,9 @@ export const RESOURCES: Record<string, ResourceDef> = {
       "name", "commercial_name", "partner_type", "tax_id", "contact_name", "email", "phone", "whatsapp",
       "address", "city", "country", "credit_limit", "credit_days", "currency", "default_commission_pct",
       "logo_url", "status", "contract_from", "contract_to", "commercial_terms", "notes", "parent_partner",
+      // Cómo gana este socio (0078). Lo declara la operadora al pactar, y es
+      // lo que decide si además de su precio se le liquida comisión.
+      "pricing_model",
     ],
     numeric: ["credit_limit", "credit_days", "default_commission_pct"],
     dates: ["contract_from", "contract_to"],

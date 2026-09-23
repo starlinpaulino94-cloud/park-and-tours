@@ -708,6 +708,46 @@ describe("las comisiones que genera la venta", () => {
     expect(tipos).toEqual(["partner", "seller"]);
   });
 
+  it("el socio a NETO no cobra comisión: su margen ya va en el precio", async () => {
+    /**
+     * EL COBRO DOBLE QUE ESTO CIERRA.
+     *
+     * Hay dos formas de trabajar con un canal externo y son excluyentes: o
+     * vende a tarifa y se le liquida un porcentaje, o COMPRA a precio neto y
+     * revende al que quiera. Con las dos a la vez, el socio cobra su margen dos
+     * veces —una en el precio y otra en la liquidación— y no se ve el día de la
+     * venta, porque las dos cifras son correctas por separado. Se ve un mes
+     * después, comparando la liquidación con el contrato.
+     */
+    db = conVendedor([], {
+      partner: [{
+        _id: "soc-1", name: "Caribe", default_commission_pct: 18,
+        credit_limit: 0, credit_days: 0, pricing_model: "net",
+      }],
+    });
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1", seller_id: "ven-1", partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    });
+    const tipos = db.rows("commission").map((c) => c.beneficiary_type).sort();
+    // El vendedor de la casa sí cobra la suya: es empleado de la operadora y su
+    // comisión no tiene nada que ver con el modelo del tour center.
+    expect(tipos).toEqual(["seller"]);
+  });
+
+  it("y sin modelo declarado sigue cobrando, como hacía siempre", async () => {
+    // Entender el hueco como «neto» le quitaría la comisión a todos los socios
+    // existentes de golpe el día del despliegue.
+    db = conVendedor([], {
+      partner: [{ _id: "soc-1", name: "Caribe", default_commission_pct: 18, credit_limit: 0, credit_days: 0 }],
+    });
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1", partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    });
+    expect(db.rows("commission").map((c) => c.beneficiary_type)).toEqual(["partner"]);
+  });
+
   it("una venta sin vendedor ni socio no genera comisión de nadie", async () => {
     // Es la venta directa de la empresa. Inventarle un beneficiario sería
     // pagarle a alguien por algo que no vendió.

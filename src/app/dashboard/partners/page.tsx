@@ -96,6 +96,17 @@ export default function PartnersPage() {
         { name: "whatsapp", label: "WhatsApp" },
         { name: "city", label: "Ciudad" },
         { name: "country", label: "País" },
+        /**
+         * Cómo gana este socio. Va justo encima de la comisión estándar a
+         * propósito: con «neto» esa casilla deja de aplicarse, y verlas juntas
+         * es lo que evita rellenar las dos creyendo que se suman.
+         */
+        { name: "pricing_model", label: "Modelo comercial", type: "select", defaultValue: "commission",
+          help: "Con «neto» su margen ya va en el precio: no se le liquida comisión.",
+          options: [
+            { value: "commission", label: "Vende a tarifa y cobra comisión" },
+            { value: "net", label: "Compra a precio neto (sin comisión)" },
+          ] },
         { name: "default_commission_pct", label: "Comisión estándar", type: "number", suffix: "%" },
         { name: "currency", label: "Moneda", type: "select", options: CURRENCY_OPTIONS },
         { name: "credit_limit", label: "Límite de crédito", type: "number" },

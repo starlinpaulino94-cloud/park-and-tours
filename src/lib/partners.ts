@@ -35,6 +35,16 @@ export const PARTNER_RELATIONSHIP_COLUMNS: Record<string, string> = {
   credit_days: "credit_days",
   contract_from: "contract_from",
   contract_to: "contract_to",
+  /**
+   * Cómo gana este socio (0078): a comisión o a neto.
+   *
+   * Va en la relación y no en la organización porque es del CONTRATO — la
+   * misma agencia puede trabajar a comisión con una operadora y a neto con
+   * otra. Y es escribible porque lo declara la operadora al pactar; lo que no
+   * puede es quedarse sin declarar, y por eso la columna tiene valor por
+   * defecto en vez de admitir nulos.
+   */
+  pricing_model: "pricing_model",
 };
 
 /**
