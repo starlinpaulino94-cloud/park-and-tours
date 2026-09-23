@@ -800,7 +800,7 @@ export const PORTAL_NAV: NavItem[] = [
   { id: "p-resumen", href: "/portal", label: "Resumen", icon: "LayoutDashboard", description: "Tu actividad y saldo." },
   { id: "p-catalogo", href: "/portal/catalogo", label: "Catálogo", icon: "Ticket", description: "Qué puedes vender hoy." },
   { id: "p-reservar", href: "/portal/reservar", label: "Reservar", icon: "CalendarPlus", description: "Vender con tu neto y tu crédito." },
-  { id: "p-reservar", href: "/portal/reservar", label: "Reservar", icon: "CalendarPlus", description: "Vender con tu neto y tu crédito." },
+  { id: "p-cupos", href: "/portal/cupos", label: "Mi cupo", icon: "CalendarRange", description: "Las plazas que tienes contratadas, día a día." },
   { id: "p-reservas", href: "/portal/reservas", label: "Mis reservas", icon: "CalendarCheck", description: "Reservas creadas por tu equipo." },
   { id: "p-liquidaciones", href: "/portal/liquidaciones", label: "Liquidaciones", icon: "FileSpreadsheet", description: "Cortes y pagos." },
   { id: "p-vendedores", href: "/portal/vendedores", label: "Mi equipo de ventas", icon: "BadgeDollarSign", description: "Quién vendió qué, y cuánto lleva generado." },

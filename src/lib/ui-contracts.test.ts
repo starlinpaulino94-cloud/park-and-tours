@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import path from "node:path";
+import { PORTAL_NAV } from "@/lib/nav";
 
 /**
  * Contratos de código fuente.
@@ -14,6 +15,7 @@ import path from "node:path";
 
 const ROOT = path.resolve(__dirname, "../..");
 const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
+const existe = (rel: string) => existsSync(path.join(ROOT, rel));
 /** El fichero sin comentarios: una guarda no puede darse por cumplida por lo
  *  que un comentario MENCIONA, solo por lo que el código HACE. Varios bloques
  *  declaran el suyo; este es el de los que no. */
@@ -6554,4 +6556,107 @@ describe("el socio que integra por API", () => {
    * que SALE, no del texto, y vive probada en `src/lib/tarifario.test.ts`
    * ejecutando la función con un producto cuyo precio revienta.
    */
+
+  /* ═══════════════════════════════════ Fase 6.4 · el cupo, visible antes */
+
+  it("el catálogo del portal cruza las plazas con EL CUPO DEL SOCIO", () => {
+    /**
+     * Enseñaba las plazas libres de la SALIDA. Un socio con diez garantizadas
+     * veía las cuarenta de la guagua, vendía quince, y el 409 de
+     * `assertAllotment` le llegaba en la cara del turista que tenía delante.
+     *
+     * El motor de cupos no estaba roto —comprueba bien, y en el único camino
+     * que crea reservas—: estaba escondido, y un límite que solo aparece al
+     * final es indistinguible de un fallo del sistema.
+     */
+    const catalogo = cuerpoDe("src/app/api/portal/catalog/route.ts");
+    expect(catalogo).toMatch(/allotmentsOf\(ctx\.companyId, partnerId\)/);
+    // Y el resultado se USA en la salida, no solo se calcula: la línea que
+    // importa es la que sustituye el número, no la que lo obtiene.
+    expect(catalogo, "available_pax sale del cupo, no de la salida")
+      .toMatch(/available_pax: cupo\.disponible/);
+    expect(catalogo, "y el cupo cruza las dos cosas")
+      .toMatch(/cupoVisible\(\s*plazasLibres\(/);
+  });
+
+  it("la pantalla de reservar NO vuelve a calcular las plazas", () => {
+    /**
+     * Si reconstruye el número en el navegador a partir de `capacity`, cuando
+     * el servidor contesta «no se sabe» le sale la guagua entera: afirmaría
+     * cuarenta plazas libres justo cuando nadie las ha contado. Y peor: se
+     * saltaría el cupo, que es lo que esta ola vino a enseñar.
+     */
+    const pantalla = cuerpoDe("src/app/portal/reservar/page.tsx");
+    expect(pantalla).toMatch(/cupoParaMostrar\(salida\?\.cupo\)/);
+    expect(pantalla, "el número lo da el servidor ya cruzado")
+      .not.toMatch(/plazasParaMostrar\(/);
+  });
+
+  it("solo se bloquea el botón por lo que no cambia esperando", () => {
+    /**
+     * Bloquear por una salida llena le quitaría al socio la plaza que acaba de
+     * liberar una cancelación, con un número de hace dos minutos. Bloquear por
+     * un cupo CERRADO es lo contrario: no se abre solo, y dejar el botón vivo
+     * ahí solo sirve para que escriba los datos del turista y se coma un 409.
+     */
+    const dominio = cuerpoDe("src/lib/cupo-socio.ts");
+    const i = dominio.indexOf("MOTIVO_DEFINITIVO");
+    expect(dominio.slice(i, i + 400)).toMatch(/cerrado: true/);
+    expect(dominio.slice(i, i + 400)).toMatch(/salida_llena: false/);
+    expect(cuerpoDe("src/app/portal/reservar/page.tsx"))
+      .toMatch(/disabled=\{!salida \|\| \(salida\.cupo\?\.motivo \? MOTIVO_DEFINITIVO\[/);
+  });
+
+  it("/api/portal/cupos se acota por la FICHA, no por el parámetro", () => {
+    /**
+     * Atender un `?partner=` a quien es del socio convertiría esta ruta en la
+     * forma de leer el contrato de plazas de la agencia de enfrente: cuántas le
+     * apartan y cuántas lleva vendidas.
+     */
+    const ruta = cuerpoDe("src/app/api/portal/cupos/route.ts");
+    const i = ruta.indexOf("if (esDeSocio(ctx))");
+    expect(i, "la ruta pregunta por la ficha").toBeGreaterThan(-1);
+    // La rama del socio toma SU identificador y no mira `sp.get`.
+    const rama = ruta.slice(i, ruta.indexOf("} else {", i));
+    expect(rama).toMatch(/partnerId = ctx\.partnerId/);
+    expect(rama, "sin tocar el parámetro").not.toMatch(/sp\.get/);
+    // Y el interno necesita manager para mirar el de otro.
+    expect(ruta).toMatch(/requireAtLeast\(ctx, "manager"\)/);
+  });
+
+  it("la disponibilidad por API respeta el contrato Y el cupo", () => {
+    /**
+     * Dos cosas que esta ruta no miraba y la reserva sí. Sin la primera, un
+     * socio integrado planifica sobre un producto que no tiene autorizado;
+     * sin la segunda, sobre plazas que no son suyas. En los dos casos el
+     * rechazo llega al confirmar, cuando ya no puede hacer nada.
+     */
+    const ruta = cuerpoDe("src/app/api/v1/availability/route.ts");
+    expect(ruta, "el contrato por producto").toMatch(/autorizados\.has\(productId\)/);
+    expect(ruta, "y el cupo").toMatch(/allotmentsOf\(caller\.companyId, caller\.partnerId\)/);
+    // `seatsLeft` pasa a ser LO SUYO: dejarle el número grande al lado del
+    // pequeño es pedirle a quien integra que elija el equivocado.
+    expect(ruta).toMatch(/seatsLeft: cupo\.disponible/);
+    // Y lo que su contrato no le deja vender no se devuelve como disponible.
+    expect(ruta).toMatch(/filter\(\(d\) => d\.allotment\.motivo === null\)/);
+  });
+
+  it("el portal no repite una entrada de menú", () => {
+    /**
+     * `p-reservar` estaba dos veces, palabra por palabra: dos líneas iguales en
+     * el menú del socio y dos claves de React idénticas. Una lista escrita a
+     * mano acumula esto en silencio, y una guarda de tres líneas lo caza.
+     */
+    const ids = PORTAL_NAV.map((n) => n.id);
+    expect(ids, "ids repetidos en PORTAL_NAV").toEqual([...new Set(ids)]);
+    const hrefs = PORTAL_NAV.map((n) => n.href);
+    expect(hrefs, "rutas repetidas en PORTAL_NAV").toEqual([...new Set(hrefs)]);
+  });
+
+  it("«mi cupo» tiene pantalla y entrada de menú", () => {
+    // Una pantalla sin menú es un módulo muerto: existe, funciona y no la
+    // encuentra nadie.
+    expect(existe("src/app/portal/cupos/page.tsx")).toBe(true);
+    expect(PORTAL_NAV.some((n) => n.href === "/portal/cupos")).toBe(true);
+  });
 });

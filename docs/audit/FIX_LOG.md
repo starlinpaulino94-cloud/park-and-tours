@@ -2411,3 +2411,51 @@ Y la tabla dice dos cosas más que no se preguntaban:
   reservar, así que le enseñaba productos que su propia reserva iba a rechazar.
   Y añade `net_price`/`net_currency` con la misma función del tarifario.
 - **Mutación: nueve, las nueve muertas.**
+
+### Fase 6.4 — el motor de cupos estaba entero; lo que faltaba era enseñarlo
+- **Lo primero fue mirar qué había, y había casi todo.** `allotment` existe
+  desde 0010, `allotments.ts` decide, `allotment-service.ts` aplica y
+  `createOrderWithBookings` —el único camino que crea reservas, también el de la
+  API y el de las OTA— lo comprueba antes de tomar plazas. La liberación
+  automática funciona y la cancelación devuelve las plazas a su cupo. Nada de
+  eso había que escribirlo.
+- **Lo que no existía era que el socio lo supiera.** Su catálogo y su pantalla
+  de reservar le enseñaban las plazas libres de la SALIDA. Un tour center con
+  diez garantizadas veía las cuarenta de la guagua, vendía quince, y el 409 de
+  `assertAllotment` le llegaba en la cara del turista que tenía delante. **El
+  contrato no estaba roto: estaba escondido, y un límite que solo aparece al
+  final es indistinguible de un fallo del sistema.**
+- **La rejilla del cupo ya estaba escrita y pedía `manager`.** Es decir: el
+  contrato de plazas que el tour center firmó solo podía verlo la otra parte. Se
+  enteraba de lo que le quedaba preguntando por WhatsApp — que es exactamente
+  lo que el motor de cupos vino a sustituir.
+- **Una función para las tres superficies**, `cupoVisible`: el catálogo del
+  portal, la pantalla de reservar y `/api/v1/availability` dicen el mismo número,
+  y el mismo que va a comprobar la reserva. Mismo motivo que el tarifario de
+  6.3: dos cuentas del mismo cupo no divergen el día uno.
+- **Tres motivos y no uno, porque el remedio es distinto.** «Cupo cerrado» y
+  «cupo agotado» los arregla su comercial; «salida llena» no lo arregla nadie y
+  lo que toca es otro día. Un único «no hay plazas» manda al socio a llamar a
+  quien no puede ayudarle.
+- **Y solo se bloquea el botón por lo que no cambia esperando.** La pantalla
+  avisa en vez de bloquear porque su número es de hace dos minutos y una
+  cancelación libera plazas todo el rato. Pero un cupo CERRADO no se abre solo:
+  dejar el botón vivo ahí solo sirve para que el socio escriba los datos del
+  turista y se coma el rechazo al final.
+- **`/api/v1/availability` no miraba ninguna de las dos cosas que la reserva sí
+  mira**: ni el contrato por producto de 6.1 —un socio integrado planificaba
+  sobre un producto que no tiene autorizado— ni su cupo. Ahora `seatsLeft` es LO
+  SUYO: dejarle el número grande al lado del pequeño es pedirle a quien integra
+  que elija el equivocado.
+- **«No saber» sigue sin ser «agotado».** Una salida sin cupo calculado no está
+  llena, y la pantalla dejó de reconstruir el número desde `capacity`: hacerlo
+  en el navegador devolvía la guagua entera justo cuando nadie la había contado.
+- **Y no se le inventa un contrato al que no lo tiene.** `allotmentState`
+  devuelve un `free_sale` de relleno para que la venta siga adelante; eso es un
+  valor por defecto, no un acuerdo, y presentarlo como tal le diría al socio que
+  firmó algo que no firmó.
+- **Una entrada de menú estaba duplicada palabra por palabra** (`p-reservar`,
+  dos líneas idénticas: dos entradas en el menú del socio y dos claves de React
+  iguales). Una lista escrita a mano acumula esto en silencio; la guarda que lo
+  caza son tres líneas y vale para todas las futuras.
+- **Mutación: quince, las quince muertas.**

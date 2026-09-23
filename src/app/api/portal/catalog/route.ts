@@ -6,6 +6,9 @@ import type { Departure, Partner, Product, ProductModality } from "@/lib/types";
 import { refId } from "@/lib/types";
 import { autorizadosDe, type AutorizacionSocio } from "@/lib/catalogo-socio";
 import { plazasLibres, type SalidaConCupo } from "@/lib/plazas";
+import { allotmentsOf } from "@/lib/allotment-service";
+import { pickAllotment, allotmentState } from "@/lib/allotments";
+import { cupoVisible } from "@/lib/cupo-socio";
 
 /**
  * GET /api/portal/catalog?date=YYYY-MM-DD
@@ -100,6 +103,21 @@ export async function GET(req: NextRequest) {
       departuresByProduct.set(id, [...(departuresByProduct.get(id) || []), d]);
     }
 
+    /**
+     * EL CUPO CONTRATADO, DELANTE Y NO AL FINAL.
+     *
+     * Esta pantalla enseñaba las plazas libres de la SALIDA. Un socio con diez
+     * garantizadas veía las cuarenta de la guagua, vendía quince, y el 409 de
+     * `assertAllotment` le llegaba en la cara del turista que tenía delante. El
+     * motor de cupos no estaba roto —comprueba bien, y en el único camino que
+     * crea reservas—: estaba escondido, y un límite que solo aparece al final
+     * es indistinguible de un fallo del sistema.
+     *
+     * Los cupos se piden UNA vez y se cruzan en memoria: son pocos por socio y
+     * preguntar por salida convertiría el catálogo en cien consultas.
+     */
+    const cupos = await allotmentsOf(ctx.companyId, partnerId);
+
     // B2B price per product using the pricing engine (never a frontend formula).
     const rows = await Promise.all(
       products.map(async (product) => {
@@ -140,14 +158,27 @@ export async function GET(req: NextRequest) {
           category: typeof product.category === "object" ? product.category?.name : undefined,
           modalities: modalities.map((m) => ({ _id: m._id, name: m.name, modality_type: m.modality_type })),
           price,
-          departures: productDepartures.slice(0, 20).map((d) => ({
-            _id: d._id,
-            departure_at: d.departure_at,
-            // Mismo motivo que en el POS: un hueco no es un agotado.
-            available_pax: plazasLibres(d as SalidaConCupo),
-            capacity: d.capacity ?? 0,
-            status: d.status,
-          })),
+          departures: productDepartures.slice(0, 20).map((d) => {
+            const cupo = cupoVisible(
+              // Mismo motivo que en el POS: un hueco no es un agotado.
+              plazasLibres(d as SalidaConCupo),
+              allotmentState(pickAllotment(cupos, {
+                partnerId: partnerId as string,
+                productId: product._id,
+                departureId: d._id,
+                travelDate: d.departure_at,
+              }))
+            );
+            return {
+              _id: d._id,
+              departure_at: d.departure_at,
+              // Lo que este socio puede reservar, no lo que cabe en la guagua.
+              available_pax: cupo.disponible,
+              capacity: d.capacity ?? 0,
+              status: d.status,
+              cupo,
+            };
+          }),
           next_departure: productDepartures[0]?.departure_at,
         };
       })
