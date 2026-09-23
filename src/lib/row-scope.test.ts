@@ -106,3 +106,81 @@ describe("el detalle dice lo mismo que la lista", () => {
     expect(() => assertRowInScope("order", vendedor, null)).not.toThrow();
   });
 });
+
+/**
+ * EL VENDEDOR DEL TOUR CENTER (Fase 5).
+ *
+ * El actor que en 4.5 solo existía en una prueba. Aquí se comprueba quién lo
+ * es de verdad, que es lo que 4.5 no podía comprobar: entonces nadie recibía
+ * ficha de vendedor viniendo de un socio.
+ */
+const agenteConFicha: ActorDeFila = {
+  role: "partner", partnerId: "soc-1", isPartnerMember: true,
+  partnerRole: "agent", sellerId: "v-1",
+};
+const agenteSinFicha: ActorDeFila = {
+  role: "partner", partnerId: "soc-1", isPartnerMember: true, partnerRole: "agent",
+};
+const adminDeSocio: ActorDeFila = {
+  role: "partner", partnerId: "soc-1", isPartnerMember: true,
+  partnerRole: "admin", sellerId: "v-9",
+};
+
+describe("el sub-login del vendedor del tour center", () => {
+  it("el agente CON ficha se acota además a lo suyo", () => {
+    const filtros = scopeFiltersFor("booking", agenteConFicha);
+    expect(filtros).toHaveLength(2);
+    expect(filtros).toContainEqual({ partner: "soc-1" });
+    expect(filtros).toContainEqual({ _or: [{ seller: "v-1" }, { seller: null }] });
+  });
+
+  it("el agente SIN ficha se acota solo a su empresa", () => {
+    /**
+     * Y ésta es la asimetría que hay que tener escrita: dentro de la operadora
+     * el ROL declara que alguien está acotado, así que sin ficha se acota a
+     * «lo de nadie». En un tour center el rol no puede decir nada —todos
+     * tienen el mismo— y la señal es la ficha. Sin ficha, acotar a «lo de
+     * nadie» dejaría el portal vacío a todos los tour centers que no usan
+     * vendedores, que son la mayoría al principio.
+     */
+    expect(scopeFiltersFor("booking", agenteSinFicha)).toEqual([{ partner: "soc-1" }]);
+  });
+
+  it("quien administra el tour center no se acota a una persona, tenga ficha o no", () => {
+    // Es el equivalente del gerente que además vende: su pantalla de equipo
+    // existe para ver lo de todos los suyos.
+    expect(scopeFiltersFor("booking", adminDeSocio)).toEqual([{ partner: "soc-1" }]);
+  });
+
+  it("y en el detalle pasa las DOS comprobaciones", () => {
+    expect(() => assertRowInScope("order", agenteConFicha, {
+      _id: "o1", partner: "soc-1", seller: "v-2",
+    })).toThrow(/de otro vendedor/);
+    expect(() => assertRowInScope("order", agenteConFicha, {
+      _id: "o1", partner: "soc-2", seller: "v-1",
+    })).toThrow(/fuera de tu ámbito/);
+    expect(() => assertRowInScope("order", agenteConFicha, {
+      _id: "o1", partner: "soc-1", seller: "v-1",
+    })).not.toThrow();
+  });
+
+  it("la tabla de vendedores es PROPIA del socio, nunca compartida", () => {
+    /**
+     * El cuidado específico del plan. Como compartida, «sin filtro de socio»:
+     * el tour center leería las fichas internas de la operadora con la
+     * comisión, la meta y el techo de descuento de cada vendedor propio.
+     */
+    expect(scopeFiltersFor("seller", adminDeSocio)).toContainEqual({ partner: "soc-1" });
+    expect(() => assertRowInScope("seller", adminDeSocio, { _id: "v-9", partner: null }))
+      .toThrow(/fuera de tu ámbito/);
+  });
+
+  it("y las cuatro tablas sin columna de socio siguen denegadas", () => {
+    // Decidido de antemano, como pedía el plan: no tienen dimensión de socio,
+    // así que acotarlas exigiría una subconsulta que el armador no expresa.
+    for (const tabla of ["seller_goal", "seller_bonus", "seller_link", "seller_attribution"]) {
+      expect(() => scopeFiltersFor(tabla, adminDeSocio), tabla).toThrow(/No tienes acceso/);
+      expect(() => scopeFiltersFor(tabla, agenteConFicha), tabla).toThrow(/No tienes acceso/);
+    }
+  });
+});

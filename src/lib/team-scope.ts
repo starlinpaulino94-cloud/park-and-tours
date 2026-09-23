@@ -1,5 +1,5 @@
 import type { AppRole } from "@/lib/auth";
-import { atLeast, esDeSocio, TenantError } from "@/lib/tenant";
+import { atLeast, esDeSocio, esAdminDeSocio, TenantError } from "@/lib/tenant";
 
 /**
  * QUIÉN PUEDE GESTIONAR A QUIÉN. LA DECISIÓN, EN UN SOLO SITIO Y PURA.
@@ -37,11 +37,6 @@ export interface AmbitoEquipo {
    */
   organizationId: string | null;
   esSocio: boolean;
-}
-
-/** El administrador DENTRO de un tour center. */
-export function esAdminDeSocio(actor: Actor): boolean {
-  return esDeSocio(actor) && actor.partnerRole === "admin";
 }
 
 /**

@@ -99,7 +99,7 @@ export async function GET(req: NextRequest) {
     if (sp.get("quote_type")) filter.quote_type = sp.get("quote_type");
     // El mismo ámbito que en `/api/orders`: esta ruta tampoco pasa por
     // `buildListFilter`, y el embudo de cotizaciones es cartera comercial.
-    const sellerScope = sellerFilterFor("quote", ctx.role, ctx.sellerId);
+    const sellerScope = sellerFilterFor("quote", ctx);
     if (sellerScope) Object.assign(filter, sellerScope);
 
     const [rows, total] = await Promise.all([

@@ -2373,7 +2373,7 @@ describe("el alcance por sucursal", () => {
      */
     // El ámbito por fila —socio y vendedor— entra por un solo punto desde 4.5.
     expect(read("src/lib/erp-query.ts")).toMatch(/scopeFiltersFor\(def\.table, ctx\)/);
-    expect(read("src/lib/row-scope.ts")).toMatch(/sellerFilterFor\(table, ctx\.role, ctx\.sellerId\)/);
+    expect(read("src/lib/row-scope.ts")).toMatch(/sellerFilterFor\(table, ctx\)/);
 
     const detalle = read("src/app/api/erp/[resource]/[id]/route.ts");
     // En la lectura…
@@ -2390,7 +2390,7 @@ describe("el alcance por sucursal", () => {
     ] as const) {
       const fuente = read(file);
       expect(fuente, file).toMatch(
-        new RegExp(`sellerFilterFor\\("${tabla}", ctx\\.role, ctx\\.sellerId\\)`)
+        new RegExp(`sellerFilterFor\\("${tabla}", ctx\\)`)
       );
       // Y el resultado se APLICA. Comprobar solo la llamada dejaba pasar la
       // peor versión del fallo: el ámbito calculado y tirado a la basura una
@@ -2828,11 +2828,25 @@ describe("el alcance por sucursal", () => {
      * sin este dato su apartado propio no existiría. No les acota nada
      * —`sellerScopeApplies` solo mira al rango más bajo—, les da su vista.
      *
-     * Y se salta para el socio y para el superadministrador, incluso mientras
-     * impersona: quien entra a mirar una empresa ajena no es vendedor de ella.
+     * Desde la Fase 5 se resuelve TAMBIÉN para la gente de un tour center: el
+     * sub-login del vendedor de un socio es exactamente eso, una persona del
+     * portal que además tiene ficha. Se salta solo para quien no se acota
+     * nunca: el superadministrador —incluso mientras impersona, porque quien
+     * entra a mirar una empresa ajena no es vendedor de ella— y quien
+     * administra la cuenta de su tour center.
      */
-    expect(auth).toMatch(/!esDeSocio\(ctx\) && ctx\.role !== "superadmin"/);
-    expect(auth).toMatch(/ctx\.sellerId = await loadSellerId\(ctx\.companyId!, user\.id\)/);
+    expect(auth).toMatch(/ctx\.role !== "superadmin" && !esAdminDelSocio/);
+    /**
+     * Y la ficha del vendedor de un socio se busca ACOTADA A SU SOCIO. Sin
+     * eso, un usuario de tour center cuyo correo coincidiera con el de una
+     * ficha interna quedaría acotado a esa ficha, y vería las ventas de un
+     * vendedor de la operadora desde el portal.
+     */
+    expect(auth, "la ficha del socio cuelga de su socio")
+      .toMatch(/partnerId \? q\.eq\("partner_id", partnerId\) : q\.is\("partner_id", null\)/);
+    expect(auth, "y se le pasa el socio de quien llama")
+      .toMatch(/loadSellerId\(ctx\.companyId!, user\.id, ctx\.partnerId \?\? null\)/);
+    expect(auth).toMatch(/ctx\.sellerId = await loadSellerId\(ctx\.companyId!, user\.id, ctx\.partnerId \?\? null\)/);
     // Y el panel usa ESE dato, no una segunda consulta que pueda discrepar.
     expect(read("src/app/api/dashboard/route.ts")).toMatch(/ctx\.sellerId \?\? null/);
   });
@@ -5490,7 +5504,14 @@ describe("el aislamiento del socio no depende del nombre del rol", () => {
   };
 
   it("cada punto de aislamiento pregunta por esDeSocio", () => {
-    const mudos = PUNTOS_DE_AISLAMIENTO.filter((rel) => !/esDeSocio\s*\(/.test(sinComentariosDe(rel)));
+    /**
+     * `esAdminDeSocio` cuenta: está construida sobre `esDeSocio` y pregunta lo
+     * mismo con una condición más. Lo que la regla persigue es que la decisión
+     * salga del IDENTIFICADOR y no del nombre del rol, y eso se cumple igual —
+     * la guarda de abajo, que prohíbe la comparación por nombre, es la que
+     * impide que esto se convierta en un coladero.
+     */
+    const mudos = PUNTOS_DE_AISLAMIENTO.filter((rel) => !/es(?:Admin)?DeSocio\s*\(/.test(sinComentariosDe(rel)));
     expect(mudos, "estos ficheros decidían el aislamiento del socio y ya no preguntan").toEqual([]);
   });
 
@@ -5831,5 +5852,162 @@ describe("un solo punto de entrada de ámbito por fila", () => {
     expect(sql, "compara el antes y el después")
       .toMatch(/usuarios_contados_antes[\s\S]*usuarios_contados_ahora/);
     expect(sql, "y señala a quién avisar").toMatch(/SE PASA AL DESPLEGAR/);
+  });
+});
+
+describe("el vendedor del tour center", () => {
+  it("la tabla de vendedores entra como PROPIA del socio, no como compartida", () => {
+    /**
+     * EL CUIDADO ESPECÍFICO DEL PLAN, Y POR QUÉ SE COMPRUEBA ASÍ.
+     *
+     * «Compartida» significa, literalmente, sin filtro de socio. Con `seller`
+     * ahí, el tour center leería las fichas INTERNAS de la operadora con la
+     * comisión, la meta y el techo de descuento de cada vendedor propio. Es la
+     * lista a la que se añade por costumbre lo que el socio «solo consulta».
+     */
+    const recursos = sinComentariosDe("src/lib/resources.ts");
+    const propias = recursos.slice(
+      recursos.indexOf("const PARTNER_OWNED_TABLES"),
+      recursos.indexOf("const PARTNER_SHARED_TABLES"));
+    const compartidas = recursos.slice(
+      recursos.indexOf("const PARTNER_SHARED_TABLES"),
+      recursos.indexOf("export type PartnerScope"));
+    expect(propias, "propia").toMatch(/"seller"/);
+    expect(compartidas, "y nunca compartida").not.toMatch(/"seller"/);
+  });
+
+  it("las cuatro tablas sin columna de socio están denegadas Y escrito por qué", () => {
+    /**
+     * `partnerScopeFor` deniega por defecto, así que la lista no cambia nada:
+     * existe para que la decisión esté tomada por escrito. El plan pedía
+     * decidirlo «de antemano» porque es donde la respuesta fácil —añadirlas
+     * cuando alguien las pida— es la equivocada: no tienen dimensión de socio,
+     * y un filtro por vendedor a secas le enseñaría al agente de un tour
+     * center las metas de los vendedores internos.
+     */
+    const recursos = sinComentariosDe("src/lib/resources.ts");
+    const declaradas = recursos.slice(recursos.indexOf("PARTNER_DENEGADAS_A_PROPOSITO"));
+    for (const tabla of ["seller_goal", "seller_bonus", "seller_link", "seller_attribution"]) {
+      expect(declaradas, tabla).toMatch(new RegExp(`${tabla}:`));
+      // Y ninguna se ha colado en las que sí ve.
+      expect(recursos.slice(
+        recursos.indexOf("const PARTNER_OWNED_TABLES"),
+        recursos.indexOf("export type PartnerScope")), tabla).not.toMatch(new RegExp(`"${tabla}"`));
+    }
+  });
+
+  it("el ámbito del vendedor recibe al actor entero, no cuatro cadenas sueltas", () => {
+    /**
+     * Con `(table, role, sellerId, rowSellerId)` eran cuatro argumentos del
+     * mismo tipo en fila — el sitio donde se cuela un intercambio de dos que
+     * compila y no se nota hasta que alguien lee lo que no debía. Y con el
+     * vendedor del tour center harían falta dos más.
+     */
+    const ambito = sinComentariosDe("src/lib/seller-scope.ts");
+    expect(ambito).toMatch(/export interface ActorVendedor/);
+    expect(ambito, "el filtro").toMatch(/sellerFilterFor\(\s*table: string,\s*actor: ActorVendedor/);
+    expect(ambito, "y la fila").toMatch(/sellerCanReadRow\(\s*table: string,\s*actor: ActorVendedor/);
+  });
+
+  it("y decide por la ficha cuando quien llama viene de un socio", () => {
+    // La asimetría documentada: dentro de la operadora lo dice el rol; dentro
+    // de un tour center, la ficha. Comprobado sobre el `return`, no sobre que
+    // la función se mencione.
+    const cuerpo = cuerpoDe("src/lib/seller-scope.ts");
+    const i = cuerpo.indexOf("export function sellerScopeApplies");
+    const fn = cuerpo.slice(i, cuerpo.indexOf("export function sellerFilterFor"));
+    expect(fn).toMatch(/if \(esDeSocio\(actor\)\) return !esAdminDeSocio\(actor\) && Boolean\(actor\.sellerId\)/);
+    expect(fn).toMatch(/return actor\.role === "seller"/);
+  });
+});
+
+describe("el vendedor de una venta es de quien la vende", () => {
+  it("la venta comprueba la coherencia ANTES de escribir nada", () => {
+    /**
+     * Rechazar tarde obliga a compensar escrituras que no había que haber
+     * hecho: plazas tomadas, cupo consumido, crédito apuntado. Por eso va con
+     * el vendedor ya resuelto y antes del primer bloque que reserva algo.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    const i = servicio.indexOf("desajusteDeAtribucion(");
+    expect(i, "la comprobación no está").toBeGreaterThan(-1);
+    // Sobre el `throw`, no sobre la llamada: afirmar que la función aparece
+    // deja borrar el lanzamiento y conservar la llamada muerta.
+    expect(servicio.slice(i, i + 220)).toMatch(/if \(desajuste\) throw[\s\S]{0,80}status: 400/);
+    // Anclado en CÓDIGO y no en el texto de un comentario: `cuerpoDe` los
+    // quita, y una guarda de orden que se apoya en un comentario mide el orden
+    // de dos cosas que no existen.
+    expect(i, "antes de tomar plazas").toBeLessThan(servicio.indexOf("assertCapacity("));
+    expect(i, "antes de consumir cupo").toBeLessThan(servicio.indexOf("assertAllotment("));
+    expect(i, "y antes del límite de crédito").toBeLessThan(servicio.indexOf("creditCheck("));
+  });
+
+  it("y solo cuesta una consulta cuando hay vendedor", () => {
+    /**
+     * La venta directa es la mitad de las que se registran: no puede pagar una
+     * consulta por una comprobación que no le aplica.
+     *
+     * Se mira el trozo QUE PRECEDE a la comprobación y no el fichero entero:
+     * `if (attributedSeller)` aparece dos veces —la otra apunta el embudo de
+     * atribución al final—, así que buscarlo suelto lo daba por bueno aunque
+     * se hubiera borrado el de aquí. No mordía; ahora sí.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    const i = servicio.indexOf("desajusteDeAtribucion(");
+    expect(servicio.slice(Math.max(0, i - 400), i)).toMatch(/if \(attributedSeller\) \{/);
+  });
+
+  it("el punto de venta no ofrece lo que la API va a rechazar", () => {
+    /**
+     * Los dos desplegables eran independientes y se mandaban tal cual. Estrechar
+     * la pantalla no cierra nada por sí solo —los identificadores viajan en el
+     * cuerpo—, pero ofrecer una opción que el servidor rechaza es peor que no
+     * ofrecerla: el error aparece al final, con el carrito lleno.
+     */
+    const contexto = sinComentariosDe("src/app/api/pos/context/route.ts");
+    expect(contexto, "de qué socio es cada ficha").toMatch(/partner: refId\(s\.partner\) \?\? null/);
+
+    const pos = sinComentariosDe("src/app/dashboard/pos/page.tsx");
+    expect(pos, "la lista se acota").toMatch(/todos\.filter\(\(s\) => !s\.partner \|\| s\.partner === partnerId\)/);
+    // Y el desplegable usa la lista acotada, no la cruda: sin esto el filtro
+    // existiría y no lo miraría nadie.
+    expect(pos, "y el desplegable la usa").toMatch(/\{vendedoresDisponibles\.map\(/);
+    // Al cambiar de socio, el vendedor que deja de encajar se suelta. Sin esto
+    // queda un identificador seleccionado que el desplegable ya no enseña.
+    expect(pos, "y se suelta al cambiar de socio")
+      .toMatch(/if \(!vendedoresDisponibles\.some\(\(s\) => s\._id === sellerId\)\) setSellerId\(""\)/);
+  });
+});
+
+describe("/portal/vendedores", () => {
+  it("es de quien dirige, no de quien vende", () => {
+    /**
+     * Enseña lo que vendió cada compañero: justo lo que el ámbito del vendedor
+     * existe para que un agente no vea. Y aquí ese ámbito no se aplica solo,
+     * porque la consulta pide las órdenes de una LISTA de vendedores y no pasa
+     * por el armador de filtros. La puerta se cierra a la entrada.
+     */
+    const ruta = cuerpoDe("src/app/api/portal/sellers/route.ts");
+    expect(ruta).toMatch(/if \(!esAdminDeSocio\(ctx\)\) \{[\s\S]{0,260}throw new TenantError/);
+    expect(ruta, "y desde la operadora, gerencia").toMatch(/requireAtLeast\(ctx, "manager"\)/);
+  });
+
+  it("sin equipo no consulta nada, en vez de preguntar por una lista vacía", () => {
+    /**
+     * `in: []` no significa «ninguno» en todos los traductores de consulta: en
+     * algunos es una condición que no se aplica, y entonces esta pantalla
+     * enseñaría las ventas de la operadora entera. No se le da la ocasión.
+     */
+    expect(cuerpoDe("src/app/api/portal/sellers/route.ts"))
+      .toMatch(/ids\.length\s*\?[\s\S]{0,900}:\s*\[\[\], \[\]\]/);
+  });
+
+  it("y no rehace el aislamiento por su cuenta", () => {
+    // El ámbito del socio ya acota `seller` —es tabla propia desde 5.1— y el
+    // recorte de columnas es el mismo módulo que usa el listado genérico. Una
+    // ruta a medida que rehace el aislamiento es una que un día lo hará mal.
+    const ruta = cuerpoDe("src/app/api/portal/sellers/route.ts");
+    expect(ruta).toMatch(/projectRows\("seller", ctx,/);
+    expect(ruta, "no arma su propio ámbito de socio").not.toMatch(/partnerScopeFor|PARTNER_OWNED/);
   });
 });

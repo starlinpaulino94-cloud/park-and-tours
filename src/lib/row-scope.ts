@@ -43,6 +43,14 @@ export interface ActorDeFila {
   partnerId?: string | null;
   isPartnerMember?: boolean;
   sellerId?: string | null;
+  /**
+   * Sin esto el tipo mentía: el ámbito del vendedor pregunta por la jerarquía
+   * interna del socio —quien administra su tour center no se acota a una
+   * persona— y aquí no se declaraba. Funcionaba porque el contexto real la
+   * trae; un llamante que construyera un `ActorDeFila` estricto habría perdido
+   * la exención sin que nada se quejara.
+   */
+  partnerRole?: string | null;
 }
 
 /**
@@ -60,7 +68,7 @@ export function scopeFiltersFor(table: string, ctx: ActorDeFila): Record<string,
     if (scope.kind === "own") filtros.push({ [scope.field]: scope.partnerId });
   }
 
-  const delVendedor = sellerFilterFor(table, ctx.role, ctx.sellerId);
+  const delVendedor = sellerFilterFor(table, ctx);
   if (delVendedor) filtros.push(delVendedor);
 
   return filtros;
@@ -104,7 +112,7 @@ export function assertRowInScope(
 
   const campo = sellerFieldFor(table);
   const rowSellerId = campo ? refId(record[campo]) : null;
-  if (!sellerCanReadRow(table, ctx.role, ctx.sellerId, rowSellerId)) {
+  if (!sellerCanReadRow(table, ctx, rowSellerId)) {
     throw new TenantError("Este registro es de otro vendedor", 403);
   }
 }

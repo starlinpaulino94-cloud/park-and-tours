@@ -48,7 +48,7 @@ interface PosContext {
   catalog: CatalogProduct[];
   bundles: CatalogBundle[];
   hotels: { _id: string; name?: string; zone?: string }[];
-  sellers: { _id: string; name: string }[];
+  sellers: { _id: string; name: string; partner?: string | null }[];
   /** La ficha de quien vende, cuando el servidor va a sellar la venta a su nombre. */
   own_seller_id?: string | null;
   seller_locked?: boolean;
@@ -189,6 +189,36 @@ export default function PosPage() {
   }, [date]);
 
   useEffect(() => { loadContext(); }, [loadContext]);
+
+  /**
+   * LOS VENDEDORES QUE ENCAJAN CON EL SOCIO ELEGIDO.
+   *
+   * Los dos desplegables eran independientes: se podía registrar la venta del
+   * tour center A atribuida a un vendedor del B, y detrás del vendedor va la
+   * comisión. El servidor lo rechaza desde esta entrega; esto es para que la
+   * pantalla no llegue a ofrecerlo, que es distinto de impedirlo.
+   *
+   * El vendedor de la casa aparece SIEMPRE, también con un socio elegido: el
+   * conserje trae al cliente y el vendedor del mostrador remata, y el motor de
+   * comisiones reparte las dos. Lo que no aparece nunca es el de otro socio.
+   */
+  const vendedoresDisponibles = useMemo(() => {
+    const todos = ctx?.sellers || [];
+    return todos.filter((s) => !s.partner || s.partner === partnerId);
+  }, [ctx?.sellers, partnerId]);
+
+  /**
+   * Y si el vendedor elegido deja de encajar al cambiar de socio, se suelta.
+   *
+   * Sin esto queda seleccionado un valor que el desplegable ya no enseña —el
+   * control queda en blanco con un identificador dentro— y la venta se manda
+   * con él. Es la forma más silenciosa de que la comprobación del servidor
+   * salte con un mensaje que quien vende no sabe de dónde sale.
+   */
+  useEffect(() => {
+    if (!sellerId) return;
+    if (!vendedoresDisponibles.some((s) => s._id === sellerId)) setSellerId("");
+  }, [vendedoresDisponibles, sellerId]);
 
   // Customer search — debounced, server-side.
   useEffect(() => {
@@ -743,7 +773,7 @@ export default function PosPage() {
                   <SelectTrigger><SelectValue placeholder="Venta directa" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="__none">Venta directa</SelectItem>
-                    {(ctx?.sellers || []).map((s) => <SelectItem key={s._id} value={s._id}>{s.name}</SelectItem>)}
+                    {vendedoresDisponibles.map((s) => <SelectItem key={s._id} value={s._id}>{s.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
               )}

@@ -2019,3 +2019,97 @@ daba error: los tres producían números equivocados en silencio.
   cuáles y por cuánto. **No es opcional**: es la diferencia entre avisar y que a
   alguien le deje de funcionar el sistema un martes.
 - **Mutación: diez, las diez muertas.**
+
+## Fase 5 — El tour center opera
+
+### Fase 5.1 — el sub-login del vendedor del tour center
+- **Qué es:** una persona del portal que ADEMÁS tiene ficha de vendedor
+  colgando de su propio tour center. Con eso, el ámbito combinado —lo de su
+  socio, y dentro de eso lo suyo— sale solo, porque los dos filtros se acumulan
+  desde 4.5. La prueba que allí usaba un actor que no existía ahora describe uno
+  real.
+- **La ficha se busca ACOTADA A SU SOCIO, y esto no es una comodidad.** Sin el
+  filtro, un usuario de tour center cuyo correo coincidiera con el de una ficha
+  interna quedaría acotado a esa ficha — y vería las ventas de un vendedor de la
+  operadora desde el portal. Va con `is null` para el personal interno por lo
+  simétrico: una ficha con socio no es de la operadora.
+- **La asimetría, escrita para que no parezca un descuido.** Dentro de la
+  operadora **lo dice el rol**: `seller` declara por sí solo que esa persona
+  está acotada, así que sin ficha se acota a «lo de nadie» —falla cerrado—.
+  Dentro de un tour center el rol no puede decir nada, porque desde 0073 todas
+  sus personas tienen el mismo; la señal es **la ficha**. Y por eso aquí sin
+  ficha NO se acota: un tour center que no usa vendedores —la mayoría, al
+  principio— se habría encontrado el portal vacío el día del despliegue.
+- Quien administra la cuenta del tour center no se acota nunca, tenga ficha o
+  no: es el equivalente del gerente que además vende.
+- **El cuidado específico del plan: `seller` entra como PROPIA, nunca como
+  compartida.** «Compartida» significa literalmente sin filtro de socio, y esa
+  tabla trae las condiciones de los vendedores INTERNOS —comisión, meta, techo
+  de descuento—. Queda una guarda que lo comprueba en las dos listas, porque la
+  de catálogo compartido es donde se añade por costumbre lo que el socio «solo
+  consulta».
+- **Y las cuatro tablas sin columna de socio quedan denegadas POR ESCRITO**
+  (`seller_goal`, `seller_bonus`, `seller_link`, `seller_attribution`). Ya lo
+  estaban —se deniega por defecto—: lo que faltaba era la decisión tomada de
+  antemano, que es lo que el plan pedía. Acotarlas exigiría una subconsulta que
+  el armador de filtros no expresa, y con un filtro por vendedor a secas el
+  agente de un tour center vería las metas de la red interna.
+- **El recorte de columnas gana una exención**: quien administra un tour center
+  ve la comisión y la meta de SU gente. El recorte por rango se las escondía
+  —su rango es el más bajo que hay— y `/portal/vendedores` existe justamente
+  para enseñárselas. Al agente no: sus compañeros son sus compañeros. Y la
+  exención comprueba el socio de la fila en vez de apoyarse en que el ámbito ya
+  la haya filtrado: son dos capas, y la segunda tiene que sostenerse sola.
+- **El ámbito del vendedor pasa a recibir al actor entero.** Eran cuatro
+  argumentos del mismo tipo en fila —el sitio donde se cuela un intercambio de
+  dos que compila—, y harían falta dos más. El compilador hizo de inventario:
+  nombró los siete puntos de llamada uno a uno.
+- **Y el compilador cazó un tipo que mentía**: `ActorDeFila` no declaraba
+  `partnerRole`, así que la exención de quien administra funcionaba solo porque
+  el contexto real lo trae. Un llamante que construyera el tipo estricto la
+  habría perdido sin que nada se quejara.
+- **Mutación: doce, las doce muertas.**
+
+### Fase 5.2 — el equipo de ventas del tour center, y el POS que no los confunde
+- **El fallo que apareció al mirar el POS:** los desplegables «Vendedor» y
+  «Partner» eran independientes y se mandaban tal cual. Nada comprobaba que
+  encajaran, así que se podía registrar la venta del tour center A atribuida a
+  un vendedor del tour center B. No es un error de etiqueta: **detrás del
+  vendedor va la comisión**, y el motor la calcula sobre `seller_id` sin volver
+  a mirar de quién es la venta. Se le paga a quien no vendió, y quien vendió lo
+  reclama —con razón— en la liquidación del mes siguiente.
+- **La regla NO es simétrica, y mi primera versión lo fue.** Exigir que los dos
+  coincidieran siempre parecía lo obvio; **lo cazó una prueba de comisiones que
+  ya existía**: el vendedor de la casa SÍ puede cerrar la venta de un tour
+  center —el conserje trae al cliente, el mostrador remata— y el motor genera
+  dos comisiones a propósito, una para cada uno. Prohibirlo habría roto una
+  forma de vender que ya estaba en producción. Lo que no puede pasar es que una
+  ficha **que pertenece a un tour center** figure en la venta de otro, o en una
+  venta propia.
+- **Se comprueba antes de escribir nada** —plazas, cupo, crédito—, porque
+  rechazar tarde obliga a compensar escrituras que no había que haber hecho. Y
+  solo cuesta una consulta cuando hay vendedor: la venta directa, que es la
+  mitad de las que se registran, no paga nada.
+- **La pantalla se acota también**, y es otra cosa que cerrarla: estrechar el
+  desplegable no impide nada —los identificadores viajan en el cuerpo— pero
+  ofrecer una opción que el servidor va a rechazar es peor que no ofrecerla,
+  porque el error aparece al final, con el carrito lleno. Y el vendedor que deja
+  de encajar al cambiar de socio **se suelta**: si no, queda seleccionado un
+  identificador que el desplegable ya no enseña.
+- **`/portal/vendedores`**: cuánto vendió cada uno de los suyos y cuánto lleva
+  generado. Es de quien DIRIGE, no de quien vende: enseña justo lo que el ámbito
+  del vendedor existe para que un agente no vea, y aquí ese ámbito no se aplica
+  solo —la consulta pide las órdenes de una lista de vendedores y no pasa por el
+  armador de filtros—, así que la puerta se cierra a la entrada.
+- **Sin equipo no se consulta nada.** `in: []` no significa «ninguno» en todos
+  los traductores de consulta: en alguno es una condición que no se aplica, y
+  entonces esa pantalla enseñaría las ventas de la operadora entera.
+- Y la ruta **no rehace el aislamiento**: `seller` ya viene acotado por el
+  ámbito —es tabla propia del socio desde 5.1— y el recorte de columnas es el
+  mismo módulo que usa el listado genérico.
+- **Mutación: doce, las doce muertas.** Dos no mordían al principio: una guarda
+  buscaba `if (attributedSeller)` suelto y lo encontraba en OTRO sitio del mismo
+  fichero —ahora mira el trozo que precede a la comprobación—, y a la regla le
+  faltaba el caso del socio en blanco, que da un mensaje distinto («es de otro
+  tour center» cuando no eligió ninguno) y manda a quien vende a buscar cuál es
+  el otro.

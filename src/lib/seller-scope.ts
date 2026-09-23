@@ -73,6 +73,24 @@
  */
 
 import type { AppRole } from "@/lib/auth";
+import { esDeSocio, esAdminDeSocio } from "@/lib/tenant";
+
+/**
+ * Quien consulta, con lo justo para decidir.
+ *
+ * Antes estas funciones recibían `(role, sellerId)` sueltos. Con el vendedor
+ * del tour center hacen falta dos datos más, y pasarlos también sueltos
+ * significaría cuatro argumentos del mismo tipo en fila: el sitio donde se
+ * cuela un intercambio de dos que compila y no se nota hasta que alguien lee
+ * lo que no debía.
+ */
+export interface ActorVendedor {
+  role: AppRole;
+  sellerId?: string | null;
+  partnerId?: string | null;
+  isPartnerMember?: boolean;
+  partnerRole?: string | null;
+}
 
 /**
  * Qué tablas se acotan, y por qué campo.
@@ -153,9 +171,44 @@ export function esEstricta(table: string): boolean {
   return SELLER_ESTRICTAS.has(table);
 }
 
-/** Solo el rango más bajo se acota; de `cashier` hacia arriba se ve la empresa. */
-export function sellerScopeApplies(role: AppRole): boolean {
-  return role === "seller";
+/**
+ * QUIÉN SE ACOTA A UNA FICHA. DOS CAMINOS, Y NO SON SIMÉTRICOS.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * DENTRO DE LA OPERADORA: LO DICE EL ROL
+ *
+ * Solo el rango más bajo se acota; de `cashier` hacia arriba se ve la empresa.
+ * El rol `seller` declara por sí solo «esta persona está acotada», y por eso el
+ * ámbito se le aplica AUNQUE no tenga ficha vinculada: entonces acota a «lo de
+ * nadie». Falla cerrado.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * DENTRO DE UN TOUR CENTER: LO DICE LA FICHA
+ *
+ * Aquí el rol no puede decir nada: desde 0073 TODAS las personas de un socio
+ * tienen el mismo (`partner`). Lo que distingue al vendedor del tour center de
+ * su compañero de mostrador es tener ficha de vendedor colgando de ese socio.
+ *
+ * Y por eso, al revés que arriba, **sin ficha no se acota**. No es una
+ * inconsistencia: es que la señal es otra. Un tour center que no usa vendedores
+ * —la mayoría, al principio— tiene usuarios de portal a secas, y acotarlos a
+ * «lo de nadie» les dejaría el portal vacío el día del despliegue. El ámbito
+ * del socio ya los acota a su empresa; la ficha es lo que además los acota a
+ * una persona.
+ *
+ * Quien administra la cuenta del tour center no se acota nunca, tenga ficha o
+ * no: es el equivalente del gerente que además vende, y su pantalla de equipo
+ * existe precisamente para ver lo de todos.
+ *
+ * *Residuo consciente*: un administrador de tour center podría quitarle la
+ * ficha a un agente para ensancharle la vista. Solo hasta lo que él mismo ya
+ * ve —su propia empresa—, así que no cruza ninguna frontera.
+ */
+export function sellerScopeApplies(
+  actor: { role: AppRole; partnerId?: string | null; isPartnerMember?: boolean; partnerRole?: string | null; sellerId?: string | null }
+): boolean {
+  if (esDeSocio(actor)) return !esAdminDeSocio(actor) && Boolean(actor.sellerId);
+  return actor.role === "seller";
 }
 
 /**
@@ -168,10 +221,10 @@ export function sellerScopeApplies(role: AppRole): boolean {
  */
 export function sellerFilterFor(
   table: string,
-  role: AppRole,
-  sellerId: string | null | undefined
+  actor: ActorVendedor
 ): Record<string, unknown> | null {
-  if (!sellerScopeApplies(role)) return null;
+  const sellerId = actor.sellerId;
+  if (!sellerScopeApplies(actor)) return null;
   const field = SELLER_SCOPED[table];
   if (!field) return null;
 
@@ -200,11 +253,11 @@ export function sellerFilterFor(
  */
 export function sellerCanReadRow(
   table: string,
-  role: AppRole,
-  sellerId: string | null | undefined,
+  actor: ActorVendedor,
   rowSellerId: string | null | undefined
 ): boolean {
-  if (!sellerScopeApplies(role)) return true;
+  const sellerId = actor.sellerId;
+  if (!sellerScopeApplies(actor)) return true;
   if (!isSellerScoped(table)) return true;
   // En las tablas del dinero, sin vendedor en la fila la respuesta es NO: esa
   // comisión o esa factura son de un socio o de un proveedor.
@@ -235,9 +288,9 @@ export function sellerCanReadRow(
  * es la marca que esos dos motores ya usan para decir «aquí no hay nadie».
  */
 export function ventaSelladaPorVendedor(
-  ctx: { role: AppRole; userId?: string | null }
+  ctx: ActorVendedor & { userId?: string | null }
 ): boolean {
-  return sellerScopeApplies(ctx.role) && Boolean(ctx.userId);
+  return sellerScopeApplies(ctx) && Boolean(ctx.userId);
 }
 
 /**
@@ -256,7 +309,7 @@ export function ventaSelladaPorVendedor(
  */
 export function sellerStampFor(
   table: string,
-  ctx: { role: AppRole; userId?: string | null; sellerId?: string | null },
+  ctx: ActorVendedor & { userId?: string | null },
   payload: Record<string, unknown>
 ): Record<string, unknown> {
   const field = SELLER_SCOPED[table];
@@ -280,18 +333,18 @@ export function sellerStampFor(
  */
 export function assertSellerOwnsRow(
   table: string,
-  ctx: { role: AppRole; userId?: string | null; sellerId?: string | null },
+  ctx: ActorVendedor & { userId?: string | null },
   record: Record<string, unknown> | null | undefined,
   etiqueta = "Este registro"
 ): void {
-  if (!sellerScopeApplies(ctx.role)) return;
+  if (!sellerScopeApplies(ctx)) return;
   const field = SELLER_SCOPED[table];
   if (!field || !record) return;
   const valor = record[field];
   const rowSellerId = valor && typeof valor === "object"
     ? ((valor as { _id?: string })._id ?? null)
     : ((valor as string | null | undefined) ?? null);
-  if (sellerCanReadRow(table, ctx.role, ctx.sellerId, rowSellerId)) return;
+  if (sellerCanReadRow(table, ctx, rowSellerId)) return;
   throw Object.assign(new Error(`${etiqueta} es de otro vendedor`), { status: 403 });
 }
 

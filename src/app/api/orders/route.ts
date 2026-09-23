@@ -112,7 +112,7 @@ export async function GET(req: NextRequest) {
     // el ámbito del vendedor hay que aplicarlo aquí a mano. Sin esto, acotar
     // `/api/erp/order` no habría servido de nada: la pantalla de ventas lee por
     // aquí, y por aquí se veían las de toda la empresa.
-    const sellerScope = sellerFilterFor("order", ctx.role, ctx.sellerId);
+    const sellerScope = sellerFilterFor("order", ctx);
     if (sellerScope) Object.assign(filter, sellerScope);
 
     const [rows, total] = await Promise.all([

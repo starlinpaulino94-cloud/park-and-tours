@@ -80,21 +80,21 @@ describe("qué se acota", () => {
 
 describe("a quién se acota", () => {
   it("solo al rango más bajo", () => {
-    expect(sellerScopeApplies("seller")).toBe(true);
+    expect(sellerScopeApplies({ role: "seller" })).toBe(true);
     for (const role of ["cashier", "operations", "manager", "admin", "owner", "superadmin"] as const) {
-      expect(sellerScopeApplies(role), role).toBe(false);
+      expect(sellerScopeApplies({ role: role }), role).toBe(false);
     }
   });
 
   it("un gerente sigue viendo la empresa entera", () => {
-    expect(sellerFilterFor("order", "manager", null)).toBeNull();
-    expect(sellerFilterFor("order", "manager", "v1")).toBeNull();
+    expect(sellerFilterFor("order", { role: "manager", sellerId: null })).toBeNull();
+    expect(sellerFilterFor("order", { role: "manager", sellerId: "v1" })).toBeNull();
   });
 });
 
 describe("el filtro", () => {
   it("trae lo suyo y lo que no es de ningún vendedor", () => {
-    expect(sellerFilterFor("order", "seller", "v1")).toEqual({
+    expect(sellerFilterFor("order", { role: "seller", sellerId: "v1" })).toEqual({
       _or: [{ seller: "v1" }, { seller: null }],
     });
   });
@@ -106,8 +106,8 @@ describe("el filtro", () => {
      * exactamente el agujero que esto viene a cerrar, y bastaría con no
      * vincular la ficha para conservarlo.
      */
-    expect(sellerFilterFor("order", "seller", null)).toEqual({ seller: null });
-    expect(sellerFilterFor("order", "seller", undefined)).toEqual({ seller: null });
+    expect(sellerFilterFor("order", { role: "seller", sellerId: null })).toEqual({ seller: null });
+    expect(sellerFilterFor("order", { role: "seller", sellerId: undefined })).toEqual({ seller: null });
   });
 
   it("el campo del cliente no se llama igual que el de la venta", () => {
@@ -118,34 +118,34 @@ describe("el filtro", () => {
   });
 
   it("una tabla sin dimensión de vendedor no se acota", () => {
-    expect(sellerFilterFor("product", "seller", "v1")).toBeNull();
+    expect(sellerFilterFor("product", { role: "seller", sellerId: "v1" })).toBeNull();
   });
 });
 
 describe("una fila concreta", () => {
   it("la de otro vendedor, no", () => {
-    expect(sellerCanReadRow("order", "seller", "v1", "v2")).toBe(false);
+    expect(sellerCanReadRow("order", { role: "seller", sellerId: "v1" }, "v2")).toBe(false);
   });
 
   it("la suya, sí", () => {
-    expect(sellerCanReadRow("order", "seller", "v1", "v1")).toBe(true);
+    expect(sellerCanReadRow("order", { role: "seller", sellerId: "v1" }, "v1")).toBe(true);
   });
 
   it("la que no tiene vendedor, sí", () => {
-    expect(sellerCanReadRow("order", "seller", "v1", null)).toBe(true);
+    expect(sellerCanReadRow("order", { role: "seller", sellerId: "v1" }, null)).toBe(true);
   });
 
   it("sin ficha vinculada, solo las que no tienen vendedor", () => {
-    expect(sellerCanReadRow("order", "seller", null, null)).toBe(true);
-    expect(sellerCanReadRow("order", "seller", null, "v2")).toBe(false);
+    expect(sellerCanReadRow("order", { role: "seller", sellerId: null }, null)).toBe(true);
+    expect(sellerCanReadRow("order", { role: "seller", sellerId: null }, "v2")).toBe(false);
   });
 
   it("un gerente abre cualquiera", () => {
-    expect(sellerCanReadRow("order", "manager", null, "v2")).toBe(true);
+    expect(sellerCanReadRow("order", { role: "manager", sellerId: null }, "v2")).toBe(true);
   });
 
   it("una tabla no acotada se abre entera", () => {
-    expect(sellerCanReadRow("product", "seller", "v1", "v2")).toBe(true);
+    expect(sellerCanReadRow("product", { role: "seller", sellerId: "v1" }, "v2")).toBe(true);
   });
 });
 
@@ -288,7 +288,7 @@ describe("donde «sin vendedor» NO significa «de la empresa»", () => {
 
   it("la venta es indulgente: lo suyo y lo de la empresa", () => {
     expect(esEstricta("order")).toBe(false);
-    expect(sellerFilterFor("order", "seller", "v1")).toEqual({
+    expect(sellerFilterFor("order", { role: "seller", sellerId: "v1" })).toEqual({
       _or: [{ seller: "v1" }, { seller: null }],
     });
   });
@@ -296,7 +296,7 @@ describe("donde «sin vendedor» NO significa «de la empresa»", () => {
   it("el dinero es estricto: SOLO lo suyo", () => {
     for (const tabla of ["commission", "settlement", "payable"]) {
       expect(esEstricta(tabla), tabla).toBe(true);
-      expect(sellerFilterFor(tabla, "seller", "v1"), tabla).toEqual({ seller: "v1" });
+      expect(sellerFilterFor(tabla, { role: "seller", sellerId: "v1" }), tabla).toEqual({ seller: "v1" });
     }
   });
 
@@ -304,21 +304,21 @@ describe("donde «sin vendedor» NO significa «de la empresa»", () => {
     // Una `price_rule` sin vendedor es la tarifa general: con la regla
     // indulgente, el vendedor habría leído el tarifario entero.
     for (const tabla of ["price_rule", "commission_rule"]) {
-      expect(sellerFilterFor(tabla, "seller", "v1"), tabla).toEqual({ seller: "v1" });
+      expect(sellerFilterFor(tabla, { role: "seller", sellerId: "v1" }), tabla).toEqual({ seller: "v1" });
     }
   });
 
   it("en una tabla estricta, sin ficha vinculada no se trae NADA", () => {
     // Un filtro imposible, no la ausencia de filtro: no saber quién eres no
     // puede significar «te lo enseño todo».
-    expect(sellerFilterFor("commission", "seller", null)).toEqual({ seller: NADIE });
+    expect(sellerFilterFor("commission", { role: "seller", sellerId: null })).toEqual({ seller: NADIE });
   });
 
   it("y una fila sin vendedor NO se abre en una tabla estricta", () => {
-    expect(sellerCanReadRow("commission", "seller", "v1", null)).toBe(false);
-    expect(sellerCanReadRow("settlement", "seller", "v1", null)).toBe(false);
+    expect(sellerCanReadRow("commission", { role: "seller", sellerId: "v1" }, null)).toBe(false);
+    expect(sellerCanReadRow("settlement", { role: "seller", sellerId: "v1" }, null)).toBe(false);
     // Mientras que en la venta sí, que es de lo que depende el punto de venta.
-    expect(sellerCanReadRow("order", "seller", "v1", null)).toBe(true);
+    expect(sellerCanReadRow("order", { role: "seller", sellerId: "v1" }, null)).toBe(true);
   });
 
   it("toda tabla estricta está declarada como acotada", () => {
@@ -335,5 +335,48 @@ describe("donde «sin vendedor» NO significa «de la empresa»", () => {
     for (const tabla of ["order", "booking", "quote", "lead"]) {
       expect(SELLER_ESTRICTAS.has(tabla), tabla).toBe(false);
     }
+  });
+});
+
+describe("a quién se acota — el vendedor del tour center", () => {
+  const agente = (extra: Record<string, unknown> = {}) => ({
+    role: "partner" as const, partnerId: "soc-1", isPartnerMember: true,
+    partnerRole: "agent", ...extra,
+  });
+
+  it("dentro de la operadora lo dice el rol; dentro de un tour center, la ficha", () => {
+    /**
+     * LA ASIMETRÍA, Y POR QUÉ NO ES UNA INCOHERENCIA.
+     *
+     * El rol `seller` declara por sí solo «esta persona está acotada», así que
+     * sin ficha se acota a «lo de nadie» —falla cerrado—. En un tour center
+     * todas las personas tienen el mismo rol desde 0073: el rol no distingue
+     * nada, y la señal pasa a ser la ficha.
+     */
+    expect(sellerScopeApplies({ role: "seller" }), "interno sin ficha").toBe(true);
+    expect(sellerScopeApplies(agente()), "agente sin ficha").toBe(false);
+    expect(sellerScopeApplies(agente({ sellerId: "v-1" })), "agente con ficha").toBe(true);
+  });
+
+  it("quien administra su tour center no se acota nunca", () => {
+    expect(sellerScopeApplies(agente({ partnerRole: "admin", sellerId: "v-1" }))).toBe(false);
+  });
+
+  it("y el sello de la venta lo sigue al pie de la letra", () => {
+    // Lo que reserva el vendedor de un tour center nace a su nombre: es lo que
+    // hace que el filtro combinado signifique algo al día siguiente.
+    expect(ventaSelladaPorVendedor({ ...agente({ sellerId: "v-1" }), userId: "u-1" })).toBe(true);
+    expect(ventaSelladaPorVendedor({ ...agente(), userId: "u-1" }), "sin ficha").toBe(false);
+    expect(
+      ventaSelladaPorVendedor({ ...agente({ partnerRole: "admin", sellerId: "v-1" }), userId: "u-1" }),
+      "quien administra"
+    ).toBe(false);
+  });
+
+  it("los motores que fabrican contexto siguen sin sellar", () => {
+    // `public-booking-service` y `octo-service` arman `role: "seller"` con
+    // `userId: ""` a propósito. Sellar ahí apagaría el motor de atribución web
+    // sin ningún error que lo delatara.
+    expect(ventaSelladaPorVendedor({ role: "seller", userId: "" })).toBe(false);
   });
 });

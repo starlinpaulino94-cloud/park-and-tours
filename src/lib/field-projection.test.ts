@@ -233,3 +233,52 @@ describe("la ficha del socio no viaja entera a la empresa asociada", () => {
     expect((orden.partner as Record<string, unknown>).notes).toBeUndefined();
   });
 });
+
+describe("el equipo del tour center: su comisión sí, la de la operadora no", () => {
+  const adminDeSocio: ProjectionCtx = {
+    role: "partner", partnerId: "soc-1", isPartnerMember: true, partnerRole: "admin",
+  };
+  const agenteDeSocio: ProjectionCtx = {
+    role: "partner", partnerId: "soc-1", isPartnerMember: true, partnerRole: "agent",
+  };
+
+  it("quien administra el tour center ve las condiciones de SU gente", () => {
+    /**
+     * El recorte por rango se las escondía: el rango de un socio es el más
+     * bajo que hay. Y `/portal/vendedores` existe justamente para enseñar la
+     * comisión por persona — una pantalla que promete eso y devuelve huecos no
+     * es una pantalla acotada, es una rota.
+     */
+    const ficha = projectRow("seller", adminDeSocio, {
+      _id: "v-1", partner: "soc-1", first_name: "Ana", commission_pct: 8, monthly_goal: 12000,
+    });
+    expect(ficha.commission_pct).toBe(8);
+    expect(ficha.monthly_goal).toBe(12000);
+  });
+
+  it("el agente NO ve las de sus compañeros", () => {
+    const ficha = projectRow("seller", agenteDeSocio, {
+      _id: "v-2", partner: "soc-1", commission_pct: 8,
+    });
+    expect(ficha.commission_pct).toBeUndefined();
+  });
+
+  it("y la exención no alcanza a una ficha de otro socio ni a una interna", () => {
+    /**
+     * Hoy no le llega ninguna —`seller` está en su ámbito como propia por
+     * socio— pero el recorte no puede APOYARSE en eso: son dos capas, y la
+     * segunda tiene que sostenerse sola el día que una ficha llegue por una
+     * expansión que nadie revisó.
+     */
+    expect(projectRow("seller", adminDeSocio, { _id: "v-3", partner: "soc-2", commission_pct: 8 })
+      .commission_pct).toBeUndefined();
+    expect(projectRow("seller", adminDeSocio, { _id: "v-4", partner: null, commission_pct: 8 })
+      .commission_pct).toBeUndefined();
+  });
+
+  it("el vendedor interno sigue viendo la suya y no la de al lado", () => {
+    const vendedorInterno: ProjectionCtx = { role: "seller", sellerId: "v-1" };
+    expect(projectRow("seller", vendedorInterno, { _id: "v-1", commission_pct: 6 }).commission_pct).toBe(6);
+    expect(projectRow("seller", vendedorInterno, { _id: "v-2", commission_pct: 6 }).commission_pct).toBeUndefined();
+  });
+});
