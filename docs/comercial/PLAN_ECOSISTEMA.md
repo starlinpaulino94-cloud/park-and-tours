@@ -86,9 +86,18 @@ manifiesto y la hoja de ruta son papel interno.
 - **La seguridad a nivel de fila SÍ está activa en producción.**
   `assertSafeDataBackendConfig` lanza `Unsafe production config` si
   `NODE_ENV === "production"` y `SUPABASE_USE_RLS !== "true"`: en producción, o
-  está activa, o la aplicación no arranca. **Consecuencia que invierte una
-  conclusión cómoda: cada tabla que se abra a un actor nuevo necesita su
-  política en la misma fase, o la pantalla nueva devolverá vacío.**
+  está activa, o la aplicación no arranca.
+  > **CORRECCIÓN (Fase 2.1).** De esto deduje que «cada tabla que se abra a un
+  > actor nuevo necesita su política, o la pantalla saldrá vacía». Es falso
+  > para las tablas que YA existen. La política que instala
+  > `app.enable_tenant_rls` es `organization_id = app.current_org_id()` —más una
+  > cláusula de socio en las marcadas como `partner_scoped`— y **no mira el
+  > rol**: un vendedor pasa ese filtro igual que un gerente. Abrir `commission`
+  > al vendedor no necesitó ni una línea de SQL; lo único que la cerraba era
+  > `READ_ROLE`, que es aplicación. El enunciado solo vale para tablas NUEVAS
+  > (la identidad de proveedor de la Fase 8), que sí nacen sin política hasta
+  > que se llama a ese ayudante. Verificado en
+  > `supabase/migrations/0001_init_extensions_helpers.sql:51-74`.
 
 ---
 
@@ -275,9 +284,19 @@ inventariar quién abre qué antes de recortar.
    socios**. La exención va sobre una lista corta y explícita —`commission`,
    `settlement`, `payable` del propio vendedor— y con una prueba que falle si
    alguien mete una tabla en una lista sin meterla en la otra.
-2. **Políticas de seguridad a nivel de fila para cada tabla que se abra.** No es
-   opcional ni «camino no crítico»: en producción la RLS está activa o la
-   aplicación no arranca. Sin política, la pantalla nueva sale vacía.
+   > **AMPLIACIÓN (Fase 2.1).** El problema era más grande de lo que este punto
+   > decía, y no solo afectaba a las dos tablas de reglas. `commission`,
+   > `settlement` y `payable` llevan `beneficiary_type`: una fila sin
+   > `seller_id` **no es «de nadie», es de un socio o de un proveedor**. La
+   > regla indulgente les habría abierto de paso todas las comisiones de los
+   > tour centers y todas las facturas de los proveedores. El ámbito tiene
+   > ahora dos modos —indulgente para la venta, **estricto** para el dinero— y
+   > una prueba fija cuál le toca a cada tabla.
+2. ~~**Políticas de seguridad a nivel de fila para cada tabla que se abra.**~~
+   **No hizo falta ninguna** (ver la corrección de §1): las políticas
+   existentes no miran el rol, así que abrir una tabla ya creada es puramente
+   una decisión de aplicación. Queda vivo para las tablas NUEVAS de fases
+   posteriores.
 3. **`/dashboard/mi-espacio/comisiones`**: devengada, pendiente y pagada por
    período, con referencia de reserva, producto, fecha de venta **y fecha de
    salida**, importe base, **porcentaje congelado** (no el vigente) y marca

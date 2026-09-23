@@ -2968,11 +2968,25 @@ describe("las exportaciones", () => {
   });
 
   it("la exportación aplica la MISMA autorización de lectura que el listado", () => {
-    // Sin esto, un rol que no puede ver un recurso en pantalla se lo llevaría
-    // entero en un archivo.
-    const route = read("src/app/api/export/[resource]/route.ts");
-    expect(route).toMatch(/readRoleFor\(def\.table\)/);
-    expect(route).toMatch(/requireAtLeast\(ctx, rr\)/);
+    /**
+     * Sin esto, un rol que no puede ver un recurso en pantalla se lo llevaría
+     * entero en un archivo.
+     *
+     * Y ya no basta con que las TRES rutas contengan la misma condición
+     * copiada: desde que hay excepciones por actor —el socio, y el vendedor
+     * sobre su propio dinero— la condición tiene ramas, y tres copias de algo
+     * con ramas divergen. Lo que se comprueba ahora es que las tres llamen a
+     * la MISMA función y que ninguna se guarde una copia propia.
+     */
+    for (const file of [
+      "src/app/api/erp/[resource]/route.ts",
+      "src/app/api/erp/[resource]/[id]/route.ts",
+      "src/app/api/export/[resource]/route.ts",
+    ]) {
+      const route = read(file);
+      expect(route, file).toMatch(/assertCanReadTable\(ctx, def\.table\)/);
+      expect(route, `${file} se guarda una copia de la regla`).not.toMatch(/readRoleFor\(def\.table\)/);
+    }
   });
 
   it("el listado y su exportación comparten el armado del filtro", () => {

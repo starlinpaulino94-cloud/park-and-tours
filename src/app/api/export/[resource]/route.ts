@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireTenant, requireAtLeast, tenantQuery, TenantError } from "@/lib/tenant";
-import { getResource, readRoleFor } from "@/lib/resources";
+import { getResource, assertCanReadTable } from "@/lib/resources";
 import { fail } from "@/lib/api-response";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { buildListFilter, buildListSort } from "@/lib/erp-query";
@@ -44,12 +44,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
     // Más estricto que el listado: un archivo completo es más caro de servir.
     await assertRateLimit({ key: rateLimitKey(req, `export:${def.table}`, ctx.userId), limit: 10, windowMs: 60_000 });
 
-    // La misma autorización de lectura que el listado. Sin esto, un rol que no
-    // puede VER un recurso podría llevárselo entero en un archivo.
-    if (ctx.role !== "partner") {
-      const rr = readRoleFor(def.table);
-      if (rr) requireAtLeast(ctx, rr);
-    }
+    // La autorización de lectura, en `resources.ts`: la escribían por su cuenta
+    // el listado, el detalle y la exportación, y basta con que una se quede
+    // atrás para que un rol lea por un camino lo que el otro le niega.
+    assertCanReadTable(ctx, def.table);
 
     const sp = req.nextUrl.searchParams;
     const filter = buildListFilter(def, ctx, sp);

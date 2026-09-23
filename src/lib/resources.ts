@@ -1,6 +1,7 @@
 import type { ModuleKey } from "@/lib/types";
 import "server-only";
 import type { AppRole } from "@/lib/auth";
+import { TenantError, atLeast } from "@/lib/tenant";
 
 /**
  * Registry of tables exposed through the generic REST layer
@@ -1479,6 +1480,64 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
 /** Minimum role required to READ a resource (for non-partner roles). */
 export function readRoleFor(table: string): AppRole | null {
   return READ_ROLE[table] ?? null;
+}
+
+/**
+ * LO QUE UN VENDEDOR PUEDE LEER DE SU PROPIO DINERO.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ HACÍA FALTA UNA EXCEPCIÓN
+ *
+ * `READ_ROLE` se evalúa ANTES que el ámbito por fila. Da igual que
+ * `seller-scope.ts` sepa acotar las comisiones de un vendedor: la compuerta las
+ * reserva a gerencia y devuelve 403 antes de que el filtro llegue a aplicarse.
+ * Por eso el vendedor no veía ni su propia comisión.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * ESTA LISTA NO ES `SELLER_SCOPED`, Y ESA ES LA DECISIÓN
+ *
+ * Lo cómodo habría sido eximir «las tablas que el ámbito ya acota». Habría sido
+ * un agujero: `SELLER_SCOPED` incluye `price_rule` y `commission_rule`, que
+ * también se acotan por vendedor pero cuyo contenido es el tarifario y el
+ * esquema de comisiones de TODA la empresa y de sus socios.
+ *
+ * Así que la exención va sobre una lista propia, corta y escrita a mano, con
+ * una prueba que falla si alguien mete algo aquí sin que el ámbito lo acote —y
+ * otra que comprueba que las reglas comerciales siguen fuera—.
+ *
+ * Las tres que están son las del dinero de la persona, y las tres son
+ * ESTRICTAS en el ámbito (`SELLER_ESTRICTAS`): una fila sin vendedor ahí es de
+ * un socio o de un proveedor, no «de nadie», así que abrirlas no abre de paso
+ * lo ajeno.
+ */
+const SELLER_READABLE = new Set(["commission", "settlement", "payable"]);
+
+export function sellerCanReadTable(table: string): boolean {
+  return SELLER_READABLE.has(table);
+}
+
+/**
+ * La autorización de LECTURA de una tabla, en un solo sitio.
+ *
+ * La escribían por su cuenta el listado, el detalle y la exportación, con la
+ * misma condición copiada tres veces. Copiada, basta con que una se quede
+ * atrás para que un rol lea por un camino lo que el otro le niega —y la que se
+ * queda atrás suele ser la exportación, que es la que se lleva TODO—.
+ */
+export function assertCanReadTable(
+  ctx: { role: AppRole; sellerId?: string | null },
+  table: string
+): void {
+  // El ámbito del socio lo aplica `buildListFilter`; su rango fallaría aquí.
+  if (ctx.role === "partner") return;
+  // Y el del vendedor sobre lo suyo, acotado fila a fila por `seller-scope.ts`.
+  if (ctx.role === "seller" && sellerCanReadTable(table)) return;
+
+  const rr = readRoleFor(table);
+  if (!rr) return;
+  if (!atLeast(ctx.role, rr)) {
+    throw new TenantError("No tienes permisos para realizar esta acción", 403);
+  }
 }
 
 /**

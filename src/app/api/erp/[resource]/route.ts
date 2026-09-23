@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireTenant, requireTenantWrite, tenantQuery, tenantCreate, tenantCount, requireAtLeast, TenantError } from "@/lib/tenant";
-import { getResource, sanitizePayload, readRoleFor } from "@/lib/resources";
+import { getResource, sanitizePayload, assertCanReadTable } from "@/lib/resources";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -29,12 +29,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
     const ctx = await requireTenant();
     await assertRateLimit({ key: rateLimitKey(req, `erp:list:${def.table}`, ctx.userId), limit: 180, windowMs: 60_000 });
 
-    // AUD-004 follow-up: read authorization for sensitive resources. El ámbito
-    // del partner lo aplica `buildListFilter` (su rango fallaría aquí).
-    if (ctx.role !== "partner") {
-      const rr = readRoleFor(def.table);
-      if (rr) requireAtLeast(ctx, rr);
-    }
+    // La autorización de lectura, en `resources.ts`: la escribían por su cuenta
+    // el listado, el detalle y la exportación, y basta con que una se quede
+    // atrás para que un rol lea por un camino lo que el otro le niega.
+    assertCanReadTable(ctx, def.table);
 
     const sp = req.nextUrl.searchParams;
     const maxLimit = sp.get("bulk") === "true" ? 500 : 200;

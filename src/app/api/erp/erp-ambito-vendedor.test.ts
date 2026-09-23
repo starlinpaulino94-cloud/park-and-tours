@@ -207,3 +207,51 @@ describe("la exportación se lleva lo MISMO que la pantalla", () => {
     expect(partes).toContainEqual({ _or: [{ seller: "v1" }, { seller: null }] });
   });
 });
+
+describe("su dinero: abierto, pero solo el suyo", () => {
+  it("las comisiones ya no le devuelven 403, y llegan acotadas a él", async () => {
+    /**
+     * `READ_ROLE` se evalúa ANTES que el ámbito, así que la tabla estaba
+     * cerrada por rango por mucho que el filtro por fila estuviera escrito.
+     * Esta prueba comprueba las dos mitades a la vez: que entra, y que lo que
+     * pide a la base es SOLO lo suyo.
+     */
+    requireTenant.mockResolvedValue(ctx("seller", "v1"));
+    const res = await listar(peticion("https://x.test/api/erp/commission"), params("commission"));
+    expect(res.status).toBe(200);
+    // Estricto, sin `_or`: una comisión sin vendedor es de un SOCIO.
+    expect(filtroRecibido?._and).toContainEqual({ seller: "v1" });
+  });
+
+  it("sin ficha vinculada no se le entrega ninguna", async () => {
+    requireTenant.mockResolvedValue(ctx("seller", null));
+    await listar(peticion("https://x.test/api/erp/commission"), params("commission"));
+    expect(filtroRecibido?._and).toContainEqual({ seller: "00000000-0000-0000-0000-000000000000" });
+  });
+
+  it("el tarifario y el esquema de comisiones siguen cerrados", async () => {
+    // Son las dos tablas que el ámbito acota y que NO se abren: su contenido es
+    // la tarifa y el esquema de comisiones de la empresa entera.
+    requireTenant.mockResolvedValue(ctx("seller", "v1"));
+    for (const tabla of ["price_rule", "commission_rule"]) {
+      const res = await listar(peticion(`https://x.test/api/erp/${tabla}`), params(tabla));
+      expect(res.status, tabla).toBe(403);
+    }
+  });
+
+  it("la comisión de un socio no se abre por su identificador", async () => {
+    // El detalle no pasa por el filtro del listado: `tenantFindOne` solo mira
+    // la empresa. Una comisión sin vendedor es de un socio, y por eso aquí
+    // «sin vendedor» se rechaza en vez de dejarse pasar.
+    requireTenant.mockResolvedValue(ctx("seller", "v1"));
+    filaUnica = { _id: "c9", seller: null, partner: "p1", amount: 300 };
+    const res = await detalle(peticion("https://x.test/api/erp/commission/c9"), params("commission", "c9"));
+    expect(res.status).toBe(403);
+  });
+
+  it("y la exportación de sus comisiones va igual de acotada", async () => {
+    requireTenant.mockResolvedValue(ctx("seller", "v1"));
+    await exportar(peticion("https://x.test/api/export/commission"), params("commission"));
+    expect(filtroRecibido?._and).toContainEqual({ seller: "v1" });
+  });
+});

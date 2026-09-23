@@ -3,6 +3,7 @@ import {
   sellerFilterFor, sellerCanReadRow, isSellerScoped, sellerFieldFor,
   sellerScopeApplies, SELLER_SCOPED,
   ventaSelladaPorVendedor, sellerStampFor, assertSellerOwnsRow,
+  esEstricta, SELLER_ESTRICTAS, NADIE,
 } from "@/lib/seller-scope";
 import { buildListFilter } from "@/lib/erp-query";
 import { RESOURCES } from "@/lib/resources";
@@ -266,5 +267,73 @@ describe("actuar sobre una fila ajena", () => {
 
   it("un gerente actúa sobre cualquiera", () => {
     expect(() => assertSellerOwnsRow("booking", { role: "manager", userId: "u1" }, { seller: "v2" })).not.toThrow();
+  });
+});
+
+describe("donde «sin vendedor» NO significa «de la empresa»", () => {
+  /**
+   * EL FALLO QUE ESTAS PRUEBAS EVITAN.
+   *
+   * La regla «lo mío o lo de nadie» es correcta para la VENTA: una orden sin
+   * vendedor entró por la web o la registró un administrador, y esconderla
+   * sería perder el pasado.
+   *
+   * En el dinero es al revés, y no se ve hasta mirar el esquema: `commission`,
+   * `settlement` y `payable` tienen `beneficiary_type`, así que una fila sin
+   * `seller_id` no es «de nadie» — es de un SOCIO o de un PROVEEDOR. Abrirle
+   * las comisiones a un vendedor con la regla indulgente le habría abierto
+   * todas las comisiones de los tour centers y todas las facturas de los
+   * proveedores de una vez.
+   */
+
+  it("la venta es indulgente: lo suyo y lo de la empresa", () => {
+    expect(esEstricta("order")).toBe(false);
+    expect(sellerFilterFor("order", "seller", "v1")).toEqual({
+      _or: [{ seller: "v1" }, { seller: null }],
+    });
+  });
+
+  it("el dinero es estricto: SOLO lo suyo", () => {
+    for (const tabla of ["commission", "settlement", "payable"]) {
+      expect(esEstricta(tabla), tabla).toBe(true);
+      expect(sellerFilterFor(tabla, "seller", "v1"), tabla).toEqual({ seller: "v1" });
+    }
+  });
+
+  it("las reglas generales de la empresa tampoco son «de nadie»", () => {
+    // Una `price_rule` sin vendedor es la tarifa general: con la regla
+    // indulgente, el vendedor habría leído el tarifario entero.
+    for (const tabla of ["price_rule", "commission_rule"]) {
+      expect(sellerFilterFor(tabla, "seller", "v1"), tabla).toEqual({ seller: "v1" });
+    }
+  });
+
+  it("en una tabla estricta, sin ficha vinculada no se trae NADA", () => {
+    // Un filtro imposible, no la ausencia de filtro: no saber quién eres no
+    // puede significar «te lo enseño todo».
+    expect(sellerFilterFor("commission", "seller", null)).toEqual({ seller: NADIE });
+  });
+
+  it("y una fila sin vendedor NO se abre en una tabla estricta", () => {
+    expect(sellerCanReadRow("commission", "seller", "v1", null)).toBe(false);
+    expect(sellerCanReadRow("settlement", "seller", "v1", null)).toBe(false);
+    // Mientras que en la venta sí, que es de lo que depende el punto de venta.
+    expect(sellerCanReadRow("order", "seller", "v1", null)).toBe(true);
+  });
+
+  it("toda tabla estricta está declarada como acotada", () => {
+    // Una estricta que no esté en el mapa de ámbito no se acota en absoluto:
+    // la declaración de estrictez sería decorativa.
+    for (const tabla of SELLER_ESTRICTAS) {
+      expect(isSellerScoped(tabla), `${tabla} no está en SELLER_SCOPED`).toBe(true);
+    }
+  });
+
+  it("y las tablas de la venta NO están entre las estrictas", () => {
+    // Meterlas ahí escondería al vendedor su propia venta sin atribuir, un
+    // segundo después de hacerla.
+    for (const tabla of ["order", "booking", "quote", "lead"]) {
+      expect(SELLER_ESTRICTAS.has(tabla), tabla).toBe(false);
+    }
   });
 });

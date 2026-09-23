@@ -104,8 +104,53 @@ export const SELLER_SCOPED: Record<string, string> = {
   seller_attribution: "seller",
 };
 
+/**
+ * DONDE «SIN VENDEDOR» NO SIGNIFICA «DE LA EMPRESA».
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * EL FALLO QUE ESTO EVITA, Y QUE ESTUVO A PUNTO DE COLARSE
+ *
+ * La regla «lo mío, o lo de nadie» es correcta para la VENTA: una orden sin
+ * vendedor es una venta directa de la empresa —entró por la web, la registró un
+ * administrador, viene del histórico— y esconderla sería perder el pasado.
+ *
+ * En el dinero es al revés, y la diferencia no se ve hasta que se mira el
+ * esquema. `commission`, `settlement` y `payable` tienen `beneficiary_type`:
+ * una fila sin `seller_id` no es «de nadie», es **de otro beneficiario** —de un
+ * socio o de un proveedor—. Con la regla indulgente, abrirle las comisiones a
+ * un vendedor le habría abierto de paso TODAS las comisiones de los tour
+ * centers y TODAS las facturas de los proveedores, porque en esas filas el
+ * vendedor es nulo.
+ *
+ * Lo mismo con las reglas: una `price_rule` o una `commission_rule` sin
+ * vendedor es la regla GENERAL de la empresa, no una regla huérfana.
+ *
+ * Así que aquí la ausencia se lee como exclusión, no como pertenencia.
+ */
+export const SELLER_ESTRICTAS = new Set([
+  "commission", "settlement", "payable", "commission_rule", "price_rule",
+  "seller_goal", "seller_bonus", "seller_link", "seller_attribution",
+]);
+
+/**
+ * El identificador que no es de nadie.
+ *
+ * Cuando la tabla es estricta y no se sabe qué vendedor es quien llama, el
+ * filtro tiene que no traer NADA. Se usa un uuid imposible en vez de un
+ * mecanismo aparte porque así el «no hay nada que enseñarte» viaja como un
+ * filtro normal y funciona igual en el listado, en la exportación y dentro de
+ * un `_and`. Es el mismo recurso que ya usa el panel para el vendedor
+ * desconocido (`dashboard-metrics.ts`).
+ */
+export const NADIE = "00000000-0000-0000-0000-000000000000";
+
 export function isSellerScoped(table: string): boolean {
   return Object.prototype.hasOwnProperty.call(SELLER_SCOPED, table);
+}
+
+/** ¿Una fila sin vendedor es de la empresa (no) o de otro beneficiario (sí)? */
+export function esEstricta(table: string): boolean {
+  return SELLER_ESTRICTAS.has(table);
 }
 
 /** Solo el rango más bajo se acota; de `cashier` hacia arriba se ve la empresa. */
@@ -129,7 +174,13 @@ export function sellerFilterFor(
   if (!sellerScopeApplies(role)) return null;
   const field = SELLER_SCOPED[table];
   if (!field) return null;
-  // Sin ficha vinculada: solo lo que no es de ningún vendedor.
+
+  // En las tablas del dinero, una fila sin vendedor es de OTRO beneficiario:
+  // ahí solo lo suyo, y sin ficha vinculada, nada.
+  if (esEstricta(table)) return { [field]: sellerId || NADIE };
+
+  // En la venta, una fila sin vendedor es de la empresa. Sin ficha vinculada,
+  // solo esas: no saber quién eres nunca abre el ámbito.
   if (!sellerId) return { [field]: null };
   return { _or: [{ [field]: sellerId }, { [field]: null }] };
 }
@@ -155,8 +206,9 @@ export function sellerCanReadRow(
 ): boolean {
   if (!sellerScopeApplies(role)) return true;
   if (!isSellerScoped(table)) return true;
-  // Sin vendedor en la fila, la misma regla que en el listado: es de la empresa.
-  if (!rowSellerId) return true;
+  // En las tablas del dinero, sin vendedor en la fila la respuesta es NO: esa
+  // comisión o esa factura son de un socio o de un proveedor.
+  if (!rowSellerId) return !esEstricta(table);
   return Boolean(sellerId) && rowSellerId === sellerId;
 }
 

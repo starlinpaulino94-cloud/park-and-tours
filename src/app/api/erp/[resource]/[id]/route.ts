@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { requireTenant, requireTenantWrite, tenantFindOne, tenantUpdate, tenantDelete, requireAtLeast, atLeast, TenantError } from "@/lib/tenant";
 import {
-  getResource, sanitizePayload, partnerScopeFor, readRoleFor,
+  getResource, sanitizePayload, partnerScopeFor, assertCanReadTable,
   ownershipFieldFor, OWNERSHIP_OVERRIDE_ROLE,
 } from "@/lib/resources";
 import { ok, fail, readJson } from "@/lib/api-response";
@@ -64,11 +64,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
 
     const ctx = await requireTenant();
     await assertRateLimit({ key: rateLimitKey(_req, `erp:read:${def.table}`, ctx.userId), limit: 240, windowMs: 60_000 });
-    // AUD-004 follow-up: same read authorization as the list endpoint.
-    if (ctx.role !== "partner") {
-      const rr = readRoleFor(def.table);
-      if (rr) requireAtLeast(ctx, rr);
-    }
+    assertCanReadTable(ctx, def.table);
     const record = await tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id, def.expandOne || def.expand || {});
     if (ctx.role === "partner") assertPartnerCanRead(def.table, ctx.partnerId, record);
     assertSellerCanRead(def.table, ctx.role, ctx.sellerId, record);
