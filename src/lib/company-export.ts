@@ -84,6 +84,9 @@ export const COMPANY_EXPORT_AREAS: CompanyExportArea[] = [
       promotion: "promociones",
       cancellation_policy: "politicas-de-cancelacion",
       partner: "partners",
+      // El contrato de qué puede vender cada canal externo (0077). Va con los
+      // partners y no con el catálogo: es de la RELACIÓN, no del producto.
+      partner_product: "catalogo-autorizado",
       seller: "vendedores",
       seller_type: "tipos-de-vendedor",
       seller_link: "enlaces-de-vendedor",

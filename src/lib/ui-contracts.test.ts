@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import path from "node:path";
+import { PORTAL_NAV } from "@/lib/nav";
 
 /**
  * Contratos de código fuente.
@@ -14,6 +15,7 @@ import path from "node:path";
 
 const ROOT = path.resolve(__dirname, "../..");
 const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
+const existe = (rel: string) => existsSync(path.join(ROOT, rel));
 /** El fichero sin comentarios: una guarda no puede darse por cumplida por lo
  *  que un comentario MENCIONA, solo por lo que el código HACE. Varios bloques
  *  declaran el suyo; este es el de los que no. */
@@ -6409,5 +6411,336 @@ describe("la exportación del socio", () => {
     expect(i, "va antes de deducir columnas de las filas")
       .toBeLessThan(exportador.indexOf("const seen: string[] = []"));
     expect(exportador.slice(i, i + 420)).toMatch(/options\.fields\s*\n?\s*\.filter/);
+  });
+});
+
+describe("el contrato socio–producto", () => {
+  it("se aplica AL VENDER, no solo al listar", () => {
+    /**
+     * Es la mitad que faltaba y la que el plan subrayaba. Acotar el catálogo
+     * esconde el producto de UNA pantalla; la reserva llega por el cuerpo de
+     * una petición con un `product_id` dentro, y la de un socio que integra por
+     * API ni siquiera pasa por esa pantalla. Un filtro de listado es una
+     * sugerencia.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    const i = servicio.indexOf("noAutorizados(");
+    expect(i, "la venta no comprueba el contrato").toBeGreaterThan(-1);
+    // Sobre el `throw`: afirmar que la función aparece deja borrar el
+    // lanzamiento y conservar la llamada muerta.
+    expect(servicio.slice(i, i + 700)).toMatch(/if \(fuera\.length > 0\)[\s\S]{0,520}throw[\s\S]{0,120}status: 403/);
+    // Y antes de tomar plazas, consumir cupo o apuntar crédito: rechazar tarde
+    // obliga a compensar escrituras que no había que haber hecho.
+    expect(i).toBeLessThan(servicio.indexOf("assertCapacity("));
+    expect(i).toBeLessThan(servicio.indexOf("creditCheck("));
+  });
+
+  it("y solo cuesta una consulta cuando la venta es de un socio", () => {
+    // La venta propia del mostrador no pasa por ningún contrato: aplicárselo
+    // apagaría el punto de venta entero.
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    const i = servicio.indexOf("noAutorizados(");
+    expect(servicio.slice(Math.max(0, i - 700), i)).toMatch(/if \(input\.partner_id\) \{/);
+  });
+
+  it("el catálogo del portal filtra SIEMPRE, también con la lista vacía", () => {
+    /**
+     * EL FALLO, EN UNA LÍNEA.
+     *
+     *     ...(authorizedIds.length ? { _id: { in: authorizedIds } } : {})
+     *
+     * Sin autorizaciones, sin filtro. Y `authorized_products` no existía en
+     * ninguna tabla ni en el mapa de relaciones, así que la lista estaba vacía
+     * SIEMPRE: ese filtro no se aplicó nunca, ni una vez.
+     */
+    const ruta = cuerpoDe("src/app/api/portal/catalog/route.ts");
+    expect(ruta, "el filtro condicional ya no está")
+      .not.toMatch(/authorizedIds\.length \?/);
+    expect(ruta, "sale de su tabla").toMatch(/tenantQuery[\s\S]{0,80}"partner_product"/);
+    /**
+     * Y EL FILTRO SE APLICA.
+     *
+     * Comprobar que la lista se calcula y no que se usa dejaba borrar esta
+     * línea y pasar la guarda: el catálogo volvía a enseñarlo todo con las
+     * autorizaciones leídas y tiradas. No mordía; ahora sí.
+     */
+    expect(ruta, "el filtro está en la consulta").toMatch(/_id: \{ in: authorizedIds \}/);
+    // Sin nada autorizado no se consulta, en vez de fiarlo a que `in: []`
+    // signifique «ninguno»: en algún traductor es una condición que no se
+    // aplica, y ahí el fallo sería devolver el catálogo entero.
+    expect(ruta).toMatch(/authorizedIds\.length === 0 \? \[\] :/);
+  });
+
+  it("el socio no lee el contrato de los demás por el CRUD genérico", () => {
+    // La lista de autorizaciones de los otros tour centers es el mapa de qué
+    // vende cada uno. No está en su ámbito, ni propia ni compartida.
+    const recursos = sinComentariosDe("src/lib/resources.ts");
+    const ambito = recursos.slice(
+      recursos.indexOf("const PARTNER_OWNED_TABLES"),
+      recursos.indexOf("export type PartnerScope"));
+    expect(ambito).not.toMatch(/"partner_product"/);
+  });
+
+  it("la migración siembra, o corta la venta de los socios existentes", () => {
+    /**
+     * En cuanto la lista vacía deja de significar «todo», un socio sin filas no
+     * puede vender nada. Sin siembra, el despliegue apagaría la venta de todos
+     * los tour centers a la vez — y el síntoma sería «el catálogo me sale
+     * vacío», que nadie relaciona con una migración.
+     */
+    const sql = read("supabase/migrations/0077_partner_product.sql");
+    /**
+     * Con las TRES columnas proyectadas, no solo con la forma.
+     *
+     * Un `insert ... select` con el mismo `where` y un `null` donde va el socio
+     * es una siembra que corre, no escribe nada útil y pasa una guarda que solo
+     * mire el contorno. Se pinta qué va en cada columna.
+     */
+    expect(sql, "la siembra").toMatch(
+      /insert into partner_product \(organization_id, partner_id, product_id\)\s*\nselect o\.tenant_org_id, o\.id, p\.id/
+    );
+    expect(sql, "de los socios").toMatch(/where o\.kind = 'partner'/);
+    expect(sql, "solo el catálogo activo").toMatch(/p\.status <> 'inactive'/);
+    // Y los dos disparadores que evitan el mismo apagón por los dos lados.
+    // Con final de palabra: `create trigger product_autoriza_socios_off` CONTIENE
+    // `create trigger product_autoriza_socios`, así que sin el límite un
+    // disparador renombrado —o sea, desactivado— pasaba la guarda.
+    expect(sql, "producto nuevo").toMatch(/create trigger product_autoriza_socios\b(?!_)/);
+    expect(sql, "socio nuevo").toMatch(/create trigger organizations_autoriza_catalogo\b(?!_)/);
+    // Tabla nueva y actor externo: su política, en la misma migración.
+    expect(sql, "la política").toMatch(/enable_tenant_rls\('public\.partner_product', true\)/);
+  });
+
+  it("desautorizar no borra la fila", () => {
+    // Queda el rastro de que ese producto estuvo autorizado, que es lo que se
+    // mira cuando un tour center reclama una reserva que «antes sí podía».
+    expect(read("supabase/migrations/0077_partner_product.sql"))
+      .toMatch(/status\s+text not null default 'active' check \(status in \('active','inactive'\)\)/);
+    expect(sinComentariosDe("src/app/dashboard/partners/catalogo/page.tsx"))
+      .toMatch(/api\.put\(`\/api\/erp\/partner_product\/\$\{actual\._id\}`, \{ status:/);
+  });
+});
+
+describe("el modelo comercial del socio", () => {
+  it("el motor pregunta antes de empujar al socio como beneficiario", () => {
+    /**
+     * Antes bastaba con que la reserva tuviera socio. Un tour center que COMPRA
+     * a precio neto lleva su margen dentro del precio que pagó: liquidarle
+     * además una comisión es pagárselo dos veces, y no se ve el día de la venta
+     * —las dos cifras son correctas por separado— sino un mes después.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    expect(servicio).toMatch(/if \(partnerRow && devengaComision\(/);
+    expect(servicio, "el empujón incondicional ya no está")
+      .not.toMatch(/if \(partnerRow\) \{\s*beneficiaries\.push/);
+  });
+
+  it("y lo desconocido es COMISIÓN, no neto", () => {
+    /**
+     * Es lo que hacía el sistema con todos los socios antes de que la columna
+     * existiera. Entender el hueco como `net` les quitaría la comisión a todos
+     * de golpe el día del despliegue — el mismo apagón silencioso que evita la
+     * siembra de 0077, con el signo cambiado.
+     */
+    const regla = cuerpoDe("src/lib/modelo-comercial.ts");
+    expect(regla).toMatch(/partner\?\.pricing_model === "net" \? "net" : "commission"/);
+    expect(read("supabase/migrations/0078_partner_pricing_model.sql"))
+      .toMatch(/not null default 'commission'/);
+  });
+
+  it("se declara en la RELACIÓN, no en la organización", () => {
+    // Es del contrato: la misma agencia puede trabajar a comisión con una
+    // operadora y a neto con otra. Mismo sitio que las condiciones de 0073.
+    expect(read("supabase/migrations/0078_partner_pricing_model.sql"))
+      .toMatch(/alter table organization_relationships[\s\S]{0,200}pricing_model/);
+    const partners = sinComentariosDe("src/lib/partners.ts");
+    const mapa = partners.slice(
+      partners.indexOf("PARTNER_RELATIONSHIP_COLUMNS"),
+      partners.indexOf("PARTNER_DERIVED_FIELDS"));
+    expect(mapa).toMatch(/pricing_model: "pricing_model"/);
+  });
+
+  it("y la ficha del socio lo pide, junto a la comisión que deja de aplicarse", () => {
+    // Verlas juntas es lo que evita rellenar las dos creyendo que se suman.
+    const pantalla = sinComentariosDe("src/app/dashboard/partners/page.tsx");
+    const i = pantalla.indexOf('name: "pricing_model"');
+    expect(i, "la ficha no lo pide").toBeGreaterThan(-1);
+    expect(i).toBeLessThan(pantalla.indexOf('name: "default_commission_pct"'));
+  });
+});
+
+describe("el socio que integra por API", () => {
+  it("su reserva es SUYA: la llave lleva el socio y ahora se usa", () => {
+    /**
+     * `api_key.partner_id` existe desde que existe la tabla, `requireApiKey` lo
+     * devuelve, y hasta esta entrega solo se escribía en la bitácora. Una
+     * reserva hecha con la llave de un tour center nacía SIN socio, y con ella
+     * se caían cinco cosas a la vez: su comisión, su límite de crédito, su
+     * cupo, su contrato de productos y su propia pantalla de reservas, que
+     * filtra por socio.
+     *
+     * El síntoma que se reporta es el inofensivo —«reservo por API y no me sale
+     * en el portal»—. El que cuesta dinero es el primero.
+     */
+    const ruta = cuerpoDe("src/app/api/v1/bookings/route.ts");
+    expect(ruta).toMatch(/createPublicBooking\(\s*page, parsed\.request, caller\.company, \{\}, caller\.partnerId\s*\)/);
+    const motor = cuerpoDe("src/lib/public-booking-service.ts");
+    expect(motor, "y el motor lo pone en la orden").toMatch(/partner_id: partnerId/);
+  });
+
+  it("y entra por el MISMO canal que su portal", () => {
+    /**
+     * Dos motivos. `b2b_api` no existe —`sales_channel` es un enum cerrado y el
+     * tipo de TypeScript no lo dice, porque el canal viaja como cadena—, y
+     * sobre todo: las reglas de precio se acotan por canal. Con un canal propio
+     * para la API, el mismo tour center recibiría un precio por el portal y
+     * otro por la integración, y descubriría la diferencia al facturar.
+     */
+    expect(cuerpoDe("src/lib/public-booking-service.ts"))
+      .toMatch(/channel: partnerId \? "b2b_portal" : "web"/);
+    // Y el canal existe en el enum de verdad.
+    expect(read("supabase/migrations/0003_enums.sql")).toMatch(/'b2b_portal'/);
+  });
+
+  it("la API le enseña SU catálogo, no el catálogo", () => {
+    // El contrato por producto se aplicaba en el portal y al vender, y esta
+    // ruta —por donde mira un socio que integra antes de reservar— se había
+    // quedado fuera: le enseñaba productos que su reserva iba a rechazar.
+    const ruta = cuerpoDe("src/app/api/v1/products/route.ts");
+    expect(ruta).toMatch(/caller\.partnerId[\s\S]{0,200}"partner_product"/);
+    expect(ruta, "y el filtro se aplica").toMatch(/\.\.\.\(autorizados \? \{ _id: \{ in: autorizados \} \} : \{\}\)/);
+    expect(ruta, "sin nada autorizado, nada").toMatch(/autorizados !== null && autorizados\.length === 0/);
+  });
+
+  it("el tarifario y la API salen de la MISMA función", () => {
+    /**
+     * El criterio del plan es que «el tarifario descargado coincide con lo que
+     * la API devuelve». Eso no se consigue revisándolo: se consigue teniendo
+     * una sola función que los produzca. Dos implementaciones del mismo precio
+     * divergen el día que alguien añade una regla de temporada a una de las
+     * dos, y la divergencia sale a la luz facturando.
+     */
+    expect(cuerpoDe("src/app/api/portal/tarifario/route.ts")).toMatch(/tarifarioDeSocio\(/);
+    expect(cuerpoDe("src/app/api/v1/products/route.ts")).toMatch(/tarifarioDeSocio\(/);
+    // Y esa función no calcula precios: se los pide al motor.
+    const tarifario = cuerpoDe("src/lib/tarifario.ts");
+    expect(tarifario).toMatch(/await resolvePrice\(/);
+    expect(tarifario, "nada de fórmulas a mano").not.toMatch(/base_price|default_commission_pct/);
+    // Con el mismo canal con el que reserva: con otro, el tarifario diría un
+    // precio y la reserva cobraría otro.
+    expect(tarifario).toMatch(/channel: "b2b_portal"/);
+  });
+
+  /**
+   * «Un producto sin tarifa no tumba el tarifario entero» NO se guarda aquí.
+   *
+   * Aquí había un guardia que buscaba un `catch (err)` cerca del
+   * `resolvePrice`. No mordía: un `catch` que vuelva a lanzar el error lo
+   * cumple al pie de la letra y rompe el archivo igual. Esa propiedad es de lo
+   * que SALE, no del texto, y vive probada en `src/lib/tarifario.test.ts`
+   * ejecutando la función con un producto cuyo precio revienta.
+   */
+
+  /* ═══════════════════════════════════ Fase 6.4 · el cupo, visible antes */
+
+  it("el catálogo del portal cruza las plazas con EL CUPO DEL SOCIO", () => {
+    /**
+     * Enseñaba las plazas libres de la SALIDA. Un socio con diez garantizadas
+     * veía las cuarenta de la guagua, vendía quince, y el 409 de
+     * `assertAllotment` le llegaba en la cara del turista que tenía delante.
+     *
+     * El motor de cupos no estaba roto —comprueba bien, y en el único camino
+     * que crea reservas—: estaba escondido, y un límite que solo aparece al
+     * final es indistinguible de un fallo del sistema.
+     */
+    const catalogo = cuerpoDe("src/app/api/portal/catalog/route.ts");
+    expect(catalogo).toMatch(/allotmentsOf\(ctx\.companyId, partnerId\)/);
+    // Y el resultado se USA en la salida, no solo se calcula: la línea que
+    // importa es la que sustituye el número, no la que lo obtiene.
+    expect(catalogo, "available_pax sale del cupo, no de la salida")
+      .toMatch(/available_pax: cupo\.disponible/);
+    expect(catalogo, "y el cupo cruza las dos cosas")
+      .toMatch(/cupoVisible\(\s*plazasLibres\(/);
+  });
+
+  it("la pantalla de reservar NO vuelve a calcular las plazas", () => {
+    /**
+     * Si reconstruye el número en el navegador a partir de `capacity`, cuando
+     * el servidor contesta «no se sabe» le sale la guagua entera: afirmaría
+     * cuarenta plazas libres justo cuando nadie las ha contado. Y peor: se
+     * saltaría el cupo, que es lo que esta ola vino a enseñar.
+     */
+    const pantalla = cuerpoDe("src/app/portal/reservar/page.tsx");
+    expect(pantalla).toMatch(/cupoParaMostrar\(salida\?\.cupo\)/);
+    expect(pantalla, "el número lo da el servidor ya cruzado")
+      .not.toMatch(/plazasParaMostrar\(/);
+  });
+
+  it("solo se bloquea el botón por lo que no cambia esperando", () => {
+    /**
+     * Bloquear por una salida llena le quitaría al socio la plaza que acaba de
+     * liberar una cancelación, con un número de hace dos minutos. Bloquear por
+     * un cupo CERRADO es lo contrario: no se abre solo, y dejar el botón vivo
+     * ahí solo sirve para que escriba los datos del turista y se coma un 409.
+     */
+    const dominio = cuerpoDe("src/lib/cupo-socio.ts");
+    const i = dominio.indexOf("MOTIVO_DEFINITIVO");
+    expect(dominio.slice(i, i + 400)).toMatch(/cerrado: true/);
+    expect(dominio.slice(i, i + 400)).toMatch(/salida_llena: false/);
+    expect(cuerpoDe("src/app/portal/reservar/page.tsx"))
+      .toMatch(/disabled=\{!salida \|\| \(salida\.cupo\?\.motivo \? MOTIVO_DEFINITIVO\[/);
+  });
+
+  it("/api/portal/cupos se acota por la FICHA, no por el parámetro", () => {
+    /**
+     * Atender un `?partner=` a quien es del socio convertiría esta ruta en la
+     * forma de leer el contrato de plazas de la agencia de enfrente: cuántas le
+     * apartan y cuántas lleva vendidas.
+     */
+    const ruta = cuerpoDe("src/app/api/portal/cupos/route.ts");
+    const i = ruta.indexOf("if (esDeSocio(ctx))");
+    expect(i, "la ruta pregunta por la ficha").toBeGreaterThan(-1);
+    // La rama del socio toma SU identificador y no mira `sp.get`.
+    const rama = ruta.slice(i, ruta.indexOf("} else {", i));
+    expect(rama).toMatch(/partnerId = ctx\.partnerId/);
+    expect(rama, "sin tocar el parámetro").not.toMatch(/sp\.get/);
+    // Y el interno necesita manager para mirar el de otro.
+    expect(ruta).toMatch(/requireAtLeast\(ctx, "manager"\)/);
+  });
+
+  it("la disponibilidad por API respeta el contrato Y el cupo", () => {
+    /**
+     * Dos cosas que esta ruta no miraba y la reserva sí. Sin la primera, un
+     * socio integrado planifica sobre un producto que no tiene autorizado;
+     * sin la segunda, sobre plazas que no son suyas. En los dos casos el
+     * rechazo llega al confirmar, cuando ya no puede hacer nada.
+     */
+    const ruta = cuerpoDe("src/app/api/v1/availability/route.ts");
+    expect(ruta, "el contrato por producto").toMatch(/autorizados\.has\(productId\)/);
+    expect(ruta, "y el cupo").toMatch(/allotmentsOf\(caller\.companyId, caller\.partnerId\)/);
+    // `seatsLeft` pasa a ser LO SUYO: dejarle el número grande al lado del
+    // pequeño es pedirle a quien integra que elija el equivocado.
+    expect(ruta).toMatch(/seatsLeft: cupo\.disponible/);
+    // Y lo que su contrato no le deja vender no se devuelve como disponible.
+    expect(ruta).toMatch(/filter\(\(d\) => d\.allotment\.motivo === null\)/);
+  });
+
+  it("el portal no repite una entrada de menú", () => {
+    /**
+     * `p-reservar` estaba dos veces, palabra por palabra: dos líneas iguales en
+     * el menú del socio y dos claves de React idénticas. Una lista escrita a
+     * mano acumula esto en silencio, y una guarda de tres líneas lo caza.
+     */
+    const ids = PORTAL_NAV.map((n) => n.id);
+    expect(ids, "ids repetidos en PORTAL_NAV").toEqual([...new Set(ids)]);
+    const hrefs = PORTAL_NAV.map((n) => n.href);
+    expect(hrefs, "rutas repetidas en PORTAL_NAV").toEqual([...new Set(hrefs)]);
+  });
+
+  it("«mi cupo» tiene pantalla y entrada de menú", () => {
+    // Una pantalla sin menú es un módulo muerto: existe, funciona y no la
+    // encuentra nadie.
+    expect(existe("src/app/portal/cupos/page.tsx")).toBe(true);
+    expect(PORTAL_NAV.some((n) => n.href === "/portal/cupos")).toBe(true);
   });
 });

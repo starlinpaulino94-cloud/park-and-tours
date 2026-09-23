@@ -15,9 +15,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { formatDateTime, formatMoney, formatNumber, toDateInput } from "@/lib/format";
-import { plazasParaMostrar } from "@/lib/plazas";
+import { cupoParaMostrar, MOTIVO_CUPO_MENSAJE, MOTIVO_DEFINITIVO, type CupoVisible } from "@/lib/cupo-socio";
 
-interface Salida { _id: string; departure_at?: string; available_pax?: number; capacity?: number; status?: string }
+interface Salida { _id: string; departure_at?: string; available_pax?: number | null; capacity?: number; status?: string; cupo?: CupoVisible }
 interface Producto {
   _id: string; name?: string; short_description?: string; location?: string;
   modalities: { _id: string; name?: string; modality_type?: string }[];
@@ -400,12 +400,17 @@ function ElegirSalida({
    * escribir, y un bloqueo aquí con un número de hace dos minutos le impediría
    * vender una plaza que acaba de liberarse. Se avisa, que es lo honesto.
    *
-   * Y por `plazasParaMostrar`, no por `?? 0`: un cupo que nadie ha calculado
+   * Y por `cupoParaMostrar`, no por `?? 0`: un cupo que nadie ha calculado
    * —una salida creada por SQL, una importación— no es un agotado, y pintarlo
    * como tal le dice al tour center que no puede vender una salida vacía. Lo
    * cazó la guarda que nació de esa misma captura.
+   *
+   * El número viene YA cruzado con su contrato: el servidor devuelve lo menor
+   * entre las plazas de la salida y lo que le queda de su cupo. Antes esta
+   * pantalla enseñaba las de la salida y el tope del contrato aparecía en el
+   * 409, con el turista delante.
    */
-  const { libres, desconocido } = plazasParaMostrar(salida);
+  const { libres, desconocido, bloqueado, nota } = cupoParaMostrar(salida?.cupo);
 
   return (
     <Sheet open onOpenChange={(v) => { if (!v) onCerrar(); }}>
@@ -423,12 +428,16 @@ function ElegirSalida({
               <SelectTrigger id="salida"><SelectValue placeholder="Elige una salida" /></SelectTrigger>
               <SelectContent>
                 {producto.departures.map((d) => {
-                  const cupo = plazasParaMostrar(d);
+                  const cupo = cupoParaMostrar(d.cupo);
                   return (
                     <SelectItem key={d._id} value={d._id}>
                       {d.departure_at ? formatDateTime(d.departure_at) : "Sin fecha"}
                       {" · "}
-                      {cupo.desconocido ? "cupo sin definir" : `${formatNumber(cupo.libres)} plazas`}
+                      {cupo.desconocido
+                        ? "cupo sin definir"
+                        : cupo.bloqueado
+                          ? cupo.nota
+                          : `${formatNumber(cupo.libres)} plazas${cupo.nota ? ` ${cupo.nota}` : ""}`}
                     </SelectItem>
                   );
                 })}
@@ -447,16 +456,33 @@ function ElegirSalida({
                 onChange={(e) => setNinos(Math.max(0, Number(e.target.value) || 0))} />
             </div>
           </div>
-          {!desconocido && pax > libres && (
+          {bloqueado && (
+            <p className="text-xs text-destructive">
+              {salida?.cupo ? MOTIVO_CUPO_MENSAJE[salida.cupo.motivo!] : ""}
+            </p>
+          )}
+          {salida?.cupo?.requiere_confirmacion && !bloqueado && (
+            <p className="text-xs text-muted-foreground">
+              Tu contrato para esta salida es a petición: la reserva queda pendiente hasta que la
+              operadora la confirme.
+            </p>
+          )}
+          {!desconocido && !bloqueado && pax > libres && (
             <p className="text-xs text-amber-600">
-              Quedaban {formatNumber(libres)} plazas cuando se cargó esta pantalla. Puedes intentarlo:
-              el cupo real se comprueba al confirmar.
+              Quedaban {formatNumber(libres)} plazas{nota ? ` ${nota}` : ""} cuando se cargó esta
+              pantalla. Puedes intentarlo: el cupo real se comprueba al confirmar.
             </p>
           )}
         </div>
         <SheetFooter>
           <Button
-            disabled={!salida}
+            /**
+             * Solo se bloquea por lo que no cambia esperando. Un cupo cerrado
+             * seguirá cerrado dentro de dos minutos; una salida llena no, y
+             * bloquear ahí le quitaría al socio la plaza que acaba de liberar
+             * una cancelación.
+             */
+            disabled={!salida || (salida.cupo?.motivo ? MOTIVO_DEFINITIVO[salida.cupo.motivo] : false)}
             onClick={() => salida && onAnadir(producto, salida, adultos, ninos)}
           >
             Añadir a la reserva

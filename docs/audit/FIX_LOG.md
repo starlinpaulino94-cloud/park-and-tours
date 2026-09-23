@@ -2253,3 +2253,209 @@ daba error: los tres producían números equivocados en silencio.
   salido en el archivo — y nadie lo habría notado, porque el socio no sabe qué
   columnas debería tener y quien las declaró no vuelve a mirar.
 - **Mutación: ocho, las ocho muertas.**
+
+---
+
+## La medición del conteo de plan — hecha (2026-09-23)
+
+`supabase/editor/medir_usuarios_antes_de_activar_el_conteo.sql`, ejecutada en
+producción antes de desplegar el arreglo de 4.5. Resultado:
+
+| operadora | plan | tope | antes | ahora | efecto |
+| --- | --- | --- | --- | --- | --- |
+| Platform Admin | — | — | 2 | 2 | sin tope declarado |
+| Havelgo Demo Tours | — | — | 1 | 1 | sin tope declarado |
+
+**Ninguna operadora se pasa: el arreglo se puede desplegar sin avisar a nadie.**
+Queda cerrado el «no es opcional» que este registro dejó escrito en 4.5.
+
+Y la tabla dice dos cosas más que no se preguntaban:
+
+- **`antes` y `ahora` coinciden en las dos**, o sea que hoy no hay NINGUNA
+  membresía colgando de una organización de socio. Es exactamente lo que
+  describía 4.1 —«ningún tour center podía entrar»— visto desde los datos: el
+  hueco que 4.1 cerró no llegó a producir un solo usuario de portal.
+- **Ninguna de las dos tiene plan asignado**, así que `max_users` es nulo y el
+  techo no existe todavía. El conteo corregido no limitará nada hasta que se
+  asigne un plan; conviene volver a correr esta consulta el día que se asigne,
+  porque entonces sí puede haber una operadora por encima.
+
+## Fase 6 — El contrato explícito
+
+### Fase 6.1 — el contrato socio–producto: no estaba roto, no existía
+- **Lo que había.** `authorized_products` aparece en el tipo `Partner`, el
+  catálogo del portal lo pide expandido, el reparto del formulario lo descarta
+  a propósito y la ficha del socio promete «catálogo autorizado» en su
+  descripción. Lo que no hay en ninguna parte es **dónde guardarlo**: no existe
+  la tabla, `partner` no lo declara escribible, ningún formulario lo ofrece, y
+  `authorized_products` **ni siquiera está en el mapa de relaciones** — así que
+  la expansión devuelve vacío SIEMPRE.
+- Y el catálogo filtraba así: `authorizedIds.length ? { _id: { in: … } } : {}`.
+  Lista vacía, sin filtro. **Ese filtro no se aplicó nunca, ni una vez, desde
+  que se escribió.** Un operador que lea esa pantalla concluye que su tour
+  center solo ve lo autorizado.
+- **Migración 0077** crea la tabla, su política —tabla nueva y actor externo:
+  aquí la tabla ES la autorización, y sin política un socio leería las de sus
+  competidores, que es el mapa de qué vende cada uno— y **siembra**.
+- **La siembra no es una comodidad.** En cuanto la lista vacía deja de
+  significar «todo», un socio sin filas no vende nada: sin sembrar, el
+  despliegue apagaría la venta de todos los tour centers a la vez, con el
+  síntoma «el catálogo me sale vacío», que nadie relaciona con una migración. Lo
+  mismo por los otros dos lados, con un disparador cada uno: **un producto nuevo
+  nace autorizado para todos** y **un socio nuevo nace con el catálogo de hoy**.
+  Lo contrario suena más «contrato explícito» y es la trampa — publicar una
+  excursión dejaría de verse hasta que alguien la autorizara socio a socio.
+- **Y se aplica AL VENDER, que es la mitad que faltaba.** Acotar el catálogo
+  esconde el producto de una pantalla; la reserva llega por el cuerpo de una
+  petición con un `product_id` dentro, y la de un socio que integra por API ni
+  siquiera pasa por esa pantalla. Un filtro de listado es una sugerencia.
+  Comprobado **antes** de tomar plazas, consumir cupo o apuntar crédito, y solo
+  cuesta una consulta cuando la venta es de un socio.
+- **El error dice QUÉ productos, por su nombre, y todos de una vez.** Un 403 con
+  uuids obliga a quien integra a cruzarlos a mano; contestarle de uno en uno le
+  hace descubrir su contrato a base de reintentos.
+- **Nueve pruebas existentes se pusieron en rojo al instante** — todas las de
+  venta al socio, más las de OTA. Es exactamente el riesgo del plan reproducido
+  en el banco de pruebas: sin autorizaciones sembradas, no se vende. Los
+  fixtures se siembran igual que la migración.
+- **Tres guardas foráneas mordieron**: un recurso escribible sin pantalla es un
+  módulo muerto (de ahí `/dashboard/partners/catalogo`), una tabla nueva tiene
+  que salir en «llévate tus datos», y **un `create table` junto a un bloque `$$`
+  revienta el editor de Supabase** — el SQL va en tres partes por eso.
+- **Mutación: diez, las diez muertas.** Tres no mordían y eran fallos de las
+  guardas, no del código: una comprobaba que la lista se calculaba pero no que
+  se usara —se podía borrar el filtro entero—, otra daba por bueno un disparador
+  **renombrado** porque `..._off` contiene el nombre original, y la tercera
+  aceptaba una siembra que escribe `null` donde va el socio.
+
+### Fase 6.2 — el socio a neto cobraba su margen dos veces
+- **Dos formas de trabajar con un canal externo, y son excluyentes.** A
+  **comisión**: vende al precio de tarifa y se le liquida un porcentaje. A
+  **neto**: COMPRA a un precio rebajado y revende al que quiera, con su margen
+  ya dentro del precio. El sistema soportaba las dos por separado sin saber que
+  no se suman.
+- `generateCommissionsForBooking` empujaba un beneficiario de tipo socio **en
+  cuanto la reserva tenía socio**, sin preguntar nada más. Un tour center con
+  tarifa neta cobraba su margen dos veces: una en el precio y otra en la
+  liquidación.
+- **Y no se ve el día de la venta**: las dos cifras son correctas por separado.
+  Se ve un mes después, cuando alguien compara la liquidación con el contrato —
+  que es exactamente por lo que el plan lo llamaba riesgo económico y no de
+  datos.
+- **Migración 0078**: `pricing_model` en la RELACIÓN, no en la organización,
+  porque es del contrato — la misma agencia puede trabajar a comisión con una
+  operadora y a neto con otra. Mismo sitio y mismo motivo que las condiciones
+  aceptadas de 0073.
+- **Lo desconocido es «comisión», no «neto».** Es lo que hacía el sistema con
+  todos los socios antes de que la columna existiera; entender el hueco como
+  neto les quitaría la comisión a todos de golpe el día del despliegue — el
+  mismo apagón silencioso que evita la siembra de 0077, con el signo cambiado.
+  Las filas existentes toman el valor por defecto sin tocarlas: no hay relleno.
+- **La ficha pide el modelo justo encima de la comisión estándar**, a propósito:
+  con «neto» esa casilla deja de aplicarse, y verlas juntas es lo que evita
+  rellenar las dos creyendo que se suman.
+- **Y la verificación mira dos cosas que solo se ven después**: socios a neto
+  con la comisión estándar todavía rellena —señal de que alguien la puso
+  creyendo que sumaba— y **comisiones ya generadas** a socios que ahora se
+  declaran a neto. Esas son del pasado y no se tocan —reescribir el histórico es
+  peor—, pero hay que saber que existen antes de liquidar el mes.
+- **Lo que NO se hizo, y por qué:** el plan pedía «modelo de precio **y de
+  cobro**». El de cobro son los tres modos de la Fase 7 (paga el cliente al
+  operador; cobra el punto de venta y debe el neto; el vendedor retiene su
+  comisión), y allí tendrán quién los lea. Declarar hoy una columna que nadie
+  lee es repetir exactamente el fallo que 6.1 acaba de arreglar.
+- **Mutación: siete, las siete muertas.**
+
+### Fase 6.3 — la reserva por API nacía sin socio, y el tarifario no existía
+- **El hallazgo grande no era el tarifario: era la llave de API.** `api_key`
+  tiene `partner_id` desde que existe, y ese dato llegaba **solo al registro de
+  auditoría**. La reserva se creaba sin socio. Todo lo que cuelga del socio se
+  perdía en silencio, de una vez: su comisión, su comprobación de crédito, su
+  cupo contratado, su contrato por producto (el de 6.1) y la visibilidad de esa
+  reserva en su propio portal. El socio integrado por API era, para el sistema,
+  un cliente anónimo que casualmente traía una llave.
+- **Y se pierde callando**, que es lo que lo hace caro: la reserva se crea, el
+  tourista viaja, nadie ve un error. Sale a la luz a fin de mes, cuando el socio
+  reclama una liquidación que no cuadra con lo que vendió.
+- `createPublicBooking` recibe ahora el socio y sella con él `partner_id` y el
+  canal: `b2b_portal` cuando lo hay, `web` cuando no.
+- **El canal es `b2b_portal` también por API, y a propósito.** `b2b_api` ni
+  existe en el enum `sales_channel` —el insert habría fallado, y TypeScript no
+  lo ve porque el canal viaja como cadena—, pero además las reglas de precio se
+  indexan por canal: con dos canales distintos, el mismo socio pagaría un precio
+  por el portal y otro por la API, por el mismo producto y el mismo día.
+- **El tarifario y la API salen de la MISMA función**, `tarifarioDeSocio`. El
+  criterio del plan —«el archivo descargado coincide con lo que la API
+  devuelve»— no se consigue revisándolo: se consigue teniendo una sola fuente.
+  Dos implementaciones del mismo precio no divergen el día uno; divergen el día
+  que alguien añade una regla de temporada a una de las dos, y la divergencia
+  aparece facturando.
+- **Los precios los da el motor, no una fórmula.** Reconstruir aquí «precio base
+  menos comisión» habría dado un número parecido casi siempre, que es la peor
+  clase de número: el que nadie revisa hasta que no cuadra.
+- **La fecha es obligatoria y va dentro del archivo y en su nombre.** Las reglas
+  tienen temporada, así que «el tarifario» sin día no existe; un archivo sin
+  fecha dentro es el que alguien reenvía en noviembre con los precios de agosto.
+- **Un producto sin tarifa no tumba el archivo entero**: se queda fuera y los
+  demás salen. Lo contrario le quita al socio los cuarenta precios que sí tiene
+  por culpa del que falta, y el arreglo está del lado de la operadora.
+- **Una guarda de texto no mordía y se tiró.** Comprobaba que hubiera un `catch`
+  cerca del `resolvePrice`; un `catch` que vuelva a lanzar el error la cumple al
+  pie de la letra y rompe el archivo igual. Esa propiedad es de lo que SALE, no
+  del texto: vive ahora en `src/lib/tarifario.test.ts`, ejecutando la función
+  con un producto cuyo precio revienta y comprobando que los otros dos siguen
+  saliendo. **Es la segunda vez en esta fase que una «mutación que no muerde»
+  resulta ser una guarda escrita contra el texto en vez de contra el efecto.**
+- **`/api/v1/products` aplica el contrato por producto**, que se había quedado
+  fuera en 6.1: era justo la ruta por la que mira un socio que integra antes de
+  reservar, así que le enseñaba productos que su propia reserva iba a rechazar.
+  Y añade `net_price`/`net_currency` con la misma función del tarifario.
+- **Mutación: nueve, las nueve muertas.**
+
+### Fase 6.4 — el motor de cupos estaba entero; lo que faltaba era enseñarlo
+- **Lo primero fue mirar qué había, y había casi todo.** `allotment` existe
+  desde 0010, `allotments.ts` decide, `allotment-service.ts` aplica y
+  `createOrderWithBookings` —el único camino que crea reservas, también el de la
+  API y el de las OTA— lo comprueba antes de tomar plazas. La liberación
+  automática funciona y la cancelación devuelve las plazas a su cupo. Nada de
+  eso había que escribirlo.
+- **Lo que no existía era que el socio lo supiera.** Su catálogo y su pantalla
+  de reservar le enseñaban las plazas libres de la SALIDA. Un tour center con
+  diez garantizadas veía las cuarenta de la guagua, vendía quince, y el 409 de
+  `assertAllotment` le llegaba en la cara del turista que tenía delante. **El
+  contrato no estaba roto: estaba escondido, y un límite que solo aparece al
+  final es indistinguible de un fallo del sistema.**
+- **La rejilla del cupo ya estaba escrita y pedía `manager`.** Es decir: el
+  contrato de plazas que el tour center firmó solo podía verlo la otra parte. Se
+  enteraba de lo que le quedaba preguntando por WhatsApp — que es exactamente
+  lo que el motor de cupos vino a sustituir.
+- **Una función para las tres superficies**, `cupoVisible`: el catálogo del
+  portal, la pantalla de reservar y `/api/v1/availability` dicen el mismo número,
+  y el mismo que va a comprobar la reserva. Mismo motivo que el tarifario de
+  6.3: dos cuentas del mismo cupo no divergen el día uno.
+- **Tres motivos y no uno, porque el remedio es distinto.** «Cupo cerrado» y
+  «cupo agotado» los arregla su comercial; «salida llena» no lo arregla nadie y
+  lo que toca es otro día. Un único «no hay plazas» manda al socio a llamar a
+  quien no puede ayudarle.
+- **Y solo se bloquea el botón por lo que no cambia esperando.** La pantalla
+  avisa en vez de bloquear porque su número es de hace dos minutos y una
+  cancelación libera plazas todo el rato. Pero un cupo CERRADO no se abre solo:
+  dejar el botón vivo ahí solo sirve para que el socio escriba los datos del
+  turista y se coma el rechazo al final.
+- **`/api/v1/availability` no miraba ninguna de las dos cosas que la reserva sí
+  mira**: ni el contrato por producto de 6.1 —un socio integrado planificaba
+  sobre un producto que no tiene autorizado— ni su cupo. Ahora `seatsLeft` es LO
+  SUYO: dejarle el número grande al lado del pequeño es pedirle a quien integra
+  que elija el equivocado.
+- **«No saber» sigue sin ser «agotado».** Una salida sin cupo calculado no está
+  llena, y la pantalla dejó de reconstruir el número desde `capacity`: hacerlo
+  en el navegador devolvía la guagua entera justo cuando nadie la había contado.
+- **Y no se le inventa un contrato al que no lo tiene.** `allotmentState`
+  devuelve un `free_sale` de relleno para que la venta siga adelante; eso es un
+  valor por defecto, no un acuerdo, y presentarlo como tal le diría al socio que
+  firmó algo que no firmó.
+- **Una entrada de menú estaba duplicada palabra por palabra** (`p-reservar`,
+  dos líneas idénticas: dos entradas en el menú del socio y dos claves de React
+  iguales). Una lista escrita a mano acumula esto en silencio; la guarda que lo
+  caza son tres líneas y vale para todas las futuras.
+- **Mutación: quince, las quince muertas.**

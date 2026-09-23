@@ -4,7 +4,11 @@ import { ok, fail } from "@/lib/api-response";
 import { resolvePrice } from "@/lib/pricing";
 import type { Departure, Partner, Product, ProductModality } from "@/lib/types";
 import { refId } from "@/lib/types";
+import { autorizadosDe, type AutorizacionSocio } from "@/lib/catalogo-socio";
 import { plazasLibres, type SalidaConCupo } from "@/lib/plazas";
+import { allotmentsOf } from "@/lib/allotment-service";
+import { pickAllotment, allotmentState } from "@/lib/allotments";
+import { cupoVisible } from "@/lib/cupo-socio";
 
 /**
  * GET /api/portal/catalog?date=YYYY-MM-DD
@@ -26,22 +30,50 @@ export async function GET(req: NextRequest) {
     if (!partnerId) throw new TenantError("Tu usuario no está asociado a ningún partner", 403);
 
     const partner = (await tenantQuery<Partner>(ctx.companyId, "partner", {
-      _filter: { _id: partnerId }, _limit: 1, authorized_products: true,
+      _filter: { _id: partnerId }, _limit: 1,
     }))[0];
     if (!partner) throw new TenantError("Partner no encontrado", 404);
     if (partner.status !== "active") throw new TenantError("El partner está inactivo", 403);
 
-    const authorized = (partner.authorized_products || []) as any[];
-    const authorizedIds = authorized.map((p) => (typeof p === "object" ? p._id : p)).filter(Boolean);
+    /**
+     * EL CONTRATO, DESDE SU TABLA (0077).
+     *
+     * Antes se pedía `authorized_products` expandido en la consulta de arriba y
+     * se filtraba así:
+     *
+     *     ...(authorizedIds.length ? { _id: { in: authorizedIds } } : {})
+     *
+     * `authorized_products` no existía en ninguna tabla ni en el mapa de
+     * relaciones, así que la expansión devolvía vacío SIEMPRE y ese filtro no
+     * se aplicó nunca — ni una vez. La pantalla prometía «catálogo autorizado»
+     * y enseñaba el catálogo entero.
+     */
+    const autorizaciones = await tenantQuery<Record<string, unknown>>(ctx.companyId, "partner_product", {
+      _filter: { partner: partnerId, status: "active" }, _limit: 1000,
+    });
+    const autorizados = autorizadosDe(autorizaciones as AutorizacionSocio[]);
+    const authorizedIds = [...autorizados];
 
-    const products = await tenantQuery<Product>(ctx.companyId, "product", {
+    /**
+     * Sin nada autorizado, el catálogo está vacío y no se consulta.
+     *
+     * Y explícito, no confiando en que `in: []` signifique «ninguno»: no lo
+     * significa en todos los traductores de consulta —en alguno es una
+     * condición que no se aplica— y ahí el fallo sería devolverle el catálogo
+     * entero justo al socio que no tiene nada autorizado.
+     */
+    const products = authorizedIds.length === 0 ? [] : await tenantQuery<Product>(ctx.companyId, "product", {
       _filter: {
         status: "active",
         // Mismo motivo que en el punto de venta: la reserva de un paquete
         // necesita el día de inicio, que este catálogo no pide. Enseñarlo aquí
         // sería ofrecerle a un socio algo que no puede reservar.
         is_bundle: false,
-        ...(authorizedIds.length ? { _id: { in: authorizedIds } } : {}),
+        // Y SIEMPRE. Desde 0077 la tabla se siembra con el catálogo entero por
+        // socio, así que «vacía» significa lo que dice; el filtro condicional
+        // de antes es exactamente la línea que convirtió la autorización en un
+        // adorno.
+        _id: { in: authorizedIds },
       },
       _limit: 200, _sort: { name: "asc" },
       category: true,
@@ -70,6 +102,21 @@ export async function GET(req: NextRequest) {
       const id = refId(d.product) || "none";
       departuresByProduct.set(id, [...(departuresByProduct.get(id) || []), d]);
     }
+
+    /**
+     * EL CUPO CONTRATADO, DELANTE Y NO AL FINAL.
+     *
+     * Esta pantalla enseñaba las plazas libres de la SALIDA. Un socio con diez
+     * garantizadas veía las cuarenta de la guagua, vendía quince, y el 409 de
+     * `assertAllotment` le llegaba en la cara del turista que tenía delante. El
+     * motor de cupos no estaba roto —comprueba bien, y en el único camino que
+     * crea reservas—: estaba escondido, y un límite que solo aparece al final
+     * es indistinguible de un fallo del sistema.
+     *
+     * Los cupos se piden UNA vez y se cruzan en memoria: son pocos por socio y
+     * preguntar por salida convertiría el catálogo en cien consultas.
+     */
+    const cupos = await allotmentsOf(ctx.companyId, partnerId);
 
     // B2B price per product using the pricing engine (never a frontend formula).
     const rows = await Promise.all(
@@ -111,21 +158,34 @@ export async function GET(req: NextRequest) {
           category: typeof product.category === "object" ? product.category?.name : undefined,
           modalities: modalities.map((m) => ({ _id: m._id, name: m.name, modality_type: m.modality_type })),
           price,
-          departures: productDepartures.slice(0, 20).map((d) => ({
-            _id: d._id,
-            departure_at: d.departure_at,
-            // Mismo motivo que en el POS: un hueco no es un agotado.
-            available_pax: plazasLibres(d as SalidaConCupo),
-            capacity: d.capacity ?? 0,
-            status: d.status,
-          })),
+          departures: productDepartures.slice(0, 20).map((d) => {
+            const cupo = cupoVisible(
+              // Mismo motivo que en el POS: un hueco no es un agotado.
+              plazasLibres(d as SalidaConCupo),
+              allotmentState(pickAllotment(cupos, {
+                partnerId: partnerId as string,
+                productId: product._id,
+                departureId: d._id,
+                travelDate: d.departure_at,
+              }))
+            );
+            return {
+              _id: d._id,
+              departure_at: d.departure_at,
+              // Lo que este socio puede reservar, no lo que cabe en la guagua.
+              available_pax: cupo.disponible,
+              capacity: d.capacity ?? 0,
+              status: d.status,
+              cupo,
+            };
+          }),
           next_departure: productDepartures[0]?.departure_at,
         };
       })
     );
 
     console.log(`[portal/catalog] ${rows.length} productos autorizados para ${partner.commercial_name || partner.name}`);
-    return ok({ products: rows, partner_id: partnerId, restricted: authorizedIds.length > 0 });
+    return ok({ products: rows, partner_id: partnerId, restricted: true });
   } catch (err) {
     return fail(err);
   }

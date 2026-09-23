@@ -3,6 +3,8 @@ import { tenantCreate, tenantQuery, tenantUpdate, type TenantContext } from "@/l
 import { ventaSelladaPorVendedor } from "@/lib/seller-scope";
 import { excesoDeDescuento, mensajeExceso } from "@/lib/techo-descuento";
 import { desajusteDeAtribucion } from "@/lib/atribucion-coherente";
+import { autorizadosDe, noAutorizados, mensajeNoAutorizado, type AutorizacionSocio } from "@/lib/catalogo-socio";
+import { devengaComision } from "@/lib/modelo-comercial";
 import { resolvePrice, resolveCost, billablePax } from "@/lib/pricing";
 import { assertCapacity, recalculateDeparture, OversellError } from "@/lib/availability";
 import { resolveExchangeRate } from "@/lib/currency";
@@ -421,6 +423,37 @@ export async function createOrderWithBookings(
     }
   }
 
+
+  /**
+   * EL CONTRATO DEL SOCIO, AL VENDER.
+   *
+   * Acotar el catálogo esconde el producto de UNA pantalla. La reserva llega
+   * por el cuerpo de una petición con un `product_id` dentro, y la de un socio
+   * que integra ni siquiera pasa por esa pantalla. Un filtro de listado es una
+   * sugerencia; esto es el contrato.
+   *
+   * Va aquí, con el resto de comprobaciones que preceden a cualquier escritura,
+   * y solo cuesta una consulta cuando la venta es de un socio.
+   */
+  if (input.partner_id) {
+    const autorizaciones = await tenantQuery<Record<string, unknown>>(companyId, "partner_product", {
+      _filter: { partner: input.partner_id, status: "active" }, _limit: 1000,
+    });
+    const fuera = noAutorizados(
+      (input.items ?? []).map((i) => i.product_id),
+      autorizadosDe(autorizaciones as AutorizacionSocio[])
+    );
+    if (fuera.length > 0) {
+      // Con los nombres: un 403 con uuids dentro obliga a quien integra a
+      // cruzarlos a mano contra su catálogo para entender qué le niegan.
+      const nombres = new Map<string, string>();
+      const fichas = await tenantQuery<{ _id?: string; name?: string }>(companyId, "product", {
+        _filter: { _id: { in: fuera } }, _limit: 50,
+      });
+      for (const f of fichas) if (f._id && f.name) nombres.set(f._id, f.name);
+      throw Object.assign(new Error(mensajeNoAutorizado(fuera, nombres)), { status: 403 });
+    }
+  }
 
   /**
    * Y el vendedor tiene que ser de quien vende.
@@ -1275,7 +1308,19 @@ export async function generateCommissionsForBooking(
   const baseAmount = round2((booking.gross_amount ?? 0) - (booking.discount_amount ?? 0));
 
   const beneficiaries: BeneficiaryDescriptor[] = [];
-  if (partnerRow) {
+  /**
+   * EL SOCIO A NETO NO DEVENGA COMISIÓN.
+   *
+   * Antes bastaba con que la reserva tuviera socio. Un tour center que COMPRA a
+   * precio neto ya lleva su margen dentro del precio que pagó: liquidarle
+   * además una comisión es pagárselo dos veces. Y no se ve el día de la venta
+   * —las dos cifras son correctas por separado— sino un mes después, cuando
+   * alguien compara la liquidación con el contrato.
+   *
+   * `devengaComision` entiende el hueco como «a comisión», que es lo que hacía
+   * el sistema antes de que la columna existiera.
+   */
+  if (partnerRow && devengaComision(partnerRow as { pricing_model?: string | null })) {
     beneficiaries.push({
       type: "partner",
       name: partnerRow.commercial_name || partnerRow.name || "Partner",

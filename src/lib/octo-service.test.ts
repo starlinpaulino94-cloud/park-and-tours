@@ -66,6 +66,17 @@ function catalogo() {
   return fakeDb({
     organizations: [{ _id: ORG, name: "Operadora", currency: "usd" }],
     partner: [{ _id: "soc-1", organization_id: ORG, name: "Caribe OTA", credit_limit: 0, credit_days: 0 }],
+    /**
+     * El contrato del revendedor (0077).
+     *
+     * La reserva de OTA pasa por el mismo servicio de venta que el mostrador, y
+     * desde esta entrega la venta de un socio exige producto autorizado. Es
+     * justo donde más falta hace: una OTA reserva por API sin pasar por
+     * ninguna pantalla, así que el filtro del catálogo no la toca.
+     */
+    partner_product: [
+      { _id: "aut-1", organization_id: ORG, partner: "soc-1", product: "prod-saona", status: "active" },
+    ],
     product: [{
       _id: "prod-saona", organization_id: ORG, name: "Isla Saona", product_type: "tour",
       base_price: 100, base_cost: 40, status: "active", published: true, sort_order: 1,

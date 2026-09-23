@@ -80,9 +80,28 @@ export const RESOURCES: Record<string, ResourceDef> = {
       "name", "commercial_name", "partner_type", "tax_id", "contact_name", "email", "phone", "whatsapp",
       "address", "city", "country", "credit_limit", "credit_days", "currency", "default_commission_pct",
       "logo_url", "status", "contract_from", "contract_to", "commercial_terms", "notes", "parent_partner",
+      // Cómo gana este socio (0078). Lo declara la operadora al pactar, y es
+      // lo que decide si además de su precio se le liquida comisión.
+      "pricing_model",
     ],
     numeric: ["credit_limit", "credit_days", "default_commission_pct"],
     dates: ["contract_from", "contract_to"],
+    writeRole: "manager",
+  },
+  /**
+   * EL CONTRATO SOCIO–PRODUCTO (0077).
+   *
+   * Lo escribe la operadora desde la ficha del socio. No está en el ámbito del
+   * socio —ni propia ni compartida—, así que él no lo lee por el CRUD genérico:
+   * lo ve resuelto en su catálogo, que es donde le sirve. La lista de
+   * autorizaciones de los demás tour centers es el mapa de qué vende cada uno.
+   */
+  partner_product: {
+    table: "partner_product",
+    search: [],
+    expand: { partner: true, product: true },
+    sort: { createdAt: "desc" },
+    writable: ["partner", "product", "status"],
     writeRole: "manager",
   },
   seller: {
