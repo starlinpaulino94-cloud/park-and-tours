@@ -38,8 +38,14 @@ export default function SellersPage() {
         { key: "supervisor", header: "Supervisor", hideOn: "lg",
           render: (s: any) => (typeof s.supervisor === "object" && s.supervisor
             ? [s.supervisor.first_name, s.supervisor.last_name].filter(Boolean).join(" ") : "—") },
-        { key: "commission", header: "Comisión", align: "right", hideOn: "sm", render: (s: any) => formatPercent(s.commission_pct ?? 0) },
-        { key: "goal", header: "Meta mensual", align: "right", hideOn: "md", render: (s: any) => formatMoney(s.monthly_goal ?? 0, s.currency || "usd") },
+        // «—» y no «0» cuando el campo no viene: el recorte de columnas
+        // (`field-projection.ts`) esconde las condiciones de los compañeros a
+        // quien no tiene rango, y una comisión del 0 % es una afirmación falsa
+        // sobre el contrato de esa persona, no una ausencia.
+        { key: "commission", header: "Comisión", align: "right", hideOn: "sm",
+          render: (s: any) => (s.commission_pct == null ? "—" : formatPercent(s.commission_pct)) },
+        { key: "goal", header: "Meta mensual", align: "right", hideOn: "md",
+          render: (s: any) => (s.monthly_goal == null ? "—" : formatMoney(s.monthly_goal, s.currency || "usd")) },
         {
           // Sin cuenta vinculada, esta persona entra al sistema y no ve NINGUNA
           // de sus ventas: el sistema no sabe cuáles son suyas. Se enseña en el

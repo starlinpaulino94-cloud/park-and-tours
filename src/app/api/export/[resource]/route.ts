@@ -4,6 +4,7 @@ import { getResource, readRoleFor } from "@/lib/resources";
 import { fail } from "@/lib/api-response";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { buildListFilter, buildListSort } from "@/lib/erp-query";
+import { projectRows } from "@/lib/field-projection";
 import { buildExport, exportFilename } from "@/lib/export";
 import { writeAudit } from "@/lib/audit";
 
@@ -71,7 +72,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
       }
     }
 
-    const { csv } = buildExport(resource, rows);
+    /**
+     * El recorte de columnas, también aquí.
+     *
+     * El exportador no sabe recortar por su cuenta: sin esta línea, el archivo
+     * se llevaría el coste de cada excursión y la comisión de cada compañero
+     * mientras la pantalla los esconde. Y nadie lo revisaría, porque «lo
+     * exportó el sistema».
+     */
+    const { csv } = buildExport(resource, projectRows(def.table, ctx, rows));
     const filename = exportFilename(resource);
 
     // Queda en la bitácora: sacar la cartera de clientes en un archivo es

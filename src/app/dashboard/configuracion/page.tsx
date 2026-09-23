@@ -743,7 +743,10 @@ function Modalities() {
           render: (m: any) => MODALITY_TYPE[m.modality_type || ""]?.label || m.modality_type || "—" },
         { key: "ages", header: "Edades", hideOn: "lg",
           render: (m: any) => (m.age_from != null || m.age_to != null ? `${m.age_from ?? 0}–${m.age_to ?? "+"}` : "—") },
-        { key: "cost", header: "Coste", align: "right", hideOn: "lg", render: (m: any) => formatMoney(m.cost ?? 0, m.currency) },
+        // «—» y no «0»: el recorte de columnas esconde el coste a quien no
+        // tiene rango, y un coste en cero afirma que la modalidad sale gratis.
+        { key: "cost", header: "Coste", align: "right", hideOn: "lg",
+          render: (m: any) => (m.cost == null ? "—" : formatMoney(m.cost, m.currency)) },
         { key: "price", header: "Precio", align: "right",
           render: (m: any) => <span className="font-semibold">{formatMoney(m.price ?? 0, m.currency)}</span> },
         { key: "weight", header: "Peso cupo", align: "right", hideOn: "sm", render: (m: any) => m.capacity_weight ?? 1 },

@@ -9,6 +9,7 @@ import { writeAudit } from "@/lib/audit";
 import { notificationForCreate } from "@/lib/notify";
 import { notify } from "@/lib/notify-service";
 import { buildListFilter, buildListSort } from "@/lib/erp-query";
+import { projectRows } from "@/lib/field-projection";
 import { branchStampFor } from "@/lib/branch-scope";
 import { sellerStampFor } from "@/lib/seller-scope";
 import { protectedFieldChanges, protectedFieldMessage } from "@/lib/field-write-role";
@@ -62,7 +63,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
       if (process.env.NODE_ENV !== "production" && elapsed > 800) {
         console.warn(`[api/erp] ${resourceName} sin total tardó ${elapsed}ms`);
       }
-      return ok(pageRows, { total: offset + pageRows.length + (hasMore ? 1 : 0) });
+    /**
+     * Y antes de salir, el recorte de columnas (`field-projection.ts`).
+     *
+     * Va en los TRES sitios que sirven filas —listado, detalle y exportación—
+     * y no en uno: el exportador no sabe recortar por su cuenta, y un archivo
+     * con el coste de cada excursión mientras la pantalla no lo enseña es el
+     * fallo que nadie revisa porque «lo exportó el sistema».
+     */
+      return ok(projectRows(def.table, ctx, pageRows), { total: offset + pageRows.length + (hasMore ? 1 : 0) });
     }
 
     const [rows, total] = await Promise.all([
@@ -80,7 +89,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
     if (process.env.NODE_ENV !== "production" && elapsed > 800) {
       console.warn(`[api/erp] ${resourceName} con total tardó ${elapsed}ms`);
     }
-    return ok(rows, { total });
+    return ok(projectRows(def.table, ctx, rows), { total });
   } catch (err) {
     const elapsed = Date.now() - started;
     if (process.env.NODE_ENV !== "production" && elapsed > 800) {

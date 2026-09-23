@@ -1415,3 +1415,56 @@ daba error: los tres producían números equivocados en silencio.
   una línea después, con el nombre de la función a la vista de quien revisa—.
   Es el segundo caso idéntico en dos olas; la guarda ahora exige que el
   resultado se ACTÚE, no solo que la función se llame.
+
+### Fase 1.2 y 1.3 — el inventario de rutas, y recortar columnas sin negar tablas
+- **El inventario, convertido en guarda.** `/api/orders` y `/api/quotes` se
+  cerraron a mano porque no pasan por `buildListFilter`. «A mano» no se
+  sostiene: la siguiente ruta que consulte una tabla con dimensión de vendedor
+  nacería sin ámbito y nadie lo notaría, porque **un filtro que falta no da
+  error — devuelve la empresa entera**. `seller-scope-rutas.test.ts` recorre
+  TODAS las rutas de la API y exige que cada una que toque esas tablas esté en
+  uno de tres casos: pide rango por encima de vendedor, aplica el ámbito, o
+  está en una lista de excepciones **con su motivo escrito**.
+- **Resultado del barrido: una sola ruta abierta de verdad.** `/api/payments`,
+  y se deja abierta a propósito —cobrar es operativo: el cliente llega al
+  mostrador a pagar una venta que pudo hacer cualquiera del equipo, y exigir que
+  sea del vendedor que atiende lo dejaría sin poder pagar—. Residuo consciente y
+  escrito: la respuesta devuelve la orden actualizada. Las demás (check-in,
+  cierre de salida, comisiones, liquidaciones, rentabilidad, QR) piden rango por
+  encima de vendedor; `/api/portal/summary` está acotada por socio y sin socio
+  responde 403.
+- **La excepción caduca sola**: hay una prueba que comprueba que cada ruta
+  excusada siga existiendo y siga tocando esas tablas. Una excepción que
+  sobrevive a la ruta que excusaba es una puerta abierta con permiso escrito.
+
+- **`field-projection.ts`: se PROYECTA, no se bloquea.** `READ_ROLE` decide
+  sobre la tabla entera, y con `product` eso no vale —un vendedor sin catálogo
+  no puede vender y el punto de venta se queda sin nada que enseñar—. Lo que
+  sobra no es la tabla: son columnas. Fuera `base_cost` del producto, `cost` de
+  la modalidad, y `commission_pct`, `monthly_goal` y `max_discount_pct` de los
+  compañeros —la ficha PROPIA se exceptúa, porque el apartado del vendedor
+  existe justamente para enseñarle su comisión—.
+- **El recorte baja por las expansiones.** Recortar solo la fila de arriba
+  habría sido teatro: una reserva expande su producto con el coste dentro y una
+  orden expande su vendedor con la comisión dentro. Se resuelve a qué recurso
+  apunta cada relación con el mismo mapa que usa la expansión, así que una
+  expansión nueva hereda el recorte en vez de volver a arrastrar el coste.
+- **Se BORRA la clave, no se pone a cero.** Un coste en cero no es «no puedes
+  verlo»: es «esta excursión no cuesta nada», y el margen que se dibuja a partir
+  de ahí sale del 100 %. Tres pantallas pasaron de `?? 0` a «—».
+- **Y en los TRES sitios**: listado, detalle y exportación. El exportador no
+  sabe recortar por su cuenta; un archivo con el coste de cada excursión
+  mientras la pantalla no lo enseña es el fallo que nadie revisa.
+- **`payment_schedule` sube a `manager`.** Estaba en `seller` y esa tabla no
+  tiene columna de vendedor —el suyo está en la orden, tabla unida, que la capa
+  de consulta no sabe filtrar—: cualquier vendedor leía el calendario de cobros
+  de toda la empresa.
+- **UN FALLO MÍO, CAZADO POR MI PROPIA GUARDA.** Declaré
+  `product_modality.base_cost`. Esa columna se llama `cost`: el recorte no
+  habría recortado nada, sin un solo error. Lo cazó la prueba que valida cada
+  campo declarado contra el recurso real —la misma idea que ya protege al
+  ámbito por fila—, y por eso está escrita antes que el código.
+- **Mutación:** doce en las dos olas, las doce muertas — entre ellas poner a
+  cero en vez de borrar, dejar de bajar por las expansiones, tratar toda ficha
+  como «la propia», que la exportación deje de recortar mientras la pantalla sí,
+  y volver a escribir mal el campo de la modalidad.

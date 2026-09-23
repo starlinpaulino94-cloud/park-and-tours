@@ -2424,6 +2424,53 @@ describe("el alcance por sucursal", () => {
     expect(conCargador, "ninguna ruta usa el cargador").toBeGreaterThan(5);
   });
 
+  it("el recorte de columnas se aplica en los TRES sitios que sirven filas", () => {
+    /**
+     * Listado, detalle y exportación. Dejar uno sin migrar es el fallo que
+     * nadie revisa: un archivo con el coste de cada excursión mientras la
+     * pantalla no lo enseña se acepta porque «lo exportó el sistema».
+     *
+     * Y `READ_ROLE` no sirve aquí: negar `product` dejaría al vendedor sin
+     * catálogo y rompería el punto de venta. Se proyecta, no se bloquea.
+     */
+    const listado = sinComentariosDe("src/app/api/erp/[resource]/route.ts");
+    expect(listado).toMatch(/return ok\(projectRows\(def\.table, ctx, rows\), \{ total \}\);/);
+    expect(listado).toMatch(/projectRows\(def\.table, ctx, pageRows\)/);
+
+    expect(sinComentariosDe("src/app/api/erp/[resource]/[id]/route.ts"))
+      .toMatch(/return ok\(projectRow\(def\.table, ctx, record\)\);/);
+
+    expect(sinComentariosDe("src/app/api/export/[resource]/route.ts"))
+      .toMatch(/buildExport\(resource, projectRows\(def\.table, ctx, rows\)\)/);
+  });
+
+  it("las pantallas distinguen «no puedo verlo» de «vale cero»", () => {
+    /**
+     * El recorte BORRA la clave. Con `?? 0` la pantalla convertía la ausencia
+     * en una afirmación falsa sobre el negocio —una excursión que no cuesta
+     * nada, un margen del 100 %, un compañero con 0 % de comisión— y nadie
+     * habría sabido que estaba leyendo un hueco.
+     */
+    const productos = read("src/app/dashboard/productos/page.tsx");
+    expect(productos).toMatch(/p\.base_cost == null \? "—"/);
+    expect(productos).toMatch(/if \(p\.base_cost == null\) return "—";/);
+    expect(productos).not.toMatch(/base_cost \?\? 0/);
+
+    const vendedores = read("src/app/dashboard/vendedores/page.tsx");
+    expect(vendedores).toMatch(/s\.commission_pct == null \? "—"/);
+    expect(vendedores).toMatch(/s\.monthly_goal == null \? "—"/);
+
+    expect(read("src/app/dashboard/configuracion/page.tsx")).toMatch(/m\.cost == null \? "—"/);
+  });
+
+  it("el calendario de cobros deja de estar abierto al vendedor", () => {
+    // `payment_schedule` no tiene columna de vendedor —el suyo está en la
+    // orden, tabla unida—, así que no se puede acotar: sube de rango.
+    const recursos = read("src/lib/resources.ts");
+    expect(recursos).toMatch(/payment_schedule: "manager"/);
+    expect(recursos).not.toMatch(/payment_schedule: "seller"/);
+  });
+
   it("saber QUÉ vendedor es quien llama sale de la base en cada petición", () => {
     /**
      * El vínculo vive en `seller.user_id`. Va por consulta y no en el token a

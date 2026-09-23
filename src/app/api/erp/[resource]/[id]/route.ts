@@ -15,6 +15,7 @@ import { assertPayloadAssignable } from "@/lib/hr-service";
 import { sellerCanReadRow, sellerFieldFor, isSellerScoped } from "@/lib/seller-scope";
 import { protectedFieldChanges, protectedFieldMessage, hasProtectedFields } from "@/lib/field-write-role";
 import { assertSellerUserLinkable } from "@/lib/seller-identity";
+import { projectRow } from "@/lib/field-projection";
 
 type Params = { params: Promise<{ resource: string; id: string }> };
 
@@ -71,7 +72,9 @@ export async function GET(_req: NextRequest, { params }: Params) {
     const record = await tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id, def.expandOne || def.expand || {});
     if (ctx.role === "partner") assertPartnerCanRead(def.table, ctx.partnerId, record);
     assertSellerCanRead(def.table, ctx.role, ctx.sellerId, record);
-    return ok(record);
+    // El mismo recorte que el listado y la exportación: abrir la ficha no puede
+    // enseñar lo que la lista esconde.
+    return ok(projectRow(def.table, ctx, record));
   } catch (err) {
     return fail(err);
   }

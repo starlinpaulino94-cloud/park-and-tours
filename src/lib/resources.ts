@@ -1448,7 +1448,13 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
   payment: "cashier", cash_session: "cashier", cash_movement: "cashier", cash_count: "cashier",
   // Commercial/accounting figures, costs and margins — managers and up.
   commission: "manager", settlement: "manager", receivable: "manager", payable: "manager",
-  payment_schedule: "seller", booking_cost: "manager",
+  // `payment_schedule` estaba en `seller`, y esa tabla NO tiene columna de
+  // vendedor —el suyo está en la orden, tabla unida, que la capa de consulta no
+  // sabe filtrar—. Es decir: cualquier vendedor leía el calendario de cobros de
+  // toda la empresa, con quién debe qué y cuándo. El informe de cobros
+  // (`/api/reports/collections`) sí se acota, sobre la orden ya expandida; lo
+  // que no se podía acotar era el CRUD genérico, así que sube de rango.
+  payment_schedule: "manager", booking_cost: "manager",
   commission_rule: "manager", product_cost: "manager", price_rule: "manager",
   ledger_account: "manager", ledger_entry: "manager", invoice: "manager",
   expense: "manager", tax_profile: "manager", purchase_order: "manager", purchase_order_line: "manager",
