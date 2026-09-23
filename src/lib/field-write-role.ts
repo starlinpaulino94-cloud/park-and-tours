@@ -46,6 +46,9 @@ export const FIELD_WRITE_ROLE: Record<string, Record<string, AppRole>> = {
   // La llave de identidad. `admin` y no `manager`: es la única columna del
   // sistema que traslada el dinero de una persona a otra con un solo cambio.
   seller: { user: "admin" },
+  // Reapuntar un enlace ya impreso y pegado en un mostrador traslada a otra
+  // persona todo el tráfico que ese cartel siga trayendo durante meses.
+  seller_link: { seller: "manager" },
 };
 
 /** Etiqueta legible del campo, para que el rechazo diga qué se intentó cambiar. */

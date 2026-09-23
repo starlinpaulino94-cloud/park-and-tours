@@ -2583,6 +2583,83 @@ describe("el alcance por sucursal", () => {
     expect(suyo).toMatch(/percentage: Number\(row\.percentage \?\? 0\)/);
   });
 
+  it("el slug del enlace lo genera el SERVIDOR", () => {
+    /**
+     * `seller_link_slug_key` es único EN TODO EL SISTEMA, no por empresa.
+     * Aceptarlo del navegador permite dos cosas distintas:
+     *
+     *  · OCUPAR los nombres del espacio compartido, incluidos los de otras
+     *    empresas alojadas aquí;
+     *  · IMITAR el de un compañero —`MARISOL1` frente a `MARIS0L1`— y llevarse
+     *    sus visitas. El cliente teclea lo que ve en un cartel: no comprueba
+     *    nada.
+     */
+    const recurso = sinComentariosDe("src/lib/resources.ts");
+    const bloqueLink = /seller_link: \{([\s\S]*?)\n  \},/.exec(recurso)?.[1] ?? "";
+    expect(bloqueLink, "no se encontró el recurso seller_link").not.toBe("");
+    // Solo en `writable`: buscar POR slug es legítimo —es lo que se teclea de
+    // un cartel— y prohibir la palabra en todo el bloque habría prohibido eso
+    // de paso. Lo que no puede es ESCRIBIRSE.
+    const escribibles = /writable: \[([\s\S]*?)\]/.exec(bloqueLink)?.[1] ?? "";
+    expect(escribibles, "no se encontró writable en seller_link").not.toBe("");
+    expect(escribibles, "el slug no puede escribirse desde el CRUD").not.toMatch(/"slug"/);
+
+    const ruta = sinComentariosDe("src/app/api/attribution/links/route.ts");
+    expect(ruta).toMatch(/const slug = await slugLibre\(/);
+    // El cuerpo de la petición NO decide el slug.
+    expect(ruta, "el slug viaja en el cuerpo").not.toMatch(/body\.slug/);
+    // Ni de quién es el enlace, cuando quien lo pide es un vendedor.
+    expect(ruta).toMatch(/sellerId = ctx\.sellerId;/);
+    // Y queda en la bitácora: un enlace reparte atribución, o sea dinero.
+    expect(ruta).toMatch(/action: "seller_link_created"/);
+    expect(read("src/lib/bitacora.ts")).toMatch(/seller_link_created:/);
+  });
+
+  it("el enlace y su QR se abren a su dueño, no a cualquier rango", () => {
+    /**
+     * `assertSellerOwnsRow` no sirve para ABRIR: es un ámbito, y un ámbito deja
+     * pasar a quien no es vendedor —a un gerente no hay nada que acotarle—, así
+     * que usarlo aquí habría dejado entrar también a caja y a operaciones, que
+     * no tienen ficha y para quienes «nada que acotar» significa «lo ven todo».
+     */
+    const qr = sinComentariosDe("src/app/api/attribution/links/[id]/qr/route.ts");
+    expect(qr).toMatch(/assertGerenciaOVendedorDe\(ctx, refId\(link\.seller\)/);
+    expect(qr, "el QR sigue decidiendo por rango").not.toMatch(/requireAtLeast\(ctx, "manager"\)/);
+
+    // Y el embudo se fuerza al vendedor del contexto, ignorando la consulta.
+    const embudo = sinComentariosDe("src/app/api/attribution/route.ts");
+    const rama = embudo.slice(embudo.indexOf('if (ctx.role === "seller")'), embudo.indexOf("} else {"));
+    expect(rama).toMatch(/sellerId = ctx\.sellerId \?\? NADIE/);
+    expect(rama, "la rama del vendedor lee la consulta").not.toMatch(/searchParams/);
+  });
+
+  it("el techo de descuento se aplica en el SERVIDOR, y en los dos sitios", () => {
+    /**
+     * `seller.max_discount_pct` existía desde 0005, la pantalla lo pedía
+     * («Descuento máximo autorizado»), se guardaba — y no se aplicaba en ningún
+     * cálculo. La operadora creía haber acotado lo que sus vendedores regalan y
+     * el sistema aceptaba un 90 % igual que un 5 %.
+     *
+     * Va en los dos sitios a propósito: lo definitivo lo decide la creación de
+     * la orden, que es donde se cobra, pero el punto de venta cotiza mientras
+     * el cajero teclea, y enseñar un total con un 40 % para rechazarlo al
+     * confirmar es discutir con el cliente delante por un precio que el sistema
+     * ya le había enseñado.
+     */
+    for (const rel of ["src/lib/booking-service.ts", "src/app/api/pricing/quote/route.ts"]) {
+      const src = sinComentariosDe(rel);
+      expect(src, rel).toMatch(/excesoDeDescuento\(/);
+      // Y el veredicto se ACTÚA, no se calcula y se tira.
+      expect(src, `${rel} calcula el exceso y no lo aplica`)
+        .toMatch(/if \(exceso\) throw Object\.assign\(new Error\(mensajeExceso\(exceso\)\)/);
+    }
+
+    // La pantalla puede pintarlo en rojo; lo que impide el descuento es el
+    // servidor. Nunca al revés.
+    const regla = sinComentariosDe("src/lib/techo-descuento.ts");
+    expect(regla, "sin techo declarado no puede haber techo").toMatch(/techo == null/);
+  });
+
   it("el recorte de columnas se aplica en los TRES sitios que sirven filas", () => {
     /**
      * Listado, detalle y exportación. Dejar uno sin migrar es el fallo que

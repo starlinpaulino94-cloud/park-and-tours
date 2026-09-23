@@ -1,5 +1,5 @@
 import "server-only";
-import { tenantQuery, TenantError } from "@/lib/tenant";
+import { tenantQuery, atLeast, TenantError, type TenantContext } from "@/lib/tenant";
 import { supabaseService } from "@/lib/supabase/service";
 import { refId } from "@/lib/types";
 
@@ -108,5 +108,37 @@ export async function usuarioDeVendedor(
     return refId(filas[0]?.user) ?? null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * GERENCIA, O EL VENDEDOR DE ESTA FILA. NADIE MÁS.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ NO VALE `assertSellerOwnsRow` A SECAS
+ *
+ * Aquel deja pasar a todo el que no tenga rango de vendedor —es un ÁMBITO, y
+ * un ámbito no acota a quien no está dentro—. Sirve para acotar lo que ve un
+ * vendedor; no sirve para ABRIR algo que hasta ahora pedía gerencia, porque
+ * entonces entrarían también caja y operaciones, que no tienen ficha y para
+ * quienes «no hay nada que acotar» significaría «lo ve todo».
+ *
+ * Aquí la pregunta es la contraria: esto era de gerencia y se le abre a UNA
+ * persona más, la dueña de la fila. El enlace de venta y su embudo son de quien
+ * los reparte, y el QR de un compañero dice cuánta gente trae — que es
+ * exactamente lo que no tiene por qué saber.
+ */
+export function assertGerenciaOVendedorDe(
+  ctx: Pick<TenantContext, "role"> & { sellerId?: string | null },
+  rowSellerId: string | null | undefined,
+  etiqueta = "Este registro"
+): void {
+  if (atLeast(ctx.role, "manager")) return;
+  if (ctx.role !== "seller") {
+    throw new TenantError("No tienes permisos para ver esto", 403);
+  }
+  // Sin ficha vinculada no es de nadie, y desde luego no es suyo.
+  if (!ctx.sellerId || rowSellerId !== ctx.sellerId) {
+    throw new TenantError(`${etiqueta} es de otro vendedor`, 403);
   }
 }

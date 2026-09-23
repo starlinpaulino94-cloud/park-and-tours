@@ -156,7 +156,20 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["slug", "name", "campaign"],
     expand: { seller: true, product: true },
     sort: { created_at: "desc" },
-    writable: ["seller", "slug", "name", "channel", "product", "campaign", "status"],
+    /**
+     * `slug` NO es escribible, y esa es la decisión de 0071.
+     *
+     * Es único EN TODO EL SISTEMA —el índice es global, no por empresa—, así
+     * que aceptarlo del navegador permitiría dos cosas: ocupar los nombres
+     * bonitos del espacio compartido, y sobre todo IMITAR el de un compañero
+     * (`MARISOL1` frente a `MARIS0L1`) para llevarse sus visitas. El cliente
+     * teclea lo que ve en un cartel; no comprueba nada.
+     *
+     * Lo genera el servidor en `POST /api/attribution/links`. `seller` tampoco
+     * se puede reapuntar: cambiarlo es trasladar la atribución —el dinero— de
+     * una persona a otra, y eso lo gobierna `field-write-role.ts`.
+     */
+    writable: ["seller", "name", "channel", "product", "campaign", "status"],
     writeRole: "manager",
   },
   /**

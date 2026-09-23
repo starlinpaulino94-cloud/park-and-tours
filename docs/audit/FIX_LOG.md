@@ -1655,3 +1655,62 @@ daba error: los tres producían números equivocados en silencio.
   `booking_cost`, y la comprobación leía el fichero entero.
 - **Mutación:** veintiuna a lo largo de la fase, las veintiuna muertas tras
   reescribir cuatro guardas.
+
+### Fase 3 (parte) — el enlace es suyo, y el techo de descuento existe de verdad
+- **El embudo y el QR se abren a su dueño.** Todo el motor de atribución estaba
+  escrito y funcionando —`/e/[slug]`, cookies, `seller_link`, `funnelReport`— y
+  lo único que lo cerraba era una guarda de rango. Un cartel que no se puede
+  descargar no se pega en ningún mostrador.
+- **Y `assertSellerOwnsRow` NO servía para abrirlo.** Aquel es un ÁMBITO, y un
+  ámbito deja pasar a quien no es vendedor —a un gerente no hay nada que
+  acotarle—: usarlo aquí habría dejado entrar también a caja y a operaciones,
+  que no tienen ficha y para quienes «nada que acotar» significa «lo ven todo».
+  Hace falta la pregunta contraria (`assertGerenciaOVendedorDe`): esto era de
+  gerencia y se le abre a UNA persona más, la dueña de la fila.
+- **El embudo del vendedor ignora `?seller=`**, igual que las metas: aceptarlo y
+  comprobar después deja un fallo de comparación entre él y el embudo de un
+  compañero, que dice cuánta gente trae.
+- **0071 — el slug lo genera el servidor.** `seller_link_slug_key` es único EN
+  TODO EL SISTEMA, no por empresa, y aceptarlo del navegador permitía dos cosas:
+  **ocupar** los nombres del espacio compartido —incluidos los de otras empresas
+  alojadas aquí— y, peor, **imitar** el de un compañero (`MARISOL1` frente a
+  `MARIS0L1`) para llevarse sus visitas. El cliente teclea lo que ve en un
+  cartel: no comprueba nada. Sale de `writable`, nace en la ruta, y si choca se
+  reintenta — el choque es normal cuando el espacio es compartido.
+- Más el techo de 25 enlaces activos por vendedor (sin tope, una cuenta fabrica
+  miles de slugs del espacio de nombres ajeno), `created_by` —quien lo creó deja
+  de coincidir con de quién es— y la creación anotada en la bitácora: un enlace
+  reparte atribución, o sea dinero, y el día que aparezcan veinte de la nada la
+  pregunta es quién los hizo.
+
+- **EL TECHO DE DESCUENTO, QUE NO EXISTÍA.** `seller.max_discount_pct` está en
+  el esquema desde 0005, la pantalla lo pide y se guarda; **no se aplicaba en
+  ningún cálculo**. La operadora configuraba un techo, creía haber acotado lo
+  que sus vendedores regalan, y el sistema aceptaba un 90 % igual que un 5 %. Es
+  de la misma familia que «el formulario pedía la sucursal y la API la tiraba»:
+  un campo que promete algo que no ocurre es peor que no ofrecerlo, porque quien
+  lo rellena deja de vigilarlo a mano.
+- **Sin techo declarado no hay techo, pero un cero declarado sí lo es.** `null`
+  es «nadie lo configuró» y no se convierte en cero: si la ausencia valiera
+  cero, activar esto le quitaría de golpe la capacidad de descontar a todas las
+  empresas que nunca rellenaron el campo —que son todas, porque el campo no
+  hacía nada—. Y «esta persona no puede descontar» tiene que poder expresarse.
+- **Es una autorización de QUIEN VENDE, no del dueño de la venta.** Un gerente
+  registrando una venta ejerce la suya; si fuera la de la ficha atribuida,
+  bastaría con atribuirle la venta a alguien sin techo para saltárselo.
+- **En los dos sitios**: la creación de la orden, que es donde se cobra, y la
+  cotización, porque el punto de venta cotiza mientras el cajero teclea y
+  enseñar un total con un 40 % para rechazarlo al confirmar es discutir con el
+  cliente delante por un precio que el sistema ya le había enseñado.
+- **Guardas ajenas que saltaron**: la etiqueta en castellano del evento nuevo,
+  el inventario de columnas de la migración, el inventario de rutas —que no
+  reconocía la guarda nueva y por eso dio por desprotegido el QR— y **una mía**,
+  que exigía que un campo protegido sea escribible: al quitar `seller` de
+  `writable` la protección quedaba decorativa. Se resolvió al revés de lo
+  esperado: gerencia SÍ debe poder reasignar un cartel impreso cuando la persona
+  se va, así que el campo vuelve a ser escribible y lo que se prohíbe es que lo
+  reapunte el vendedor.
+- **Y otra mía mal escrita**: prohibía la palabra `slug` en todo el bloque del
+  recurso, y buscar POR slug es legítimo —es lo que se teclea de un cartel—.
+  Ahora mira solo dentro de `writable`.
+- **Mutación:** once, las once muertas.

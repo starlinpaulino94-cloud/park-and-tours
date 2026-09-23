@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0021-0070 tienen que haber creado.
+ * El inventario de lo que las migraciones 0021-0071 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -478,6 +478,17 @@ export const MIGRATION_CHECKS = [
     // `supabase/editor/0069_parte_2_indice.sql`, que sí consulta `pg_indexes`
     // y devuelve una fila legible. Declararlo aquí sin comprobarlo habría
     // parecido una garantía sin serlo.
+  },
+  {
+    migration: "0071 — el enlace de venta en autoservicio",
+    // Quién lo creó deja de coincidir con de quién es en cuanto el vendedor
+    // puede crearse el suyo; y `hits` responde «no se ha abierto nunca» sin
+    // recorrer el histórico del embudo, que es lo único que su pantalla
+    // pregunta en cada carga.
+    tables: ["seller_link"],
+    columns: [
+      ["seller_link", ["created_by", "hits"]],
+    ],
   },
   {
     migration: "0070 — la comisión sabe de qué día es",

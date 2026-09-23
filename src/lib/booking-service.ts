@@ -1,6 +1,7 @@
 import "server-only";
 import { tenantCreate, tenantQuery, tenantUpdate, type TenantContext } from "@/lib/tenant";
 import { ventaSelladaPorVendedor } from "@/lib/seller-scope";
+import { excesoDeDescuento, mensajeExceso } from "@/lib/techo-descuento";
 import { resolvePrice, resolveCost, billablePax } from "@/lib/pricing";
 import { assertCapacity, recalculateDeparture, OversellError } from "@/lib/availability";
 import { resolveExchangeRate } from "@/lib/currency";
@@ -373,6 +374,32 @@ export async function createOrderWithBookings(
    * la pregunta la responde `ventaSelladaPorVendedor` y no el rol a secas.
    */
   const selladaPorPersona = ventaSelladaPorVendedor(ctx);
+
+  /**
+   * EL TECHO DE DESCUENTO DE QUIEN VENDE, APLICADO DE VERDAD.
+   *
+   * `seller.max_discount_pct` existía desde 0005, la pantalla lo pedía y no se
+   * aplicaba en ningún cálculo: la operadora creía haber acotado lo que sus
+   * vendedores regalan y el sistema aceptaba un 90 % igual que un 5 %.
+   *
+   * Va AQUÍ y no en la pantalla porque una validación que solo vive en el
+   * navegador no es un techo: es una sugerencia que se salta cualquiera que
+   * llame a la API. Y va antes de calcular precios, para no cobrar nada y tener
+   * que deshacerlo.
+   *
+   * Solo pesa sobre quien vende con rango de vendedor. Un gerente registrando
+   * una venta ejerce SU autorización, no la de la ficha a la que se atribuye.
+   */
+  if (selladaPorPersona && ctx.sellerId) {
+    const [fichaPropia] = await tenantQuery<{ max_discount_pct?: number | null }>(
+      companyId, "seller", { _filter: { _id: ctx.sellerId }, _limit: 1 }
+    );
+    const exceso = excesoDeDescuento(
+      (input.items ?? []).map((i) => ({ product_id: i.product_id, discount_pct: i.discount_pct })),
+      fichaPropia?.max_discount_pct
+    );
+    if (exceso) throw Object.assign(new Error(mensajeExceso(exceso)), { status: 403 });
+  }
 
   let attributedSeller = selladaPorPersona ? ctx.sellerId ?? null : input.seller_id || null;
   let attributionId: string | null = null;

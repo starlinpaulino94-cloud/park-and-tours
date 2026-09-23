@@ -591,6 +591,54 @@ describe("las comisiones que genera la venta", () => {
     expect(c.status).toBe("pending");
   });
 
+  it("un vendedor no puede descontar más de lo que tiene autorizado", async () => {
+    /**
+     * El campo existía desde 0005, la pantalla lo pedía y no se aplicaba en
+     * ningún cálculo: la operadora creía haber acotado lo que sus vendedores
+     * regalan y el sistema aceptaba un 90 % igual que un 5 %.
+     *
+     * Se comprueba AQUÍ, en el único camino que crea reservas, y no en la
+     * pantalla: una validación que solo vive en el navegador no es un techo,
+     * es una sugerencia que se salta cualquiera que llame a la API.
+     */
+    db = conVendedor([], {
+      seller: [{ _id: "ven-1", first_name: "Marisol", last_name: "Peña", commission_pct: 5, max_discount_pct: 10, status: "active" }],
+    });
+    const suyo = { ...ctx, role: "seller", userId: "u-1", sellerId: "ven-1" } as typeof ctx;
+
+    await expect(createOrderWithBookings(suyo, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2, discount_pct: 40 }],
+    })).rejects.toThrow(/autorización llega al 10 %/);
+
+    // Y no queda nada a medias: se comprueba ANTES de calcular precios.
+    expect(db.rows("sales_order"), "la venta rechazada dejó rastro").toHaveLength(0);
+    expect(db.rows("booking")).toHaveLength(0);
+  });
+
+  it("hasta su techo sí puede, y un gerente no tiene techo", async () => {
+    db = conVendedor([], {
+      seller: [{ _id: "ven-1", first_name: "Marisol", last_name: "Peña", commission_pct: 5, max_discount_pct: 10, status: "active" }],
+    });
+    const suyo = { ...ctx, role: "seller", userId: "u-1", sellerId: "ven-1" } as typeof ctx;
+    await createOrderWithBookings(suyo, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2, discount_pct: 10 }],
+    });
+    expect(db.rows("sales_order")).toHaveLength(1);
+
+    /**
+     * El techo es una autorización de QUIEN VENDE. Un gerente registrando una
+     * venta ejerce la suya, no la de la ficha a la que se atribuye — si no,
+     * bastaría con atribuirle la venta a alguien sin techo para saltárselo.
+     */
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1", seller_id: "ven-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2, discount_pct: 40 }],
+    });
+    expect(db.rows("sales_order")).toHaveLength(2);
+  });
+
   it("la comisión nace sabiendo de QUÉ DÍA es, no solo de cuándo se vendió", async () => {
     /**
      * El mercado liquida por la fecha del TOUR y no por la de la venta: una

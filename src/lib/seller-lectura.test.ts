@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { assertCanReadTable, readRoleFor, sellerCanReadTable } from "@/lib/resources";
 import { isSellerScoped, esEstricta } from "@/lib/seller-scope";
+import { assertGerenciaOVendedorDe } from "@/lib/seller-identity";
 
 /**
  * LA COMPUERTA SE EVALÚA ANTES QUE EL ÁMBITO.
@@ -107,5 +108,44 @@ describe("la regla vive en un solo sitio", () => {
       expect(src, rel).toContain("assertCanReadTable(ctx, def.table)");
       expect(src, `${rel} reimplementa la compuerta`).not.toMatch(/readRoleFor\(/);
     }
+  });
+});
+
+describe("abrir a su dueño algo que era de gerencia", () => {
+  /**
+   * `assertSellerOwnsRow` no sirve para esto y la diferencia importa: aquel es
+   * un ÁMBITO —deja pasar a quien no es vendedor, porque a un gerente no hay
+   * nada que acotarle—, así que usarlo para ABRIR el enlace y el embudo habría
+   * dejado entrar también a caja y a operaciones, que no tienen ficha y para
+   * quienes «no hay nada que acotar» significa «lo ven todo».
+   */
+  it("gerencia y arriba, sí", () => {
+    for (const role of ["manager", "admin", "owner", "superadmin"] as const) {
+      expect(() => assertGerenciaOVendedorDe({ role, sellerId: null }, "v1"), role).not.toThrow();
+    }
+  });
+
+  it("el vendedor, solo lo suyo", () => {
+    expect(() => assertGerenciaOVendedorDe({ role: "seller", sellerId: "v1" }, "v1")).not.toThrow();
+    expect(() => assertGerenciaOVendedorDe({ role: "seller", sellerId: "v1" }, "v2")).toThrow();
+  });
+
+  it("sin ficha vinculada, nada — ni siquiera lo que no tiene dueño", () => {
+    // Si `null === null` casara, cualquier cuenta sin vincular abriría todos
+    // los enlaces sin vendedor asignado.
+    expect(() => assertGerenciaOVendedorDe({ role: "seller", sellerId: null }, null)).toThrow();
+  });
+
+  it("caja y operaciones, NO", () => {
+    // Están por encima del vendedor y por debajo de gerencia, y no tienen
+    // ficha: con un ámbito a secas habrían pasado de largo.
+    for (const role of ["cashier", "operations"] as const) {
+      expect(() => assertGerenciaOVendedorDe({ role, sellerId: null }, "v1"), role).toThrow();
+      expect(() => assertGerenciaOVendedorDe({ role, sellerId: null }, null), role).toThrow();
+    }
+  });
+
+  it("el socio del portal tampoco", () => {
+    expect(() => assertGerenciaOVendedorDe({ role: "partner", sellerId: null }, "v1")).toThrow();
   });
 });

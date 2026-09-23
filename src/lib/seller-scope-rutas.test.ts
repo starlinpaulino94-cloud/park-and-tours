@@ -73,7 +73,8 @@ const CONSULTA = new RegExp(
   `(tenantQuery|tenantCount|tenantFindOne)\\s*(<[^>]*>)?\\s*\\(\\s*[A-Za-z_.]+\\s*,\\s*"(${TABLAS.join("|")})"`,
   "g"
 );
-const APLICA_AMBITO = /sellerFilterFor|assertSellerOwnsRow|sellerCanReadRow|ventaSelladaPorVendedor/;
+const APLICA_AMBITO =
+  /sellerFilterFor|assertSellerOwnsRow|sellerCanReadRow|ventaSelladaPorVendedor|assertGerenciaOVendedorDe/;
 
 function rangoMinimo(src: string): number {
   const encontrados = [...src.matchAll(/requireAtLeast\([A-Za-z_.]+, "([a-z]+)"\)/g)]
