@@ -411,6 +411,11 @@ export const RESOURCES: Record<string, ResourceDef> = {
     // again. Commission state changes only through `/api/commissions/bulk` and
     // `/api/settlements/generate`.
     writable: ["notes"],
+    // `service_date` es de solo lectura —la escribe el devengo— pero SÍ se
+    // declara como fecha: es por donde la pantalla del vendedor corta períodos,
+    // y un campo no declarado no es filtrable.
+    dates: ["service_date", "generated_at"],
+    numeric: ["base_amount", "percentage", "amount"],
     writeRole: "manager",
     module: "commissions",
   },

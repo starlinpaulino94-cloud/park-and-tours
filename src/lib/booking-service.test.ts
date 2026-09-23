@@ -591,6 +591,32 @@ describe("las comisiones que genera la venta", () => {
     expect(c.status).toBe("pending");
   });
 
+  it("la comisión nace sabiendo de QUÉ DÍA es, no solo de cuándo se vendió", async () => {
+    /**
+     * El mercado liquida por la fecha del TOUR y no por la de la venta: una
+     * excursión vendida en marzo para agosto no se cobra en marzo.
+     *
+     * La fecha de salida vive dos tablas más allá (`booking` → `departure`) y
+     * la capa de consulta NO filtra por columna de tabla unida, así que sin
+     * copiarla aquí no hay forma de cortar períodos por el día del servicio.
+     *
+     * Y el fallo de no copiarla es silencioso de la peor manera: la columna
+     * existe, el relleno de la migración arregla el histórico, y a partir de
+     * ahí **cada comisión nueva nace en nulo**. La pantalla del vendedor
+     * enseñaría lo viejo y perdería lo de esta semana, sin un solo error.
+     */
+    db = conVendedor();
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1", seller_id: "ven-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    });
+
+    const c = db.rows("commission")[0];
+    const salida = db.rows("departure").find((d) => d._id === "sal-saona")!;
+    expect(c.service_date, "la comisión no sabe de qué día es").toBeTruthy();
+    expect(String(c.service_date).slice(0, 10)).toBe(String(salida.departure_at).slice(0, 10));
+  });
+
   it("una regla concreta gana al porcentaje suelto de la ficha del vendedor", async () => {
     db = conVendedor([{
       _id: "regla-saona", name: "Saona 12%", beneficiary_type: "seller",

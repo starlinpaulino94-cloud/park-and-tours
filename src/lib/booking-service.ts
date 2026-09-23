@@ -1292,6 +1292,18 @@ export async function generateCommissionsForBooking(
       amount: c.amount,
       currency: c.currency,
       status: "pending",
+      /**
+       * La fecha del SERVICIO, copiada aquí y no leída de la reserva (0070).
+       *
+       * El mercado liquida por fecha de tour y no por la de venta —una
+       * excursión vendida en marzo para agosto no se cobra en marzo—, y la
+       * capa de consulta no sabe filtrar por columna de una tabla unida.
+       *
+       * Se copia UNA vez: si la reserva se reprograma después, esta fecha no
+       * se mueve. Cambiarla movería el período de liquidación de un dinero ya
+       * devengado, que quizá ya se pagó.
+       */
+      service_date: meta.travelDate ?? undefined,
       generated_at: new Date().toISOString(),
       snapshot: JSON.stringify(c.snapshot),
       // 0059 — la frase que se imprime en la liquidación, y los pasajeros
