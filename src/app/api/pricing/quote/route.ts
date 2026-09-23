@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenantWrite, tenantQuery } from "@/lib/tenant";
+import { requireTenantWrite, tenantQuery, esDeSocio } from "@/lib/tenant";
 import { ventaSelladaPorVendedor } from "@/lib/seller-scope";
 import { excesoDeDescuento, mensajeExceso } from "@/lib/techo-descuento";
 import { ok, fail, readJson } from "@/lib/api-response";
@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Portal users are always priced with their own partner's B2B rules.
-    const partnerId = ctx.role === "partner" && ctx.partnerId ? ctx.partnerId : body.partner_id || null;
+    const partnerId = esDeSocio(ctx) && ctx.partnerId ? ctx.partnerId : body.partner_id || null;
 
     const lines = await Promise.all(
       items.map(async (item) => {

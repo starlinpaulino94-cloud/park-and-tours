@@ -1,7 +1,7 @@
 import type { ModuleKey } from "@/lib/types";
 import "server-only";
 import type { AppRole } from "@/lib/auth";
-import { TenantError, atLeast } from "@/lib/tenant";
+import { TenantError, atLeast, esDeSocio } from "@/lib/tenant";
 
 /**
  * Registry of tables exposed through the generic REST layer
@@ -1547,7 +1547,7 @@ export function assertCanReadTable(
   table: string
 ): void {
   // El ámbito del socio lo aplica `buildListFilter`; su rango fallaría aquí.
-  if (ctx.role === "partner") return;
+  if (esDeSocio(ctx)) return;
   // Y el del vendedor sobre lo suyo, acotado fila a fila por `seller-scope.ts`.
   if (ctx.role === "seller" && sellerCanReadTable(table)) return;
 

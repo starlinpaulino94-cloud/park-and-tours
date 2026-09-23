@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { getTenantContext, tenantQuery } from "@/lib/tenant";
+import { getTenantContext, tenantQuery, esDeSocio } from "@/lib/tenant";
 import { SideShell } from "@/components/tf/side-shell";
 import { PORTAL_NAV } from "@/lib/nav";
 import { PortalProvider } from "./portal-context";
@@ -21,7 +21,7 @@ export default async function PortalLayout({ children }: { children: React.React
     if (partner) partnerName = partner.commercial_name || partner.name || partnerName;
   }
 
-  const isStaff = ctx.role !== "partner";
+  const isStaff = !esDeSocio(ctx);
 
   return (
     <SideShell

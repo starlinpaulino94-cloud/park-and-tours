@@ -5,7 +5,7 @@ import { decidableFilter } from "@/lib/approvals";
 import { branchFilterFor } from "@/lib/branch-scope";
 import { sellerFilterFor } from "@/lib/seller-scope";
 import { searchFilterFor } from "@/lib/search";
-import { TenantError, type TenantContext } from "@/lib/tenant";
+import { TenantError, type TenantContext, esDeSocio } from "@/lib/tenant";
 import { limitesConsulta, normalizarPeriodo } from "@/lib/report";
 import { companyTimeZone } from "@/lib/time";
 
@@ -98,7 +98,7 @@ export function buildListFilter(
 
   // Un usuario del portal B2B solo ve lo de su partner. Denegar por defecto:
   // una tabla que no sea suya ni compartida es 403.
-  if (ctx.role === "partner") {
+  if (esDeSocio(ctx)) {
     const scope = partnerScopeFor(def.table, ctx.partnerId);
     if (scope.kind === "denied") {
       throw new TenantError("No tienes acceso a este recurso", 403);

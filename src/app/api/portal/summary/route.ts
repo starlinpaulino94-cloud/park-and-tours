@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, tenantQuery, requireAtLeast, TenantError } from "@/lib/tenant";
+import { requireTenant, tenantQuery, requireAtLeast, TenantError, esDeSocio } from "@/lib/tenant";
 import { ok, fail, resolvePeriod } from "@/lib/api-response";
 import type { Booking, Commission, Partner, Receivable, Settlement } from "@/lib/types";
 import { refId, isTerminalBookingStatus } from "@/lib/types";
@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
     // another partner's portal, but only from manager up — previously any seller
     // could pass an arbitrary `partner_id` and read that partner's financials.
     let partnerId: string | null;
-    if (ctx.role === "partner") {
+    if (esDeSocio(ctx)) {
       partnerId = ctx.partnerId;
     } else {
       const requested = sp.get("partner_id");

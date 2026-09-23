@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireTenantWrite, requireAtLeast, tenantFindOne, tenantQuery, tenantUpdate } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, requireAtLeast, tenantFindOne, tenantQuery, tenantUpdate, esDeSocio } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { ensureSchedule, setSchedule, refreshAllocation } from "@/lib/schedule-service";
 import { buildSchedule, dayOf, collectionStatus, type PlannedInstallment } from "@/lib/collections";
@@ -17,7 +17,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
     const order = await tenantFindOne<Order>(ctx.companyId, "order", id, { customer: true, partner: true });
     // Un socio solo ve lo suyo: el calendario dice cuánto debe alguien.
-    if (ctx.role === "partner") {
+    if (esDeSocio(ctx)) {
       const partnerId = typeof order.partner === "object" ? order.partner?._id : order.partner;
       if (!ctx.partnerId || partnerId !== ctx.partnerId) {
         throw Object.assign(new Error("No tienes acceso a esta venta"), { status: 403 });

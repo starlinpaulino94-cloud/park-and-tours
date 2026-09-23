@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireTenantWrite, tenantQuery, tenantCreate, tenantCount, requireAtLeast, TenantError } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, tenantQuery, tenantCreate, tenantCount, requireAtLeast, TenantError, esDeSocio } from "@/lib/tenant";
 import { getResource, sanitizePayload, assertCanReadTable } from "@/lib/resources";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -109,7 +109,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ res
     const ctx = await requireTenantWrite();
     await assertRateLimit({ key: rateLimitKey(req, `erp:create:${def.table}`, ctx.userId), limit: 60, windowMs: 60_000 });
     // AUD-004: partners are read-only in the generic ERP.
-    if (ctx.role === "partner") throw new TenantError("No tienes permisos para crear este recurso", 403);
+    if (esDeSocio(ctx)) throw new TenantError("No tienes permisos para crear este recurso", 403);
     if (def.writeRole) requireAtLeast(ctx, def.writeRole);
     // El plan, después del rol y antes de escribir: el módulo acota lo que se
     // puede CREAR (leer lo ya registrado nunca se bloquea), y el catálogo tiene

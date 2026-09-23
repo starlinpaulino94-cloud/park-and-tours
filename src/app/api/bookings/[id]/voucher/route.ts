@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, tenantFindOne, tenantQuery, TenantError } from "@/lib/tenant";
+import { requireTenant, tenantFindOne, tenantQuery, TenantError, esDeSocio } from "@/lib/tenant";
 import { fail } from "@/lib/api-response";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { buildVoucherPdf } from "@/lib/pdf/documents";
@@ -50,7 +50,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     });
 
     // Un partner solo emite el voucher de lo que él vendió.
-    if (ctx.role === "partner" && refId(booking.partner) !== ctx.partnerId) {
+    if (esDeSocio(ctx) && refId(booking.partner) !== ctx.partnerId) {
       throw new TenantError("Esa reserva no es de tu cartera", 403);
     }
 

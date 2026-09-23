@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireAtLeast, requireTenantWrite, tenantFindOne } from "@/lib/tenant";
+import { requireAtLeast, requireTenantWrite, tenantFindOne, esDeSocio } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import {
   BUCKETS, type BucketKey, assertUploadable, objectPath, partnerObjectPath,
@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
     await assertWithinLimit(ctx, "max_storage_mb", Math.max(1, Math.ceil(file.size / (1024 * 1024))));
 
     // Partner-role users write only under their own partner folder.
-    const path = ctx.role === "partner" && ctx.partnerId
+    const path = esDeSocio(ctx) && ctx.partnerId
       ? partnerObjectPath(ctx.companyId, ctx.partnerId, entity, file.name)
       : objectPath(ctx.companyId, entity, id, file.name);
 

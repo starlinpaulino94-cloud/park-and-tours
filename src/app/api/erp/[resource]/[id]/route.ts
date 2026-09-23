@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireTenantWrite, tenantFindOne, tenantUpdate, tenantDelete, requireAtLeast, atLeast, TenantError } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, tenantFindOne, tenantUpdate, tenantDelete, requireAtLeast, atLeast, TenantError, esDeSocio } from "@/lib/tenant";
 import {
   getResource, sanitizePayload, partnerScopeFor, assertCanReadTable,
   ownershipFieldFor, OWNERSHIP_OVERRIDE_ROLE,
@@ -66,7 +66,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
     await assertRateLimit({ key: rateLimitKey(_req, `erp:read:${def.table}`, ctx.userId), limit: 240, windowMs: 60_000 });
     assertCanReadTable(ctx, def.table);
     const record = await tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id, def.expandOne || def.expand || {});
-    if (ctx.role === "partner") assertPartnerCanRead(def.table, ctx.partnerId, record);
+    if (esDeSocio(ctx)) assertPartnerCanRead(def.table, ctx.partnerId, record);
     assertSellerCanRead(def.table, ctx.role, ctx.sellerId, record);
     // El mismo recorte que el listado y la exportación: abrir la ficha no puede
     // enseñar lo que la lista esconde.
@@ -88,7 +88,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
     await assertRateLimit({ key: rateLimitKey(req, `erp:update:${def.table}`, ctx.userId), limit: 90, windowMs: 60_000 });
     // AUD-004: a partner is read-only in the generic ERP (some resources have
     // no writeRole, which would otherwise let any authenticated user write).
-    if (ctx.role === "partner") throw new TenantError("No tienes permisos para modificar este recurso", 403);
+    if (esDeSocio(ctx)) throw new TenantError("No tienes permisos para modificar este recurso", 403);
     if (def.writeRole) requireAtLeast(ctx, def.writeRole);
     if (def.module) assertModule(ctx, def.module);
 
@@ -199,7 +199,7 @@ export async function DELETE(req: NextRequest, { params }: Params) {
 
     const ctx = await requireTenantWrite();
     await assertRateLimit({ key: rateLimitKey(req, `erp:delete:${def.table}`, ctx.userId), limit: 30, windowMs: 60_000 });
-    if (ctx.role === "partner") throw new TenantError("No tienes permisos para eliminar este recurso", 403);
+    if (esDeSocio(ctx)) throw new TenantError("No tienes permisos para eliminar este recurso", 403);
     if (def.module) assertModule(ctx, def.module);
     requireAtLeast(ctx, def.writeRole === "seller" ? "manager" : def.writeRole || "manager");
 

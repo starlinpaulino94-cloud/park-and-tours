@@ -5,7 +5,7 @@ import { supabaseService } from "@/lib/supabase/service";
 import type { AppRole } from "@/lib/auth";
 import { mfaGate, hasVerifiedFactor } from "@/lib/mfa";
 import type { Company } from "@/lib/types";
-import type { TenantContext } from "@/lib/tenant";
+import { esDeSocio, type TenantContext } from "@/lib/tenant";
 
 /**
  * Supabase Auth → TenantContext (M3).
@@ -97,6 +97,15 @@ export function mapClaimsToContext(
     role,
     companyId: claims.org_id,
     partnerId: claims.partner_id || null,
+    /**
+     * Del MISMO sitio que el identificador, y por eso no pueden discrepar: los
+     * dos salen de que la organización de la membresía sea de tipo socio.
+     *
+     * Se guarda como campo propio en vez de dejar que cada sitio haga
+     * `Boolean(ctx.partnerId)` porque así la regla tiene un nombre, se puede
+     * buscar, y el día que un actor nuevo necesite lo mismo hay dónde ponerlo.
+     */
+    isPartnerMember: Boolean(claims.partner_id),
     branchId: claims.branch_id || null,
     company,
   };
@@ -318,7 +327,10 @@ export async function getSupabaseTenantContext(): Promise<TenantContext | null> 
    * le acota lo que ve, que es justo para lo que sirve impersonar (y queda
    * auditado).
    */
-  if (ctx.role !== "partner" && ctx.role !== "superadmin") {
+  // Del socio, tenga el rol que tenga: un empleado de un tour center dado de
+  // alta como `seller` no es vendedor de la operadora y buscarle ficha sería
+  // una consulta por petición para no encontrar nunca nada.
+  if (!esDeSocio(ctx) && ctx.role !== "superadmin") {
     ctx.sellerId = await loadSellerId(ctx.companyId!, user.id);
   }
 

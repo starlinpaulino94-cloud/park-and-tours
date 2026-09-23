@@ -1793,3 +1793,46 @@ daba error: los tres producían números equivocados en silencio.
   empresa» y no tendría forma de entender por qué. Se acota por `tenant_org_id`
   para que el aislamiento no dependa de esa consulta.
 - **Mutación:** seis, las seis muertas.
+
+### Fase 4.2 — el aislamiento deja de depender del nombre del rol
+- **La regla pasa a ser una sola:** identificador de socio presente ⇒ acotado,
+  diga lo que diga el rol. Vive en `esDeSocio()` (`src/lib/tenant.ts`) y
+  sustituye las **29 comparaciones** `ctx.role === "partner"` repartidas por 20
+  ficheros — rutas de venta, manifiestos, vouchers, PDF de arqueo y de estado de
+  cuenta, subida de ficheros, cotizador, portal, ERP genérico y los tres
+  `layout` del servidor.
+- **Por qué importaba:** el identificador de socio se rellena para CUALQUIER
+  rol; lo emite `auth-context` en cuanto la membresía cuelga de una organización
+  de tipo socio. Un empleado de un tour center dado de alta como `seller` o
+  `cashier` tenía socio y **ninguna de las 29 condiciones lo reconocía como de
+  fuera**: entraba al ERP interno de la operadora. Hoy era latente —el cerrojo
+  de 4.1 fuerza el rol al colgar de un socio—, pero una puerta que depende de
+  que otra siga cerrada no está cerrada.
+- **Sigue mirando el rol también, y no es redundancia por si acaso.** Varios
+  servicios FABRICAN contextos a mano —el motor público, el de revendedor, el
+  sembrador— y ninguno rellena `isPartnerMember`. Mirar las dos cosas hace que
+  la sustitución sea segura en todos ellos sin tener que encontrarlos uno a uno,
+  que es justo el barrido donde se escapa el que falta.
+- **Tres sitios se dejan comparando por nombre, con su motivo escrito:**
+  `tenant.ts` (es la definición), `portal-context.tsx` (componente de cliente;
+  `tenant.ts` es `server-only` y no se puede importar ahí) y
+  `configuracion/page.tsx` (es el rol que se **asigna** en el formulario, no el
+  de quien llama).
+- **La guarda que importa no es la lista, es el barrido.** Enumerar los veinte
+  ficheros protege lo ya arreglado; lo que reabre la puerta es un fichero NUEVO
+  que vuelva a escribir la comparación, y de ése nadie se acuerda de añadirlo a
+  ninguna lista. Así que la regla recorre todo `src`, cuenta las comparaciones
+  por fichero y las compara contra las tres perdonadas **con su recuento**: sin
+  el recuento, un fichero perdonado una vez queda perdonado para siempre y puede
+  ir acumulando comparaciones nuevas debajo de la excepción vieja.
+- **Y una prueba de conducta, no de texto** (`socio-identidad.test.ts`): las
+  guardas de contrato comprueban que los veinte puntos LLAMAN a `esDeSocio`, y
+  eso no vale nada si la función contesta mal — podría devolver `false` siempre
+  y las veinte llamadas seguirían en su sitio. Incluye el fallo simétrico: un
+  `partnerId` vacío no puede contar como socio, o el personal interno se queda
+  fuera de su propio ERP.
+- **Migración 0072**: `app.can_read_partner()` deja de mirar el rol en la base de
+  datos también, por el mismo motivo y para que las dos capas digan lo mismo.
+- **Mutación: trece, las trece muertas** — ocho contra las guardas de contrato
+  (incluida un fichero nuevo con la comparación vieja, para probar el barrido) y
+  cinco contra la prueba de conducta.

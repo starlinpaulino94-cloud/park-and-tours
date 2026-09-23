@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireTenantWrite, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, requireAtLeast, tenantQuery, tenantCount, esDeSocio } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { sellerFilterFor } from "@/lib/seller-scope";
 import { notify } from "@/lib/notify-service";
@@ -44,14 +44,14 @@ export async function POST(req: NextRequest) {
     // no decide cuánto descubierto aguanta la empresa. Y el portal del socio
     // nunca puede saltárselo, se pida como se pida.
     if (body.allow_over_credit) {
-      if (ctx.role === "partner") delete body.allow_over_credit;
+      if (esDeSocio(ctx)) delete body.allow_over_credit;
       else requireAtLeast(ctx, "manager");
     }
     // Las condiciones de cobro salen de la cotización, no del navegador: aquí
     // permitirían regalarse un anticipo de cero y un saldo a un año.
     delete body.terms;
     // Portal users always sell on behalf of their own partner.
-    if (ctx.role === "partner" && ctx.partnerId) body.partner_id = ctx.partnerId;
+    if (esDeSocio(ctx) && ctx.partnerId) body.partner_id = ctx.partnerId;
 
     // El techo de reservas del mes se mide con TODAS las que trae la orden, no
     // de una en una: una orden de cinco reservas con cuatro de hueco tiene que
@@ -107,7 +107,7 @@ export async function GET(req: NextRequest) {
     const sp = req.nextUrl.searchParams;
     const filter: Record<string, unknown> = {};
     if (sp.get("status")) filter.status = sp.get("status");
-    if (ctx.role === "partner" && ctx.partnerId) filter.partner = ctx.partnerId;
+    if (esDeSocio(ctx) && ctx.partnerId) filter.partner = ctx.partnerId;
     // Esta ruta arma su propio filtro y NO pasa por `buildListFilter`, así que
     // el ámbito del vendedor hay que aplicarlo aquí a mano. Sin esto, acotar
     // `/api/erp/order` no habría servido de nada: la pantalla de ventas lee por

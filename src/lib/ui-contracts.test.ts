@@ -423,8 +423,14 @@ describe("Panel ejecutivo", () => {
     // Una reserva cancelada no viaja: contarla manda al guía a buscar a alguien
     // que no existe y da la salida por llena.
     expect(service).toContain("DEAD_BOOKING_STATUSES");
-    // Es una lista de clientes: un partner no ve las reservas de la competencia.
-    expect(route).toMatch(/role === "partner"/);
+    /**
+     * Es una lista de clientes: un socio no ve las reservas de la competencia.
+     *
+     * Se comprueba `esDeSocio` y no el nombre del rol: un empleado de un tour
+     * center dado de alta como `seller` TIENE identificador de socio y no ese
+     * rol, así que por el nombre se habría llevado el manifiesto entero.
+     */
+    expect(route).toMatch(/esDeSocio\(ctx\)/);
 
     // Y está hecha para imprimirse.
     expect(page).toContain("window.print()");
@@ -930,7 +936,7 @@ describe("Panel ejecutivo", () => {
     // Y saltárselo es decisión de gestión, nunca del portal del socio.
     const route = read("src/app/api/orders/route.ts");
     expect(route).toMatch(/allow_over_credit[\s\S]{0,200}requireAtLeast\(ctx, "manager"\)/);
-    expect(route).toMatch(/partner"\)\s*delete body\.allow_over_credit/);
+    expect(route).toMatch(/esDeSocio\(ctx\)\)\s*delete body\.allow_over_credit/);
   });
 
   it("Proveedores — el costo sabe de quién es, y sale del mismo cálculo que el margen", () => {
@@ -2819,7 +2825,7 @@ describe("el alcance por sucursal", () => {
      * Y se salta para el socio y para el superadministrador, incluso mientras
      * impersona: quien entra a mirar una empresa ajena no es vendedor de ella.
      */
-    expect(auth).toMatch(/ctx\.role !== "partner" && ctx\.role !== "superadmin"/);
+    expect(auth).toMatch(/!esDeSocio\(ctx\) && ctx\.role !== "superadmin"/);
     expect(auth).toMatch(/ctx\.sellerId = await loadSellerId\(ctx\.companyId!, user\.id\)/);
     // Y el panel usa ESE dato, no una segunda consulta que pueda discrepar.
     expect(read("src/app/api/dashboard/route.ts")).toMatch(/ctx\.sellerId \?\? null/);
@@ -5421,5 +5427,110 @@ describe("ninguna acción sin bitácora", () => {
     const src = read("src/app/api/erp/[resource]/[id]/route.ts");
     const i = src.indexOf("record_updated");
     expect(src.slice(i, i + 400)).toMatch(/campos/);
+  });
+});
+
+describe("el aislamiento del socio no depende del nombre del rol", () => {
+  /**
+   * Los ficheros que decidían «esto es de un socio» comparando `ctx.role` con
+   * la cadena `"partner"`. Están enumerados uno a uno a propósito: una regla
+   * que solo dijera «esDeSocio aparece en algún sitio» se cumpliría con que
+   * quedara UNA sola llamada, y las otras dieciocho podrían volver al nombre
+   * del rol sin que nada se quejara.
+   */
+  const PUNTOS_DE_AISLAMIENTO = [
+    "src/app/api/bookings/[id]/voucher/route.ts",
+    "src/app/api/cash/sessions/[id]/arqueo/pdf/route.ts",
+    "src/app/api/departures/[id]/manifest/pdf/route.ts",
+    "src/app/api/departures/[id]/manifest/route.ts",
+    "src/app/api/erp/[resource]/[id]/route.ts",
+    "src/app/api/erp/[resource]/route.ts",
+    "src/app/api/orders/[id]/schedule/route.ts",
+    "src/app/api/orders/route.ts",
+    "src/app/api/portal/catalog/route.ts",
+    "src/app/api/portal/summary/route.ts",
+    "src/app/api/pricing/quote/route.ts",
+    "src/app/api/settlements/[id]/statement/pdf/route.ts",
+    "src/app/api/storage/upload/route.ts",
+    "src/app/dashboard/layout.tsx",
+    "src/app/dashboard/mi-espacio/layout.tsx",
+    "src/app/page.tsx",
+    "src/app/portal/layout.tsx",
+    "src/lib/erp-query.ts",
+    "src/lib/resources.ts",
+    "src/lib/supabase/auth-context.ts",
+  ];
+
+  /**
+   * Lo que TODAVÍA compara con el nombre del rol, con su motivo y su recuento.
+   *
+   * El recuento importa tanto como la lista: sin él, un fichero perdonado una
+   * vez queda perdonado para siempre y puede ir acumulando comparaciones
+   * nuevas debajo de la excepción vieja.
+   */
+  const COMPARACIONES_PERDONADAS: Record<string, { veces: number; porque: string }> = {
+    "src/lib/tenant.ts": {
+      veces: 1,
+      porque: "es LA definición: esDeSocio() es el único sitio que puede mirar el nombre",
+    },
+    "src/app/portal/portal-context.tsx": {
+      veces: 1,
+      porque: "componente de cliente; tenant.ts es `server-only` y no se puede importar aquí",
+    },
+    "src/app/dashboard/configuracion/page.tsx": {
+      veces: 3,
+      porque: "es el rol que se ASIGNA en el formulario, no el de quien llama",
+    },
+  };
+
+  it("cada punto de aislamiento pregunta por esDeSocio", () => {
+    const mudos = PUNTOS_DE_AISLAMIENTO.filter((rel) => !/esDeSocio\s*\(/.test(sinComentariosDe(rel)));
+    expect(mudos, "estos ficheros decidían el aislamiento del socio y ya no preguntan").toEqual([]);
+  });
+
+  it("y ninguno de ellos ha vuelto a comparar el nombre del rol", () => {
+    const recaidos = PUNTOS_DE_AISLAMIENTO.filter((rel) =>
+      /\brole\s*(?:===|!==)\s*"partner"/.test(sinComentariosDe(rel)));
+    expect(recaidos, "aquí conviven las dos reglas; la del nombre gana en silencio").toEqual([]);
+  });
+
+  it("el barrido de todo src no encuentra comparaciones nuevas por nombre", () => {
+    /**
+     * La guarda de verdad. Las dos de arriba protegen lo que YA se arregló;
+     * esta protege lo que todavía no existe: un fichero nuevo que vuelva a
+     * escribir `ctx.role === "partner"` reabre la misma puerta trasera y nadie
+     * se acordará de añadirlo a la lista de arriba.
+     */
+    const encontradas: Record<string, number> = {};
+    for (const file of walk(path.join(ROOT, "src"))) {
+      const rel = path.relative(ROOT, file).replace(/\\/g, "/");
+      const n = (sinComentariosDe(rel).match(/\brole\s*(?:===|!==)\s*"partner"/g) || []).length;
+      if (n) encontradas[rel] = n;
+    }
+    const esperadas = Object.fromEntries(
+      Object.entries(COMPARACIONES_PERDONADAS).map(([rel, e]) => [rel, e.veces]));
+    expect(encontradas, "compara el rol por su nombre; usa esDeSocio(ctx)").toEqual(esperadas);
+  });
+
+  it("esDeSocio se cree el identificador, no solo el rol", () => {
+    /**
+     * Si la función se quedara en `ctx.role === "partner"` las veinte llamadas
+     * de arriba seguirían ahí y no querrían decir nada: la sustitución entera
+     * se apoya en que el identificador mande.
+     */
+    const cuerpo = cuerpoDe("src/lib/tenant.ts");
+    const i = cuerpo.indexOf("export function esDeSocio");
+    expect(i, "esDeSocio ya no está en tenant.ts").toBeGreaterThan(-1);
+    const fn = cuerpo.slice(i, i + 400);
+    expect(fn, "una membresía que cuelga de una organización socia").toMatch(/ctx\.isPartnerMember/);
+    expect(fn, "un socio asignado directamente").toMatch(/ctx\.partnerId/);
+  });
+
+  it("y el identificador se rellena para cualquier rol, no solo para «partner»", () => {
+    // Sin esto, `isPartnerMember` sería siempre falso y la regla volvería a
+    // depender del nombre por la puerta de atrás.
+    const auth = sinComentariosDe("src/lib/supabase/auth-context.ts");
+    expect(auth).toMatch(/isPartnerMember:\s*Boolean\(claims\.partner_id\)/);
+    expect(sinComentariosDe("src/lib/tenant.ts")).toMatch(/isPartnerMember\??:\s*boolean/);
   });
 });

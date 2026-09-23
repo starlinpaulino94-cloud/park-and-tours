@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { getTenantContext } from "@/lib/tenant";
+import { getTenantContext, esDeSocio } from "@/lib/tenant";
 
 /**
  * GUARDA DE SERVIDOR DEL APARTADO PROPIO.
@@ -18,6 +18,6 @@ export default async function MiEspacioLayout({ children }: { children: React.Re
   const ctx = await getTenantContext();
   if (!ctx) redirect("/login");
   if (!ctx.companyId) redirect("/onboarding");
-  if (ctx.role === "partner") redirect("/portal");
+  if (esDeSocio(ctx)) redirect("/portal");
   return <>{children}</>;
 }

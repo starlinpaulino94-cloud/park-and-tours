@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, tenantFindOne, TenantError } from "@/lib/tenant";
+import { requireTenant, tenantFindOne, TenantError, esDeSocio } from "@/lib/tenant";
 import { assertSettlementBeneficiary, beneficiaryOf, type SettlementLike } from "@/lib/settlement-access";
 import { fail } from "@/lib/api-response";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -21,7 +21,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const { id } = await params;
     const ctx = await requireTenant();
     await assertRateLimit({ key: rateLimitKey(req, "settlements:statement:pdf", ctx.userId), limit: 60, windowMs: 60_000 });
-    if (ctx.role === "partner") throw new TenantError("El estado de cuenta es de uso interno", 403);
+    if (esDeSocio(ctx)) throw new TenantError("El estado de cuenta es de uso interno", 403);
 
     /**
      * La misma pregunta que en la pantalla, y por el mismo motivo: abierta a su
