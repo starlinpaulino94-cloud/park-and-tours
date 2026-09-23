@@ -64,7 +64,13 @@ export async function auditMembego(
   organizationId: string,
   action: string,
   description: string,
-  opts: { userId?: string | null; severity?: string; metadata?: Record<string, unknown> } = {}
+  opts: {
+    userId?: string | null;
+    severity?: string;
+    metadata?: Record<string, unknown>;
+    /** A qué cosa concreta se refiere: el id del sobre, del cliente, del vínculo. */
+    entityId?: string | null;
+  } = {}
 ): Promise<void> {
   try {
     const h = await headers().catch(() => null);
@@ -76,6 +82,7 @@ export async function auditMembego(
       user_id: opts.userId ?? null,
       action,
       entity_type: "membego",
+      entity_id: opts.entityId ?? null,
       description,
       severity: opts.severity || "info",
       metadata_json: opts.metadata || {},

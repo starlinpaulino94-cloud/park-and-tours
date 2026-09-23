@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0068 — EL ESTADO DE LA MEMBRESÍA EN EL ESPEJO DE MEMBEGO
+-- 0077 — EL ESTADO DE LA MEMBRESÍA EN EL ESPEJO DE MEMBEGO
 --
 -- LO QUE PASA HOY
 --
