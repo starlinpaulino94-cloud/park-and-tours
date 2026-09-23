@@ -63,8 +63,25 @@ const ctx = {
 } as unknown as Parameters<typeof createOrderWithBookings>[0];
 
 /** El catálogo mínimo con el que una venta se puede armar. */
+/**
+ * Las autorizaciones del socio del banco de pruebas.
+ *
+ * Desde 0077 una venta de tour center exige contrato por producto. El banco lo
+ * siembra con el catálogo entero, igual que la migración: si no lo hiciera,
+ * cada prueba de venta al socio fallaría por una razón que no es la que está
+ * probando — y eso es exactamente lo que le pasaría en producción a toda la red
+ * de un operador si la migración no sembrara.
+ */
+function autorizaciones(partnerId = "soc-1") {
+  return [
+    { _id: `aut-${partnerId}-saona`, partner: partnerId, product: "prod-saona", status: "active" },
+    { _id: `aut-${partnerId}-buggy`, partner: partnerId, product: "prod-buggy", status: "active" },
+  ];
+}
+
 function catalogo(extra: Record<string, Record<string, unknown>[]> = {}) {
   return {
+    partner_product: autorizaciones(),
     customer: [{ _id: "cli-1", first_name: "Laura", last_name: "Gutiérrez" }],
     product: [
       { _id: "prod-saona", name: "Isla Saona", base_price: 100, base_cost: 40, status: "active" },
@@ -800,5 +817,109 @@ describe("sincronizar el cobro de una orden", () => {
     const r = db.row("booking", { _id: "res-1" })!;
     expect(r.status).toBe("partially_paid");
     expect(Number(r.balance_amount)).toBe(120);
+  });
+});
+
+/* ═══════════════════════════════════ el contrato socio–producto (0077) ══ */
+
+describe("lo que un tour center tiene autorizado vender", () => {
+  it("un producto fuera de su contrato NO se reserva", async () => {
+    /**
+     * LA MITAD QUE FALTABA.
+     *
+     * Acotar el catálogo esconde el producto de UNA pantalla. La reserva llega
+     * por el cuerpo de una petición con un `product_id` dentro, y la de un
+     * socio que integra por API ni siquiera pasa por esa pantalla. Un filtro de
+     * listado es una sugerencia.
+     */
+    db = fakeDb(catalogo({
+      partner: [{ _id: "soc-1", name: "Caribe", credit_limit: 0, credit_days: 0 }],
+      partner_product: [
+        { _id: "aut-1", partner: "soc-1", product: "prod-saona", status: "active" },
+      ],
+    }));
+
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1", partner_id: "soc-1",
+      items: [{ product_id: "prod-buggy", departure_id: "sal-buggy", adults: 2 }],
+    })).rejects.toThrow(/no tienes autorizada la venta/i);
+  });
+
+  it("y el mensaje dice QUÉ producto, por su nombre", async () => {
+    // Un 403 con uuids dentro obliga a quien integra a cruzarlos a mano contra
+    // su catálogo para entender qué le están negando.
+    db = fakeDb(catalogo({
+      partner: [{ _id: "soc-1", name: "Caribe", credit_limit: 0, credit_days: 0 }],
+      partner_product: [{ _id: "aut-1", partner: "soc-1", product: "prod-saona", status: "active" }],
+    }));
+
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1", partner_id: "soc-1",
+      items: [{ product_id: "prod-buggy", departure_id: "sal-buggy", adults: 2 }],
+    })).rejects.toThrow(/Buggy/);
+  });
+
+  it("una autorización RETIRADA deja de valer", async () => {
+    // Se desautoriza poniendo la fila inactiva, no borrándola: queda el rastro.
+    db = fakeDb(catalogo({
+      partner: [{ _id: "soc-1", name: "Caribe", credit_limit: 0, credit_days: 0 }],
+      partner_product: [
+        { _id: "aut-1", partner: "soc-1", product: "prod-saona", status: "inactive" },
+      ],
+    }));
+
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1", partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow(/no tienes autorizada la venta/i);
+  });
+
+  it("sin NINGUNA autorización no se vende nada, que es lo contrario de antes", async () => {
+    /**
+     * El catálogo del portal hacía `autorizados.length ? filtrar : no filtrar`,
+     * así que la lista vacía significaba «todo». Desde 0077 la tabla se siembra
+     * con el catálogo entero por socio: vacía significa lo que dice.
+     */
+    db = fakeDb(catalogo({
+      partner: [{ _id: "soc-1", name: "Caribe", credit_limit: 0, credit_days: 0 }],
+      partner_product: [],
+    }));
+
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1", partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow(/no tienes autorizada la venta/i);
+  });
+
+  it("la venta PROPIA de la operadora no pasa por ningún contrato", async () => {
+    // El contrato es de la relación con un tour center. Aplicarlo a la venta
+    // del mostrador apagaría el punto de venta entero.
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    });
+    expect(res.order._id).toBeTruthy();
+  });
+
+  it("y se comprueba ANTES de tomar plazas", async () => {
+    /**
+     * Rechazar después obliga a compensar escrituras que no había que haber
+     * hecho. Se mira la salida: si las plazas siguen libres, no se llegó a
+     * tocar nada.
+     */
+    db = fakeDb(catalogo({
+      partner: [{ _id: "soc-1", name: "Caribe", credit_limit: 0, credit_days: 0 }],
+      partner_product: [],
+    }));
+
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1", partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow();
+
+    const salida = db.rows("departure").find((d) => d._id === "sal-saona");
+    expect(salida?.booked_pax ?? 0, "se tomaron plazas de una venta rechazada").toBe(0);
+    expect(salida?.pending_pax ?? 0).toBe(0);
+    expect(db.rows("sales_order")).toHaveLength(0);
   });
 });

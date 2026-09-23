@@ -6327,3 +6327,110 @@ describe("la exportación del socio", () => {
     expect(exportador.slice(i, i + 420)).toMatch(/options\.fields\s*\n?\s*\.filter/);
   });
 });
+
+describe("el contrato socio–producto", () => {
+  it("se aplica AL VENDER, no solo al listar", () => {
+    /**
+     * Es la mitad que faltaba y la que el plan subrayaba. Acotar el catálogo
+     * esconde el producto de UNA pantalla; la reserva llega por el cuerpo de
+     * una petición con un `product_id` dentro, y la de un socio que integra por
+     * API ni siquiera pasa por esa pantalla. Un filtro de listado es una
+     * sugerencia.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    const i = servicio.indexOf("noAutorizados(");
+    expect(i, "la venta no comprueba el contrato").toBeGreaterThan(-1);
+    // Sobre el `throw`: afirmar que la función aparece deja borrar el
+    // lanzamiento y conservar la llamada muerta.
+    expect(servicio.slice(i, i + 700)).toMatch(/if \(fuera\.length > 0\)[\s\S]{0,520}throw[\s\S]{0,120}status: 403/);
+    // Y antes de tomar plazas, consumir cupo o apuntar crédito: rechazar tarde
+    // obliga a compensar escrituras que no había que haber hecho.
+    expect(i).toBeLessThan(servicio.indexOf("assertCapacity("));
+    expect(i).toBeLessThan(servicio.indexOf("creditCheck("));
+  });
+
+  it("y solo cuesta una consulta cuando la venta es de un socio", () => {
+    // La venta propia del mostrador no pasa por ningún contrato: aplicárselo
+    // apagaría el punto de venta entero.
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    const i = servicio.indexOf("noAutorizados(");
+    expect(servicio.slice(Math.max(0, i - 700), i)).toMatch(/if \(input\.partner_id\) \{/);
+  });
+
+  it("el catálogo del portal filtra SIEMPRE, también con la lista vacía", () => {
+    /**
+     * EL FALLO, EN UNA LÍNEA.
+     *
+     *     ...(authorizedIds.length ? { _id: { in: authorizedIds } } : {})
+     *
+     * Sin autorizaciones, sin filtro. Y `authorized_products` no existía en
+     * ninguna tabla ni en el mapa de relaciones, así que la lista estaba vacía
+     * SIEMPRE: ese filtro no se aplicó nunca, ni una vez.
+     */
+    const ruta = cuerpoDe("src/app/api/portal/catalog/route.ts");
+    expect(ruta, "el filtro condicional ya no está")
+      .not.toMatch(/authorizedIds\.length \?/);
+    expect(ruta, "sale de su tabla").toMatch(/tenantQuery[\s\S]{0,80}"partner_product"/);
+    /**
+     * Y EL FILTRO SE APLICA.
+     *
+     * Comprobar que la lista se calcula y no que se usa dejaba borrar esta
+     * línea y pasar la guarda: el catálogo volvía a enseñarlo todo con las
+     * autorizaciones leídas y tiradas. No mordía; ahora sí.
+     */
+    expect(ruta, "el filtro está en la consulta").toMatch(/_id: \{ in: authorizedIds \}/);
+    // Sin nada autorizado no se consulta, en vez de fiarlo a que `in: []`
+    // signifique «ninguno»: en algún traductor es una condición que no se
+    // aplica, y ahí el fallo sería devolver el catálogo entero.
+    expect(ruta).toMatch(/authorizedIds\.length === 0 \? \[\] :/);
+  });
+
+  it("el socio no lee el contrato de los demás por el CRUD genérico", () => {
+    // La lista de autorizaciones de los otros tour centers es el mapa de qué
+    // vende cada uno. No está en su ámbito, ni propia ni compartida.
+    const recursos = sinComentariosDe("src/lib/resources.ts");
+    const ambito = recursos.slice(
+      recursos.indexOf("const PARTNER_OWNED_TABLES"),
+      recursos.indexOf("export type PartnerScope"));
+    expect(ambito).not.toMatch(/"partner_product"/);
+  });
+
+  it("la migración siembra, o corta la venta de los socios existentes", () => {
+    /**
+     * En cuanto la lista vacía deja de significar «todo», un socio sin filas no
+     * puede vender nada. Sin siembra, el despliegue apagaría la venta de todos
+     * los tour centers a la vez — y el síntoma sería «el catálogo me sale
+     * vacío», que nadie relaciona con una migración.
+     */
+    const sql = read("supabase/migrations/0077_partner_product.sql");
+    /**
+     * Con las TRES columnas proyectadas, no solo con la forma.
+     *
+     * Un `insert ... select` con el mismo `where` y un `null` donde va el socio
+     * es una siembra que corre, no escribe nada útil y pasa una guarda que solo
+     * mire el contorno. Se pinta qué va en cada columna.
+     */
+    expect(sql, "la siembra").toMatch(
+      /insert into partner_product \(organization_id, partner_id, product_id\)\s*\nselect o\.tenant_org_id, o\.id, p\.id/
+    );
+    expect(sql, "de los socios").toMatch(/where o\.kind = 'partner'/);
+    expect(sql, "solo el catálogo activo").toMatch(/p\.status <> 'inactive'/);
+    // Y los dos disparadores que evitan el mismo apagón por los dos lados.
+    // Con final de palabra: `create trigger product_autoriza_socios_off` CONTIENE
+    // `create trigger product_autoriza_socios`, así que sin el límite un
+    // disparador renombrado —o sea, desactivado— pasaba la guarda.
+    expect(sql, "producto nuevo").toMatch(/create trigger product_autoriza_socios\b(?!_)/);
+    expect(sql, "socio nuevo").toMatch(/create trigger organizations_autoriza_catalogo\b(?!_)/);
+    // Tabla nueva y actor externo: su política, en la misma migración.
+    expect(sql, "la política").toMatch(/enable_tenant_rls\('public\.partner_product', true\)/);
+  });
+
+  it("desautorizar no borra la fila", () => {
+    // Queda el rastro de que ese producto estuvo autorizado, que es lo que se
+    // mira cuando un tour center reclama una reserva que «antes sí podía».
+    expect(read("supabase/migrations/0077_partner_product.sql"))
+      .toMatch(/status\s+text not null default 'active' check \(status in \('active','inactive'\)\)/);
+    expect(sinComentariosDe("src/app/dashboard/partners/catalogo/page.tsx"))
+      .toMatch(/api\.put\(`\/api\/erp\/partner_product\/\$\{actual\._id\}`, \{ status:/);
+  });
+});

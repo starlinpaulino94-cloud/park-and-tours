@@ -4,6 +4,7 @@ import { ok, fail } from "@/lib/api-response";
 import { resolvePrice } from "@/lib/pricing";
 import type { Departure, Partner, Product, ProductModality } from "@/lib/types";
 import { refId } from "@/lib/types";
+import { autorizadosDe, type AutorizacionSocio } from "@/lib/catalogo-socio";
 import { plazasLibres, type SalidaConCupo } from "@/lib/plazas";
 
 /**
@@ -26,22 +27,50 @@ export async function GET(req: NextRequest) {
     if (!partnerId) throw new TenantError("Tu usuario no está asociado a ningún partner", 403);
 
     const partner = (await tenantQuery<Partner>(ctx.companyId, "partner", {
-      _filter: { _id: partnerId }, _limit: 1, authorized_products: true,
+      _filter: { _id: partnerId }, _limit: 1,
     }))[0];
     if (!partner) throw new TenantError("Partner no encontrado", 404);
     if (partner.status !== "active") throw new TenantError("El partner está inactivo", 403);
 
-    const authorized = (partner.authorized_products || []) as any[];
-    const authorizedIds = authorized.map((p) => (typeof p === "object" ? p._id : p)).filter(Boolean);
+    /**
+     * EL CONTRATO, DESDE SU TABLA (0077).
+     *
+     * Antes se pedía `authorized_products` expandido en la consulta de arriba y
+     * se filtraba así:
+     *
+     *     ...(authorizedIds.length ? { _id: { in: authorizedIds } } : {})
+     *
+     * `authorized_products` no existía en ninguna tabla ni en el mapa de
+     * relaciones, así que la expansión devolvía vacío SIEMPRE y ese filtro no
+     * se aplicó nunca — ni una vez. La pantalla prometía «catálogo autorizado»
+     * y enseñaba el catálogo entero.
+     */
+    const autorizaciones = await tenantQuery<Record<string, unknown>>(ctx.companyId, "partner_product", {
+      _filter: { partner: partnerId, status: "active" }, _limit: 1000,
+    });
+    const autorizados = autorizadosDe(autorizaciones as AutorizacionSocio[]);
+    const authorizedIds = [...autorizados];
 
-    const products = await tenantQuery<Product>(ctx.companyId, "product", {
+    /**
+     * Sin nada autorizado, el catálogo está vacío y no se consulta.
+     *
+     * Y explícito, no confiando en que `in: []` signifique «ninguno»: no lo
+     * significa en todos los traductores de consulta —en alguno es una
+     * condición que no se aplica— y ahí el fallo sería devolverle el catálogo
+     * entero justo al socio que no tiene nada autorizado.
+     */
+    const products = authorizedIds.length === 0 ? [] : await tenantQuery<Product>(ctx.companyId, "product", {
       _filter: {
         status: "active",
         // Mismo motivo que en el punto de venta: la reserva de un paquete
         // necesita el día de inicio, que este catálogo no pide. Enseñarlo aquí
         // sería ofrecerle a un socio algo que no puede reservar.
         is_bundle: false,
-        ...(authorizedIds.length ? { _id: { in: authorizedIds } } : {}),
+        // Y SIEMPRE. Desde 0077 la tabla se siembra con el catálogo entero por
+        // socio, así que «vacía» significa lo que dice; el filtro condicional
+        // de antes es exactamente la línea que convirtió la autorización en un
+        // adorno.
+        _id: { in: authorizedIds },
       },
       _limit: 200, _sort: { name: "asc" },
       category: true,
@@ -125,7 +154,7 @@ export async function GET(req: NextRequest) {
     );
 
     console.log(`[portal/catalog] ${rows.length} productos autorizados para ${partner.commercial_name || partner.name}`);
-    return ok({ products: rows, partner_id: partnerId, restricted: authorizedIds.length > 0 });
+    return ok({ products: rows, partner_id: partnerId, restricted: true });
   } catch (err) {
     return fail(err);
   }

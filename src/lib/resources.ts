@@ -85,6 +85,22 @@ export const RESOURCES: Record<string, ResourceDef> = {
     dates: ["contract_from", "contract_to"],
     writeRole: "manager",
   },
+  /**
+   * EL CONTRATO SOCIO–PRODUCTO (0077).
+   *
+   * Lo escribe la operadora desde la ficha del socio. No está en el ámbito del
+   * socio —ni propia ni compartida—, así que él no lo lee por el CRUD genérico:
+   * lo ve resuelto en su catálogo, que es donde le sirve. La lista de
+   * autorizaciones de los demás tour centers es el mapa de qué vende cada uno.
+   */
+  partner_product: {
+    table: "partner_product",
+    search: [],
+    expand: { partner: true, product: true },
+    sort: { createdAt: "desc" },
+    writable: ["partner", "product", "status"],
+    writeRole: "manager",
+  },
   seller: {
     table: "seller",
     search: ["first_name", "last_name", "code", "email", "phone"],

@@ -3,6 +3,7 @@ import { tenantCreate, tenantQuery, tenantUpdate, type TenantContext } from "@/l
 import { ventaSelladaPorVendedor } from "@/lib/seller-scope";
 import { excesoDeDescuento, mensajeExceso } from "@/lib/techo-descuento";
 import { desajusteDeAtribucion } from "@/lib/atribucion-coherente";
+import { autorizadosDe, noAutorizados, mensajeNoAutorizado, type AutorizacionSocio } from "@/lib/catalogo-socio";
 import { resolvePrice, resolveCost, billablePax } from "@/lib/pricing";
 import { assertCapacity, recalculateDeparture, OversellError } from "@/lib/availability";
 import { resolveExchangeRate } from "@/lib/currency";
@@ -421,6 +422,37 @@ export async function createOrderWithBookings(
     }
   }
 
+
+  /**
+   * EL CONTRATO DEL SOCIO, AL VENDER.
+   *
+   * Acotar el catálogo esconde el producto de UNA pantalla. La reserva llega
+   * por el cuerpo de una petición con un `product_id` dentro, y la de un socio
+   * que integra ni siquiera pasa por esa pantalla. Un filtro de listado es una
+   * sugerencia; esto es el contrato.
+   *
+   * Va aquí, con el resto de comprobaciones que preceden a cualquier escritura,
+   * y solo cuesta una consulta cuando la venta es de un socio.
+   */
+  if (input.partner_id) {
+    const autorizaciones = await tenantQuery<Record<string, unknown>>(companyId, "partner_product", {
+      _filter: { partner: input.partner_id, status: "active" }, _limit: 1000,
+    });
+    const fuera = noAutorizados(
+      (input.items ?? []).map((i) => i.product_id),
+      autorizadosDe(autorizaciones as AutorizacionSocio[])
+    );
+    if (fuera.length > 0) {
+      // Con los nombres: un 403 con uuids dentro obliga a quien integra a
+      // cruzarlos a mano contra su catálogo para entender qué le niegan.
+      const nombres = new Map<string, string>();
+      const fichas = await tenantQuery<{ _id?: string; name?: string }>(companyId, "product", {
+        _filter: { _id: { in: fuera } }, _limit: 50,
+      });
+      for (const f of fichas) if (f._id && f.name) nombres.set(f._id, f.name);
+      throw Object.assign(new Error(mensajeNoAutorizado(fuera, nombres)), { status: 403 });
+    }
+  }
 
   /**
    * Y el vendedor tiene que ser de quien vende.

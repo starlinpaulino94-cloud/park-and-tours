@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0021-0076 tienen que haber creado.
+ * El inventario de lo que las migraciones 0021-0077 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -478,6 +478,18 @@ export const MIGRATION_CHECKS = [
     // `supabase/editor/0069_parte_2_indice.sql`, que sí consulta `pg_indexes`
     // y devuelve una fila legible. Declararlo aquí sin comprobarlo habría
     // parecido una garantía sin serlo.
+  },
+  {
+    migration: "0077 — el contrato socio–producto",
+    // `authorized_products` aparecía en el tipo, el catálogo del portal lo pedía
+    // expandido y el reparto del formulario lo descartaba. Lo que no había era
+    // dónde guardarlo: ni tabla, ni campo escribible, ni relación — así que la
+    // lista estaba vacía SIEMPRE y el portal, ante una lista vacía, enseñaba el
+    // catálogo entero.
+    tables: ["partner_product"],
+    columns: [
+      ["partner_product", ["partner_id", "product_id", "status"]],
+    ],
   },
   {
     migration: "0076 — la disputa de una liquidación",

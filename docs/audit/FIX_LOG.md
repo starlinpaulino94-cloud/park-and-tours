@@ -2279,3 +2279,51 @@ Y la tabla dice dos cosas más que no se preguntaban:
   techo no existe todavía. El conteo corregido no limitará nada hasta que se
   asigne un plan; conviene volver a correr esta consulta el día que se asigne,
   porque entonces sí puede haber una operadora por encima.
+
+## Fase 6 — El contrato explícito
+
+### Fase 6.1 — el contrato socio–producto: no estaba roto, no existía
+- **Lo que había.** `authorized_products` aparece en el tipo `Partner`, el
+  catálogo del portal lo pide expandido, el reparto del formulario lo descarta
+  a propósito y la ficha del socio promete «catálogo autorizado» en su
+  descripción. Lo que no hay en ninguna parte es **dónde guardarlo**: no existe
+  la tabla, `partner` no lo declara escribible, ningún formulario lo ofrece, y
+  `authorized_products` **ni siquiera está en el mapa de relaciones** — así que
+  la expansión devuelve vacío SIEMPRE.
+- Y el catálogo filtraba así: `authorizedIds.length ? { _id: { in: … } } : {}`.
+  Lista vacía, sin filtro. **Ese filtro no se aplicó nunca, ni una vez, desde
+  que se escribió.** Un operador que lea esa pantalla concluye que su tour
+  center solo ve lo autorizado.
+- **Migración 0077** crea la tabla, su política —tabla nueva y actor externo:
+  aquí la tabla ES la autorización, y sin política un socio leería las de sus
+  competidores, que es el mapa de qué vende cada uno— y **siembra**.
+- **La siembra no es una comodidad.** En cuanto la lista vacía deja de
+  significar «todo», un socio sin filas no vende nada: sin sembrar, el
+  despliegue apagaría la venta de todos los tour centers a la vez, con el
+  síntoma «el catálogo me sale vacío», que nadie relaciona con una migración. Lo
+  mismo por los otros dos lados, con un disparador cada uno: **un producto nuevo
+  nace autorizado para todos** y **un socio nuevo nace con el catálogo de hoy**.
+  Lo contrario suena más «contrato explícito» y es la trampa — publicar una
+  excursión dejaría de verse hasta que alguien la autorizara socio a socio.
+- **Y se aplica AL VENDER, que es la mitad que faltaba.** Acotar el catálogo
+  esconde el producto de una pantalla; la reserva llega por el cuerpo de una
+  petición con un `product_id` dentro, y la de un socio que integra por API ni
+  siquiera pasa por esa pantalla. Un filtro de listado es una sugerencia.
+  Comprobado **antes** de tomar plazas, consumir cupo o apuntar crédito, y solo
+  cuesta una consulta cuando la venta es de un socio.
+- **El error dice QUÉ productos, por su nombre, y todos de una vez.** Un 403 con
+  uuids obliga a quien integra a cruzarlos a mano; contestarle de uno en uno le
+  hace descubrir su contrato a base de reintentos.
+- **Nueve pruebas existentes se pusieron en rojo al instante** — todas las de
+  venta al socio, más las de OTA. Es exactamente el riesgo del plan reproducido
+  en el banco de pruebas: sin autorizaciones sembradas, no se vende. Los
+  fixtures se siembran igual que la migración.
+- **Tres guardas foráneas mordieron**: un recurso escribible sin pantalla es un
+  módulo muerto (de ahí `/dashboard/partners/catalogo`), una tabla nueva tiene
+  que salir en «llévate tus datos», y **un `create table` junto a un bloque `$$`
+  revienta el editor de Supabase** — el SQL va en tres partes por eso.
+- **Mutación: diez, las diez muertas.** Tres no mordían y eran fallos de las
+  guardas, no del código: una comprobaba que la lista se calculaba pero no que
+  se usara —se podía borrar el filtro entero—, otra daba por bueno un disparador
+  **renombrado** porque `..._off` contiene el nombre original, y la tercera
+  aceptaba una siembra que escribe `null` donde va el socio.
