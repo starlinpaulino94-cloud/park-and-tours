@@ -1675,6 +1675,29 @@ describe("integración con MembeGo", () => {
     expect(refresco).toMatch(/return;/);
   });
 
+  it("el webhook anota con la organización del VÍNCULO, no con el id de MembeGo", () => {
+    // SIN COMENTARIOS: el porqué de este arreglo está escrito en la propia
+    // ruta y NOMBRA a `writeAudit`. Una guarda que lea el fichero entero se
+    // cumple o se incumple por lo que dice una explicación, no por lo que hace
+    // el código — que es exactamente la forma de tener una guarda que no
+    // guarda nada.
+    const route = sinComentariosDe("src/app/api/membego/webhook/route.ts");
+
+    // `writeAudit` con empresa pasa por las ayudas de inquilino, que resuelven
+    // el cliente desde cookies de sesión. Este webhook lo firma una máquina:
+    // no hay sesión, ni la va a haber. Y como la bitácora se traga su propio
+    // error a propósito —no puede tumbar lo que describe—, el fallo no se ve
+    // por ningún lado: una auditoría que parece estar y no está.
+    expect(route).not.toContain("writeAudit");
+    expect(route).toContain("auditMembego(");
+
+    // Y el id que se anota es el LOCAL. `event.companyId` es el cuid de
+    // MembeGo; `audit_log.organization_id` es `uuid`, así que ese insert no
+    // falla a veces: falla siempre, con 22P02.
+    expect(route).toContain("link.organization_id");
+    expect(route).not.toMatch(/companyId:\s*event\.companyId/);
+  });
+
   it("el estado de la membresía es una columna con dominio cerrado", () => {
     const sql = read("supabase/migrations/0077_membego_membership_status.sql");
     expect(sql).toMatch(/add column if not exists membership_status/);
