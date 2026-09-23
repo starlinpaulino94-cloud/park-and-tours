@@ -5952,8 +5952,30 @@ describe("el vendedor del tour center", () => {
      * center las metas de los vendedores internos.
      */
     const recursos = sinComentariosDe("src/lib/resources.ts");
-    const declaradas = recursos.slice(recursos.indexOf("PARTNER_DENEGADAS_A_PROPOSITO"));
-    for (const tabla of ["seller_goal", "seller_bonus", "seller_link", "seller_attribution"]) {
+    /**
+     * La rebanada termina donde termina la constante.
+     *
+     * Abierta hasta el final del fichero, `cash_session:` se encontraba más
+     * abajo —en la definición del recurso— y la guarda daba por declarada una
+     * tabla que se había borrado de la lista.
+     */
+    const inicio = recursos.indexOf("PARTNER_DENEGADAS_A_PROPOSITO");
+    const fin = recursos.indexOf("\n};", inicio);
+    // Que la rebanada exista de verdad: si el quitacomentarios se comiera el
+    // cierre —pasó, por un `/api/cash` con asterisco dentro de una cadena—,
+    // `indexOf` devolvería el siguiente `};` del fichero y la guarda buscaría
+    // en las definiciones de recursos, donde `cash_session:` sí aparece.
+    expect(fin, "no se encuentra el final de la lista").toBeGreaterThan(inicio);
+    const declaradas = recursos.slice(inicio, fin);
+    expect(declaradas.length, "la lista se lee entera").toBeGreaterThan(400);
+    for (const tabla of [
+      "seller_goal", "seller_bonus", "seller_link", "seller_attribution",
+      // La caja, desde 0081: el socio tiene la suya y la base se la deja leer,
+      // pero sus pantallas van por `/api/cash/*`, que además comprueba que el
+      // turno sea suyo antes de mover o cerrar. Abrirla al CRUD sería una
+      // segunda puerta al mismo dinero con la mitad de las comprobaciones.
+      "cash_register", "cash_session", "cash_movement",
+    ]) {
       expect(declaradas, tabla).toMatch(new RegExp(`${tabla}:`));
       // Y ninguna se ha colado en las que sí ve.
       expect(recursos.slice(
@@ -6956,5 +6978,139 @@ describe("el socio que integra por API", () => {
     // Y la de la operadora, que es la única que puede recargar.
     expect(existe("src/app/dashboard/partners/saldo/page.tsx")).toBe(true);
     expect(read("src/lib/nav.ts")).toContain('href: "/dashboard/partners/saldo"');
+  });
+
+  /* ════════════════════ Fase 7.1/7.2 · de quién es el dinero de la caja */
+
+  it("el cobro y su apunte de caja llevan EL MISMO socio", () => {
+    /**
+     * EL FALLO QUE YA PASABA, SIN ESPERAR A LA CAJA EXTERNA.
+     *
+     * `/api/payments` creaba el cobro CON su socio —`payment.partner` existe y
+     * se rellenaba— y en la línea siguiente abría el `cash_movement` sin él.
+     * Desde el momento de escribirlo, el efectivo de una venta de socio era
+     * indistinguible del propio de la operadora.
+     */
+    const ruta = cuerpoDe("src/app/api/payments/route.ts");
+    expect(ruta, "el socio se calcula una vez").toMatch(/const socioDelCobro =/);
+    // En el cobro Y en el movimiento, que es la fila que el arqueo suma.
+    expect(ruta).toMatch(/partner: socioDelCobro \|\| undefined,/);
+    const iMov = ruta.indexOf('"cash_movement"');
+    expect(iMov, "no se abre el movimiento de caja").toBeGreaterThan(-1);
+    expect(ruta.slice(iMov, iMov + 500), "el apunte de caja pierde el socio")
+      .toMatch(/partner: socioDelCobro \|\| undefined,/);
+  });
+
+  it("UN ARQUEO DE LA OPERADORA EXIGE partner NULO", () => {
+    /**
+     * El criterio del plan es que no incluya NI UN movimiento de caja de socio,
+     * y eso es una condición que hay que escribir. Omitir el filtro —que es lo
+     * que hace la política de la base, donde el interno lo ve todo— haría que
+     * el arqueo sumara el efectivo de los tour centers como propio.
+     *
+     * Y la ruta armaba su propio filtro sin pasar por ningún ámbito: listaba
+     * TODAS las sesiones de la empresa, en las dos direcciones.
+     */
+    const dominio = cuerpoDe("src/lib/caja-identidad.ts");
+    const i = dominio.indexOf("export function filtroDeArqueo");
+    expect(dominio.slice(i, i + 400)).toMatch(/return \{ partner: null \}/);
+    // Y sin ficha de socio NO cae en el filtro de la operadora.
+    expect(dominio.slice(i, i + 400)).toMatch(/__sin_socio__/);
+    /**
+     * Y el filtro se USA, no solo se calcula: con `toMatch(/filtroDeArqueo\(/)`
+     * bastaba dejar la llamada tirada al lado de un `{}` y la guarda pasaba.
+     */
+    expect(cuerpoDe("src/app/api/cash/sessions/route.ts"))
+      .toMatch(/const filter: Record<string, unknown> = filtroDeArqueo\(\{/);
+  });
+
+  it("y lo hace cumplir la BASE, no el acordarse de copiarlo", () => {
+    /**
+     * El arqueo suma los movimientos de SU turno, así que basta con que ninguno
+     * pueda llevar un dueño distinto del de su turno. Sin el disparador, un
+     * movimiento con el socio mal puesto entra en el arqueo equivocado sin que
+     * nada chille, y se descubre contando el efectivo.
+     */
+    const sql = read("supabase/migrations/0081_cash_identity.sql").replace(/^\s*--.*$/gm, "");
+    // `\b(?!_)` y no el nombre a secas: `cash_movement_matches_session_off`
+    // contiene `cash_movement_matches_session`, así que renombrarlo —que es
+    // como se apaga un disparador— pasaba la guarda. Tercera vez.
+    expect(sql).toMatch(/create trigger cash_movement_matches_session\b(?!_)/);
+    // `is distinct from` y no `<>`: con nulos —el caso normal, la caja de la
+    // operadora— `<>` devuelve nulo y la condición no se cumple NUNCA.
+    expect(sql, "con <> el disparador no salta en el caso normal")
+      .toMatch(/new\.partner_id is distinct from s_partner/);
+    expect(sql).not.toMatch(/new\.partner_id <> s_partner/);
+    // Y un turno no cambia de dueño a mitad.
+    expect(sql).toMatch(/create trigger cash_session_owner_frozen\b(?!_)/);
+  });
+
+  it("abrir, mover y cerrar un turno usan LA MISMA comprobación", () => {
+    /**
+     * Tres comprobaciones distintas de «esta caja es tuya» acaban discrepando,
+     * y la que se quede corta es por la que entra alguien a cerrarle el turno a
+     * otro: el descuadre, con su aprobación, queda a nombre de quien sí estuvo.
+     *
+     * `tenantFindOne` solo comprueba la empresa, así que antes bastaba conocer
+     * el identificador de una sesión.
+     */
+    for (const ruta of [
+      "src/app/api/cash/sessions/route.ts",
+      "src/app/api/cash/movements/route.ts",
+      "src/app/api/cash/sessions/[id]/close/route.ts",
+      "src/app/api/cash/sessions/[id]/arqueo/route.ts",
+    ]) {
+      const src = cuerpoDe(ruta);
+      expect(src, `${ruta} no comprueba de quién es la caja`)
+        .toMatch(/noPuedeAbrirLaCaja\(/);
+      /**
+       * Y PARA. Comprobar solo que la función se llama deja pasar la mutación
+       * que importa: borrar el `throw` y quedarse con la llamada. La guarda
+       * miraba la llamada, no el efecto — cinco veces en esta misma ola.
+       */
+      expect(src, `${ruta} calcula el impedimento y no lo aplica`)
+        .toMatch(/if \(impedimento\) throw new TenantError\(impedimento, 403\);/);
+      expect(src, `${ruta} decide el socio por el nombre del rol`)
+        .toMatch(/esDeSocio: esDeSocio\(ctx\)/);
+    }
+  });
+
+  it("el socio no abre la caja de la operadora, ni al revés", () => {
+    /**
+     * Las dos direcciones. La segunda es la que no se piensa: dejar que alguien
+     * de un tour center abra la caja de la casa metería su efectivo en el cajón
+     * de la operadora, y el arqueo interno lo contaría como propio porque esos
+     * movimientos no llevarían socio.
+     */
+    const dominio = cuerpoDe("src/lib/caja-identidad.ts");
+    expect(dominio).toMatch(/if \(dueno\.partnerId === null\) \{[\s\S]{0,160}?no entra en su arqueo/);
+    expect(dominio).toMatch(/\} else if \(dueno\.partnerId !== null\) \{[\s\S]{0,120}?lo firma él/);
+    // Y sin ficha de socio, ninguna: fallar hacia el silencio.
+    expect(dominio).toMatch(/if \(!miSocio\) return "Tu usuario no está asociado/);
+  });
+
+  it("el dueño del turno sale de la CAJA, no del cuerpo de la petición", () => {
+    // Dejar que quien abre elija de quién es el dinero es la puerta de atrás
+    // entera: se abriría un turno «de socio» para sacar efectivo del arqueo
+    // interno, o al revés.
+    const ruta = cuerpoDe("src/app/api/cash/sessions/route.ts");
+    expect(ruta).toMatch(/const dueno = duenoDeLaCaja\(register\)/);
+    /**
+     * Anclado en la creación de la SESIÓN, no suelto: `partner: dueno.partnerId`
+     * aparece también en el movimiento de apertura, unas líneas más abajo, así
+     * que borrarlo del turno dejaba la guarda contenta. Es la misma trampa de
+     * «la guarda encuentra su texto en otro sitio del mismo fichero».
+     */
+    // La CREACIÓN, no la primera mención: `"cash_session"` sale antes en el
+    // listado, y anclar ahí buscaba el dueño en una consulta de lectura.
+    const iSesion = ruta.indexOf('tenantCreate<CashSession>(ctx.companyId, "cash_session"');
+    expect(iSesion, "no se crea la sesión").toBeGreaterThan(-1);
+    expect(ruta.slice(iSesion, iSesion + 500), "el turno nace sin dueño")
+      .toMatch(/partner: dueno\.partnerId \?\? undefined/);
+    expect(ruta, "el socio no puede venir del cuerpo").not.toMatch(/body\.partner_id/);
+    // Y el movimiento manual lo hereda del TURNO.
+    const mov = cuerpoDe("src/app/api/cash/movements/route.ts");
+    expect(mov).toMatch(/const dueno = duenoDeLaCaja\(session\)/);
+    expect(mov, "el socio no puede venir del cuerpo").not.toMatch(/body\.partner_id/);
   });
 });

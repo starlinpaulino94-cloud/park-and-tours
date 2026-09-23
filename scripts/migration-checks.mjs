@@ -480,6 +480,18 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0081 — de quién es el dinero de cada caja",
+    // Las tres tablas de caja llevaban sucursal y usuario, y nada más: no había
+    // forma de decir «esta caja es del mostrador del tour center Coral». Y
+    // `/api/payments` ya perdía el dato hoy — creaba el cobro CON su socio y el
+    // movimiento de caja sin él.
+    columns: [
+      ["cash_register", ["partner_id", "seller_id"]],
+      ["cash_session", ["partner_id", "seller_id"]],
+      ["cash_movement", ["partner_id", "seller_id"]],
+    ],
+  },
+  {
     migration: "0080 — el saldo prepago del tour center",
     // El crédito existía y el prepago no: al socio que ingresa por adelantado
     // había que llevarle el saldo en una libreta y mirarla antes de cada venta.

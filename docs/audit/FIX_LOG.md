@@ -2586,3 +2586,58 @@ Y la tabla dice dos cosas más que no se preguntaban:
   reflejado es una llamada al día siguiente preguntando si llegó — y, si no
   llegó, una venta que le rebota por saldo sin que sepa por qué.
 - **Mutación: veinte, las veinte muertas.**
+
+### Fase 7.1/7.2 — la caja no sabía de quién era el dinero
+- **Las tres tablas de caja llevaban sucursal y usuario, y nada más.** No había
+  forma de decir «esta caja es del mostrador del tour center Coral» ni «este
+  turno es del vendedor de la playa»: el dinero de la calle no cabía en el
+  modelo, así que o no existía o entraba en el cajón de la operadora.
+- **Y hay un sitio donde ya se perdía HOY, sin esperar a la caja externa.**
+  `/api/payments` creaba el cobro CON su socio —`payment.partner` existe y se
+  rellenaba— y en la línea siguiente abría el `cash_movement` sin él. Desde el
+  momento de escribirlo, el efectivo de una venta de socio era indistinguible
+  del propio de la operadora. Mientras el socio no pueda abrir caja eso no
+  descuadra nada; deja de ser cierto en cuanto exista la caja externa.
+- **`/api/cash/sessions` armaba su propio filtro y no pasaba por ningún ámbito**:
+  listaba TODAS las sesiones de la empresa. Con la caja externa son dos fallos a
+  la vez — al interno le enseñaría el efectivo de los tour centers como propio,
+  y a un miembro de un tour center el de la operadora y el de las demás.
+- **El arqueo interno exige `partner` NULO, no la ausencia de filtro.** El
+  criterio del plan es que no incluya NI UN movimiento de caja de socio, y eso
+  hay que escribirlo: omitir el filtro —que es lo que hace la política de la
+  base, donde el interno lo ve todo— haría que el arqueo sumara el efectivo de
+  los tour centers como propio.
+- **Y lo hace cumplir la BASE, no el acordarse de copiarlo.** Un disparador
+  rechaza el movimiento cuyo dueño no sea el de su turno. El arqueo suma los
+  movimientos de SU turno, así que basta con eso — y no se consigue acordándose
+  de pasarlo bien en las tres rutas que escriben. Con `is distinct from` y no
+  `<>`: con nulos, que es el caso normal, `<>` devuelve nulo y no salta nunca.
+- **Un turno no cambia de dueño a mitad**, también por disparador. Mover el
+  socio de una sesión abierta reasigna de golpe todo su efectivo, y en la
+  dirección cara: una caja de socio que se vuelve de la operadora mete en el
+  arqueo un dinero que nadie tiene.
+- **`tenantFindOne` solo comprueba la empresa**, así que bastaba conocer el
+  identificador de una sesión para meterle un retiro, cerrarle el turno a otro o
+  abrir su arqueo — y el descuadre, con su aprobación, queda a nombre de quien
+  sí estuvo ahí. Las cuatro rutas usan ahora la MISMA función: tres
+  comprobaciones distintas de «esta caja es tuya» acaban discrepando.
+- **El socio no abre la caja de la operadora, ni al revés.** La segunda
+  dirección es la que no se piensa: dejarle abrirla metería su efectivo en el
+  cajón de la casa —el descuadre que toda esta fase existe para evitar— y el
+  arqueo interno lo contaría como propio.
+- **La caja no se abre al CRUD genérico**, y la decisión queda escrita: la base
+  se la deja leer al socio (`can_read_partner`), pero sus pantallas van por las
+  rutas de caja, que además comprueban el dueño del turno. Una segunda puerta al
+  mismo dinero con la mitad de las comprobaciones. La aplicación puede ser más
+  estricta que la base; nunca al revés.
+- **Diez de diecisiete mutaciones no mordían, y las diez eran fallos de las
+  guardas.** Cinco comprobaban la LLAMADA y no el efecto —borrar el `throw` y
+  dejar la llamada las pasaba—; dos daban por bueno un disparador **renombrado**
+  porque `..._off` contiene el nombre original; una encontraba su texto en otro
+  sitio del mismo fichero; una comprobaba que el filtro se calcula pero no que
+  se use. Y la décima destapó una trampa nueva: **`/api/cash` seguido de un
+  asterisco dentro de una cadena abre un comentario de bloque**, y el
+  quitacomentarios de las guardas se tragó tres líneas de la lista de tablas
+  denegadas — la guarda buscaba entonces en las definiciones de recursos, donde
+  el nombre sí aparece.
+- **Mutación: diecisiete, las diecisiete muertas.**

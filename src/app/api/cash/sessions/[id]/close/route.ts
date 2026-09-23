@@ -1,5 +1,9 @@
 import { NextRequest } from "next/server";
-import { requireTenantWrite, requireAtLeast, tenantCreate, tenantFindOne, tenantUpdate } from "@/lib/tenant";
+import {
+  requireTenantWrite, requireAtLeast, tenantCreate, tenantFindOne, tenantUpdate,
+  TenantError, esDeSocio, esAdminDeSocio,
+} from "@/lib/tenant";
+import { noPuedeAbrirLaCaja } from "@/lib/caja-identidad";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { recalcCashSession } from "@/lib/cash";
 import { loadCashClose } from "@/lib/cash-service";
@@ -46,10 +50,30 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       notes?: string;
     }>(req);
 
-    const session = await tenantFindOne<CashSession>(ctx.companyId, "cash_session", id);
+    const session = await tenantFindOne<CashSession & { partner?: unknown; seller?: unknown }>(
+      ctx.companyId, "cash_session", id
+    );
     if (session.status !== "open") {
       throw Object.assign(new Error("La sesión de caja ya está cerrada"), { status: 409 });
     }
+
+    /**
+     * Cierra el turno su dueño (0081).
+     *
+     * `tenantFindOne` solo comprueba la empresa, así que sin esto bastaba
+     * conocer el identificador de una sesión para cerrarle el turno a otro —y
+     * el descuadre, con su aprobación y todo, queda a su nombre—. Misma función
+     * que para abrirla y que para moverla: tres comprobaciones distintas de
+     * «esta caja es tuya» acaban discrepando.
+     */
+    const impedimento = noPuedeAbrirLaCaja(
+      { ...session, status: "active" },
+      {
+        esDeSocio: esDeSocio(ctx), partnerId: ctx.partnerId,
+        sellerId: ctx.sellerId, esAdminDeSocio: esAdminDeSocio(ctx),
+      }
+    );
+    if (impedimento) throw new TenantError(impedimento, 403);
 
     // Se recalcula ANTES de contar: cerrar contra un esperado viejo convierte
     // en descuadre cualquier cobro registrado mientras el cajero contaba.
