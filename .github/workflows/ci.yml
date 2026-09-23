@@ -9,14 +9,6 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    # Explícitos y mínimos: `contents` para el checkout y `packages` para bajar
-    # las imágenes de Supabase autenticado. Este flujo no escribe nada en
-    # GitHub —ni comenta, ni publica, ni etiqueta—, así que declararlo así no
-    # le quita nada y deja de depender de cuál sea el permiso por defecto del
-    # repositorio, que se puede cambiar desde los ajustes sin tocar este fichero.
-    permissions:
-      contents: read
-      packages: read
     steps:
       - uses: actions/checkout@v4
 
@@ -99,9 +91,12 @@ jobs:
       #   2. Reintentar con una espera DE VERDAD entre intentos, para que el
       #      cubo tenga tiempo de rellenarse.
       #
-      # Autenticarse va aparte (el paso de abajo) y es barato, pero no se
-      # apunta el mérito: está por si algún día el límite que topamos sí
-      # distingue quién pide.
+      # Autenticarse contra ghcr.io se probó y se descartó, por dos motivos que
+      # conviene dejar escritos: no arregla esto (ver arriba), y meter un
+      # secreto del repositorio en un paso choca de frente con la guarda de
+      # aislamiento de `ci-aislamiento.test.ts`, que prohíbe exactamente eso.
+      # Esa guarda existe por un incidente real; un «por si acaso» no vale una
+      # excepción en ella.
       # ══════════════════════════════════════════════════════════════════════
       - name: Bajar las imágenes de dos en dos
         run: |
@@ -126,13 +121,6 @@ jobs:
             sleep 1
           done
           docker info --format 'descargas en paralelo: {{.Name}}' > /dev/null
-
-      # Barato y sin secretos nuevos: `GITHUB_TOKEN` lo emite Actions en cada
-      # corrida y caduca con ella. Ver arriba por qué esto NO es el arreglo.
-      - name: Autenticar contra ghcr.io
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Levantar Supabase local (migraciones desde cero)
         run: |
