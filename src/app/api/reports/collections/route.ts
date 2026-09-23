@@ -3,6 +3,8 @@ import { requireTenant, requireAtLeast, tenantQuery } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { statusFor, dayOf, daysBetween } from "@/lib/collections";
+import { sellerCanReadRow, sellerScopeApplies } from "@/lib/seller-scope";
+import { refId } from "@/lib/types";
 import type { PaymentScheduleRow } from "@/lib/types";
 
 const MAX_ROWS = 500;
@@ -49,10 +51,28 @@ export async function GET(req: NextRequest) {
     // que ya no existe.
     const DEAD_ORDER = new Set(["cancelled", "refunded"]);
 
+    /**
+     * Un vendedor cobra LO SUYO, no lo de todos.
+     *
+     * `payment_schedule` no tiene columna de vendedor —el vendedor es el de la
+     * orden—, así que la capa de consulta no puede acotarlo y se acota aquí,
+     * sobre la orden ya expandida, con la misma regla de `seller-scope.ts`:
+     * lo suyo, o lo que no es de ningún vendedor.
+     *
+     * El recorte es POSTERIOR al tope de filas, así que un vendedor puede ver
+     * menos de las suyas de las que hay cuando la empresa supera las 500
+     * pendientes. Se prefiere enseñar de menos a enseñar la cartera ajena.
+     */
+    const sellerScoped = sellerScopeApplies(ctx);
+
     const installments = rows
       .filter((row) => {
         const status = typeof row.order === "object" ? row.order?.status : null;
         if (status && DEAD_ORDER.has(status)) return false;
+        if (sellerScoped) {
+          const owner = typeof row.order === "object" ? refId(row.order?.seller) : null;
+          if (!sellerCanReadRow("order", ctx, owner)) return false;
+        }
         const balance = row.balance ?? Math.max((row.amount ?? 0) - (row.paid_amount ?? 0), 0);
         return balance > 0.009;
       })

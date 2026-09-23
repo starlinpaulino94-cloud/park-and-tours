@@ -1,9 +1,10 @@
 import { NextRequest } from "next/server";
-import { requireTenant, tenantQuery, requireAtLeast, TenantError } from "@/lib/tenant";
+import { requireTenant, tenantQuery, requireAtLeast, TenantError, esDeSocio } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import { resolvePrice } from "@/lib/pricing";
 import type { Departure, Partner, Product, ProductModality } from "@/lib/types";
 import { refId } from "@/lib/types";
+import { plazasLibres, type SalidaConCupo } from "@/lib/plazas";
 
 /**
  * GET /api/portal/catalog?date=YYYY-MM-DD
@@ -15,7 +16,7 @@ export async function GET(req: NextRequest) {
     const sp = req.nextUrl.searchParams;
     // AUD-006: a staff user needs manager+ to inspect another partner's catalog.
     let partnerId: string | null;
-    if (ctx.role === "partner") {
+    if (esDeSocio(ctx)) {
       partnerId = ctx.partnerId;
     } else {
       const requested = sp.get("partner_id");
@@ -36,6 +37,10 @@ export async function GET(req: NextRequest) {
     const products = await tenantQuery<Product>(ctx.companyId, "product", {
       _filter: {
         status: "active",
+        // Mismo motivo que en el punto de venta: la reserva de un paquete
+        // necesita el día de inicio, que este catálogo no pide. Enseñarlo aquí
+        // sería ofrecerle a un socio algo que no puede reservar.
+        is_bundle: false,
         ...(authorizedIds.length ? { _id: { in: authorizedIds } } : {}),
       },
       _limit: 200, _sort: { name: "asc" },
@@ -109,7 +114,8 @@ export async function GET(req: NextRequest) {
           departures: productDepartures.slice(0, 20).map((d) => ({
             _id: d._id,
             departure_at: d.departure_at,
-            available_pax: d.available_pax ?? 0,
+            // Mismo motivo que en el POS: un hueco no es un agotado.
+            available_pax: plazasLibres(d as SalidaConCupo),
             capacity: d.capacity ?? 0,
             status: d.status,
           })),

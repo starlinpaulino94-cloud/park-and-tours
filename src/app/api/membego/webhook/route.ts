@@ -3,6 +3,7 @@ import { verifyMembegoWebhook, parseMembegoEvent } from "@/lib/membego";
 import { membegoSecret, linkByCompany, applyMembegoEvent } from "@/lib/membego-service";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { fail } from "@/lib/api-response";
+import { writeAudit } from "@/lib/audit";
 
 export const dynamic = "force-dynamic";
 
@@ -76,6 +77,19 @@ export async function POST(req: NextRequest) {
     }
 
     const outcome = await applyMembegoEvent(link, event);
+
+    // Un evento de la plataforma hermana cambia datos de la empresa sin que
+    // nadie de aquí toque nada: si no se anota, no hay forma de explicar por
+    // qué un beneficio apareció o desapareció.
+    await writeAudit({
+      companyId: event.companyId,
+      action: "membego_event_applied",
+      entityType: "membego_event",
+      entityId: event.id,
+      description: `MembeGo aplicó un evento (${event.tipo})`,
+      metadata: { tipo: event.tipo },
+    });
+
     return NextResponse.json({ ok: true, data: { id: event.id, ...outcome } });
   } catch (err) {
     // 5xx: que la cola de MembeGo reintente. El detalle queda en el log y, si

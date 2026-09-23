@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast, TenantError } from "@/lib/tenant";
+import { requireTenant, requireAtLeast, TenantError, esDeSocio } from "@/lib/tenant";
 import { fail } from "@/lib/api-response";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { loadCashClose } from "@/lib/cash-service";
@@ -27,7 +27,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const { id } = await params;
     const ctx = await requireTenant();
     await assertRateLimit({ key: rateLimitKey(req, "cash:arqueo:pdf", ctx.userId), limit: 60, windowMs: 60_000 });
-    if (ctx.role === "partner") throw new TenantError("El arqueo de caja es de uso interno", 403);
+    if (esDeSocio(ctx)) throw new TenantError("El arqueo de caja es de uso interno", 403);
     requireAtLeast(ctx, "cashier");
 
     const arqueo = await loadCashClose(ctx.companyId, id);

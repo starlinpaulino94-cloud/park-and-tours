@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/tf/icon";
-import { getTenantContext } from "@/lib/tenant";
+import { getTenantContext, esDeSocio } from "@/lib/tenant";
 import { FILES } from "../../assets/files";
 
 const PILLARS = [
@@ -54,7 +54,10 @@ export default async function LandingPage() {
   // straight into the app instead of the "create account" call to action.
   const session = await getTenantContext();
   const signedIn = !!session;
-  const appHref = !session ? "/login" : session.role === "partner" ? "/portal" : session.companyId ? "/dashboard" : "/onboarding";
+  // Quien tiene socio entra al portal, tenga el rol que tenga: por el nombre
+  // del rol, un empleado de un tour center aterrizaba en el ERP interno.
+  const esDelSocio = session ? esDeSocio(session) : false;
+  const appHref = !session ? "/login" : esDelSocio ? "/portal" : session.companyId ? "/dashboard" : "/onboarding";
   const appLabel = !session ? "Entrar" : session.companyId ? "Ir al panel" : "Terminar configuración";
 
   return (

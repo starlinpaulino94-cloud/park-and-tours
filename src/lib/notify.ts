@@ -148,6 +148,74 @@ export const NOTIFY_EVENTS = {
   },
 
   /** Liquidación confirmada: alguien tiene que pagarla o cobrarla. */
+  /**
+   * LOS CUATRO AVISOS DEL VENDEDOR, Y POR QUÉ VAN CON NOMBRE Y APELLIDO.
+   *
+   * El resto del catálogo se reparte por AUDIENCIA: quien tenga ese rol lo ve.
+   * Para estos cuatro eso sería exactamente lo contrario de lo que hacen falta:
+   * «te han aprobado la comisión» mandado a la audiencia `seller` se lo manda a
+   * TODOS los vendedores de la empresa, así que cada uno recibe el aviso de las
+   * ventas de sus compañeros y ninguno se entera de las suyas entre el ruido.
+   * Y de paso les cuenta cuánto cobran los demás.
+   *
+   * Por eso se emiten con `userId` y `notify` pone entonces `audience_role` en
+   * null: un aviso personal ya tiene nombre y apellido. La audiencia declarada
+   * aquí es la red que queda si algún día se emiten sin usuario, y por eso es
+   * `manager` y no `seller`.
+   */
+  sale_attributed: {
+    type: "booking",
+    audience: "manager",
+    title: (v) => `Venta a tu nombre ${v.referencia ?? ""}`.trim(),
+    message: (v) => `${money(v)}${who(v)}. Tu comisión se calcula al confirmarse el servicio.`,
+    link: () => "/dashboard/mi-espacio/ventas",
+  },
+
+  /**
+   * LA DISPUTA LLEGA A UNA PERSONA, NO A UN ROL.
+   *
+   * Es el mismo razonamiento de los avisos de venta, y aquí pesa más: un aviso
+   * a «los administradores» que todos ven y ninguno coge es exactamente el
+   * final que tiene hoy una llamada de un tour center quejándose de su corte
+   * del mes. La audiencia declarada es la red de seguridad para cuando la
+   * liquidación no tiene a nadie asignado.
+   */
+  settlement_disputed: {
+    type: "settlement",
+    audience: "manager",
+    title: (v) => `Disputa de liquidación ${v.referencia ?? ""}`.trim(),
+    message: (v) => `${v.socio ?? "Un tour center"} no está de acuerdo con ${money(v)}: ${v.motivo ?? "sin motivo"}`,
+    link: () => "/dashboard/liquidaciones",
+  },
+
+  commission_approved: {
+    type: "settlement",
+    audience: "manager",
+    title: () => "Te aprobaron comisión",
+    message: (v) => `${money(v)} aprobado${v.referencia ? ` · ${v.referencia}` : ""}. Entra en la próxima liquidación.`,
+    link: () => "/dashboard/mi-espacio/comisiones",
+  },
+
+  settlement_paid: {
+    type: "settlement",
+    audience: "manager",
+    title: (v) => `Te pagaron la liquidación ${v.referencia ?? ""}`.trim(),
+    message: (v) => `${money(v)}. El detalle está en tu estado de cuenta.`,
+    link: () => "/dashboard/mi-espacio/comisiones",
+  },
+
+  /**
+   * Cancelar anula la comisión de quien vendió. Sin este aviso, el vendedor lo
+   * descubre el día de la liquidación, cuando ya es una discusión.
+   */
+  booking_cancelled_for_seller: {
+    type: "alert",
+    audience: "manager",
+    title: (v) => `Se canceló una venta tuya ${v.referencia ?? ""}`.trim(),
+    message: (v) => `${money(v)}${who(v)}. La comisión de esa reserva queda anulada.`,
+    link: () => "/dashboard/mi-espacio/ventas",
+  },
+
   settlement_confirmed: {
     type: "settlement",
     audience: "manager",

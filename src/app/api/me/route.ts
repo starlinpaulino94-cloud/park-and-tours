@@ -24,6 +24,25 @@ export async function GET() {
       user: {
         id: ctx.userId, email: ctx.email, name: ctx.name,
         role: ctx.role, partnerId: ctx.partnerId,
+        /**
+         * Quién es esta persona COMO VENDEDOR, o null.
+         *
+         * El shell decidía a dónde llevar a cada quien mirando solo el rol, y
+         * con eso no se puede: un gerente que además vende tiene su apartado y
+         * su ERP, y un usuario con rol de vendedor SIN ficha vinculada no tiene
+         * ventas que enseñar —hay que decírselo, no mandarlo a una pantalla en
+         * blanco—. Son tres estados, no dos, y solo este dato los distingue.
+         */
+        sellerId: ctx.sellerId ?? null,
+        /**
+         * Qué manda esta persona DENTRO de su tour center.
+         *
+         * No es el rol: desde 0073 todas las personas de un socio tienen el
+         * mismo, así que el rol no distingue a quien puede dar de alta a un
+         * compañero de quien no. La pantalla necesita ese dato para no ofrecer
+         * un botón que la API va a rechazar.
+         */
+        partnerRole: ctx.partnerRole ?? null,
       },
       companyId: ctx.companyId,
       company: ctx.company,

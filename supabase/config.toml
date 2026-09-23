@@ -1,0 +1,109 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# SUPABASE LOCAL — LA PILA QUE USA EL CI (Y QUIEN QUIERA PROBAR EN SU MÁQUINA)
+#
+# ───────────────────────────────────────────────────────────────────────────
+# POR QUÉ EXISTE ESTE FICHERO
+#
+# El E2E corría contra el proyecto de Supabase DE PRODUCCIÓN. Cada pull request
+# creaba y mantenía la empresa `e2e-tenant` en la base real, reescribía la
+# contraseña de la cuenta de pruebas y le movía la empresa de aterrizaje. Eso ya
+# causó un incidente: una cuenta que una persona usaba dejó de dejarle entrar,
+# en silencio, porque alguien había abierto un PR.
+#
+# Aislarlo con cuidado dentro del mismo proyecto no arregla la categoría del
+# problema: mientras el CI tenga una llave de servicio sobre la operación de
+# verdad, un fallo cualquiera —un filtro mal escrito, una prueba nueva que borra
+# más de la cuenta— escribe en los datos del negocio. La única forma de que eso
+# NO pueda pasar es que el CI no tenga con qué.
+#
+# Así que cada corrida levanta su propia pila, vacía, con las migraciones
+# aplicadas desde cero, y se la lleva la basura al terminar. Ventajas sobre un
+# segundo proyecto en la nube:
+#
+#   · El CI no maneja ningún secreto: las llaves locales las genera la CLI y no
+#     abren nada que exista.
+#   · Cada corrida parte de una base limpia, así que el E2E prueba TAMBIÉN que
+#     las migraciones levantan un sistema utilizable desde cero.
+#   · No hay un segundo proyecto que mantener, pagar ni vigilar.
+#
+# ───────────────────────────────────────────────────────────────────────────
+# LO QUE SE APAGA, Y POR QUÉ
+#
+# Studio, Realtime, Storage, el buzón de correo y la analítica no los toca el
+# E2E. Cada contenedor que no se levanta son segundos de arranque en cada PR y
+# una cosa menos que puede fallar por su cuenta y teñir de rojo un PR que estaba
+# bien.
+# ═══════════════════════════════════════════════════════════════════════════
+
+project_id = "park-and-tours"
+
+# La semilla de demostración NO se aplica en el CI: son trece ficheros y varios
+# miles de filas, y el E2E no las mira. La base arranca vacía, que además es lo
+# que hace que la prueba compruebe el arranque desde cero.
+[db.seed]
+enabled = false
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+# El mismo tope que trae un proyecto alojado. Ponerlo más alto aquí haría que
+# una consulta que en producción se corta en seco, en el CI pasara entera: la
+# prueba diría que todo va bien justo en el caso que falla de verdad.
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+# 17 es lo que levanta hoy la CLI. Si el proyecto alojado va por otra mayor,
+# se cambia esta línea: una prueba contra una versión distinta de la real puede
+# dar por bueno algo que allí no lo es.
+major_version = 17
+
+[auth]
+enabled = true
+site_url = "http://localhost:3100"
+additional_redirect_urls = ["http://localhost:3100"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = false
+# Sin buzón de correo levantado no hay dónde confirmar nada, y el arranque del
+# E2E crea la cuenta ya confirmada con la llave de servicio.
+enable_confirmations = false
+
+# ───────────────────────────────────────────────────────────────────────────
+# EL ENGANCHE DEL TOKEN — LO MÁS IMPORTANTE DE ESTE FICHERO
+#
+# Sin esto, el token que emite el GoTrue local no lleva `org_id`, así que
+# `getTenantContext()` devuelve null y el panel rebota a /login: el E2E fallaría
+# con un «Timeout» que no explica nada.
+#
+# Es el mismo enganche que el proyecto alojado tiene configurado a mano en
+# Authentication → Hooks. Aquí queda escrito, que es donde se puede revisar.
+# ───────────────────────────────────────────────────────────────────────────
+[auth.hook.custom_access_token]
+enabled = true
+uri = "pg-functions://postgres/app/custom_access_token_hook"
+
+[studio]
+enabled = false
+
+[realtime]
+enabled = false
+
+[storage]
+enabled = false
+
+# El buzón de correo local: no se levanta, y por eso el arranque del E2E crea la
+# cuenta ya confirmada en vez de esperar un correo que nadie va a leer.
+[local_smtp]
+enabled = false
+
+[analytics]
+enabled = false

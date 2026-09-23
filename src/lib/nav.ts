@@ -110,6 +110,27 @@ export const WORKSPACES: Workspace[] = [
           { id: "mi-dia", href: "/dashboard/inicio/mi-dia", label: "Mi día", icon: "Sun",
             description: "Tareas, aprobaciones y avisos que te toca resolver hoy.",
             keywords: ["hoy", "pendientes", "agenda"] },
+          /**
+           * El apartado de quien vende.
+           *
+           * Sin `minRole`: lo ve todo el personal interno, porque en una
+           * operadora pequeña el gerente y el dueño TAMBIÉN venden. Lo que
+           * decide si tiene algo dentro no es el rol sino la ficha vinculada
+           * (`ctx.sellerId`), y quien no la tenga entra a una pantalla que se
+           * lo explica en vez de a una vacía.
+           */
+          { id: "mi-espacio", href: "/dashboard/mi-espacio", label: "Mi espacio", icon: "UserRound",
+            description: "Tus ventas, tu comisión y tu meta del mes.",
+            keywords: ["vendedor", "mis ventas", "comision", "mi meta"] },
+          { id: "mis-ventas", href: "/dashboard/mi-espacio/ventas", label: "Mis ventas", icon: "Receipt",
+            description: "Todo lo que has vendido, con su estado de cobro.",
+            keywords: ["vendedor", "ventas", "ordenes"] },
+          { id: "mis-comisiones", href: "/dashboard/mi-espacio/comisiones", label: "Mis comisiones", icon: "BadgeDollarSign",
+            description: "Devengada, pendiente y pagada, por fecha del servicio.",
+            keywords: ["comision", "cobro", "liquidacion", "mi dinero"] },
+          { id: "mi-enlace", href: "/dashboard/mi-espacio/enlace", label: "Mi enlace y mi QR", icon: "QrCode",
+            description: "Tu enlace de venta, tu código QR y tu embudo.",
+            keywords: ["qr", "enlace", "link", "atribucion", "embudo"] },
         ],
       },
       {
@@ -775,8 +796,12 @@ export const QUICK_ACTIONS: NavItem[] = [
 export const PORTAL_NAV: NavItem[] = [
   { id: "p-resumen", href: "/portal", label: "Resumen", icon: "LayoutDashboard", description: "Tu actividad y saldo." },
   { id: "p-catalogo", href: "/portal/catalogo", label: "Catálogo", icon: "Ticket", description: "Qué puedes vender hoy." },
+  { id: "p-reservar", href: "/portal/reservar", label: "Reservar", icon: "CalendarPlus", description: "Vender con tu neto y tu crédito." },
+  { id: "p-reservar", href: "/portal/reservar", label: "Reservar", icon: "CalendarPlus", description: "Vender con tu neto y tu crédito." },
   { id: "p-reservas", href: "/portal/reservas", label: "Mis reservas", icon: "CalendarCheck", description: "Reservas creadas por tu equipo." },
   { id: "p-liquidaciones", href: "/portal/liquidaciones", label: "Liquidaciones", icon: "FileSpreadsheet", description: "Cortes y pagos." },
+  { id: "p-vendedores", href: "/portal/vendedores", label: "Mi equipo de ventas", icon: "BadgeDollarSign", description: "Quién vendió qué, y cuánto lleva generado." },
+  { id: "p-equipo", href: "/portal/equipo", label: "Accesos", icon: "Users", description: "Quién de tu empresa tiene acceso." },
 ];
 
 export const SUPERADMIN_NAV: NavItem[] = [

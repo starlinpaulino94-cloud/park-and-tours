@@ -47,6 +47,8 @@
 
 /* ════════════════════════════════════════════════════ tipos del estándar ══ */
 
+import { plazasLibres, type SalidaConCupo } from "@/lib/plazas";
+
 export type OctoBookingStatus =
   | "ON_HOLD" | "CONFIRMED" | "EXPIRED" | "CANCELLED" | "REDEEMED" | "PENDING" | "REJECTED";
 
@@ -669,7 +671,12 @@ export function availabilityStatus(
   // Sin capacidad declarada la salida no tiene techo: es venta libre.
   if (!(capacity > 0)) return "FREESALE";
 
-  const free = Math.max(0, Math.floor(Number(departure.available_pax ?? 0)));
+  // `?? 0` decía SOLD_OUT a la OTA en cuanto la caché de cupo no estuviera
+  // calculada —una salida creada por SQL o importada—. Es el peor sitio donde
+  // cometer este error: la venta se pierde en el canal y nadie se entera.
+  const libres = plazasLibres(departure as SalidaConCupo);
+  if (libres === null) return "AVAILABLE";
+  const free = Math.floor(libres);
   if (free <= 0) return "SOLD_OUT";
   return free < capacity / 2 ? "LIMITED" : "AVAILABLE";
 }
@@ -706,7 +713,10 @@ export function toOctoAvailability(input: AvailabilityInput): OctoAvailability {
   const startISO = departure.departure_at ?? new Date().toISOString();
   const endISO = new Date(new Date(startISO).getTime() + Math.max(0, durationHours) * 3_600_000).toISOString();
   const capacity = Number(departure.capacity ?? 0) > 0 ? Math.floor(Number(departure.capacity)) : null;
-  const vacancies = status === "FREESALE" ? null : Math.max(0, Math.floor(Number(departure.available_pax ?? 0)));
+  // `null` es «no aplica / no se sabe», que es lo que OCTO espera cuando no hay
+  // un número fiable. Cero significaría agotado.
+  const libresDep = plazasLibres(departure as SalidaConCupo);
+  const vacancies = status === "FREESALE" || libresDep === null ? null : Math.floor(libresDep);
   const start = localDateTime(startISO, timeZone);
   const end = localDateTime(endISO, timeZone);
 
@@ -776,7 +786,13 @@ export function toOctoCalendar(
       const freesale = open.some((s) => s.status === "FREESALE");
       const vacancies = freesale
         ? null
-        : Math.max(0, ...open.map((s) => Math.floor(Number(s.departure.available_pax ?? 0))), 0);
+        : (() => {
+            const cifras = open
+              .map((s) => plazasLibres(s.departure as SalidaConCupo))
+              .filter((n): n is number => n !== null);
+            // Si ninguna salida abierta sabe su cupo, no se inventa un cero.
+            return cifras.length ? Math.max(0, ...cifras.map(Math.floor)) : null;
+          })();
       const capacities = open
         .map((s) => Math.floor(Number(s.departure.capacity ?? 0)))
         .filter((c) => c > 0);

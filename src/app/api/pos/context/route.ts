@@ -1,8 +1,10 @@
 import { NextRequest } from "next/server";
 import { requireTenant, tenantQuery } from "@/lib/tenant";
+import { ventaSelladaPorVendedor } from "@/lib/seller-scope";
 import { ok, fail } from "@/lib/api-response";
 import type { Branch, CashSession, Departure, Hotel, Partner, Product, Seller } from "@/lib/types";
 import { refId } from "@/lib/types";
+import { plazasLibres, type SalidaConCupo } from "@/lib/plazas";
 
 /**
  * GET /api/pos/context?date=YYYY-MM-DD
@@ -18,9 +20,20 @@ export async function GET(req: NextRequest) {
     // Look 60 days ahead so the seller can also close future sales from the same screen.
     const to = new Date(from.getTime() + 60 * 86_400_000);
 
-    const [products, hotels, sellers, partners, branches, openCash] = await Promise.all([
+    const [products, bundles, hotels, sellers, partners, branches, openCash] = await Promise.all([
       tenantQuery<Product>(ctx.companyId, "product", {
-        _filter: { status: "active" },
+        // ─────────────────────────────────────────────────────────────────
+        // LOS PAQUETES NO SE OFRECEN AQUÍ TODAVÍA
+        //
+        // Un paquete necesita un dato que esta pantalla no pide: el DÍA en que
+        // empieza. Sin él, `createOrderWithBookings` rechaza la venta con
+        // «Falta el día en que empieza el paquete».
+        //
+        // Sin este filtro el paquete salía como una tarjeta normal, el cajero
+        // lo añadía y el fallo aparecía al confirmar, con el cliente delante.
+        // Ofrecer algo que no se puede cobrar es peor que no ofrecerlo: lo
+        // segundo se nota al configurar, lo primero en el mostrador.
+        _filter: { status: "active", is_bundle: false },
         _sort: { sort_order: "asc" },
         _limit: 200,
         category: true,
@@ -29,6 +42,23 @@ export async function GET(req: NextRequest) {
         // por producto si no, y el POS se abre con el cliente delante.
         product_extra: { _limit: 30, _sort: { sort_order: "asc" } },
       }),
+      // ─────────────────────────────────────────────────────────────────
+      // LOS PAQUETES VAN APARTE, Y NO MEZCLADOS EN EL CATÁLOGO
+      //
+      // No se venden igual: un paquete no tiene salida propia —salen sus
+      // actividades— así que las tarjetas del catálogo, que enseñan «próxima
+      // salida» y «plazas», no dicen nada útil sobre él. Y para añadirlo hace
+      // falta antes el DÍA en que empieza, que ninguna tarjeta pide.
+      //
+      // Separarlos deja que cada uno tenga la interfaz que le corresponde, en
+      // vez de una tarjeta que miente sobre la mitad de sus datos.
+      tenantQuery<Product & { bundle_buffer_minutes?: number }>(ctx.companyId, "product", {
+        _filter: { status: "active", is_bundle: true },
+        _sort: { sort_order: "asc" },
+        _limit: 50,
+        category: true,
+        product_bundle_item: { _limit: 20, _sort: { day_offset: "asc" }, product: true },
+      } as never),
       tenantQuery<Hotel>(ctx.companyId, "hotel", { _filter: { status: "active" }, _sort: { name: "asc" }, _limit: 300, zone: true }),
       tenantQuery<Seller>(ctx.companyId, "seller", { _filter: { status: "active" }, _sort: { first_name: "asc" }, _limit: 200 }),
       tenantQuery<Partner>(ctx.companyId, "partner", { _filter: { status: "active" }, _sort: { name: "asc" }, _limit: 200 }),
@@ -88,18 +118,75 @@ export async function GET(req: NextRequest) {
         _id: d._id,
         departure_at: d.departure_at,
         capacity: d.capacity ?? 0,
-        available_pax: d.available_pax ?? 0,
+        // `?? 0` convertía «la caché no está calculada» en «agotado», y con eso
+        // el catálogo entero salía en rojo con salidas vacías. Ver plazas.ts.
+        available_pax: plazasLibres(d as SalidaConCupo),
         status: d.status,
       })),
     }));
 
     console.log(`[pos] contexto: ${catalog.length} productos · ${departures.length} salidas · caja ${openCash[0]?.code ?? "cerrada"}`);
+    const bundleCatalog = (bundles as unknown as Record<string, unknown>[]).map((b) => ({
+      _id: String(b._id),
+      name: String(b.name ?? "Paquete"),
+      code: b.code ?? null,
+      base_price: b.base_price ?? 0,
+      currency: b.currency || ctx.company?.base_currency || "usd",
+      category: typeof b.category === "object" && b.category
+        ? (b.category as { name?: string }).name : undefined,
+      cover_image_url: b.cover_image_url ?? null,
+      // Solo para que la tarjeta pueda decir QUÉ lleva antes de pedir la fecha.
+      // El itinerario real lo arma `/api/bundles` con las salidas de cada día.
+      activities: ((b.product_bundle_item as Record<string, unknown>[]) || []).map((it) => ({
+        itemId: String(it._id),
+        name: typeof it.product === "object" && it.product
+          ? String((it.product as { name?: string }).name ?? "Actividad")
+          : "Actividad",
+        dayOffset: Number(it.day_offset ?? 0),
+        isOptional: it.is_optional === true,
+      })),
+    }));
+
+    const visibleSellers = ventaSelladaPorVendedor(ctx)
+      ? sellers.filter((s) => s._id === ctx.sellerId)
+      : sellers;
+
     return ok({
       currency: ctx.company?.base_currency || "usd",
       role: ctx.role,
       catalog,
+      bundles: bundleCatalog,
       hotels: hotels.map((h) => ({ _id: h._id, name: h.name, zone: typeof h.zone === "object" ? h.zone?.name : undefined })),
-      sellers: sellers.map((s) => ({ _id: s._id, name: [s.first_name, s.last_name].filter(Boolean).join(" ") || s.code || "Vendedor" })),
+      /**
+       * El vendedor ya no elige de quién es su venta.
+       *
+       * Este desplegable listaba a TODO el equipo, así que quien vendía podía
+       * regalarle la venta a un compañero o quedarse la de otro —y detrás va la
+       * comisión—. Ahora, cuando quien está en el punto de venta es un
+       * vendedor, solo se devuelve su propia ficha; el servidor sella la venta
+       * igual aunque llegue otra cosa (`booking-service.ts`), y esto es para
+       * que la pantalla no ofrezca algo que la API va a ignorar.
+       *
+       * De `cashier` hacia arriba se sigue devolviendo el equipo entero:
+       * registrar la venta de otro es trabajo normal en el mostrador.
+       */
+      sellers: visibleSellers.map((s) => ({
+        _id: s._id,
+        name: [s.first_name, s.last_name].filter(Boolean).join(" ") || s.code || "Vendedor",
+        /**
+         * De qué tour center es cada quien, o `null` si es de la casa.
+         *
+         * Los dos desplegables —«Vendedor» y «Partner»— eran independientes y
+         * se mandaban tal cual, así que se podía registrar la venta del tour
+         * center A atribuida a un vendedor del B. Detrás del vendedor va la
+         * comisión. El servidor lo rechaza desde esta entrega; este campo es
+         * para que la pantalla no llegue a ofrecerlo.
+         */
+        partner: refId(s.partner) ?? null,
+      })),
+      /** La ficha de quien vende, para que la pantalla la deje fija y marcada. */
+      own_seller_id: ventaSelladaPorVendedor(ctx) ? ctx.sellerId ?? null : null,
+      seller_locked: ventaSelladaPorVendedor(ctx),
       partners: partners.map((p) => ({ _id: p._id, name: p.commercial_name || p.name || "Partner" })),
       branches: branches.map((b) => ({ _id: b._id, name: b.name })),
       cash_session: openCash[0]

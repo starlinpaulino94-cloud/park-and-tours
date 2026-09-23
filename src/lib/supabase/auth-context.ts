@@ -5,7 +5,7 @@ import { supabaseService } from "@/lib/supabase/service";
 import type { AppRole } from "@/lib/auth";
 import { mfaGate, hasVerifiedFactor } from "@/lib/mfa";
 import type { Company } from "@/lib/types";
-import type { TenantContext } from "@/lib/tenant";
+import { esAdminDeSocio, type TenantContext } from "@/lib/tenant";
 
 /**
  * Supabase Auth → TenantContext (M3).
@@ -97,6 +97,15 @@ export function mapClaimsToContext(
     role,
     companyId: claims.org_id,
     partnerId: claims.partner_id || null,
+    /**
+     * Del MISMO sitio que el identificador, y por eso no pueden discrepar: los
+     * dos salen de que la organización de la membresía sea de tipo socio.
+     *
+     * Se guarda como campo propio en vez de dejar que cada sitio haga
+     * `Boolean(ctx.partnerId)` porque así la regla tiene un nombre, se puede
+     * buscar, y el día que un actor nuevo necesite lo mismo hay dónde ponerlo.
+     */
+    isPartnerMember: Boolean(claims.partner_id),
     branchId: claims.branch_id || null,
     company,
   };
@@ -188,6 +197,106 @@ async function loadMembershipClaims(userId: string, orgId: string): Promise<AppC
   }
 }
 
+/**
+ * LA FICHA DE VENDEDOR DE ESTA CUENTA.
+ *
+ * Es lo que convierte «este usuario tiene rol de vendedor» en «este usuario ES
+ * el vendedor tal», y sin eso el ámbito del vendedor (`seller-scope.ts`) no
+ * tiene por dónde acotar. El vínculo vive en `seller.user_id` y se pone desde
+ * la ficha del vendedor.
+ *
+ * Se consulta en cada petición y SOLO para el rol `seller` —una consulta por
+ * clave indexada, y únicamente para el rango más bajo—. Va por consulta y no
+ * como dato del token a propósito: vincular, desvincular o desactivar una ficha
+ * tiene efecto en la petición siguiente. Metido en el token, un vendedor
+ * desvinculado seguiría viendo lo de su ficha hasta que su sesión se renovara.
+ *
+ * Un fallo aquí devuelve null, y null NO abre nada: el ámbito acota entonces a
+ * las filas sin vendedor. Falla cerrado.
+ */
+async function loadSellerId(
+  orgId: string,
+  userId: string,
+  /**
+   * El tour center del que tiene que colgar la ficha, o `null` para el
+   * personal interno.
+   *
+   * SIN ESTE FILTRO la consulta es una fuga de aislamiento, no una comodidad:
+   * un usuario de tour center cuyo correo coincidiera con el de una ficha
+   * INTERNA de la operadora quedaría acotado a esa ficha —y entonces vería las
+   * ventas de un vendedor de la operadora desde el portal—. La ficha de un
+   * vendedor de socio tiene que colgar de SU socio; ninguna otra sirve.
+   */
+  partnerId: string | null
+): Promise<string | null> {
+  try {
+    const sb = supabaseService();
+    let q = sb
+      .from("seller")
+      .select("id")
+      .eq("organization_id", orgId)
+      .eq("user_id", userId)
+      .eq("status", "active");
+    // `is null` y no «sin condición»: una ficha con socio NO es del personal
+    // interno, y dejarla pasar acotaría a un empleado de la operadora al
+    // ámbito de un vendedor de tour center.
+    q = partnerId ? q.eq("partner_id", partnerId) : q.is("partner_id", null);
+    const { data } = await q.limit(1).maybeSingle();
+    return data?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * EL ESTADO DE LA EMPRESA DEL SOCIO.
+ *
+ * Una consulta por clave primaria, y SOLO para quien viene de un socio: el
+ * personal interno no paga nada por esto. Va por consulta y no como dato del
+ * token por lo mismo que la ficha de vendedor: desactivar o suspender a un
+ * tour center tiene que surtir efecto en la petición siguiente, no cuando a su
+ * sesión le toque renovarse dentro de una hora.
+ *
+ * FALLA CERRADO, y aquí eso importa más que en ningún otro cargador de este
+ * fichero: `loadSellerId` devuelve null y null ACOTA, pero si un fallo de red
+ * aquí devolviera «activo», un socio suspendido seguiría operando por el
+ * simple expediente de que la consulta se cayera. Devuelve la cadena vacía,
+ * que no es `active` y por tanto veta.
+ */
+async function loadPartnerMembership(
+  partnerId: string,
+  userId: string
+): Promise<{ status: string; partnerRole: string | null }> {
+  const CERRADO = { status: "", partnerRole: null };
+  try {
+    const sb = supabaseService();
+    /**
+     * Las dos cosas en UNA consulta: si esa empresa puede operar, y qué manda
+     * esta persona dentro de ella. Se parte de la MEMBRESÍA y no de la
+     * organización porque así la respuesta también deja de existir cuando la
+     * membresía deja de existir — y eso es más estricto que antes a propósito:
+     * `claims.status` viene del token y una membresía borrada seguiría pasando
+     * hasta la siguiente renovación.
+     */
+    const { data, error } = await sb
+      .from("organization_memberships")
+      .select("partner_role, status, organizations!inner(status)")
+      .eq("user_id", userId)
+      .eq("organization_id", partnerId)
+      .eq("status", "active")
+      .maybeSingle();
+    if (error || !data) return CERRADO;
+
+    const org = Array.isArray(data.organizations) ? data.organizations[0] : data.organizations;
+    return {
+      status: ((org as { status?: string } | null)?.status as string) ?? "",
+      partnerRole: (data.partner_role as string) ?? null,
+    };
+  } catch {
+    return CERRADO;
+  }
+}
+
 async function loadClaimsFromPrimaryMembership(userId: string): Promise<AppClaims | null> {
   try {
     const sb = supabaseService();
@@ -267,6 +376,52 @@ export async function getSupabaseTenantContext(): Promise<TenantContext | null> 
   );
   if (!ctx) return null;
   if (mfaPending) ctx.mfaPending = true;
+
+  /**
+   * La ficha de vendedor, para todo el personal interno.
+   *
+   * El rol `seller` la necesita porque su ámbito se acota por ella. Los rangos
+   * de arriba la necesitan por otra razón: en una operadora pequeña el gerente
+   * y el dueño TAMBIÉN venden, y sin este dato su apartado propio no existiría
+   * —o peor, existiría vacío—. No les acota nada (`sellerScopeApplies` solo
+   * mira al rango más bajo): les da su propia vista sin quitarles el ERP.
+   *
+   * Cuesta una consulta indexada por petición para el personal interno. Se
+   * salta para el socio B2B, que no tiene ficha, y para el superadministrador
+   * —incluso mientras impersona—: quien entra a mirar una empresa ajena no es
+   * ningún vendedor de ella, así que no aterriza en el apartado de nadie ni se
+   * le acota lo que ve, que es justo para lo que sirve impersonar (y queda
+   * auditado).
+   */
+  // Del socio, tenga el rol que tenga: un empleado de un tour center dado de
+  // alta como `seller` no es vendedor de la operadora y buscarle ficha sería
+  // una consulta por petición para no encontrar nunca nada.
+  // Se resuelve por `partnerId` y no por `esDeSocio`: lo que hay que consultar
+  // es el estado de UNA organización concreta, y sin identificador no hay
+  // ninguna a la que preguntar. Va ANTES de la ficha porque la ficha del
+  // vendedor de un tour center se busca acotada a ese tour center.
+  if (ctx.partnerId) {
+    const membresia = await loadPartnerMembership(ctx.partnerId, user.id);
+    ctx.partnerStatus = membresia.status;
+    ctx.partnerRole = membresia.partnerRole;
+  }
+
+  /**
+   * Y la ficha de vendedor, que desde la Fase 5 también tiene el tour center.
+   *
+   * El sub-login del vendedor de un socio es esto: una persona del portal que
+   * ADEMÁS tiene ficha, colgando de su propio tour center. Con ella, el ámbito
+   * combinado —lo de su socio, y dentro de eso lo suyo— sale solo, porque los
+   * dos filtros se acumulan (`row-scope.ts`).
+   *
+   * Quien administra la cuenta del tour center no la necesita: no se acota.
+   * Preguntar igualmente costaría una consulta por petición para un dato que
+   * nadie va a mirar.
+   */
+  const esAdminDelSocio = esAdminDeSocio(ctx);
+  if (ctx.role !== "superadmin" && !esAdminDelSocio) {
+    ctx.sellerId = await loadSellerId(ctx.companyId!, user.id, ctx.partnerId ?? null);
+  }
 
   if (ctx.role === "superadmin") {
     const target = (await cookies()).get(IMPERSONATION_COOKIE)?.value;

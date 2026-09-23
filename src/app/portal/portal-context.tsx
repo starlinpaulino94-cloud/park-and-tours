@@ -32,7 +32,10 @@ export function PortalProvider({
   partnerId: string | null;
   children: React.ReactNode;
 }) {
-  const isStaff = role !== "partner";
+  // Quien tiene socio es del socio, tenga el rol que tenga: mirar solo el
+  // nombre del rol enseñaba el aviso de «estás viendo esto como personal
+  // interno» a un empleado del tour center dado de alta como `seller`.
+  const isStaff = !partnerId && role !== "partner";
   const [preview, setPreview] = useState<string | null>(partnerId);
   const [partners, setPartners] = useState<{ _id: string; name?: string; commercial_name?: string }[]>([]);
   const [loading, setLoading] = useState(isStaff && !partnerId);

@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireTenantWrite, requireAtLeast, tenantUpdate, tenantDelete, tenantFindOne } from "@/lib/tenant";
+import type { TenantContext } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -13,8 +14,15 @@ const LINE_TYPES = new Set([
 ]);
 
 /** Comprueba que la línea es de esta cotización y que el documento sigue abierto. */
-async function assertEditable(companyId: string, quoteId: string, lineId: string) {
-  const { quote } = await loadQuoteBundle(companyId, quoteId);
+async function assertEditable(
+  ctx: TenantContext & { companyId: string },
+  quoteId: string,
+  lineId: string
+) {
+  const companyId = ctx.companyId;
+  // El ámbito del vendedor viaja hasta aquí: editar el desglose de la
+  // cotización de un compañero es cambiarle el precio a su cliente.
+  const { quote } = await loadQuoteBundle(companyId, quoteId, ctx);
   if (DECIDED_STATUSES.has(quote.status || "") || quote.status === "superseded") {
     throw Object.assign(
       new Error("Esta cotización ya está cerrada. Abre una revisión para cambiar su desglose."),
@@ -42,7 +50,7 @@ export async function PUT(
     await assertRateLimit({ key: rateLimitKey(req, "quotes:line:edit", ctx.userId), limit: 240, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
-    const { quote, line } = await assertEditable(ctx.companyId, id, lineId);
+    const { quote, line } = await assertEditable(ctx, id, lineId);
     const body = await readJson<Record<string, unknown>>(req);
 
     const patch: Record<string, unknown> = {};
@@ -117,7 +125,7 @@ export async function DELETE(
     await assertRateLimit({ key: rateLimitKey(req, "quotes:line:delete", ctx.userId), limit: 240, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
-    const { quote } = await assertEditable(ctx.companyId, id, lineId);
+    const { quote } = await assertEditable(ctx, id, lineId);
     await tenantDelete(ctx.companyId, "quote_line", lineId);
     const totals = await recalculateQuote(ctx.companyId, id);
 

@@ -6,6 +6,7 @@ import { aliasField, aliasesFor, DEFAULT_FIELD_ALIASES } from "@/lib/supabase/qu
 import {
   splitPartnerInput, mergePartnerRow, resolveRelationshipType,
 } from "@/lib/partners";
+import { versionTrasEditar } from "@/lib/partner-lifecycle";
 
 /**
  * Supabase data provider for tenant-scoped CRUD helpers in `tenant.ts`.
@@ -118,16 +119,37 @@ async function savePartnerRelationship(
   orgId: string,
   partnerId: string,
   relationship: Record<string, unknown>,
-  metadata: Record<string, unknown>
+  metadata: Record<string, unknown>,
+  /**
+   * El texto de las condiciones ANTES de esta escritura.
+   *
+   * Hace falta aquí porque la versión vive en la relación y el texto en
+   * `metadata` de la organización: sin comparar los dos, la única alternativa
+   * sería subir la versión en cada guardado, y entonces el socio recibiría
+   * «las condiciones han cambiado» cada vez que alguien corrige un teléfono.
+   * A la tercera, nadie las vuelve a leer.
+   */
+  condicionesAnteriores?: unknown
 ): Promise<void> {
   const existing = await partnerRelationship(sb, orgId, partnerId);
   const { relationship_type: incomingType, ...rest } = relationship;
-  if (!existing && Object.keys(rest).length === 0 && incomingType === undefined) return;
+  const version = versionTrasEditar(
+    condicionesAnteriores,
+    metadata.commercial_terms,
+    existing?.terms_version as number | null | undefined
+  );
+  const versionCambia = version !== ((existing?.terms_version as number | undefined) ?? 0);
+  if (!existing && Object.keys(rest).length === 0 && incomingType === undefined && !versionCambia) return;
 
-  const payload = {
+  const payload: Record<string, unknown> = {
     ...rest,
     relationship_type: resolveRelationshipType(incomingType, existing ?? undefined, metadata),
   };
+  // La versión SOLO se toca cuando el texto cambió de verdad: escribirla
+  // siempre sobrescribiría con el mismo número, pero también dejaría este
+  // camino como el único sitio donde mirar cuando alguien pregunte por qué se
+  // invalidó una aceptación.
+  if (versionCambia) payload.terms_version = version;
 
   const { error } = existing
     ? await sb.from("organization_relationships").update(payload).eq("id", existing.id as string)
@@ -262,7 +284,7 @@ export async function spCreate<T = Record<string, unknown>>(
       throw new Error(error.message);
     }
     const created = row as Record<string, unknown>;
-    await savePartnerRelationship(sb, orgId, String(created.id), split.relationship, split.metadata);
+    await savePartnerRelationship(sb, orgId, String(created.id), split.relationship, split.metadata, undefined);
     const relationship = await partnerRelationship(sb, orgId, String(created.id));
     return mergePartnerRow(fromPgRow(created), relationship) as T;
   }
@@ -307,7 +329,10 @@ export async function spUpdate<T = Record<string, unknown>>(
     if (error) throw new Error(error.message);
     if (!row) throw notFound();
 
-    await savePartnerRelationship(sb, orgId, id, split.relationship, metadata);
+    const condicionesAnteriores = (stored && typeof stored === "object" && !Array.isArray(stored)
+      ? (stored as Record<string, unknown>).commercial_terms
+      : undefined);
+    await savePartnerRelationship(sb, orgId, id, split.relationship, metadata, condicionesAnteriores);
     const relationship = await partnerRelationship(sb, orgId, id);
     return mergePartnerRow(fromPgRow(row as Record<string, unknown>), relationship) as T;
   }

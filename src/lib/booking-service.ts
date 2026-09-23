@@ -1,5 +1,8 @@
 import "server-only";
 import { tenantCreate, tenantQuery, tenantUpdate, type TenantContext } from "@/lib/tenant";
+import { ventaSelladaPorVendedor } from "@/lib/seller-scope";
+import { excesoDeDescuento, mensajeExceso } from "@/lib/techo-descuento";
+import { desajusteDeAtribucion } from "@/lib/atribucion-coherente";
 import { resolvePrice, resolveCost, billablePax } from "@/lib/pricing";
 import { assertCapacity, recalculateDeparture, OversellError } from "@/lib/availability";
 import { resolveExchangeRate } from "@/lib/currency";
@@ -351,10 +354,58 @@ export async function createOrderWithBookings(
    * `null`: la venta es directa de la empresa, que es la verdad, y no un hueco
    * que haya que rellenar con el último vendedor que pasó por ahí.
    */
-  let attributedSeller = input.seller_id || null;
+  /**
+   * Y ANTES QUE NADA: EL VENDEDOR NO ELIGE DE QUIÉN ES SU VENTA.
+   *
+   * El desplegable «Vendedor» del punto de venta listaba a TODO el equipo y
+   * quien vendía podía elegir a cualquiera: regalarle su venta a un compañero
+   * o quedarse la de otro. Es dinero —la comisión va detrás— y es la mitad
+   * escribible del agujero que cerró el ámbito por fila: acotar lo que se LEE
+   * mientras la atribución se elige a mano no acota nada.
+   *
+   * Cuando quien vende es una persona con rango de vendedor, la venta nace a
+   * su nombre y el `seller_id` del cuerpo se ignora. Su ficha sin vincular
+   * deja la venta SIN vendedor, que es la verdad —el sistema no sabe quién
+   * es—, y no se la inventa por histórico: ese motor existe para las ventas
+   * donde no hay nadie delante, y aquí hay alguien.
+   *
+   * De `cashier` hacia arriba no se sella: un gerente o un cajero que registra
+   * la venta de otro está en su derecho, y pisarle el dato sería un error
+   * silencioso. Los motores sin sesión —web y revendedor— tampoco, y por eso
+   * la pregunta la responde `ventaSelladaPorVendedor` y no el rol a secas.
+   */
+  const selladaPorPersona = ventaSelladaPorVendedor(ctx);
+
+  /**
+   * EL TECHO DE DESCUENTO DE QUIEN VENDE, APLICADO DE VERDAD.
+   *
+   * `seller.max_discount_pct` existía desde 0005, la pantalla lo pedía y no se
+   * aplicaba en ningún cálculo: la operadora creía haber acotado lo que sus
+   * vendedores regalan y el sistema aceptaba un 90 % igual que un 5 %.
+   *
+   * Va AQUÍ y no en la pantalla porque una validación que solo vive en el
+   * navegador no es un techo: es una sugerencia que se salta cualquiera que
+   * llame a la API. Y va antes de calcular precios, para no cobrar nada y tener
+   * que deshacerlo.
+   *
+   * Solo pesa sobre quien vende con rango de vendedor. Un gerente registrando
+   * una venta ejerce SU autorización, no la de la ficha a la que se atribuye.
+   */
+  if (selladaPorPersona && ctx.sellerId) {
+    const [fichaPropia] = await tenantQuery<{ max_discount_pct?: number | null }>(
+      companyId, "seller", { _filter: { _id: ctx.sellerId }, _limit: 1 }
+    );
+    const exceso = excesoDeDescuento(
+      (input.items ?? []).map((i) => ({ product_id: i.product_id, discount_pct: i.discount_pct })),
+      fichaPropia?.max_discount_pct
+    );
+    if (exceso) throw Object.assign(new Error(mensajeExceso(exceso)), { status: 403 });
+  }
+
+  let attributedSeller = selladaPorPersona ? ctx.sellerId ?? null : input.seller_id || null;
   let attributionId: string | null = null;
   let attributionPolicy: string | null = null;
-  if (!attributedSeller) {
+  if (!attributedSeller && !selladaPorPersona) {
     const attribution = await resolveOrderAttribution(
       companyId,
       { customerId: input.customer_id, visitorId: input.visitor_id },
@@ -370,6 +421,23 @@ export async function createOrderWithBookings(
     }
   }
 
+
+  /**
+   * Y el vendedor tiene que ser de quien vende.
+   *
+   * Va aquí —resuelto ya quién es, y antes de tocar cupos, crédito o plazas—
+   * porque rechazar tarde obliga a compensar escrituras que no había que haber
+   * hecho. La comprobación cuesta una consulta por clave primaria, y solo
+   * cuando hay vendedor: la venta directa, que es la mitad de las que se
+   * registran, no paga nada.
+   */
+  if (attributedSeller) {
+    const [fichaDelVendedor] = await tenantQuery<Record<string, unknown>>(companyId, "seller", {
+      _filter: { _id: attributedSeller }, _limit: 1,
+    });
+    const desajuste = desajusteDeAtribucion(fichaDelVendedor ?? null, input.partner_id ?? null);
+    if (desajuste) throw Object.assign(new Error(desajuste), { status: 400 });
+  }
 
   // ---- validate capacity before writing anything --------------------------
   // AUD-B01: aggregate requested pax PER DEPARTURE across all items. Previously
@@ -1269,6 +1337,18 @@ export async function generateCommissionsForBooking(
       amount: c.amount,
       currency: c.currency,
       status: "pending",
+      /**
+       * La fecha del SERVICIO, copiada aquí y no leída de la reserva (0070).
+       *
+       * El mercado liquida por fecha de tour y no por la de venta —una
+       * excursión vendida en marzo para agosto no se cobra en marzo—, y la
+       * capa de consulta no sabe filtrar por columna de una tabla unida.
+       *
+       * Se copia UNA vez: si la reserva se reprograma después, esta fecha no
+       * se mueve. Cambiarla movería el período de liquidación de un dinero ya
+       * devengado, que quizá ya se pagó.
+       */
+      service_date: meta.travelDate ?? undefined,
       generated_at: new Date().toISOString(),
       snapshot: JSON.stringify(c.snapshot),
       // 0059 — la frase que se imprime en la liquidación, y los pasajeros

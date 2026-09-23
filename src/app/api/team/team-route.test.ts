@@ -50,16 +50,27 @@ vi.mock("@/lib/supabase/service", () => ({
         updateUserById: async () => ({ error: null }),
       },
     },
-    from: () => ({
-      select: () => ({
-        eq: () => ({
-          eq: () => ({ maybeSingle: async () => ({ data: membershipRow, error: null }) }),
-          maybeSingle: async () => ({ data: membershipRow, error: null }),
-        }),
-      }),
-      insert: (row: unknown) => membershipInsert(row),
-      update: (row: unknown) => ({ eq: () => ({ eq: () => membershipUpdate(row) }) }),
-    }),
+    /**
+     * El doble devuelve la misma fila tras cualquier cadena de filtros: lo que
+     * estas pruebas miran es el RECHAZO y con qué se llamó a la escritura, no
+     * qué consulta se armó. Desde que la edición busca la membresía en varias
+     * organizaciones —las del socio también— hace falta `.in()` además de
+     * `.eq()`; la lista de socios que se consulta antes devuelve vacío, que es
+     * el caso de una operadora sin tour centers.
+     */
+    from: () => {
+      const cadena: Record<string, unknown> = {
+        maybeSingle: async () => ({ data: membershipRow, error: null }),
+        then: undefined,
+      };
+      cadena.eq = () => cadena;
+      cadena.in = () => cadena;
+      return {
+        select: () => ({ ...cadena, data: [], error: null }),
+        insert: (row: unknown) => membershipInsert(row),
+        update: (row: unknown) => ({ eq: () => ({ eq: () => membershipUpdate(row) }) }),
+      };
+    },
   }),
 }));
 

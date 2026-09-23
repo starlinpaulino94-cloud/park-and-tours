@@ -65,15 +65,28 @@ export default function ProductsPage() {
           render: (p: any) => (p.duration_hours ? `${p.duration_hours} h` : "—") },
         { key: "capacity", header: "Cupo", align: "right", hideOn: "sm",
           render: (p: any) => formatNumber(p.default_capacity ?? 0) },
-        { key: "cost", header: "Coste", align: "right", hideOn: "lg",
-          render: (p: any) => formatMoney(p.base_cost ?? 0, p.currency) },
+        {
+          /**
+           * «—» y no «0» cuando el coste no viene.
+           *
+           * El recorte de columnas (`field-projection.ts`) borra `base_cost`
+           * para quien no puede verlo, y un coste en cero no es «no puedes
+           * verlo»: es «esta excursión no cuesta nada». Con `?? 0` la pantalla
+           * afirmaba algo falso sobre el negocio en vez de callarse.
+           */
+          key: "cost", header: "Coste", align: "right", hideOn: "lg",
+          render: (p: any) => (p.base_cost == null ? "—" : formatMoney(p.base_cost, p.currency)),
+        },
         { key: "price", header: "Precio base", align: "right",
           render: (p: any) => <span className="font-semibold">{formatMoney(p.base_price ?? 0, p.currency)}</span> },
         {
           key: "margin", header: "Margen", align: "right", hideOn: "lg",
           render: (p: any) => {
+            // Sin coste no hay margen que calcular: un 100 % dibujado a partir
+            // de un coste que nadie enseñó es peor que no dibujar nada.
+            if (p.base_cost == null) return "—";
             const price = p.base_price ?? 0;
-            const margin = price - (p.base_cost ?? 0);
+            const margin = price - p.base_cost;
             const pct = price > 0 ? (margin / price) * 100 : 0;
             return (
               <span className={margin >= 0 ? "font-semibold text-emerald-700 dark:text-emerald-400" : "font-semibold text-rose-700 dark:text-rose-400"}>

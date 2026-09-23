@@ -1,6 +1,7 @@
 import type { ModuleKey } from "@/lib/types";
 import "server-only";
 import type { AppRole } from "@/lib/auth";
+import { TenantError, atLeast, esDeSocio } from "@/lib/tenant";
 
 /**
  * Registry of tables exposed through the generic REST layer
@@ -15,6 +16,20 @@ export interface ResourceDef {
   expand?: Record<string, unknown>;
   /** Relations expanded on the detail endpoint (defaults to `expand`). */
   expandOne?: Record<string, unknown>;
+  /**
+   * Lo que se expande en el detalle CUANDO quien consulta viene de un socio.
+   *
+   * Existe por un caso y se documenta para que no se use por otros: la ficha de
+   * cliente arrastra en `expandOne` su historial completo —órdenes, reservas y
+   * oportunidades—, que es «todo lo que esta persona le ha comprado nunca a la
+   * operadora». El tour center tiene derecho a su ficha, no a la relación
+   * entera. Y apoyarse en que la RLS filtre esas expansiones no vale: la capa
+   * de datos habla por el rol de servicio cuando la RLS está apagada, y
+   * entonces no filtra nadie.
+   *
+   * Sin declararlo, el detalle se comporta como siempre.
+   */
+  expandOnePartner?: Record<string, unknown>;
   /** Default sort. */
   sort?: Record<string, "asc" | "desc">;
   /** Fields accepted from the client on create/update. */
@@ -155,7 +170,20 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["slug", "name", "campaign"],
     expand: { seller: true, product: true },
     sort: { created_at: "desc" },
-    writable: ["seller", "slug", "name", "channel", "product", "campaign", "status"],
+    /**
+     * `slug` NO es escribible, y esa es la decisión de 0071.
+     *
+     * Es único EN TODO EL SISTEMA —el índice es global, no por empresa—, así
+     * que aceptarlo del navegador permitiría dos cosas: ocupar los nombres
+     * bonitos del espacio compartido, y sobre todo IMITAR el de un compañero
+     * (`MARISOL1` frente a `MARIS0L1`) para llevarse sus visitas. El cliente
+     * teclea lo que ve en un cartel; no comprueba nada.
+     *
+     * Lo genera el servidor en `POST /api/attribution/links`. `seller` tampoco
+     * se puede reapuntar: cambiarlo es trasladar la atribución —el dinero— de
+     * una persona a otra, y eso lo gobierna `field-write-role.ts`.
+     */
+    writable: ["seller", "name", "channel", "product", "campaign", "status"],
     writeRole: "manager",
   },
   /**
@@ -289,6 +317,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
       order: { _limit: 50, _sort: { createdAt: "desc" } },
       lead: { _limit: 20, _sort: { createdAt: "desc" } },
     },
+    // El socio ve la ficha, no el historial: esas tres expansiones son todo lo
+    // que ese cliente le ha comprado nunca a la operadora, incluido lo que
+    // compró por otro canal. `assigned_seller` tampoco: es un vendedor interno.
+    expandOnePartner: { hotel: true },
     sort: { createdAt: "desc" },
     writable: [
       "hotel", "assigned_seller", "first_name", "last_name", "email", "phone", "whatsapp", "nationality",
@@ -410,6 +442,11 @@ export const RESOURCES: Record<string, ResourceDef> = {
     // again. Commission state changes only through `/api/commissions/bulk` and
     // `/api/settlements/generate`.
     writable: ["notes"],
+    // `service_date` es de solo lectura —la escribe el devengo— pero SÍ se
+    // declara como fecha: es por donde la pantalla del vendedor corta períodos,
+    // y un campo no declarado no es filtrable.
+    dates: ["service_date", "generated_at"],
+    numeric: ["base_amount", "percentage", "amount"],
     writeRole: "manager",
     module: "commissions",
   },
@@ -689,6 +726,23 @@ export const RESOURCES: Record<string, ResourceDef> = {
     writeRole: "operations",
     module: "operations",
   },
+  /**
+   * Las encuestas se responden desde una página pública y se leen desde «La voz
+   * del cliente». Se registran aquí SOLO PARA LEER, que es lo que permite
+   * listarlas, acotarlas por período, imprimirlas y exportarlas como cualquier
+   * otro reporte. `writable: []` es la garantía de que una nota no se puede
+   * editar desde el CRUD genérico: una opinión corregida a mano deja de ser una
+   * opinión.
+   */
+  guest_survey: {
+    table: "guest_survey",
+    search: ["comment"],
+    expand: { product: true, customer: true, guide_staff: true },
+    sort: { answeredAt: "desc" },
+    writable: [],
+    writeRole: "manager",
+  },
+
   audit_log: {
     table: "audit_log",
     search: ["action", "description", "entity_type"],
@@ -1345,6 +1399,35 @@ export function getResource(name: string): ResourceDef | null {
 // customer), never by listing the whole customer table.
 const PARTNER_OWNED_TABLES = new Set([
   "order", "booking", "commission", "settlement", "receivable", "lead",
+  /**
+   * `seller` ENTRA COMO PROPIA, NUNCA COMO COMPARTIDA.
+   *
+   * El tour center necesita ver a su equipo de ventas —es lo que
+   * `/portal/vendedores` enseña—, y la tentación es meterlo en la lista de
+   * catálogo compartido, que es donde está el resto de lo que el socio
+   * consulta sin ser suyo. Sería un error grave: la tabla trae las condiciones
+   * de los vendedores INTERNOS de la operadora —su comisión, su meta, su techo
+   * de descuento— y «compartida» significa sin filtro de socio.
+   *
+   * Como propia, el filtro es `partner = <su socio>` y las fichas internas
+   * —que tienen ese campo nulo— no salen. El plan del ecosistema lo marcaba
+   * como cuidado específico de esta fase; queda escrito aquí porque es donde
+   * alguien lo cambiaría.
+   */
+  "seller",
+  /**
+   * LA CARTERA, DE CADA UNO LA SUYA.
+   *
+   * Sin esto el socio no podía terminar una venta: `POST /api/orders` exige
+   * `customer_id` y él no tenía forma de buscar ni de crear un cliente.
+   * Abrirle `customer` sin acotar habría sido lo contrario del problema — la
+   * cartera ENTERA de la operadora, con teléfonos y correos, a la vista de sus
+   * revendedores.
+   *
+   * Propia por `partner` (migración 0075): los clientes de la operadora tienen
+   * ese campo nulo y no salen. La operadora los sigue viendo todos.
+   */
+  "customer",
 ]);
 // Read-only shared catalog a partner may browse (no partner dimension).
 // NOTE: `product` is intentionally NOT here — the product table carries
@@ -1362,6 +1445,30 @@ export type PartnerScope =
   | { kind: "own"; field: string; partnerId: string };
 
 /** Decides how a partner-role user may access a given table. */
+/**
+ * LO QUE SE LE DENIEGA AL SOCIO A PROPÓSITO, Y POR QUÉ.
+ *
+ * `partnerScopeFor` deniega por defecto, así que esta lista no CAMBIA nada:
+ * existe para que la decisión esté escrita y para que una prueba la sujete. El
+ * plan del ecosistema pedía decidirlo «de antemano» justamente porque son las
+ * tablas donde la respuesta fácil —añadirlas cuando alguien las pida— es la
+ * equivocada.
+ *
+ * Las cuatro cuelgan de un vendedor y **no tienen columna de socio**. Acotarlas
+ * exigiría una subconsulta («los vendedores de mi socio»), que el armador de
+ * filtros no sabe expresar; con un filtro por vendedor a secas, el agente de un
+ * tour center vería las metas y los bonos de los vendedores INTERNOS de la
+ * operadora en cuanto su ficha quedara sin vincular.
+ *
+ * Se deniegan hasta que haya una razón de negocio y una forma de acotarlas.
+ */
+export const PARTNER_DENEGADAS_A_PROPOSITO: Record<string, string> = {
+  seller_goal: "cuelga del vendedor y no tiene columna de socio: las metas son de la operadora",
+  seller_bonus: "igual que las metas, y además es dinero de la operadora a su gente",
+  seller_link: "el enlace de atribución es de la red de ventas interna; el socio no atribuye por QR todavía",
+  seller_attribution: "el embudo del enlace, por lo mismo",
+};
+
 export function partnerScopeFor(table: string, partnerId: string | null): PartnerScope {
   if (!partnerId) return { kind: "denied" };
   if (table === "partner") return { kind: "own", field: "_id", partnerId };
@@ -1431,7 +1538,13 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
   payment: "cashier", cash_session: "cashier", cash_movement: "cashier", cash_count: "cashier",
   // Commercial/accounting figures, costs and margins — managers and up.
   commission: "manager", settlement: "manager", receivable: "manager", payable: "manager",
-  payment_schedule: "seller", booking_cost: "manager",
+  // `payment_schedule` estaba en `seller`, y esa tabla NO tiene columna de
+  // vendedor —el suyo está en la orden, tabla unida, que la capa de consulta no
+  // sabe filtrar—. Es decir: cualquier vendedor leía el calendario de cobros de
+  // toda la empresa, con quién debe qué y cuándo. El informe de cobros
+  // (`/api/reports/collections`) sí se acota, sobre la orden ya expandida; lo
+  // que no se podía acotar era el CRUD genérico, así que sube de rango.
+  payment_schedule: "manager", booking_cost: "manager",
   commission_rule: "manager", product_cost: "manager", price_rule: "manager",
   ledger_account: "manager", ledger_entry: "manager", invoice: "manager",
   expense: "manager", tax_profile: "manager", purchase_order: "manager", purchase_order_line: "manager",
@@ -1444,6 +1557,8 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
   // `/api/erp/integration` y ver la configuración de cada conector. El menú no
   // es la barrera; esta tabla sí.
   audit_log: "admin", integration: "admin", ncf_sequence: "admin",
+  // La opinión de un huésped es dato comercial sensible: no es para el mostrador.
+  guest_survey: "manager",
   accounting_period: "manager",
   // La nómina es el dato más sensible que guarda una empresa pequeña: lo que
   // cobra cada compañero. Sin esto, cualquier usuario del inquilino podía
@@ -1454,6 +1569,64 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
 /** Minimum role required to READ a resource (for non-partner roles). */
 export function readRoleFor(table: string): AppRole | null {
   return READ_ROLE[table] ?? null;
+}
+
+/**
+ * LO QUE UN VENDEDOR PUEDE LEER DE SU PROPIO DINERO.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ HACÍA FALTA UNA EXCEPCIÓN
+ *
+ * `READ_ROLE` se evalúa ANTES que el ámbito por fila. Da igual que
+ * `seller-scope.ts` sepa acotar las comisiones de un vendedor: la compuerta las
+ * reserva a gerencia y devuelve 403 antes de que el filtro llegue a aplicarse.
+ * Por eso el vendedor no veía ni su propia comisión.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * ESTA LISTA NO ES `SELLER_SCOPED`, Y ESA ES LA DECISIÓN
+ *
+ * Lo cómodo habría sido eximir «las tablas que el ámbito ya acota». Habría sido
+ * un agujero: `SELLER_SCOPED` incluye `price_rule` y `commission_rule`, que
+ * también se acotan por vendedor pero cuyo contenido es el tarifario y el
+ * esquema de comisiones de TODA la empresa y de sus socios.
+ *
+ * Así que la exención va sobre una lista propia, corta y escrita a mano, con
+ * una prueba que falla si alguien mete algo aquí sin que el ámbito lo acote —y
+ * otra que comprueba que las reglas comerciales siguen fuera—.
+ *
+ * Las tres que están son las del dinero de la persona, y las tres son
+ * ESTRICTAS en el ámbito (`SELLER_ESTRICTAS`): una fila sin vendedor ahí es de
+ * un socio o de un proveedor, no «de nadie», así que abrirlas no abre de paso
+ * lo ajeno.
+ */
+const SELLER_READABLE = new Set(["commission", "settlement", "payable"]);
+
+export function sellerCanReadTable(table: string): boolean {
+  return SELLER_READABLE.has(table);
+}
+
+/**
+ * La autorización de LECTURA de una tabla, en un solo sitio.
+ *
+ * La escribían por su cuenta el listado, el detalle y la exportación, con la
+ * misma condición copiada tres veces. Copiada, basta con que una se quede
+ * atrás para que un rol lea por un camino lo que el otro le niega —y la que se
+ * queda atrás suele ser la exportación, que es la que se lleva TODO—.
+ */
+export function assertCanReadTable(
+  ctx: { role: AppRole; sellerId?: string | null },
+  table: string
+): void {
+  // El ámbito del socio lo aplica `buildListFilter`; su rango fallaría aquí.
+  if (esDeSocio(ctx)) return;
+  // Y el del vendedor sobre lo suyo, acotado fila a fila por `seller-scope.ts`.
+  if (ctx.role === "seller" && sellerCanReadTable(table)) return;
+
+  const rr = readRoleFor(table);
+  if (!rr) return;
+  if (!atLeast(ctx.role, rr)) {
+    throw new TenantError("No tienes permisos para realizar esta acción", 403);
+  }
 }
 
 /**

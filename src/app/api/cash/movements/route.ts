@@ -6,6 +6,7 @@ import { isKnownCurrency } from "@/lib/cash-close";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import type { CashSession } from "@/lib/types";
+import { writeAudit } from "@/lib/audit";
 
 /** POST /api/cash/movements — manual cash in/out (withdrawals, deposits, petty expenses). */
 export async function POST(req: NextRequest) {
@@ -64,6 +65,16 @@ export async function POST(req: NextRequest) {
       movement_at: new Date().toISOString(),
     });
 
+    // Un movimiento de caja es dinero. Sin anotarlo, un descuadre no se puede
+    // reconstruir: se ve el saldo, no quién lo movió ni por qué.
+    await writeAudit({
+      companyId: ctx.companyId, userId: ctx.userId,
+      action: "cash_movement_registered", entityType: "cash_movement",
+      entityId: (movement as Record<string, unknown>)?._id as string | undefined,
+      description: `${ctx.email} registró un movimiento de caja`,
+      severity: "warning",
+      metadata: { tipo: body.movement_type, importe: body.amount, sesion: body.cash_session_id },
+    });
     await recalcCashSession(ctx.companyId, body.cash_session_id);
     console.log(`[cash] movimiento ${body.movement_type} de ${amount} en ${session.code}`);
     return ok(movement);

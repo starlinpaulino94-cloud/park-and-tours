@@ -24,7 +24,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<Record<string, unknown>>(req);
-    const { quote, options } = await loadQuoteBundle(ctx.companyId, id);
+    const { quote, options } = await loadQuoteBundle(ctx.companyId, id, ctx);
     if (DECIDED_STATUSES.has(quote.status || "") || quote.status === "superseded") {
       throw Object.assign(
         new Error("Esta cotización ya está cerrada. Abre una revisión para cambiar sus alternativas."),

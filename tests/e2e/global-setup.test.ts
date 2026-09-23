@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fakeDb, type FakeDb } from "@/test/fake-tenant";
 import { fakeSupabase } from "@/test/fake-supabase";
+import { clasificarDestino, mensajeDestinoProhibido } from "./global-setup";
 
 /**
  * EL ARRANQUE DEL E2E NO SE APROPIA DE LA CUENTA DE NADIE.
@@ -70,7 +71,10 @@ beforeEach(() => {
   db = proyecto();
   creados.length = 0;
   claves.length = 0;
-  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://proyecto.supabase.co";
+  // Una pila local: el arranque se niega a escribir en un proyecto remoto, y
+  // esa negativa salta ANTES que la comprobación de la cuenta —a propósito—,
+  // así que con una URL remota estas pruebas no llegarían a lo que miden.
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "http://127.0.0.1:54321";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "no-se-mira";
   process.env.E2E_EMAIL = "demopresentaciones@havelgo.com";
   process.env.E2E_PASSWORD = "clave-del-e2e";
@@ -140,15 +144,67 @@ describe("la cuenta del E2E", () => {
     expect(membresias().find((m) => m.organization_id === E2E_ORG)!.is_primary).toBe(true);
   });
 
-  it("y si no existe, la crea", async () => {
+  it("y si no existen, crea LAS DOS: la de propietario y la de vendedor", async () => {
+    /**
+     * Son dos porque el aislamiento no se puede probar con la de propietario:
+     * ve todo por definición. Hace falta una cuenta de rango bajo con su ficha
+     * vinculada.
+     *
+     * La del vendedor se DERIVA de la otra (`algo@x` → `algo+vendedor@x`) para
+     * que herede la misma garantía: si `E2E_EMAIL` es una dirección dedicada,
+     * esta también lo es, y la comprobación de «esta cuenta no es de nadie»
+     * corre sobre las dos.
+     */
     db.seed("auth_users", []);
     process.env.E2E_EMAIL = "e2e@e2e.invalid";
 
     await globalSetup();
 
-    expect(creados.map((c) => c.email)).toEqual(["e2e@e2e.invalid"]);
-    expect(membresias()).toHaveLength(1);
-    expect(membresias()[0].is_primary).toBe(true);
+    expect(creados.map((c) => c.email)).toEqual([
+      "e2e@e2e.invalid",
+      "e2e+vendedor@e2e.invalid",
+    ]);
+
+    const roles = membresias().map((m) => m.role).sort();
+    expect(roles).toEqual(["owner", "seller"]);
+    expect(membresias().every((m) => m.is_primary)).toBe(true);
+  });
+
+  it("la cuenta DERIVADA del vendedor pasa por la misma comprobación", async () => {
+    /**
+     * La cuenta de vendedor nace de la de pruebas (`algo@x` →
+     * `algo+vendedor@x`). Con el alias `+`, cualquiera puede haber registrado
+     * esa dirección antes: es una dirección real que llega al mismo buzón.
+     *
+     * Sin esta comprobación, el arranque le reescribiría la contraseña y le
+     * movería la empresa de aterrizaje en cada ejecución de CI, en silencio,
+     * que es exactamente el fallo que este fichero existe para no repetir —y
+     * que la primera vez costó que alguien no pudiera trabajar sin entender
+     * por qué—.
+     */
+    const VENDEDOR = "user-vendedor";
+    db.seed("auth_users", [
+      { _id: USUARIO, email: "demopresentaciones@havelgo.com" },
+      { _id: VENDEDOR, email: "demopresentaciones+vendedor@havelgo.com" },
+    ]);
+    db.seed("organizations", [
+      { _id: E2E_ORG, name: "E2E Tenant", slug: "e2e-tenant", kind: "tenant", status: "active", tenant_org_id: E2E_ORG },
+      { _id: REAL, name: "Havelgo Demo Tours", slug: "havelgo-demo", kind: "tenant", status: "active", tenant_org_id: REAL },
+    ]);
+    db.seed("organization_memberships", [
+      // La de propietario sí es exclusiva del E2E: el arranque pasa de largo…
+      { _id: "mem-e2e", user_id: USUARIO, organization_id: E2E_ORG, role: "owner", status: "active", is_primary: true },
+      // …y se topa con que la DERIVADA pertenece a una empresa de verdad.
+      { _id: "mem-real", user_id: VENDEDOR, organization_id: REAL, role: "owner", status: "active", is_primary: true },
+    ]);
+
+    const error = await globalSetup().catch((e: Error) => e);
+    expect(error, "el arranque tiene que negarse").toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("demopresentaciones+vendedor@havelgo.com");
+    expect((error as Error).message).toContain("Havelgo Demo Tours");
+
+    // Y no le ha tocado la contraseña a esa cuenta.
+    expect(claves.some((c) => c.id === VENDEDOR)).toBe(false);
   });
 
   it("sin credenciales no escribe nada", async () => {
@@ -158,5 +214,73 @@ describe("la cuenta del E2E", () => {
     expect(claves).toEqual([]);
     expect(creados).toEqual([]);
     expect(membresias()).toEqual([]);
+  });
+});
+
+describe("el destino del arranque tiene que ser desechable", () => {
+  it("una pila local se reconoce", () => {
+    for (const url of [
+      "http://127.0.0.1:54321", "http://localhost:54321",
+      "http://host.docker.internal:54321", "http://kong:8000",
+    ]) {
+      expect(clasificarDestino(url), url).toBe("desechable");
+    }
+  });
+
+  it("un proyecto remoto se RECHAZA por defecto", () => {
+    /**
+     * Denegar por defecto. Durante meses esto escribió en el proyecto de
+     * producción en cada pull request, y nada lo impedía porque nada lo
+     * preguntaba.
+     */
+    expect(clasificarDestino("https://abcdefgh.supabase.co")).toBe("remoto_prohibido");
+    expect(clasificarDestino("https://abcdefgh.supabase.co", "false")).toBe("remoto_prohibido");
+    expect(clasificarDestino("https://abcdefgh.supabase.co", "1")).toBe("remoto_prohibido");
+    expect(clasificarDestino("https://abcdefgh.supabase.co", "yes")).toBe("remoto_prohibido");
+  });
+
+  it("solo una persona escribiendo E2E_ALLOW_REMOTE=true lo abre", () => {
+    expect(clasificarDestino("https://abcdefgh.supabase.co", "true")).toBe("remoto_permitido");
+    expect(clasificarDestino("https://abcdefgh.supabase.co", "TRUE")).toBe("remoto_permitido");
+  });
+
+  it("una URL ilegible tampoco pasa", () => {
+    // Si no se sabe a dónde apunta, no se escribe.
+    for (const url of [undefined, "", "no-es-una-url", "supabase.co"]) {
+      expect(clasificarDestino(url as string | undefined), String(url)).toBe("ilegible");
+    }
+  });
+
+  it("el mensaje dice qué pasa, por qué y cuál es la salida", () => {
+    const texto = mensajeDestinoProhibido("https://abcdefgh.supabase.co", "remoto_prohibido");
+    expect(texto).toContain("abcdefgh.supabase.co");
+    expect(texto).toContain("REESCRIBE contraseñas");
+    expect(texto).toContain("supabase start");
+    expect(texto).toContain("E2E_ALLOW_REMOTE=true");
+  });
+});
+
+describe("contra un proyecto remoto no se escribe NI UNA fila", () => {
+  it("se niega antes de tocar nada", async () => {
+    /**
+     * No basta con que falle: tiene que fallar ANTES de escribir.
+     *
+     * Es la misma lección que la comprobación de la cuenta. Un arranque que
+     * crea la empresa, crea el usuario y LUEGO se da cuenta de que la base era
+     * la de producción ya ha escrito en la base de producción. La comprobación
+     * después del daño no es una comprobación.
+     */
+    process.env.NEXT_PUBLIC_SUPABASE_URL = "https://proyecto.supabase.co";
+    delete process.env.E2E_ALLOW_REMOTE;
+
+    await expect(globalSetup()).rejects.toThrow(/proyecto remoto/i);
+
+    expect(claves, "ni una contraseña reescrita").toEqual([]);
+    expect(creados, "ni un usuario creado").toEqual([]);
+    expect(membresias(), "ni una membresía").toEqual([]);
+    expect(
+      db.rows("organizations").filter((o) => o._id !== E2E_ORG),
+      "ni una empresa creada",
+    ).toEqual([]);
   });
 });

@@ -20,9 +20,12 @@ import { CHANNEL, DEPARTURE_STATUS, MODALITY_TYPE, PAYMENT_METHOD } from "@/lib/
 import { formatDate, formatMoney, formatNumber, formatTime, toDateInput } from "@/lib/format";
 import { optionsFrom } from "@/components/tf/options";
 import { MembegoBenefits } from "./_components/membego-benefits";
+import { plazasDeProducto, plazasLibres } from "@/lib/plazas";
 
 interface CatalogDeparture {
-  _id: string; departure_at?: string; capacity: number; available_pax: number; status?: string;
+  _id: string; departure_at?: string; capacity: number;
+  /** null = nadie ha calculado el cupo todavía. NO es agotado. */
+  available_pax: number | null; status?: string;
 }
 interface CatalogModality {
   _id: string; name?: string; modality_type?: string; price?: number; min_pax?: number; max_pax?: number;
@@ -43,11 +46,53 @@ interface CatalogProduct {
 interface PosContext {
   currency: string; role: string;
   catalog: CatalogProduct[];
+  bundles: CatalogBundle[];
   hotels: { _id: string; name?: string; zone?: string }[];
-  sellers: { _id: string; name: string }[];
+  sellers: { _id: string; name: string; partner?: string | null }[];
+  /** La ficha de quien vende, cuando el servidor va a sellar la venta a su nombre. */
+  own_seller_id?: string | null;
+  seller_locked?: boolean;
   partners: { _id: string; name: string }[];
   branches: { _id: string; name?: string }[];
   cash_session: { _id: string; code?: string; register?: string } | null;
+}
+
+/**
+ * UN PAQUETE EN EL PUNTO DE VENTA.
+ *
+ * No tiene salida propia: la tienen sus actividades. Por eso la tarjeta no
+ * enseña «próxima salida» ni «plazas», y para añadirlo hace falta primero el
+ * día en que empieza — que es lo que el servidor necesita para armar el
+ * itinerario con salidas reales.
+ */
+interface CatalogBundle {
+  _id: string;
+  name: string;
+  code?: string | null;
+  base_price: number;
+  currency: string;
+  category?: string;
+  cover_image_url?: string | null;
+  activities: { itemId: string; name: string; dayOffset: number; isOptional: boolean }[];
+}
+
+/** Un bloque del itinerario que devuelve `/api/bundles`. */
+interface BundleBlock {
+  itemId: string;
+  productName: string;
+  departureId: string;
+  day: string;
+  at: string;
+  seatsLeft: number | null;
+}
+
+interface BundlePlan {
+  bundleId: string;
+  bundleName: string;
+  startDay: string;
+  blocks: BundleBlock[];
+  unresolved: { itemId: string; productName: string; reason: string }[];
+  blocker: string | null;
 }
 
 interface CartItem {
@@ -65,6 +110,9 @@ interface CartItem {
   notes: string;
   /** Extras escogidos: id -> cantidad. Los obligatorios los añade el servidor. */
   extras: Record<string, number>;
+  /** Solo en los paquetes: el día en que empieza y el itinerario que sale. */
+  bundle_start_day?: string;
+  bundle_plan?: BundlePlan | null;
 }
 
 interface QuoteLine {
@@ -142,6 +190,36 @@ export default function PosPage() {
 
   useEffect(() => { loadContext(); }, [loadContext]);
 
+  /**
+   * LOS VENDEDORES QUE ENCAJAN CON EL SOCIO ELEGIDO.
+   *
+   * Los dos desplegables eran independientes: se podía registrar la venta del
+   * tour center A atribuida a un vendedor del B, y detrás del vendedor va la
+   * comisión. El servidor lo rechaza desde esta entrega; esto es para que la
+   * pantalla no llegue a ofrecerlo, que es distinto de impedirlo.
+   *
+   * El vendedor de la casa aparece SIEMPRE, también con un socio elegido: el
+   * conserje trae al cliente y el vendedor del mostrador remata, y el motor de
+   * comisiones reparte las dos. Lo que no aparece nunca es el de otro socio.
+   */
+  const vendedoresDisponibles = useMemo(() => {
+    const todos = ctx?.sellers || [];
+    return todos.filter((s) => !s.partner || s.partner === partnerId);
+  }, [ctx?.sellers, partnerId]);
+
+  /**
+   * Y si el vendedor elegido deja de encajar al cambiar de socio, se suelta.
+   *
+   * Sin esto queda seleccionado un valor que el desplegable ya no enseña —el
+   * control queda en blanco con un identificador dentro— y la venta se manda
+   * con él. Es la forma más silenciosa de que la comprobación del servidor
+   * salte con un mensaje que quien vende no sabe de dónde sale.
+   */
+  useEffect(() => {
+    if (!sellerId) return;
+    if (!vendedoresDisponibles.some((s) => s._id === sellerId)) setSellerId("");
+  }, [vendedoresDisponibles, sellerId]);
+
   // Customer search — debounced, server-side.
   useEffect(() => {
     const t = setTimeout(async () => {
@@ -194,9 +272,76 @@ export default function PosPage() {
     return () => { cancelled = true; clearTimeout(t); };
   }, [cart, partnerId, sellerId, channel]);
 
+  /**
+   * EL PAQUETE SE ARMA ANTES DE AÑADIRLO.
+   *
+   * Un paquete no se puede meter en la venta «y ya veremos»: si una de sus
+   * actividades no tiene salida con plazas, lo que se habría vendido es un
+   * precio cerrado por algo que el cliente no va a recibir entero.
+   *
+   * Así que primero se pide el día, el servidor arma el itinerario con salidas
+   * REALES, se le enseña al cajero —qué actividad, qué día, a qué hora— y solo
+   * si no hay nada que lo bloquee se deja añadir.
+   */
+  const [bundleFor, setBundleFor] = useState<CatalogBundle | null>(null);
+  const [bundleDay, setBundleDay] = useState("");
+  const [bundlePax, setBundlePax] = useState(1);
+  const [bundlePlan, setBundlePlan] = useState<BundlePlan | null>(null);
+  const [bundleBusy, setBundleBusy] = useState(false);
+  const [bundleError, setBundleError] = useState<string | null>(null);
+
+  const planBundleFor = useCallback(async (bundle: CatalogBundle, day: string, pax: number) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) { setBundlePlan(null); return; }
+    setBundleBusy(true);
+    setBundleError(null);
+    const res = await api.get<BundlePlan>(
+      `/api/bundles?bundle=${encodeURIComponent(bundle._id)}&day=${day}&pax=${Math.max(1, pax)}`
+    );
+    setBundleBusy(false);
+    if (!res.ok) {
+      setBundlePlan(null);
+      setBundleError(res.error?.message || "No se pudo armar el itinerario");
+      return;
+    }
+    setBundlePlan(res.data ?? null);
+  }, []);
+
+  const abrirPaquete = (bundle: CatalogBundle) => {
+    const hoy = toDateInput(new Date());
+    setBundleFor(bundle);
+    setBundleDay(hoy);
+    setBundlePax(1);
+    setBundlePlan(null);
+    setBundleError(null);
+    void planBundleFor(bundle, hoy, 1);
+  };
+
+  const addBundleToCart = () => {
+    if (!bundleFor || !bundlePlan || bundlePlan.blocker) return;
+    setCart((c) => [...c, {
+      uid: nextUid(),
+      // El paquete viaja como producto: el servidor lo expande en cabecera +
+      // componentes. Sin salida ni modalidad propias, que las ponen sus
+      // actividades.
+      product: {
+        _id: bundleFor._id, name: bundleFor.name, code: bundleFor.code ?? undefined,
+        base_price: bundleFor.base_price, currency: bundleFor.currency,
+        category: bundleFor.category, modalities: [], extras: [], departures: [],
+      } as unknown as CatalogProduct,
+      departure_id: "", modality_id: "",
+      adults: bundlePax, children: 0, infants: 0,
+      extras: {}, discount_pct: 0,
+      pickup_hotel_id: "", room_number: "", pickup_time: "", notes: "",
+      bundle_start_day: bundlePlan.startDay,
+      bundle_plan: bundlePlan,
+    }]);
+    toast.success(`${bundleFor.name} añadido a la venta`);
+    setBundleFor(null);
+  };
+
   const addToCart = (product: CatalogProduct) => {
     const modality = product.modalities.find((m) => m.modality_type === "adult") || product.modalities[0];
-    const departure = product.departures.find((d) => (d.available_pax ?? 0) > 0) || product.departures[0];
+    const departure = product.departures.find((d) => (plazasLibres(d) ?? 1) > 0) || product.departures[0];
     setCart((c) => [...c, {
       uid: nextUid(),
       product,
@@ -261,6 +406,9 @@ export default function PosPage() {
         pickup_time: i.pickup_time || null,
         room_number: i.room_number || null,
         notes: i.notes || null,
+        // Sin esto el servidor rechaza el paquete con «Falta el día en que
+        // empieza»: es el dato del que cuelga todo el itinerario.
+        bundle_start_day: i.bundle_start_day || null,
         // Los obligatorios los añade el servidor: aquí solo viaja lo que el
         // cliente escogió, para que retirar un extra del catálogo no deje
         // vendiéndose algo que ya no existe.
@@ -353,7 +501,10 @@ export default function PosPage() {
       return;
     }
     setBusy(true);
-    const res = await api.post("/api/payments", {
+    const res = await api.post<{
+      factura?: { id: string; ncf: string | null } | null;
+      factura_error?: string | null;
+    }>("/api/payments", {
       order_id: payFor.order._id,
       amount,
       method: payMethod,
@@ -365,7 +516,37 @@ export default function PosPage() {
       toast.error(res.error?.message || "No se pudo registrar el cobro");
       return;
     }
-    toast.success("Cobro registrado");
+
+    /**
+     * El NCF se enseña EN EL ACTO, con el botón para imprimirlo.
+     *
+     * Es el momento en que el cliente está delante. Decir solo «cobro
+     * registrado» obliga al cajero a irse a buscar la factura a otra pantalla
+     * mientras el cliente espera, y en la práctica eso significa que no se
+     * entrega.
+     *
+     * Y si la factura NO salió —secuencia de NCF agotada, perfil fiscal sin
+     * configurar—, se dice con todas las letras. El cobro está registrado; lo
+     * que falta es el comprobante, y quien está en el mostrador es el único que
+     * puede resolverlo antes de que el cliente se vaya.
+     */
+    const factura = res.data?.factura;
+    if (factura) {
+      toast.success(`Cobro registrado · Factura ${factura.ncf ?? ""}`.trim(), {
+        duration: 10_000,
+        action: {
+          label: "Imprimir",
+          onClick: () => window.open(`/api/invoices/${factura.id}/pdf`, "_blank"),
+        },
+      });
+    } else if (res.data?.factura_error) {
+      toast.warning("Cobro registrado, pero la factura no salió", {
+        description: res.data.factura_error,
+        duration: 12_000,
+      });
+    } else {
+      toast.success("Cobro registrado");
+    }
     setPayFor(null);
     setBenefitTotal(null);
     setPayReceived("");
@@ -386,7 +567,8 @@ export default function PosPage() {
   const overCapacity = cart.some((i) => {
     const dep = i.product.departures.find((d) => d._id === i.departure_id);
     if (!dep) return false;
-    return i.adults + i.children + i.infants > (dep.available_pax ?? 0);
+    const libres = plazasLibres(dep);
+    return libres !== null && i.adults + i.children + i.infants > libres;
   });
 
   // Ayudas del cobro tras la venta.
@@ -438,6 +620,46 @@ export default function PosPage() {
               placeholder="Buscar excursión por nombre, código, categoría o ubicación…" />
           </div>
 
+          {(ctx?.bundles?.length ?? 0) > 0 && (
+            <section className="no-print mb-4 space-y-2">
+              <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                Paquetes
+              </h2>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {(ctx?.bundles ?? []).map((b) => (
+                  <article key={b._id} className="tf-card tf-rise flex flex-col overflow-hidden border-primary/30">
+                    <div className="flex flex-1 flex-col gap-2 p-4">
+                      <div>
+                        <p className="font-display text-sm font-semibold leading-tight">{b.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {b.activities.length} actividad(es)
+                          {b.category ? ` · ${b.category}` : ""}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Pill tone="accent" className="tf-num">{formatMoney(b.base_price, b.currency)}</Pill>
+                        <Pill tone="violet">Paquete</Pill>
+                      </div>
+                      {/* Qué lleva, sin pedir todavía la fecha: el cajero tiene
+                          que poder decírselo al cliente antes de comprometerse. */}
+                      <ul className="space-y-0.5 text-xs text-muted-foreground">
+                        {b.activities.slice(0, 4).map((a) => (
+                          <li key={a.itemId}>
+                            Día {a.dayOffset + 1} · {a.name}{a.isOptional ? " (opcional)" : ""}
+                          </li>
+                        ))}
+                      </ul>
+                      <Button size="sm" variant="outline" className="mt-auto gap-1.5"
+                        onClick={() => abrirPaquete(b)}>
+                        <Icon name="CalendarRange" className="size-4" />Armar itinerario
+                      </Button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+
           {loading ? (
             <div className="grid gap-3 sm:grid-cols-2">
               {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-36 w-full rounded-xl" />)}
@@ -451,7 +673,7 @@ export default function PosPage() {
             <div className="grid gap-3 sm:grid-cols-2">
               {filteredCatalog.map((p) => {
                 const next = p.departures[0];
-                const seats = p.departures.reduce((s, d) => s + (d.available_pax ?? 0), 0);
+                const cupo = plazasDeProducto(p.departures);
                 return (
                   <article key={p._id} className="tf-card tf-rise flex flex-col overflow-hidden">
                     {p.cover_image_url && (
@@ -467,7 +689,16 @@ export default function PosPage() {
                       <div className="flex flex-wrap items-center gap-1.5">
                         <Pill tone="accent" className="tf-num">{formatMoney(p.base_price, p.currency)}</Pill>
                         {p.modalities.length > 0 && <Pill tone="neutral">{p.modalities.length} modalidades</Pill>}
-                        <Pill tone={seats > 0 ? "success" : "danger"} className="tf-num">{formatNumber(seats)} plazas</Pill>
+                        {/* Agotado y «no se sabe» son dos cosas distintas, y pintarlas
+                            igual —rojo, 0 plazas— hace que el catálogo entero parezca
+                            vendido cuando solo falta calcular la caché. */}
+                        {cupo.desconocido ? (
+                          <Pill tone="neutral">Cupo sin calcular</Pill>
+                        ) : (
+                          <Pill tone={cupo.libres > 0 ? "success" : "danger"} className="tf-num">
+                            {formatNumber(cupo.libres)} {cupo.libres === 1 ? "plaza" : "plazas"}
+                          </Pill>
+                        )}
                       </div>
                       <p className="text-xs text-muted-foreground">
                         {next ? `Próxima salida ${formatDate(next.departure_at)} · ${formatTime(next.departure_at)}` : "Sin salidas programadas"}
@@ -527,13 +758,25 @@ export default function PosPage() {
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs">Vendedor</Label>
-              <Select value={sellerId || "__none"} onValueChange={(v) => setSellerId(v === "__none" ? "" : v)}>
-                <SelectTrigger><SelectValue placeholder="Venta directa" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none">Venta directa</SelectItem>
-                  {(ctx?.sellers || []).map((s) => <SelectItem key={s._id} value={s._id}>{s.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              {/*
+                * Quien vende no elige de quién es su venta: el servidor la
+                * sella a su nombre. El desplegable se queda fijo para que la
+                * pantalla no ofrezca algo que la API va a ignorar —ofrecer una
+                * opción que no se cumple es peor que no ofrecerla—.
+                */}
+              {ctx?.seller_locked ? (
+                <div className="flex h-9 items-center rounded-md border border-input bg-muted/50 px-3 text-sm">
+                  {ctx.sellers?.[0]?.name || "Sin ficha vinculada"}
+                </div>
+              ) : (
+                <Select value={sellerId || "__none"} onValueChange={(v) => setSellerId(v === "__none" ? "" : v)}>
+                  <SelectTrigger><SelectValue placeholder="Venta directa" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">Venta directa</SelectItem>
+                    {vendedoresDisponibles.map((s) => <SelectItem key={s._id} value={s._id}>{s.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs">Partner</Label>
@@ -581,7 +824,8 @@ export default function PosPage() {
                 const line = quote?.lines[idx];
                 const departure = item.product.departures.find((d) => d._id === item.departure_id);
                 const pax = item.adults + item.children + item.infants;
-                const noSeats = departure && pax > (departure.available_pax ?? 0);
+                const libresSel = departure ? plazasLibres(departure) : null;
+                const noSeats = libresSel !== null && pax > libresSel;
                 return (
                   <article key={item.uid} className="tf-card space-y-3 p-4">
                     <header className="flex items-start justify-between gap-2">
@@ -595,21 +839,44 @@ export default function PosPage() {
                       </Button>
                     </header>
 
-                    <div className="grid gap-3 sm:grid-cols-2">
+                    {/* UN PAQUETE NO ELIGE SALIDA NI MODALIDAD: las eligen sus
+                        actividades, y ya se decidieron al armar el itinerario.
+                        Enseñar aquí dos desplegables vacíos invitaría a tocar
+                        algo que no aplica. Se enseña el itinerario, que es lo
+                        que el cajero necesita repasar con el cliente. */}
+                    {item.bundle_plan ? (
                       <div className="space-y-1.5">
+                        <Label className="text-xs">Itinerario</Label>
+                        <ul className="divide-y divide-border rounded-md border border-border text-[12.5px]">
+                          {item.bundle_plan.blocks.map((b) => (
+                            <li key={b.itemId} className="flex items-center justify-between gap-2 px-3 py-1.5">
+                              <span className="min-w-0 truncate">{b.productName}</span>
+                              <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                                {formatDate(b.at)} · {formatTime(b.at)}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                        <p className="text-[11px] text-muted-foreground">
+                          Para cambiar el día o los pasajeros, quita el paquete y vuelve a armarlo.
+                        </p>
+                      </div>
+                    ) : (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="min-w-0 space-y-1.5">
                         <Label className="text-xs">Salida</Label>
                         <Select value={item.departure_id} onValueChange={(v) => patchItem(item.uid, { departure_id: v })}>
                           <SelectTrigger><SelectValue placeholder="Selecciona la salida" /></SelectTrigger>
                           <SelectContent>
                             {item.product.departures.map((d) => (
                               <SelectItem key={d._id} value={d._id}>
-                                {formatDate(d.departure_at)} · {formatTime(d.departure_at)} · {d.available_pax} libres
+                                {formatDate(d.departure_at)} · {formatTime(d.departure_at)} · {plazasLibres(d) === null ? "cupo sin calcular" : `${plazasLibres(d)} libres`}
                               </SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
                       </div>
-                      <div className="space-y-1.5">
+                      <div className="min-w-0 space-y-1.5">
                         <Label className="text-xs">Modalidad</Label>
                         <Select value={item.modality_id || "__none"}
                           onValueChange={(v) => patchItem(item.uid, { modality_id: v === "__none" ? "" : v })}>
@@ -626,6 +893,7 @@ export default function PosPage() {
                         </Select>
                       </div>
                     </div>
+                    )}
 
                     <div className="grid grid-cols-4 gap-2">
                       <Counter label="Adultos" value={item.adults} onChange={(v) => patchItem(item.uid, { adults: v })} />
@@ -687,7 +955,7 @@ export default function PosPage() {
                     )}
 
                     <div className="grid gap-3 sm:grid-cols-3">
-                      <div className="space-y-1.5">
+                      <div className="min-w-0 space-y-1.5">
                         <Label className="text-xs">Hotel de recogida</Label>
                         <Select value={item.pickup_hotel_id || "__none"}
                           onValueChange={(v) => patchItem(item.uid, { pickup_hotel_id: v === "__none" ? "" : v })}>
@@ -700,11 +968,11 @@ export default function PosPage() {
                           </SelectContent>
                         </Select>
                       </div>
-                      <div className="space-y-1.5">
+                      <div className="min-w-0 space-y-1.5">
                         <Label className="text-xs">Habitación</Label>
                         <Input value={item.room_number} onChange={(e) => patchItem(item.uid, { room_number: e.target.value })} />
                       </div>
-                      <div className="space-y-1.5">
+                      <div className="min-w-0 space-y-1.5">
                         <Label className="text-xs">Hora de recogida</Label>
                         <Input value={item.pickup_time} placeholder="07:30"
                           onChange={(e) => patchItem(item.uid, { pickup_time: e.target.value })} />
@@ -714,7 +982,7 @@ export default function PosPage() {
                     {noSeats && (
                       <p className="flex items-center gap-1.5 rounded-lg bg-rose-50 px-3 py-2 text-[13px] text-rose-900 dark:bg-rose-950/40 dark:text-rose-100">
                         <Icon name="TriangleAlert" className="size-3.5 shrink-0" />
-                        Solo quedan {departure?.available_pax ?? 0} plazas para {pax} pasajeros.
+                        Solo {libresSel === 1 ? "queda 1 plaza" : `quedan ${libresSel ?? 0} plazas`} para {pax} {pax === 1 ? "pasajero" : "pasajeros"}.
                       </p>
                     )}
 
@@ -754,7 +1022,11 @@ export default function PosPage() {
                   </span>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {formatNumber(quote?.totals.pax ?? 0)} pasajeros en {cart.length} excursion{cart.length === 1 ? "" : "es"}
+                  {/* Concordancia de verdad: «1 pasajeros en 1 excursion» se lee como
+                      un descuido, y en la pantalla donde se cobra eso resta confianza. */}
+                  {formatNumber(quote?.totals.pax ?? 0)}{" "}
+                  {(quote?.totals.pax ?? 0) === 1 ? "pasajero" : "pasajeros"} en {cart.length}{" "}
+                  {cart.length === 1 ? "excursión" : "excursiones"}
                 </p>
               </div>
 
@@ -786,6 +1058,105 @@ export default function PosPage() {
       </div>
 
       {/* ---- quick customer --------------------------------------------- */}
+      {/* ───────────────────────────────────────────────────────────────────
+          ARMAR EL PAQUETE ANTES DE VENDERLO
+
+          El cajero ve el itinerario REAL —qué actividad, qué día, a qué hora,
+          cuántas plazas quedan— antes de comprometer al cliente. Y si alguna
+          actividad no tiene salida servible, el botón no deja añadirlo: un
+          paquete a medias es un precio cerrado por algo que no se va a
+          entregar entero.
+      ─────────────────────────────────────────────────────────────────── */}
+      <Dialog open={!!bundleFor} onOpenChange={(o) => { if (!o) setBundleFor(null); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{bundleFor?.name}</DialogTitle>
+            <DialogDescription>
+              Elige el día en que empieza y cuántos van. El itinerario se arma con las salidas reales.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="flex min-w-0 flex-col gap-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Empieza el
+              <Input
+                type="date" className="h-9 w-[160px]" value={bundleDay}
+                onChange={(e) => {
+                  setBundleDay(e.target.value);
+                  if (bundleFor) void planBundleFor(bundleFor, e.target.value, bundlePax);
+                }}
+              />
+            </label>
+            <label className="flex min-w-0 flex-col gap-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Pasajeros
+              <Input
+                type="number" min={1} className="h-9 w-[90px] text-center" value={bundlePax}
+                onChange={(e) => {
+                  const n = Math.max(1, Number(e.target.value) || 1);
+                  setBundlePax(n);
+                  if (bundleFor) void planBundleFor(bundleFor, bundleDay, n);
+                }}
+              />
+            </label>
+            <p className="text-sm font-semibold tabular-nums">
+              {formatMoney((bundleFor?.base_price ?? 0) * bundlePax, bundleFor?.currency)}
+            </p>
+          </div>
+
+          {bundleBusy ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">Buscando salidas…</p>
+          ) : bundleError ? (
+            <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm">{bundleError}</p>
+          ) : bundlePlan ? (
+            <div className="space-y-2">
+              {bundlePlan.blocks.length > 0 && (
+                <ul className="divide-y divide-border rounded-md border border-border text-[13px]">
+                  {bundlePlan.blocks.map((b) => (
+                    <li key={b.itemId} className="flex items-center justify-between gap-3 px-3 py-2">
+                      <span className="min-w-0">
+                        <span className="block font-medium">{b.productName}</span>
+                        <span className="block text-xs text-muted-foreground tabular-nums">
+                          {formatDate(b.at)} · {formatTime(b.at)}
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                        {b.seatsLeft === null ? "cupo sin calcular" : `${formatNumber(b.seatsLeft)} libres`}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {/* Lo que impide venderlo, dicho con nombre y apellido. «No se
+                  pudo» obliga a adivinar; esto dice qué actividad y por qué. */}
+              {bundlePlan.blocker && (
+                <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-[13px]">
+                  <p className="font-semibold">{bundlePlan.blocker}</p>
+                  {bundlePlan.unresolved.length > 0 && (
+                    <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                      {bundlePlan.unresolved.map((u) => (
+                        <li key={u.itemId}>{u.productName}: {u.reason}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <p className="mt-1 text-xs">Prueba con otro día de inicio o con menos pasajeros.</p>
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBundleFor(null)}>Cancelar</Button>
+            <Button
+              disabled={!bundlePlan || !!bundlePlan.blocker || bundleBusy}
+              onClick={addBundleToCart}
+            >
+              Añadir a la venta
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={newCustomerOpen} onOpenChange={setNewCustomerOpen}>
         <DialogContent>
           <DialogHeader>

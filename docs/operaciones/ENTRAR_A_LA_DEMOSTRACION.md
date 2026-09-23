@@ -39,6 +39,25 @@ comisiones que nadie cobró. Media hora operando ahí creyendo que es la de verd
 —cobrar, cerrar caja, cancelar una salida— es un daño que no se deshace tirando
 de un hilo.
 
+### El cambio alcanza también al panel y a la RLS (0068)
+
+Al principio el selector solo cambiaba una cookie. Eso bastaba para lo que se lee
+con la llave de servicio y filtro por empresa, pero NO para el panel ni para nada
+que filtre por RLS: esos leen la empresa del **token**, que se fijaba en el login.
+Resultado: cambiabas de empresa y el panel seguía en la anterior, con
+«dashboard organization is outside your tenant» y los módulos vacíos.
+
+Desde 0068 la empresa activa se guarda por persona y el **enganche del token la
+pone en el JWT**: al cambiar de empresa, el cliente refresca la sesión y el
+`org_id` del token pasa a la empresa elegida. Así RLS y el panel la respetan sin
+cerrar sesión. Y con una garantía: el enganche solo acepta la empresa activa si
+la persona **sigue teniendo una membresía activa ahí**; si la pierde, el token
+vuelve solo a la principal.
+
+> Requiere la migración **0068** aplicada y este código desplegado. Mientras
+> tanto, para ver una empresa distinta a la principal, sigue valiendo hacerla
+> principal y volver a entrar.
+
 ### Qué lo hace seguro
 
 | | |
@@ -172,6 +191,68 @@ problema de la cuenta: es esto.
 
 ---
 
+## Cargar la demostración con datos
+
+Entrar a la empresa demo y no ver nada es peor que no entrar: parece que el
+sistema está vacío. Para llenarla —catálogo, clientes, ventas, cobros, facturas,
+comisiones, operación, caja, almacén y plataforma— hay un sembrador SQL que se
+pega en el editor de Supabase:
+
+```
+supabase/seed/demo_presentation.sql
+```
+
+Ábrelo, cópialo entero, pégalo en **SQL Editor** de Supabase y ejecútalo.
+
+> **El editor de Supabase corta los pegados grandes** («syntax error at end of input»). Por eso la siembra viene troceada en `supabase/seed/demo_partes/demo_01.sql` … `demo_13.sql`: ejecútalos **en orden**, del 01 al 13, cada uno entero. Son sentencias planas (sin funciones ni bloques `do`) de <8 KB que el editor traga sin cortar. El último imprime el recuento. Tarda
+unos segundos y al final imprime un recuento por módulo. Carga sobre la empresa
+`havelgo-demo-presentaciones`, que es donde aterrizas; si no existe, la crea.
+
+Lo que deja cargado, aproximadamente:
+
+| Módulo | Filas |
+| --- | --- |
+| Productos (tours) y modalidades | 12 + 24 |
+| Clientes | 40 |
+| Salidas (pasadas y futuras) | 60 |
+| Reservas con su rastro (pagos, vouchers, participantes) | 60 |
+| Facturas con NCF | 36 |
+| Comisiones de vendedor | 60 |
+| Costes de proveedor, gastos 606, cuentas por cobrar | sí |
+| Leads, cotizaciones, encuestas NPS respondidas | sí |
+| Caja, almacén, tareas, notificaciones, auditoría | sí |
+
+**Se puede ejecutar las veces que quieras.** Empieza borrando lo que sembró la
+vez anterior (solo de la empresa demo) y vuelve a sembrar: dos ejecuciones dejan
+el mismo resultado, no el doble. Y no toca tu operación real — todo cuelga de la
+empresa demo, que la RLS mantiene aparte.
+
+Los importes **cuadran entre módulos**: el total de una orden es la suma de sus
+reservas, los pagos no superan lo facturado, y la comisión sale del total de la
+venta. No son filas sueltas: es una operación coherente, que es lo que hace
+creíble una demostración.
+
+### Si tu base va por detrás de las migraciones
+
+El sembrador es tolerante: si una tabla no existe todavía (porque tu proyecto no
+tiene aplicada la migración que la crea), la **omite y sigue**, y te avisa con un
+`WARNING` nombrando la tabla que faltó. Carga todo lo demás igual.
+
+Eso es una pista, no un adorno: significa que hay migraciones pendientes, y que
+esa parte de la app tampoco funciona hasta aplicarlas. Por ejemplo, si ves
+`guest_survey no existe (falta la migración 0067)`, las encuestas no se sembraron
+**y** la pantalla de «La voz del cliente» no funciona en la app. Para ponerlo al
+día, aplica los archivos de `supabase/migrations/` posteriores al último que
+tengas, en orden, pegándolos en el editor SQL. Luego vuelve a correr el
+sembrador y esta vez sí carga esa parte.
+
+> Igual que el resto de SQL de esta guía, el sembrador **se ejecuta en CI** —dos
+> veces, para comprobar que de verdad es idempotente— contra un Postgres con
+> todas las migraciones. Si una migración cambia una tabla que llena, el CI se
+> pone rojo en vez de fallar delante de un cliente.
+
+---
+
 ## Lo que NO cambió
 
 - Tu empresa real no se toca nunca. La demo es una empresa aparte, con
@@ -192,5 +273,6 @@ problema de la cuenta: es esto.
 | La ruta del cambio | `POST /api/workspace` |
 | El selector y la banda | `src/components/tf/app-shell.tsx` |
 | El sembrador y las cuentas | `scripts/seed-demo-presentation.mjs` |
+| Cargar la demo con datos (SQL) | `supabase/seed/demo_presentation.sql` |
 | Por qué una cuenta no entra | `npm run check:account` |
 | Qué se le dice a quien no entra | `src/lib/auth-errors.ts` |

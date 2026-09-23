@@ -72,6 +72,18 @@ export interface ExportOptions extends CsvOptions {
    * reconstruirlo de ninguna otra parte.
    */
   keepTimestamps?: boolean;
+  /**
+   * La lista blanca de campos, en su orden.
+   *
+   * Sin ella, las columnas salen de las claves que TRAIGAN las filas: el
+   * archivo se lleva cualquier columna que un día se añada a la tabla. Es lo
+   * correcto para el ERP interno —quien exporta quiere todo lo que tiene— y lo
+   * contrario de lo que hace falta para un actor externo.
+   *
+   * Cuando está, manda: solo salen estos campos, en este orden, y los que no
+   * estén en los datos simplemente no aparecen.
+   */
+  fields?: readonly string[];
 }
 
 /** Arma el archivo entero a partir de las cabeceras y las filas ya formateadas. */
@@ -213,6 +225,23 @@ export function exportColumns(
 ): ExportColumn[] {
   const target = IMPORT_TARGETS.find((t) => t.resource === resourceKey);
   const importable = new Map((target?.fields ?? []).map((f) => [f.name, f.label]));
+
+  /**
+   * Con lista blanca, se acaba la deducción.
+   *
+   * Va ANTES de recorrer las filas y no después de filtrar el resultado: así
+   * el orden es el DECLARADO y no el que traigan los datos, que cambia entre
+   * dos exportaciones del mismo listado según qué fila venga primero con qué
+   * campos rellenos. Un archivo cuyas columnas bailan no se puede comparar con
+   * el del mes pasado.
+   */
+  if (options.fields) {
+    const presentes = new Set<string>();
+    for (const row of rows) for (const key of Object.keys(row)) presentes.add(key);
+    return options.fields
+      .filter((field) => presentes.has(field))
+      .map((field) => ({ field, header: importable.get(field) ?? prettify(field) }));
+  }
 
   // Las claves presentes en los datos, en el orden en que aparecen: una fila
   // puede traer campos que otra no (columnas opcionales).

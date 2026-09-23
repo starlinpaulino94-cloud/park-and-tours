@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireTenant, requireAtLeast, tenantQuery, TenantError } from "@/lib/tenant";
-import { getResource, readRoleFor } from "@/lib/resources";
+import { requireTenant, tenantQuery, TenantError, esDeSocio } from "@/lib/tenant";
+import { getResource, assertCanReadTable } from "@/lib/resources";
 import { fail } from "@/lib/api-response";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { buildListFilter, buildListSort } from "@/lib/erp-query";
+import { projectRows } from "@/lib/field-projection";
 import { buildExport, exportFilename } from "@/lib/export";
+import { columnasParaSocio } from "@/lib/export-socio";
 import { writeAudit } from "@/lib/audit";
 
 /**
@@ -43,11 +45,29 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
     // Más estricto que el listado: un archivo completo es más caro de servir.
     await assertRateLimit({ key: rateLimitKey(req, `export:${def.table}`, ctx.userId), limit: 10, windowMs: 60_000 });
 
-    // La misma autorización de lectura que el listado. Sin esto, un rol que no
-    // puede VER un recurso podría llevárselo entero en un archivo.
-    if (ctx.role !== "partner") {
-      const rr = readRoleFor(def.table);
-      if (rr) requireAtLeast(ctx, rr);
+    // La autorización de lectura, en `resources.ts`: la escribían por su cuenta
+    // el listado, el detalle y la exportación, y basta con que una se quede
+    // atrás para que un rol lea por un camino lo que el otro le niega.
+    assertCanReadTable(ctx, def.table);
+
+    /**
+     * LA LISTA BLANCA DEL SOCIO, Y LA NEGATIVA CUANDO NO LA HAY.
+     *
+     * El exportador arma las cabeceras con las claves que traigan las filas, y
+     * el recorte por campos solo quita lo que alguien declaró sensible. Para un
+     * actor externo hace falta lo contrario: que no salga lo que nadie declaró.
+     *
+     * Y falla por OMISIÓN, que es toda la gracia. Un recurso sin lista devuelve
+     * un 403 que se entiende; la alternativa —exportar todo mientras nadie
+     * declare nada— convierte cada tabla nueva en una fuga silenciosa que se
+     * descubre cuando ya está en el Excel de alguien.
+     */
+    const columnasDelSocio = esDeSocio(ctx) ? columnasParaSocio(resource) : null;
+    if (esDeSocio(ctx) && !columnasDelSocio) {
+      throw new TenantError(
+        "Esta exportación todavía no está disponible para empresas asociadas. Pídesela a tu operador.",
+        403
+      );
     }
 
     const sp = req.nextUrl.searchParams;
@@ -71,7 +91,19 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
       }
     }
 
-    const { csv } = buildExport(resource, rows);
+    /**
+     * El recorte de columnas, también aquí.
+     *
+     * El exportador no sabe recortar por su cuenta: sin esta línea, el archivo
+     * se llevaría el coste de cada excursión y la comisión de cada compañero
+     * mientras la pantalla los esconde. Y nadie lo revisaría, porque «lo
+     * exportó el sistema».
+     */
+    const { csv } = buildExport(resource, projectRows(def.table, ctx, rows), {
+      // Sin lista, `undefined`: el ERP interno sigue exportando todo lo suyo,
+      // que es lo que quien exporta espera de sus propios datos.
+      fields: columnasDelSocio ?? undefined,
+    });
     const filename = exportFilename(resource);
 
     // Queda en la bitácora: sacar la cartera de clientes en un archivo es

@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { getTenantContext, tenantCount, type TenantContext } from "@/lib/tenant";
+import { getTenantContext, tenantCount, type TenantContext, esDeSocio } from "@/lib/tenant";
 import { countDecidableFor } from "@/lib/approvals";
 import { OPEN_TASK_STATUSES } from "@/lib/my-day";
 import { inboxFilter } from "@/lib/notify";
@@ -63,7 +63,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   if (!ctx) redirect("/login");
   if (!ctx.companyId) redirect("/onboarding");
   // Los usuarios del portal nunca entran al ERP interno.
-  if (ctx.role === "partner") redirect("/portal");
+  if (esDeSocio(ctx)) redirect("/portal");
   // La contraseña ya está, falta el código. No se cierra la sesión: obligar a
   // escribir la contraseña otra vez es lo que empuja a desactivar el segundo
   // factor. La API lo exige por su cuenta (`requireTenant`), así que esto no es

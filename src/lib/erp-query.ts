@@ -1,10 +1,13 @@
 import "server-only";
 import type { ResourceDef } from "@/lib/resources";
-import { allowedFilterFields, partnerScopeFor } from "@/lib/resources";
+import { allowedFilterFields } from "@/lib/resources";
 import { decidableFilter } from "@/lib/approvals";
 import { branchFilterFor } from "@/lib/branch-scope";
+import { scopeFiltersFor } from "@/lib/row-scope";
 import { searchFilterFor } from "@/lib/search";
-import { TenantError, type TenantContext } from "@/lib/tenant";
+import { type TenantContext } from "@/lib/tenant";
+import { limitesConsulta, normalizarPeriodo } from "@/lib/report";
+import { companyTimeZone } from "@/lib/time";
 
 /**
  * El filtro de un listado, en UN solo sitio.
@@ -43,15 +46,29 @@ export function buildListFilter(
     filter[field] = value.includes(",") ? { in: value.split(",") } : value;
   }
 
-  // Rango de fechas sobre cualquier campo.
+  /**
+   * Rango de fechas sobre cualquier campo.
+   *
+   * ──────────────────────────────────────────────────────────────────────────
+   * EL ÚLTIMO DÍA SE CAÍA, Y NO SE NOTABA
+   *
+   * Antes esto mandaba `lte: new Date(to)`, o sea la MEDIANOCHE del último día.
+   * «Hasta el 30» dejaba fuera el 30 entero: cada listado y cada exportación
+   * con rango perdía su última jornada, en silencio. Y el corte iba en UTC, así
+   * que una venta de las 21:00 en Santo Domingo se contaba en el día siguiente.
+   *
+   * Ahora el rango es SEMIABIERTO y los cortes son la medianoche de la EMPRESA:
+   * `desde <= t < día siguiente al hasta`. Dos reportes consecutivos se tocan
+   * sin solaparse, y nada se cuenta dos veces ni se pierde. La regla vive en
+   * `report.ts`, con sus pruebas.
+   */
   const dateField = sp.get("dateField");
   const from = sp.get("from");
   const to = sp.get("to");
   if (dateField && (from || to)) {
-    const range: Record<string, string> = {};
-    if (from) range.gte = new Date(from).toISOString();
-    if (to) range.lte = new Date(to).toISOString();
-    filter[dateField] = range;
+    const tz = companyTimeZone(ctx.company as { timezone?: string | null } | null);
+    const periodo = normalizarPeriodo(from, to, new Date(), tz);
+    filter[dateField] = limitesConsulta(periodo, tz);
   }
 
   // Aprobaciones: «solo las que puedo decidir» reutiliza la misma función de
@@ -79,19 +96,7 @@ export function buildListFilter(
   const searchFilter = searchFilterFor(def.table, def.search, sp.get("q"));
   if (searchFilter) Object.assign(filter, searchFilter);
 
-  // Un usuario del portal B2B solo ve lo de su partner. Denegar por defecto:
-  // una tabla que no sea suya ni compartida es 403.
-  if (ctx.role === "partner") {
-    const scope = partnerScopeFor(def.table, ctx.partnerId);
-    if (scope.kind === "denied") {
-      throw new TenantError("No tienes acceso a este recurso", 403);
-    }
-    if (scope.kind === "own") {
-      filter[scope.field] = scope.partnerId;
-    }
-  }
-
-  // Y la sucursal, cuando la persona tiene una. Va aquí —en el armador que
+  // La sucursal, cuando la persona tiene una. Va aquí —en el armador que
   // comparten el listado y su exportación— para que no puedan discrepar: un
   // archivo que se lleva las reservas de las tres sucursales mientras la
   // pantalla enseña una es exactamente el fallo que nadie revisa, porque «lo
@@ -101,7 +106,24 @@ export function buildListFilter(
   // se pisan —solo sobreviviría uno, y decidiría él solo—, y el traductor
   // aplica los `_and` uno tras otro, que es justo lo que hace falta.
   const branchFilter = branchFilterFor(def.table, ctx.branchId);
-  return branchFilter ? { _and: [filter, branchFilter] } : filter;
+
+  /**
+   * Y QUIEN CONSULTA: el socio, el vendedor, o —desde la fase siguiente— los
+   * dos a la vez.
+   *
+   * Una sola llamada. Antes eran dos, pedidas por separado aquí y otras dos
+   * guardas gemelas en el detalle; funcionaba porque hoy son disjuntos, y deja
+   * de serlo en cuanto un tour center tenga vendedores propios. El porqué está
+   * entero en `row-scope.ts`.
+   */
+  const delActor = scopeFiltersFor(def.table, ctx);
+
+  // Cada ámbito entra como un elemento de `_and` en vez de fusionarse: dos
+  // `_or` en el mismo objeto se pisan —solo sobreviviría uno, y decidiría él
+  // solo—, y el traductor aplica los `_and` uno tras otro, que es justo lo que
+  // hace falta para que se acumulen.
+  const scopes = [branchFilter, ...delActor].filter(Boolean) as Record<string, unknown>[];
+  return scopes.length > 0 ? { _and: [filter, ...scopes] } : filter;
 }
 
 /** El orden del listado: el pedido, o el que declara el recurso. */

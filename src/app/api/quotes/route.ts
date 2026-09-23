@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { requireTenant, requireTenantWrite, requireAtLeast, tenantCreate, tenantQuery, tenantCount } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { sellerFilterFor } from "@/lib/seller-scope";
 import { writeAudit } from "@/lib/audit";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -96,6 +97,10 @@ export async function GET(req: NextRequest) {
     const filter: Record<string, unknown> = {};
     if (sp.get("status")) filter.status = sp.get("status");
     if (sp.get("quote_type")) filter.quote_type = sp.get("quote_type");
+    // El mismo ámbito que en `/api/orders`: esta ruta tampoco pasa por
+    // `buildListFilter`, y el embudo de cotizaciones es cartera comercial.
+    const sellerScope = sellerFilterFor("quote", ctx);
+    if (sellerScope) Object.assign(filter, sellerScope);
 
     const [rows, total] = await Promise.all([
       tenantQuery(ctx.companyId, "quote", {

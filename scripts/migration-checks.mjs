@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0021-0066 tienen que haber creado.
+ * El inventario de lo que las migraciones 0021-0076 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -454,7 +454,119 @@ export const MIGRATION_CHECKS = [
     ],
   },
   {
-    migration: "0068 — el estado de la membresía en el espejo de MembeGo",
+    migration: "0068 — empresa activa en el token",
+    // Guarda qué empresa eligió cada persona en el selector, para que el
+    // enganche del token la ponga en el JWT y RLS/el panel respeten el cambio
+    // sin cerrar sesión.
+    tables: ["user_active_workspace"],
+    columns: [
+      ["user_active_workspace", ["user_id", "organization_id", "updated_at"]],
+    ],
+  },
+  {
+    migration: "0069 — una cuenta, un vendedor",
+    // El vínculo cuenta↔ficha decide de quién son las ventas y a quién se le
+    // paga. La columna existe desde 0005; lo que 0069 añade es que sea ÚNICA
+    // por empresa: con dos fichas apuntando a la misma cuenta, qué ventas
+    // vería esa persona dependería de qué fila devolviera la base primero.
+    tables: ["seller"],
+    columns: [
+      ["seller", ["user_id"]],
+    ],
+    // El índice ÚNICO no se comprueba aquí: este verificador habla con
+    // PostgREST, que no expone los catálogos del sistema. Lo comprueba
+    // `supabase/editor/0069_parte_2_indice.sql`, que sí consulta `pg_indexes`
+    // y devuelve una fila legible. Declararlo aquí sin comprobarlo habría
+    // parecido una garantía sin serlo.
+  },
+  {
+    migration: "0076 — la disputa de una liquidación",
+    // El estado `disputed` existía desde 0006 y `dispute_reason` desde 0040:
+    // nadie podía alcanzarlos porque no había ruta que los escribiera. Estas
+    // tres son lo que faltaba para que una queja por teléfono se convierta en
+    // un trámite con fecha, firma y destinatario.
+    columns: [
+      ["settlement", ["disputed_at", "disputed_by", "dispute_assignee"]],
+    ],
+  },
+  {
+    migration: "0075 — la cartera propia del tour center",
+    // Sin esta columna el socio no podía TERMINAR una venta: `POST /api/orders`
+    // exige cliente y él no tenía forma de crear ni de buscar uno. Abrirle
+    // `customer` sin acotar habría sido lo contrario del problema —la cartera
+    // entera de la operadora—, así que la pieza que faltaba era saber de quién
+    // es cada cliente.
+    columns: [
+      ["customer", ["partner_id"]],
+    ],
+    // La política por socio de `customer` y `seller` no se puede comprobar
+    // desde aquí: este verificador habla con PostgREST y `pg_policies` es un
+    // catálogo. Lo hace `supabase/editor/0075_parte_2_verificacion.sql`.
+  },
+  {
+    migration: "0074 — el socio gestiona a su propia gente",
+    // Desde 0073 todas las personas de un socio tienen el mismo `role` por
+    // definición, así que no había dónde escribir «ésta puede dar de alta a las
+    // demás». Va en columna propia y no relajando aquella equivalencia, que es
+    // lo que reabriría la puerta: cada rol nuevo admitido sobre una
+    // organización de socio es un rol que el aislamiento tendría que volver a
+    // reconocer uno a uno.
+    columns: [
+      ["organization_memberships", ["partner_role"]],
+    ],
+  },
+  {
+    migration: "0073 — el ciclo de vida del socio",
+    // `pending` existía desde 0002 y no lo miraba nadie: el enganche del token
+    // comprueba el estado de la MEMBRESÍA, no el de la organización del socio.
+    // Estas cuatro columnas son la otra mitad —qué versión de las condiciones
+    // aceptó el socio, cuándo y quién—, separadas de la vigente para que
+    // cambiar el texto invalide la aceptación sin borrar su rastro.
+    columns: [
+      ["organization_relationships",
+        ["terms_version", "terms_accepted_version", "terms_accepted_at", "terms_accepted_by"]],
+    ],
+    // El disparador del cerrojo no se puede comprobar desde aquí: este
+    // verificador habla con PostgREST y `pg_trigger` es un catálogo. Lo hace
+    // `supabase/editor/0073_parte_2_verificacion.sql`, que además cuenta las
+    // membresías que ya lo incumplen.
+  },
+  {
+    migration: "0072 — el ámbito del socio, por identificador",
+    // No añade columnas: cambia `app.can_read_partner` para que la BASE diga lo
+    // mismo que la aplicación —«sin identificador de socio se ve todo; con
+    // identificador, solo lo suyo»— en vez de mirar el nombre del rol, que un
+    // empleado de tour center dado de alta como `seller` no tiene.
+    // La comprobación de que ya no mira el rol la hace
+    // `supabase/editor/0072_parte_2_verificacion.sql`, que sí puede leer
+    // `pg_proc`; este verificador habla con PostgREST y no ve los catálogos.
+    rpc: [],
+  },
+  {
+    migration: "0071 — el enlace de venta en autoservicio",
+    // Quién lo creó deja de coincidir con de quién es en cuanto el vendedor
+    // puede crearse el suyo; y `hits` responde «no se ha abierto nunca» sin
+    // recorrer el histórico del embudo, que es lo único que su pantalla
+    // pregunta en cada carga.
+    tables: ["seller_link"],
+    columns: [
+      ["seller_link", ["created_by", "hits"]],
+    ],
+  },
+  {
+    migration: "0070 — la comisión sabe de qué día es",
+    // El mercado liquida por fecha de TOUR, no de venta. La fecha de salida
+    // vive dos tablas más allá y la capa de consulta no filtra por columna de
+    // tabla unida, así que sin esta columna no hay forma de cortar períodos
+    // por el día en que se prestó el servicio.
+    tables: ["commission"],
+    columns: [
+      ["commission", ["service_date"]],
+    ],
+    // Igual que arriba: el índice lo verifica `0070_parte_2_verificacion.sql`.
+  },
+  {
+    migration: "0077 — el estado de la membresía en el espejo de MembeGo",
     columns: [
       // Sin esta columna, cancelar o vencer una membresía en MembeGo no tenía
       // dónde escribirse: el espejo seguía diciendo «Plan Oro» de una baja de

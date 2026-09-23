@@ -3,9 +3,11 @@ import { requireTenantWrite, requireAtLeast, tenantFindOne, tenantQuery, tenantU
 import { ok, fail, readJson } from "@/lib/api-response";
 import { assertModule } from "@/lib/plan-service";
 import { writeAudit } from "@/lib/audit";
+import { notify } from "@/lib/notify-service";
+import { usuarioDeVendedor } from "@/lib/seller-identity";
 import { postSettlementPayment } from "@/lib/ledger-events";
 import { payBlocker, stateAfterPayment, PAY_BLOCK_MESSAGE } from "@/lib/supplier-settlement";
-import type { Settlement } from "@/lib/types";
+import { refId, type Settlement } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
 
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -135,6 +137,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       currency: settlement.currency,
       userId: ctx.userId,
     });
+
+    /**
+     * Y se le dice al beneficiario que ya cobró.
+     *
+     * A la PERSONA, no a la audiencia de rol: «te pagaron la liquidación»
+     * repartido por rol se lo manda a todos los vendedores de la empresa.
+     * Sin cuenta vinculada no se avisa a nadie —un aviso personal sin persona
+     * no puede convertirse en un aviso para todo el mundo—, y nunca bloquea:
+     * el dinero ya se movió y ya está en la contabilidad.
+     */
+    if (settlement.beneficiary_type === "seller") {
+      const userId = await usuarioDeVendedor(ctx.companyId, refId(settlement.seller as never));
+      if (userId) {
+        await notify({
+          companyId: ctx.companyId,
+          userId,
+          event: "settlement_paid",
+          entityType: "settlement",
+          entityId: id,
+          vars: {
+            referencia: settlement.code ?? "",
+            monto: payment,
+            moneda: settlement.currency ?? "usd",
+          },
+        });
+      }
+    }
 
     await writeAudit({
       companyId: ctx.companyId, userId: ctx.userId,

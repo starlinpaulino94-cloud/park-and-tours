@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { DEPARTURE_STATUS } from "@/lib/labels";
 import { formatDate, formatDateTime, formatMoney, formatNumber, formatTime, toDateInput } from "@/lib/format";
+import { plazasLibres } from "@/lib/plazas";
 
 interface CatalogDeparture {
   _id: string; departure_at?: string; available_pax?: number; capacity?: number; status?: string;
@@ -71,7 +72,7 @@ export default function PortalCatalogPage() {
     );
   }, [products, q]);
 
-  const seats = (p: CatalogProduct) => p.departures.reduce((s, d) => s + (d.available_pax ?? 0), 0);
+  const seats = (p: CatalogProduct) => p.departures.reduce((s, d) => s + (plazasLibres(d) ?? 0), 0);
 
   return (
     <div className="space-y-5">
@@ -227,8 +228,8 @@ export default function PortalCatalogPage() {
                             <p className="text-xs text-muted-foreground">Salida a las {formatTime(d.departure_at)}</p>
                           </div>
                           <div className="flex items-center gap-2">
-                            <Pill tone={availabilityTone(d.available_pax ?? 0, d.capacity ?? 0)}>
-                              {formatNumber(d.available_pax ?? 0)}/{formatNumber(d.capacity ?? 0)}
+                            <Pill tone={availabilityTone(plazasLibres(d) ?? 0, d.capacity ?? 0)}>
+                              {plazasLibres(d) === null ? "—" : formatNumber(plazasLibres(d)!)}/{formatNumber(d.capacity ?? 0)}
                             </Pill>
                             <StatusBadge value={d.status} dict={DEPARTURE_STATUS} dot={false} />
                           </div>

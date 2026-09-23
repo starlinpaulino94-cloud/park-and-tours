@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireAtLeast, requireTenantWrite, tenantFindOne } from "@/lib/tenant";
+import { requireAtLeast, requireTenantWrite, tenantFindOne, esDeSocio } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import {
   BUCKETS, type BucketKey, assertUploadable, objectPath, partnerObjectPath,
@@ -9,6 +9,7 @@ import { TenantError } from "@/lib/tenant";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { RESOURCES } from "@/lib/resources";
 import { assertWithinLimit, addStorageUsage } from "@/lib/plan-service";
+import { writeAudit } from "@/lib/audit";
 
 /**
  * POST /api/storage/upload  (M4)
@@ -41,7 +42,7 @@ export async function POST(req: NextRequest) {
     await assertWithinLimit(ctx, "max_storage_mb", Math.max(1, Math.ceil(file.size / (1024 * 1024))));
 
     // Partner-role users write only under their own partner folder.
-    const path = ctx.role === "partner" && ctx.partnerId
+    const path = esDeSocio(ctx) && ctx.partnerId
       ? partnerObjectPath(ctx.companyId, ctx.partnerId, entity, file.name)
       : objectPath(ctx.companyId, entity, id, file.name);
 
@@ -56,6 +57,12 @@ export async function POST(req: NextRequest) {
       ? await publicUrl(bucketKey, path)
       : await signedUrl(bucketKey, path, 600);
 
+    await writeAudit({
+      companyId: ctx.companyId, userId: ctx.userId,
+      action: "file_uploaded", entityType: resource.table, entityId: id,
+      description: `${ctx.email} subió un archivo a ${entity}`,
+      metadata: { bucket: BUCKETS[bucketKey], ruta: path },
+    });
     return ok({ path, bucket: BUCKETS[bucketKey], url });
   } catch (err) {
     return fail(err);

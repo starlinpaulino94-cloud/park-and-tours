@@ -1,5 +1,7 @@
 import "server-only";
 import { tenantQuery, tenantFindOne, tenantUpdate } from "@/lib/tenant";
+import { assertSellerOwnsRow } from "@/lib/seller-scope";
+import type { AppRole } from "@/lib/auth";
 import {
   headerTotals, optionBreakdown, lineTotal, depositDue,
   type QuoteOptionInput, type QuoteLineInput,
@@ -64,9 +66,25 @@ export interface QuoteBundle {
   lines: QuoteLineRow[];
 }
 
-/** Carga la cotización con todo lo que hace falta para decidir sobre ella. */
-export async function loadQuoteBundle(companyId: string, quoteId: string): Promise<QuoteBundle> {
+/**
+ * Carga la cotización con todo lo que hace falta para decidir sobre ella.
+ *
+ * `ctx` NO es opcional, y esa es la decisión: todas las rutas de
+ * `/api/quotes/:id/*` pasan por aquí —enviar, revisar, decidir, convertir,
+ * editar líneas y alternativas— y ninguna de ellas miraba de quién era la
+ * cotización, solo el rango. Con el parámetro opcional, la siguiente ruta que
+ * se escribiera se olvidaría de pasarlo y no lo notaría nadie; obligatorio, el
+ * compilador obliga a decidir. `null` significa «uso interno, sin persona
+ * detrás» y solo lo usa el recálculo, que corre DESPUÉS de una escritura ya
+ * autorizada.
+ */
+export async function loadQuoteBundle(
+  companyId: string,
+  quoteId: string,
+  ctx: { role: AppRole; userId?: string | null; sellerId?: string | null } | null
+): Promise<QuoteBundle> {
   const quote = await tenantFindOne<QuoteRow>(companyId, "quote", quoteId);
+  if (ctx) assertSellerOwnsRow("quote", ctx, quote as unknown as Record<string, unknown>, "Esta cotización");
   const [options, lines] = await Promise.all([
     tenantQuery<QuoteOptionRow>(companyId, "quote_option", {
       _filter: { quote: quoteId }, _limit: 20, _sort: { sort_order: "asc" },
@@ -98,7 +116,7 @@ export interface RecalculatedQuote {
  * no sumas que la pantalla hace al vuelo— y la cabecera toma el de la escogida.
  */
 export async function recalculateQuote(companyId: string, quoteId: string): Promise<RecalculatedQuote> {
-  const { quote, options, lines } = await loadQuoteBundle(companyId, quoteId);
+  const { quote, options, lines } = await loadQuoteBundle(companyId, quoteId, null);
   const taxPercent = quote.tax_percent;
 
   const breakdown = optionBreakdown(options, lines, taxPercent);
