@@ -281,3 +281,47 @@ describe("la diferencia", () => {
     expect(needsApproval([-3, 0], 5)).toBe(false);
   });
 });
+
+describe("la comisión que el vendedor se quedó", () => {
+  it("UN RETIRO CON COMISIÓN NO ES UN RETIRO A SECAS", () => {
+    /**
+     * Los dos sacan dinero del cajón, pero el primero es lo que el vendedor se
+     * quedó y no tiene que entregar, y el segundo es dinero que salió a otro
+     * sitio. Mezclarlos le dice que entregue de más y, al cuadrar, le apunta el
+     * descuadre a él.
+     */
+    const [fila] = summarizeCash(
+      [
+        { movement_type: "sale", amount: 300, currency: "usd" },
+        { movement_type: "withdrawal", amount: 45, currency: "usd", commission_id: "c-1" },
+        { movement_type: "withdrawal", amount: 20, currency: "usd" },
+      ],
+      []
+    );
+    expect(fila.retained).toBe(45);
+    expect(fila.withdrawals, "la comisión no es un retiro más").toBe(20);
+  });
+
+  it("pero sale del cajón igual: el esperado no cambia", () => {
+    /**
+     * Lo que cambia es qué se le enseña al vendedor, no cuánto hay. Si la
+     * comisión dejara de restar, el arqueo le pediría el dinero que ya se
+     * llevó.
+     */
+    const [fila] = summarizeCash(
+      [
+        { movement_type: "sale", amount: 300, currency: "usd" },
+        { movement_type: "withdrawal", amount: 45, currency: "usd", commission_id: "c-1" },
+      ],
+      []
+    );
+    expect(fila.expected).toBe(255);
+  });
+
+  it("sin comisiones retenidas la línea es cero, no falta", () => {
+    // Un turno de mostrador normal la trae en cero: es más fácil de leer que
+    // una columna que a veces está y a veces no.
+    const [fila] = summarizeCash([{ movement_type: "sale", amount: 100, currency: "usd" }], []);
+    expect(fila.retained).toBe(0);
+  });
+});

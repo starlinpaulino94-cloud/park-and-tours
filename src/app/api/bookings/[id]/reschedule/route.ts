@@ -181,6 +181,44 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       },
     });
 
+    /**
+     * Y AL TOUR CENTER QUE LO VENDIÓ.
+     *
+     * Al cliente se le avisa desde que existe la reprogramación; al socio, no.
+     * Y es él quien tiene el teléfono del turista en la mano, quien lo va a
+     * buscar al hotel y a quien el turista llama cuando la guagua no aparece.
+     * Enterarse por el cliente de un cambio que hizo la operadora es la peor
+     * versión de esta conversación.
+     *
+     * Misma semilla que el aviso interno: mover la misma reserva dos veces son
+     * dos hechos distintos y son dos avisos, pero el socio entra en la clave
+     * por su identificador —lo hace `notify`—, así que no chocan entre sí.
+     */
+    const ordenId = refId(booking.order as never);
+    const [orden] = ordenId
+      ? await tenantQuery<{ partner?: unknown }>(ctx.companyId, "order", { _filter: { _id: ordenId }, _limit: 1 })
+      : [];
+    const socioDeLaVenta = refId(orden?.partner as never);
+    if (socioDeLaVenta) {
+      await notify({
+        companyId: ctx.companyId,
+        partnerId: socioDeLaVenta,
+        event: "partner_booking_rescheduled",
+        entityType: "booking",
+        entityId: id,
+        dedupeSeed: `${socioDeLaVenta}:${String(target.departure_at || "").slice(0, 10)}`,
+        vars: {
+          referencia: booking.booking_number,
+          // La fecha ANTERIOR sale de la reserva sin releer: sin el «antes», el
+          // socio no sabe qué cita tiene que cambiarle al turista.
+          antes: booking.travel_date ? String(booking.travel_date).slice(0, 16).replace("T", " ") : null,
+          ahora: String(target.departure_at || "").slice(0, 16).replace("T", " "),
+          lugar: (target.meeting_point as string) || null,
+          motivo: reason,
+        },
+      });
+    }
+
     // Y al cliente, salvo que se pida lo contrario: quien no se entera de que su
     // excursión se movió se presenta en el lobby el día que no es.
     if (body.notify !== false) {

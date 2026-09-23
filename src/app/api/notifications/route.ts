@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireTenantWrite, tenantQuery, tenantCount, tenantUpdate } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, tenantQuery, tenantCount, tenantUpdate, esDeSocio } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -28,7 +28,10 @@ export async function GET(req: NextRequest) {
     await assertRateLimit({ key: rateLimitKey(req, "notifications:list", ctx.userId), limit: 120, windowMs: 60_000 });
 
     const sp = req.nextUrl.searchParams;
-    const base = inboxFilter(ctx.userId, ctx.role);
+    const base = inboxFilter({
+      userId: ctx.userId, role: ctx.role,
+      esDeSocio: esDeSocio(ctx), partnerId: ctx.partnerId,
+    });
     const filter: Record<string, unknown> = { ...base };
     if (sp.get("scope") === "unread") filter.read_status = false;
     const type = sp.get("type");
@@ -58,7 +61,13 @@ export async function POST(req: NextRequest) {
     }
 
     const unread = await tenantQuery<{ _id?: string; id?: string }>(ctx.companyId, "notification", {
-      _filter: { ...inboxFilter(ctx.userId, ctx.role), read_status: false },
+      _filter: {
+        ...inboxFilter({
+          userId: ctx.userId, role: ctx.role,
+          esDeSocio: esDeSocio(ctx), partnerId: ctx.partnerId,
+        }),
+        read_status: false,
+      },
       _sort: { created_at: "desc" },
       _limit: MARK_ALL_LIMIT,
     });

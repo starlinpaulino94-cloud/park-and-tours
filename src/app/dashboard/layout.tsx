@@ -50,7 +50,8 @@ async function loadBadges(ctx: TenantContext & { companyId: string }): Promise<N
     // manda al usuario a una pantalla donde no hay nada, y a la tercera vez
     // deja de hacerle caso a la campana.
     safe("notificaciones", () => tenantCount(companyId, "notification", {
-      ...inboxFilter(userId, ctx.role), read_status: false,
+      ...inboxFilter({ userId, role: ctx.role, esDeSocio: esDeSocio(ctx), partnerId: ctx.partnerId }),
+      read_status: false,
     })),
   ]);
 

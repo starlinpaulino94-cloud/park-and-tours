@@ -256,26 +256,63 @@ describe("Panel ejecutivo", () => {
   });
 
   it("Notificaciones — buzón personal con marcar leídas y alcance por usuario", () => {
-    const page = read("src/app/dashboard/inicio/notificaciones/page.tsx");
-    expect(page).not.toContain("SimpleResource");
-    expect(page).toContain('title="Notificaciones"');
-    expect(page).toContain("Marcar todas como leídas");
-    expect(page).toContain("/api/notifications");
+    /**
+     * UNA SOLA BANDEJA PARA LOS DOS BUZONES.
+     *
+     * Quien decide qué hay dentro es el servidor —`inboxFilter` mira al actor—,
+     * así que la pantalla es la misma. Dos copias se habrían separado el día
+     * que alguien arreglara el contador en una: nadie revisa dos veces la misma
+     * pantalla.
+     */
+    const bandeja = read("src/components/tf/bandeja-avisos.tsx");
+    expect(bandeja).not.toContain("SimpleResource");
+    expect(bandeja).toContain('title="Notificaciones"');
+    expect(bandeja).toContain("Marcar todas como leídas");
+    expect(bandeja).toContain("/api/notifications");
+    for (const page of [
+      "src/app/dashboard/inicio/notificaciones/page.tsx",
+      "src/app/portal/avisos/page.tsx",
+    ]) {
+      expect(read(page), `${page} debería usar la bandeja compartida`).toContain("<BandejaDeAvisos");
+      // Y no rearmar la suya: una segunda lista es una segunda forma de
+      // quedarse sin el arreglo de la primera.
+      expect(read(page), `${page} rearma la bandeja`).not.toContain("/api/notifications");
+    }
     // La API acota a las notificaciones propias más los avisos de empresa que
     // le tocan por rol, con la MISMA función que el contador de la campana.
+    //
+    // Y el filtro lo decide el ACTOR, no el rango: quien es de un tour center
+    // recibe otro buzón entero, y eso se lo pregunta a `esDeSocio(ctx)` —el
+    // único sitio autorizado a mirar el nombre del rol— en vez de comparar
+    // aquí.
     const route = read("src/app/api/notifications/route.ts");
-    expect(route).toMatch(/inboxFilter\(ctx\.userId, ctx\.role\)/);
+    expect(route).toMatch(/inboxFilter\(\{/);
+    expect(route).toMatch(/esDeSocio: esDeSocio\(ctx\)/);
     expect(route).toContain("mark_all_read");
     // Y no rearma el alcance por su cuenta: dos definiciones del buzón acaban
     // en un contador que promete avisos que la bandeja no enseña.
     expect(route).not.toMatch(/_or: \[\{ user_id/);
-    // La ruta de marcado verifica pertenencia antes de escribir.
+    /**
+     * La ruta de marcado verifica pertenencia antes de escribir, y CON LA MISMA
+     * función que arma la bandeja.
+     *
+     * Aquí la regla era «`user_id` nulo ⇒ es de empresa ⇒ vale». Los avisos de
+     * un tour center también tienen `user_id` nulo, así que eso dejaba que un
+     * interno —y, peor, otro tour center— se los marcara como leídos y se los
+     * borrara de la campana antes de que él los viera.
+     */
     const readRoute = read("src/app/api/notifications/[id]/read/route.ts");
     expect(readRoute).toContain("Esta notificación no es tuya");
+    expect(readRoute, "la pertenencia se decide con puedeMarcar").toMatch(/puedeMarcar\(notification, actor\)/);
+    expect(readRoute, "y no con la regla vieja del user_id nulo")
+      .not.toMatch(/notification\.user_id && notification\.user_id !== ctx\.userId/);
     // El sidebar cuenta las no leídas con ese mismo alcance.
     expect(read("src/lib/nav.ts")).toContain('badgeKey: "notifications"');
     const layout = read("src/app/dashboard/layout.tsx");
-    expect(layout).toMatch(/inboxFilter\(userId, ctx\.role\)/);
+    // Y con el MISMO actor que la ruta: un contador que cuenta el buzón de la
+    // operadora para quien ve el del socio manda a una pantalla donde no hay
+    // nada, y a la tercera vez deja de hacerle caso a la campana.
+    expect(layout).toMatch(/inboxFilter\(\{ userId, role: ctx\.role, esDeSocio: esDeSocio\(ctx\)/);
     expect(layout).not.toMatch(/_or: \[\{ user_id/);
   });
 
@@ -3129,6 +3166,18 @@ describe("las notificaciones internas", () => {
    * Estas guardas atan cada evento del catálogo al sitio donde ocurre el hecho.
    */
   const HOOKS: [string, string][] = [
+    /**
+     * Los cinco del tour center. `notification.partner_id` está en la tabla
+     * desde 0009 y nadie la escribía: al socio no se le contaba NADA de sus
+     * propias ventas — ni la confirmación, ni el cambio de fecha, ni la
+     * cancelación, ni la liquidación emitida, ni el pago.
+     */
+    ["partner_booking_confirmed", "src/lib/booking-service.ts"],
+    ["partner_booking_cancelled", "src/lib/booking-cancel-service.ts"],
+    ["partner_booking_rescheduled", "src/app/api/bookings/[id]/reschedule/route.ts"],
+    ["partner_settlement_issued", "src/app/api/settlements/generate/route.ts"],
+    ["partner_settlement_paid", "src/app/api/settlements/[id]/pay/route.ts"],
+    ["partner_wallet_topup", "src/app/api/partners/wallet/route.ts"],
     ["booking_created", "src/lib/booking-service.ts"],
     ["booking_cancelled", "src/lib/booking-cancel-service.ts"],
     ["booking_rescheduled", "src/app/api/bookings/[id]/reschedule/route.ts"],
@@ -4955,6 +5004,7 @@ describe("cada pantalla dice cómo se crea lo que enseña", () => {
     "/dashboard/mi-espacio/enlace": "su enlace y su QR: el enlace SÍ se crea aquí, pero con un botón propio y sin formulario de recurso —el slug no se elige, lo genera el servidor—, así que el detector de «cómo se crea esto» no lo reconoce",
     "/dashboard/mi-espacio/comisiones": "sus comisiones: las genera el devengo al confirmarse la venta y las liquida gerencia. Un botón de «nueva» aquí sería dejar que el vendedor se escriba su propia comisión, que es exactamente lo que este apartado no puede permitir",
     "/dashboard/mi-espacio/ventas": "sus ventas ya hechas: se crean en el punto de venta, que es donde está el cliente; esta pantalla las mira, no las inventa",
+    "/dashboard/mi-espacio/turno": "su turno de caja: lo abre quien le entrega el fondo, en «Caja y turnos», y lo cierra quien recibe el dinero. Un botón de «abrir turno» aquí dejaría al vendedor declararse su propio fondo de apertura, que es el número contra el que luego se le cuadra",
     "/dashboard/distribucion/matriz": "vista cruzada de disponibilidad ya existente",
     "/dashboard/distribucion/canales": "un canal no se crea, se conecta: aparece cuando un revendedor reserva por OCTO; se habilita en Integraciones",
     "/dashboard/inicio/notificaciones": "avisos: los emite el sistema",
@@ -5987,8 +6037,30 @@ describe("el vendedor del tour center", () => {
      * center las metas de los vendedores internos.
      */
     const recursos = sinComentariosDe("src/lib/resources.ts");
-    const declaradas = recursos.slice(recursos.indexOf("PARTNER_DENEGADAS_A_PROPOSITO"));
-    for (const tabla of ["seller_goal", "seller_bonus", "seller_link", "seller_attribution"]) {
+    /**
+     * La rebanada termina donde termina la constante.
+     *
+     * Abierta hasta el final del fichero, `cash_session:` se encontraba más
+     * abajo —en la definición del recurso— y la guarda daba por declarada una
+     * tabla que se había borrado de la lista.
+     */
+    const inicio = recursos.indexOf("PARTNER_DENEGADAS_A_PROPOSITO");
+    const fin = recursos.indexOf("\n};", inicio);
+    // Que la rebanada exista de verdad: si el quitacomentarios se comiera el
+    // cierre —pasó, por un `/api/cash` con asterisco dentro de una cadena—,
+    // `indexOf` devolvería el siguiente `};` del fichero y la guarda buscaría
+    // en las definiciones de recursos, donde `cash_session:` sí aparece.
+    expect(fin, "no se encuentra el final de la lista").toBeGreaterThan(inicio);
+    const declaradas = recursos.slice(inicio, fin);
+    expect(declaradas.length, "la lista se lee entera").toBeGreaterThan(400);
+    for (const tabla of [
+      "seller_goal", "seller_bonus", "seller_link", "seller_attribution",
+      // La caja, desde 0081: el socio tiene la suya y la base se la deja leer,
+      // pero sus pantallas van por `/api/cash/*`, que además comprueba que el
+      // turno sea suyo antes de mover o cerrar. Abrirla al CRUD sería una
+      // segunda puerta al mismo dinero con la mitad de las comprobaciones.
+      "cash_register", "cash_session", "cash_movement",
+    ]) {
       expect(declaradas, tabla).toMatch(new RegExp(`${tabla}:`));
       // Y ninguna se ha colado en las que sí ve.
       expect(recursos.slice(
@@ -6742,5 +6814,715 @@ describe("el socio que integra por API", () => {
     // encuentra nadie.
     expect(existe("src/app/portal/cupos/page.tsx")).toBe(true);
     expect(PORTAL_NAV.some((n) => n.href === "/portal/cupos")).toBe(true);
+  });
+
+  /* ═══════════════════════════════ Fase 6.5 · la bandeja del tour center */
+
+  it("un aviso de socio se escribe con partner_id y SIN rol", () => {
+    /**
+     * Las dos mitades del mismo hecho. Sin `partner_id` el aviso no llega a
+     * ninguna bandeja —el buzón del socio busca por ahí y solo por ahí—; y con
+     * `audience_role` puesto, el `check` de 0044 —que solo admite los seis
+     * roles internos— haría fallar el insert entero y el aviso se perdería en
+     * silencio, porque `notify` se traga sus propios errores a propósito.
+     */
+    const service = cuerpoDe("src/lib/notify-service.ts");
+    expect(service).toMatch(/partner_id: input\.partnerId \?\? null/);
+    expect(service, "un aviso de socio no puede llevar rol")
+      .toMatch(/audience_role: input\.userId \|\| input\.partnerId \? null : built\.audience_role/);
+  });
+
+  it("el buzón del socio no toca el cajón sin rol", () => {
+    /**
+     * `{ user_id: null, audience_role: null }` es el cajón de los avisos
+     * anteriores a 0044, y lo alcanza cualquiera. Para un miembro de un tour
+     * center eso es la bandeja interna de la operadora — el descuadre de caja
+     * de anoche incluido.
+     */
+    const notify = cuerpoDe("src/lib/notify.ts");
+    const i = notify.indexOf("export function inboxFilter");
+    const rama = notify.slice(i, notify.indexOf("return {", notify.indexOf("esDeSocio", i)));
+    expect(rama).toMatch(/if \(actor\.esDeSocio\)/);
+    expect(rama, "la rama del socio no puede mirar el rol").not.toMatch(/audience_role/);
+    // Y por identificador: sin ficha, ningún aviso de socio.
+    expect(rama).toMatch(/if \(actor\.partnerId\) suyos\.push/);
+  });
+
+  it("la operadora no ve las copias del socio", () => {
+    // Cada hecho que importa a los dos escribe DOS avisos, así que dejarlas
+    // pasar duplicaría la campana y el contador. Y «te pagamos la liquidación»
+    // no se lee bien desde el lado que paga.
+    const notify = cuerpoDe("src/lib/notify.ts");
+    const i = notify.indexOf("export function inboxFilter");
+    expect(notify.slice(i, i + 1200)).toMatch(/partner_id: null,/);
+  });
+
+  it("inboxFilter NO decide por su cuenta si quien pregunta es de un socio", () => {
+    /**
+     * Reimplementar `role === "partner"` aquí reabriría la puerta trasera que
+     * cerró 4.2: un empleado de un tour center con otro rol pasaría de largo y
+     * recibiría la bandeja interna. Este módulo es puro y no puede importar
+     * `tenant.ts`, que es `server-only`, así que la decisión entra como dato —
+     * y la calcula `esDeSocio(ctx)`, el único sitio autorizado a mirar el
+     * nombre del rol.
+     */
+    expect(cuerpoDe("src/lib/notify.ts")).not.toMatch(/role\s*===\s*"partner"/);
+    for (const ruta of [
+      "src/app/api/notifications/route.ts",
+      "src/app/api/notifications/[id]/read/route.ts",
+      "src/app/dashboard/layout.tsx",
+      "src/app/portal/layout.tsx",
+    ]) {
+      expect(cuerpoDe(ruta), `${ruta} arma el actor sin esDeSocio`).toMatch(/esDeSocio: esDeSocio\(ctx\)/);
+    }
+  });
+
+  it("el contador del portal cuenta EL MISMO buzón que la bandeja", () => {
+    // Un contador que promete avisos que la pantalla no enseña manda al socio a
+    // una lista vacía, y a la tercera vez deja de mirar el número.
+    const layout = cuerpoDe("src/app/portal/layout.tsx");
+    expect(layout).toMatch(/inboxFilter\(\{/);
+    expect(layout).toMatch(/read_status: false/);
+    expect(layout).toMatch(/badges=\{\{ notifications: sinLeer \}\}/);
+    // Y el atajo del portal sabe pintar el número: sin esto, el `badgeKey` de
+    // la navegación era una promesa muerta.
+    expect(cuerpoDe("src/components/tf/side-shell.tsx")).toMatch(/badges\?\.\[item\.badgeKey\]/);
+  });
+
+  it("la política de notification da las TRES ramas, no can_read_partner", () => {
+    /**
+     * `app.can_read_partner(partner_id)` exige que la fila lleve el socio de
+     * quien consulta, y los avisos PERSONALES de un miembro del tour center no
+     * llevan ninguno: con ella, el socio dejaría de ver los suyos propios.
+     */
+    // Sin sus comentarios: este fichero EXPLICA por qué no usa
+    // `can_read_partner`, y una guarda que se conforme con ver el nombre
+    // escrito en una explicación no comprueba nada.
+    const sql = read("supabase/migrations/0079_partner_notifications.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/create policy tenant_select on public\.notification/);
+    expect(sql).toMatch(/app\.current_partner_id\(\) is null/);
+    expect(sql).toMatch(/or partner_id = app\.current_partner_id\(\)/);
+    expect(sql, "sin esta rama el socio pierde sus avisos personales")
+      .toMatch(/or user_id = auth\.uid\(\)/);
+    expect(sql, "can_read_partner escondería los avisos personales del socio")
+      .not.toMatch(/can_read_partner/);
+  });
+
+  it("«avisos» tiene pantalla y entrada de menú con contador", () => {
+    expect(existe("src/app/portal/avisos/page.tsx")).toBe(true);
+    const entrada = PORTAL_NAV.find((n) => n.href === "/portal/avisos");
+    expect(entrada, "el socio no encuentra su bandeja").toBeTruthy();
+    expect(entrada?.badgeKey).toBe("notifications");
+  });
+
+  /* ═══════════════════════════════ Fase 6.6 · el saldo prepago */
+
+  it("EL SOCIO NO PUEDE ESCRIBIR EN SU PROPIO MONEDERO", () => {
+    /**
+     * La puerta de atrás evidente de esta ola. Quien apunta una recarga es
+     * quien VE la transferencia en el banco, y eso es la operadora. Si el socio
+     * pudiera escribir en su monedero, el saldo dejaría de significar «dinero
+     * ingresado» para significar «lo que el socio dice que ingresó» — y con eso
+     * vendería sin haber pagado.
+     *
+     * Son DOS rutas y no una con permisos: una ruta que lee y escribe acaba
+     * teniendo un camino que se salta la comprobación.
+     */
+    const interna = cuerpoDe("src/app/api/partners/wallet/route.ts");
+    // En las DOS mitades, no solo en la que escribe: el saldo de un socio dice
+    // cuánto ingresa y cuánto vende, y esta ruta acepta el socio por parámetro.
+    expect((interna.match(/if \(esDeSocio\(ctx\)\) throw new TenantError/g) || []).length)
+      .toBeGreaterThanOrEqual(2);
+    expect(interna).toMatch(/requireAtLeast\(ctx, "manager"\)/);
+
+    // Y la del portal no escribe: ni POST, ni PUT, ni PATCH.
+    const portal = cuerpoDe("src/app/api/portal/monedero/route.ts");
+    expect(portal, "el portal no puede recargar").not.toMatch(/export async function (POST|PUT|PATCH|DELETE)/);
+  });
+
+  it("el consumo lo apunta la venta, nunca una persona", () => {
+    /**
+     * Un consumo escrito a mano es un saldo que baja sin venta detrás, y no
+     * habría nada que enseñarle al socio cuando pregunte por qué. Lo escribe la
+     * venta, con su orden colgada y bajo el índice único que impide descontar
+     * dos veces la misma.
+     */
+    const ruta = cuerpoDe("src/app/api/partners/wallet/route.ts");
+    expect(ruta).toMatch(/TIPOS_A_MANO = new Set<TipoDeMovimiento>\(\["topup", "adjustment", "refund"\]\)/);
+    expect(ruta).toMatch(/if \(!TIPOS_A_MANO\.has\(tipo\)\)/);
+    // Y el CRUD genérico tampoco: la tabla no tiene ni una columna escribible.
+    expect(cuerpoDe("src/lib/resources.ts"))
+      .toMatch(/partner_wallet_movement: \{[\s\S]{0,400}?writable: \[\],/);
+  });
+
+  it("una venta descuenta UNA vez, y lo hace cumplir la base", () => {
+    /**
+     * Un reintento —la saga que se compensa y vuelve a entrar, un cliente que
+     * da dos veces al botón— descontaría dos veces la misma venta y el socio
+     * pagaría el doble. Dos instancias a la vez le ganan siempre a una
+     * comprobación hecha en la aplicación.
+     */
+    const sql = read("supabase/migrations/0080_partner_wallet.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/create unique index if not exists partner_wallet_consumption_once_idx/);
+    expect(sql).toMatch(/where movement_type = 'consumption' and order_id is not null/);
+  });
+
+  it("el importe siempre es positivo, y también en la base", () => {
+    /**
+     * El signo lo pone el TIPO. Con importes con signo, una recarga de −500
+     * vacía el monedero sin que nada parezca raro: en el listado se lee como
+     * una recarga. La regla vive también en la base porque el día que alguien
+     * inserte por SQL la aplicación no está delante.
+     */
+    const sql = read("supabase/migrations/0080_partner_wallet.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/amount\s+numeric\(14,2\) not null check \(amount > 0\)/);
+    // Y no hay columna de saldo: el saldo es la suma del libro.
+    expect(sql, "un saldo guardado se descuadra con sus propios movimientos")
+      .not.toMatch(/\bbalance\b/);
+  });
+
+  it("el prepago y el crédito son EXCLUYENTES al vender", () => {
+    /**
+     * Comprobar los dos sería pedirle al socio prepago que además tenga
+     * crédito. Y lo desconocido es crédito: es lo que hacen hoy todos los
+     * socios, y entender el hueco como prepago les cortaría la venta a todos
+     * de golpe, porque todos los monederos nacen a cero.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    expect(servicio).toMatch(/if \(prepago\) \{[\s\S]{0,300}?await assertSaldo\(/);
+    expect(servicio, "son excluyentes, no acumulativos")
+      .toMatch(/\} else if \(Number\(creditTerms\?\.credit_limit \?\? 0\) > 0\)/);
+    // Y lo desconocido es crédito, decidido en un solo sitio.
+    expect(cuerpoDe("src/lib/monedero-socio.ts"))
+      .toMatch(/relacion\?\.payment_mode === "prepaid" \? "prepaid" : "credit"/);
+  });
+
+  it("se comprueba ANTES de escribir y se descuenta DESPUÉS", () => {
+    /**
+     * Descontar antes y que la saga se compensara dejaría al socio pagando una
+     * reserva que no llegó a nacer. Y se descuenta con el TOTAL de verdad, no
+     * con la estimación que sirvió para comprobar: cobrar por la estimación
+     * dejaría el saldo distinto de lo que el socio ve en su factura.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    const iCheck = servicio.indexOf("await assertSaldo(");
+    const iOrden = servicio.indexOf("tenantCreate<Order>");
+    const iCobro = servicio.indexOf("await descontarVenta(");
+    expect(iCheck, "no se comprueba el saldo").toBeGreaterThan(-1);
+    expect(iCheck, "el saldo se comprueba después de escribir la orden").toBeLessThan(iOrden);
+    expect(iCobro, "no se descuenta la venta").toBeGreaterThan(iOrden);
+    expect(servicio.slice(iCobro, iCobro + 400), "se cobra la estimación, no el total")
+      .toMatch(/importe: totals\.total/);
+  });
+
+  it("la cancelación mira el LIBRO, no el contrato de hoy", () => {
+    /**
+     * Un socio que pasó de prepago a crédito entre la venta y la cancelación
+     * recibiría un abono por una venta que nunca le descontó — o, al revés, se
+     * quedaría sin su devolución. Lo que manda es lo que pasó.
+     */
+    const cancel = cuerpoDe("src/lib/booking-cancel-service.ts");
+    expect(cancel).toMatch(/movement_type: "consumption"[\s\S]{0,120}?_limit: 1/);
+    expect(cancel).toMatch(/if \(consumo\) \{/);
+    expect(cancel, "devuelve lo de ESTA reserva, no el total de la orden")
+      .toMatch(/importe: Number\(booking\.total_amount \?\? 0\)/);
+    expect(cancel, "no puede decidirlo por el modo de pago de hoy")
+      .not.toMatch(/esPrepago\(/);
+  });
+
+  it("la moneda del movimiento se compara con la del MONEDERO", () => {
+    /**
+     * Un monedero en dólares al que se le apunta una recarga en pesos suma
+     * 30.000 a un saldo de dólares. Comparar el movimiento consigo mismo es una
+     * comprobación que no puede fallar nunca — y era exactamente lo que hacía
+     * la primera versión de `apuntarMovimiento`.
+     */
+    const servicio = cuerpoDe("src/lib/monedero-service.ts");
+    expect(servicio).toMatch(/monedaDelMonedero: string/);
+    expect(servicio).toMatch(/movimientoInvalido\(\s*\{[^}]*\},\s*monedaDelMonedero\s*\)/);
+    // Y quien apunta a mano no elige la moneda: sale del contrato.
+    const ruta = cuerpoDe("src/app/api/partners/wallet/route.ts");
+    expect(ruta).toMatch(/const moneda = String\(partner\.currency/);
+    expect(ruta, "la moneda no puede venir del cuerpo").not.toMatch(/body\.currency/);
+  });
+
+  it("el saldo se suma sobre TODOS los movimientos, no sobre una página", () => {
+    // Un saldo por página crece solo cuando el socio pasa de quinientos
+    // movimientos, y crece hacia arriba —se pierden consumos viejos—, que es
+    // el lado caro del error.
+    const servicio = cuerpoDe("src/lib/monedero-service.ts");
+    const i = servicio.indexOf("export async function saldoDeSocio");
+    expect(servicio.slice(i, i + 400)).toMatch(/_limit: 100_000/);
+    expect(servicio.slice(i, i + 400), "el saldo no puede salir de movimientosDe")
+      .not.toMatch(/movimientosDe\(/);
+  });
+
+  it("«mi saldo» y «saldo de partners» tienen pantalla y menú", () => {
+    expect(existe("src/app/portal/monedero/page.tsx")).toBe(true);
+    expect(PORTAL_NAV.some((n) => n.href === "/portal/monedero")).toBe(true);
+    // Y la de la operadora, que es la única que puede recargar.
+    expect(existe("src/app/dashboard/partners/saldo/page.tsx")).toBe(true);
+    expect(read("src/lib/nav.ts")).toContain('href: "/dashboard/partners/saldo"');
+  });
+
+  /* ════════════════════ Fase 7.1/7.2 · de quién es el dinero de la caja */
+
+  it("el cobro y su apunte de caja llevan EL MISMO socio", () => {
+    /**
+     * EL FALLO QUE YA PASABA, SIN ESPERAR A LA CAJA EXTERNA.
+     *
+     * `/api/payments` creaba el cobro CON su socio —`payment.partner` existe y
+     * se rellenaba— y en la línea siguiente abría el `cash_movement` sin él.
+     * Desde el momento de escribirlo, el efectivo de una venta de socio era
+     * indistinguible del propio de la operadora.
+     */
+    const ruta = cuerpoDe("src/app/api/payments/route.ts");
+    expect(ruta, "el socio se calcula una vez").toMatch(/const socioDelCobro =/);
+    // En el cobro Y en el movimiento, que es la fila que el arqueo suma.
+    expect(ruta).toMatch(/partner: socioDelCobro \|\| undefined,/);
+    const iMov = ruta.indexOf('"cash_movement"');
+    expect(iMov, "no se abre el movimiento de caja").toBeGreaterThan(-1);
+    expect(ruta.slice(iMov, iMov + 500), "el apunte de caja pierde el socio")
+      .toMatch(/partner: socioDelCobro \|\| undefined,/);
+  });
+
+  it("UN ARQUEO DE LA OPERADORA EXIGE partner NULO", () => {
+    /**
+     * El criterio del plan es que no incluya NI UN movimiento de caja de socio,
+     * y eso es una condición que hay que escribir. Omitir el filtro —que es lo
+     * que hace la política de la base, donde el interno lo ve todo— haría que
+     * el arqueo sumara el efectivo de los tour centers como propio.
+     *
+     * Y la ruta armaba su propio filtro sin pasar por ningún ámbito: listaba
+     * TODAS las sesiones de la empresa, en las dos direcciones.
+     */
+    const dominio = cuerpoDe("src/lib/caja-identidad.ts");
+    const i = dominio.indexOf("export function filtroDeArqueo");
+    expect(dominio.slice(i, i + 400)).toMatch(/return \{ partner: null \}/);
+    // Y sin ficha de socio NO cae en el filtro de la operadora.
+    expect(dominio.slice(i, i + 400)).toMatch(/__sin_socio__/);
+    /**
+     * Y el filtro se USA, no solo se calcula: con `toMatch(/filtroDeArqueo\(/)`
+     * bastaba dejar la llamada tirada al lado de un `{}` y la guarda pasaba.
+     */
+    expect(cuerpoDe("src/app/api/cash/sessions/route.ts"))
+      .toMatch(/const filter: Record<string, unknown> = filtroDeArqueo\(\{/);
+  });
+
+  it("y lo hace cumplir la BASE, no el acordarse de copiarlo", () => {
+    /**
+     * El arqueo suma los movimientos de SU turno, así que basta con que ninguno
+     * pueda llevar un dueño distinto del de su turno. Sin el disparador, un
+     * movimiento con el socio mal puesto entra en el arqueo equivocado sin que
+     * nada chille, y se descubre contando el efectivo.
+     */
+    const sql = read("supabase/migrations/0081_cash_identity.sql").replace(/^\s*--.*$/gm, "");
+    // `\b(?!_)` y no el nombre a secas: `cash_movement_matches_session_off`
+    // contiene `cash_movement_matches_session`, así que renombrarlo —que es
+    // como se apaga un disparador— pasaba la guarda. Tercera vez.
+    expect(sql).toMatch(/create trigger cash_movement_matches_session\b(?!_)/);
+    // `is distinct from` y no `<>`: con nulos —el caso normal, la caja de la
+    // operadora— `<>` devuelve nulo y la condición no se cumple NUNCA.
+    expect(sql, "con <> el disparador no salta en el caso normal")
+      .toMatch(/new\.partner_id is distinct from s_partner/);
+    expect(sql).not.toMatch(/new\.partner_id <> s_partner/);
+    // Y un turno no cambia de dueño a mitad.
+    expect(sql).toMatch(/create trigger cash_session_owner_frozen\b(?!_)/);
+  });
+
+  it("abrir, mover y cerrar un turno usan LA MISMA comprobación", () => {
+    /**
+     * Tres comprobaciones distintas de «esta caja es tuya» acaban discrepando,
+     * y la que se quede corta es por la que entra alguien a cerrarle el turno a
+     * otro: el descuadre, con su aprobación, queda a nombre de quien sí estuvo.
+     *
+     * `tenantFindOne` solo comprueba la empresa, así que antes bastaba conocer
+     * el identificador de una sesión.
+     */
+    for (const ruta of [
+      "src/app/api/cash/sessions/route.ts",
+      "src/app/api/cash/movements/route.ts",
+      "src/app/api/cash/sessions/[id]/close/route.ts",
+      "src/app/api/cash/sessions/[id]/arqueo/route.ts",
+    ]) {
+      const src = cuerpoDe(ruta);
+      expect(src, `${ruta} no comprueba de quién es la caja`)
+        .toMatch(/noPuedeAbrirLaCaja\(/);
+      /**
+       * Y PARA. Comprobar solo que la función se llama deja pasar la mutación
+       * que importa: borrar el `throw` y quedarse con la llamada. La guarda
+       * miraba la llamada, no el efecto — cinco veces en esta misma ola.
+       */
+      expect(src, `${ruta} calcula el impedimento y no lo aplica`)
+        .toMatch(/if \(impedimento\) throw new TenantError\(impedimento, 403\);/);
+      expect(src, `${ruta} decide el socio por el nombre del rol`)
+        .toMatch(/esDeSocio: esDeSocio\(ctx\)/);
+    }
+  });
+
+  it("el socio no abre la caja de la operadora, ni al revés", () => {
+    /**
+     * Las dos direcciones. La segunda es la que no se piensa: dejar que alguien
+     * de un tour center abra la caja de la casa metería su efectivo en el cajón
+     * de la operadora, y el arqueo interno lo contaría como propio porque esos
+     * movimientos no llevarían socio.
+     */
+    const dominio = cuerpoDe("src/lib/caja-identidad.ts");
+    expect(dominio).toMatch(/if \(dueno\.partnerId === null\) \{[\s\S]{0,160}?no entra en su arqueo/);
+    expect(dominio).toMatch(/\} else if \(dueno\.partnerId !== null\) \{[\s\S]{0,120}?lo firma él/);
+    // Y sin ficha de socio, ninguna: fallar hacia el silencio.
+    expect(dominio).toMatch(/if \(!miSocio\) return "Tu usuario no está asociado/);
+  });
+
+  it("el dueño del turno sale de la CAJA, no del cuerpo de la petición", () => {
+    // Dejar que quien abre elija de quién es el dinero es la puerta de atrás
+    // entera: se abriría un turno «de socio» para sacar efectivo del arqueo
+    // interno, o al revés.
+    const ruta = cuerpoDe("src/app/api/cash/sessions/route.ts");
+    expect(ruta).toMatch(/const dueno = duenoDeLaCaja\(register\)/);
+    /**
+     * Anclado en la creación de la SESIÓN, no suelto: `partner: dueno.partnerId`
+     * aparece también en el movimiento de apertura, unas líneas más abajo, así
+     * que borrarlo del turno dejaba la guarda contenta. Es la misma trampa de
+     * «la guarda encuentra su texto en otro sitio del mismo fichero».
+     */
+    // La CREACIÓN, no la primera mención: `"cash_session"` sale antes en el
+    // listado, y anclar ahí buscaba el dueño en una consulta de lectura.
+    const iSesion = ruta.indexOf('tenantCreate<CashSession>(ctx.companyId, "cash_session"');
+    expect(iSesion, "no se crea la sesión").toBeGreaterThan(-1);
+    expect(ruta.slice(iSesion, iSesion + 500), "el turno nace sin dueño")
+      .toMatch(/partner: dueno\.partnerId \?\? undefined/);
+    expect(ruta, "el socio no puede venir del cuerpo").not.toMatch(/body\.partner_id/);
+    // Y el movimiento manual lo hereda del TURNO.
+    const mov = cuerpoDe("src/app/api/cash/movements/route.ts");
+    expect(mov).toMatch(/const dueno = duenoDeLaCaja\(session\)/);
+    expect(mov, "el socio no puede venir del cuerpo").not.toMatch(/body\.partner_id/);
+  });
+
+  /* ═══════════════════════ Fase 7.3 · los tres modos de cobro */
+
+  it("LO DESCONOCIDO ES «PAGA EL CLIENTE AL OPERADOR»", () => {
+    /**
+     * Es lo que el sistema hace hoy con ABSOLUTAMENTE todas las ventas. Nacer
+     * en cualquier otro modo cambiaría de golpe, el día del despliegue, dónde
+     * está el dinero de todo lo que ya existe: el efectivo de la operadora
+     * pasaría a contarse como deuda del punto de venta, o la comisión de cada
+     * vendedor aparecería como ya cobrada sin que nadie le haya dado un peso.
+     */
+    const dominio = cuerpoDe("src/lib/modo-de-cobro.ts");
+    expect(dominio).toMatch(/\?\? "operator_collects"/);
+    const sql = read("supabase/migrations/0082_collection_mode.sql").replace(/^\s*--.*$/gm, "");
+    expect((sql.match(/default 'operator_collects'/g) || []).length, "las dos declaraciones")
+      .toBe(2);
+  });
+
+  it("el contrato del socio gana a la ficha del vendedor", () => {
+    /**
+     * Es el orden contrario al que parece. Un vendedor de un tour center que
+     * retiene puede existir, pero mientras el contrato diga que cobra el punto
+     * de venta, el dinero es del mostrador y no suyo: dejar que su ficha gane
+     * haría que retuviera de un dinero que la operadora nunca va a ver pasar.
+     */
+    const dominio = cuerpoDe("src/lib/modo-de-cobro.ts");
+    const i = dominio.indexOf("export function modoDeCobro");
+    const cuerpo = dominio.slice(i, i + 400);
+    expect(cuerpo).toMatch(/const delSocio = limpio\(contrato\?\.relacion\?\.collection_mode\)/);
+    expect(cuerpo, "el contrato tiene que mandar primero").toMatch(/if \(delSocio\) return delSocio;/);
+  });
+
+  it("«cobra el punto de venta» NO se declara en una ficha de vendedor", () => {
+    /**
+     * El punto de venta es el tour center, no la persona. Ofrecerlo en su ficha
+     * invitaría a declarar ahí algo que luego decide el contrato, y las dos
+     * declaraciones acabarían discrepando.
+     */
+    const sql = read("supabase/migrations/0082_collection_mode.sql").replace(/^\s*--.*$/gm, "");
+    const i = sql.indexOf("alter table seller");
+    expect(i, "no se declara en la ficha").toBeGreaterThan(-1);
+    const bloque = sql.slice(i, i + 400);
+    expect(bloque).toMatch(/check \(collection_mode in \('operator_collects','seller_retains'\)\)/);
+    expect(bloque, "pos_collects no cabe en una persona").not.toMatch(/pos_collects/);
+  });
+
+  it("LA VENTA GUARDA EL MODO QUE SE LE APLICÓ", () => {
+    /**
+     * Es la lección de la cancelación del monedero (6.6): un contrato que
+     * cambie entre la venta y el cobro dejaría el dinero movido bajo un modo y
+     * la liquidación calculada con otro, y nadie sabría cuál de los dos pasó.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    const iOrden = servicio.indexOf('tenantCreate<Order>(companyId, "order"');
+    expect(iOrden, "no se crea la orden").toBeGreaterThan(-1);
+    expect(servicio.slice(iOrden, iOrden + 400), "la venta nace sin modo")
+      .toMatch(/collection_mode: modoDelCobro,/);
+    // Y se decide ANTES de escribirla, con las dos declaraciones.
+    const iModo = servicio.indexOf("modoDelCobro = modoDeCobro({");
+    expect(iModo, "no se decide el modo").toBeGreaterThan(-1);
+    expect(iModo).toBeLessThan(iOrden);
+    expect(servicio.slice(iModo, iModo + 220)).toMatch(/relacion: relacionDelSocio/);
+    expect(servicio.slice(iModo, iModo + 220)).toMatch(/vendedor: fichaDelVendedor/);
+  });
+
+  it("y el modo de una venta ya hecha no se edita por CRUD", () => {
+    // Lo que manda es lo que pasó. Editable, se podría reescribir a posteriori
+    // dónde estuvo el dinero de una venta ya liquidada.
+    const recursos = sinComentariosDe("src/lib/resources.ts");
+    /**
+     * `\n  order: {` con el salto de línea delante, y no `  order: {` a secas:
+     * la expansión `order: { _limit: 50, … }` de otro recurso sale ANTES en el
+     * fichero con la misma indentación, y la rebanada acababa en su llave —
+     * cincuenta líneas por encima del recurso que se quería mirar. La guarda
+     * daba por buena una lista de escribibles que ni siquiera había leído.
+     */
+    const i = recursos.indexOf("\n  order: {\n");
+    expect(i, "no se encuentra el recurso de la venta").toBeGreaterThan(-1);
+    const bloque = recursos.slice(i, recursos.indexOf("\n  },", i));
+    expect(bloque, "la rebanada llega a los escribibles").toMatch(/writable:/);
+    expect(bloque, "el modo de la venta no puede ser escribible").not.toMatch(/collection_mode/);
+  });
+
+  it("y el del vendedor SÍ se puede declarar", () => {
+    /**
+     * Un campo en el formulario que el recurso no acepta es un campo que se
+     * rellena, se guarda sin quejarse y no cambia nada: `sanitizePayload`
+     * descarta lo que no está en `writable`. Es el mismo silencio de
+     * `authorized_products` antes de 6.1.
+     */
+    const recursos = sinComentariosDe("src/lib/resources.ts");
+    const i = recursos.indexOf("\n  seller: {\n");
+    expect(i, "no se encuentra el recurso del vendedor").toBeGreaterThan(-1);
+    const bloque = recursos.slice(i, recursos.indexOf("\n  },", i));
+    expect(bloque, "el modo del vendedor no llegaría a guardarse")
+      .toMatch(/"collection_mode"/);
+  });
+
+  it("los dos modos se declaran en su ficha, cada uno en la suya", () => {
+    // Un modo que no se puede declarar es una columna muerta, que es de lo que
+    // venimos en esta fase entera.
+    expect(cuerpoDe("src/app/dashboard/partners/page.tsx"))
+      .toMatch(/name: "collection_mode"[\s\S]{0,400}?pos_collects/);
+    expect(cuerpoDe("src/app/dashboard/vendedores/page.tsx"))
+      .toMatch(/name: "collection_mode"[\s\S]{0,400}?seller_retains/);
+    // Y llegan a la relación comercial, que es donde vive el del socio.
+    expect(cuerpoDe("src/lib/partners.ts")).toMatch(/collection_mode: "collection_mode"/);
+  });
+
+  /* ═══════════ Fase 7.4 · la comisión retenida, o las dos cosas o ninguna */
+
+  it("LAS DOS INSERCIONES ESTÁN EN LA MISMA FUNCIÓN", () => {
+    /**
+     * El criterio del plan, y no se consigue desde la aplicación: el cliente de
+     * Supabase habla por HTTP y cada inserción es su propia transacción. Entre
+     * marcar la comisión y apuntar el movimiento cabe un fallo de red, un
+     * reinicio y un despliegue, y una compensación es otro par de pasos que
+     * también puede quedarse a medias.
+     *
+     * En dos pasos hay dos finales malos: el vendedor se lleva su dinero y la
+     * comisión sigue pendiente —entra en la liquidación del mes y se le paga
+     * OTRA VEZ—, o la comisión queda cobrada y el arqueo cuadra de menos.
+     */
+    const sql = read("supabase/migrations/0083_retained_commission.sql").replace(/^\s*--.*$/gm, "");
+    const i = sql.indexOf("create or replace function public.retain_seller_commission");
+    expect(i, "no existe la función").toBeGreaterThan(-1);
+    const cuerpo = sql.slice(i);
+    expect(cuerpo).toMatch(/insert into commission \([\s\S]{0,900}?returning id into v_commission;/);
+    /**
+     * Y la del movimiento HASTA su `returning`: con `toMatch(/insert into
+     * cash_movement \(/)` bastaba con que la palabra estuviera, así que
+     * romperle el cuerpo —o borrarlo entero por debajo— pasaba la guarda.
+     */
+    expect(cuerpo).toMatch(/insert into cash_movement \([\s\S]{0,700}?returning id into v_movement;/);
+    // Con el vínculo puesto: sin él no hay forma de comprobar el criterio, y
+    // un reintento sacaría el dinero otra vez.
+    expect(cuerpo).toMatch(/commission_id, movement_type/);
+    expect(cuerpo, "el movimiento tiene que sacar el dinero del cajón").toMatch(/'withdrawal'/);
+    // Y la comisión NACE cobrada: crearla pendiente para actualizarla después
+    // son otra vez dos pasos, y el hueco entre ellos es por donde se cuela la
+    // liquidación que la paga por segunda vez.
+    expect(cuerpo, "la comisión no puede nacer pendiente").toMatch(/'paid',/);
+    expect(
+      cuerpo.slice(cuerpo.indexOf("insert into commission ("), cuerpo.indexOf("insert into cash_movement ("))
+    ).not.toMatch(/'pending'/);
+  });
+
+  it("la función que mueve dinero falla CERRADA y no la llama cualquiera", () => {
+    /**
+     * Es `security definer`, así que se salta la RLS: el ámbito se comprueba a
+     * mano dentro. Es la lección de 0017, donde dos funciones de cupo se podían
+     * llamar sin credenciales con solo el uuid de una salida de otro tenant.
+     */
+    const sql = read("supabase/migrations/0083_retained_commission.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/app\.current_org_id\(\) <> p_org/);
+    expect(sql).toMatch(/errcode = 'insufficient_privilege'/);
+    expect(sql, "anon no puede llamarla").toMatch(/from anon, public, authenticated;/);
+    expect(sql).toMatch(/to service_role;/);
+  });
+
+  it("una reserva se retiene UNA vez", () => {
+    /**
+     * Un reintento —el doble clic de siempre— sacaría el dinero dos veces. El
+     * `for update` sobre el turno serializa a los dos llamantes y el segundo
+     * encuentra ya escrita la retención del primero.
+     */
+    const sql = read("supabase/migrations/0083_retained_commission.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/from cash_session cs[\s\S]{0,200}?for update;/);
+    expect(sql, "no se busca una retención previa").toMatch(/and c\.status = 'paid'/);
+    expect(sql).toMatch(/'already', true/);
+    // Y una comisión cobrada SIN su movimiento no se tapa con otro apunte: se
+    // para, porque esa combinación solo puede venir de una escritura por fuera.
+    expect(sql).toMatch(/if v_previo\.movement_id is null then/);
+  });
+
+  it("los datos de la comisión viajan en UN objeto", () => {
+    /**
+     * Con trece argumentos —cinco `uuid` seguidos— intercambiar dos compila, se
+     * ejecuta y escribe la comisión de otro vendedor sobre otra reserva sin que
+     * nada se queje. Misma razón por la que el ámbito del vendedor dejó de
+     * recibir cuatro cadenas en fila.
+     */
+    const sql = read("supabase/migrations/0083_retained_commission.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/p_commission\s+jsonb/);
+    expect(cuerpoDe("src/lib/comision-retenida.ts")).toMatch(/p_commission: \{/);
+  });
+
+  it("sin turno abierto NO se retiene, y no se inventa uno", () => {
+    /**
+     * El dinero que el vendedor se queda tiene que salir de algún arqueo, o al
+     * cerrar el día nadie sabe cuánto entregó y cuánto se quedó. Sin turno, la
+     * comisión sigue su camino normal y se le liquidará al final del mes — peor
+     * para él, pero es lo único que no descuadra nada.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    /**
+     * Con el punto y coma al final: sin él, `... || "cs-inventada"` es un
+     * prefijo válido y la guarda daba por bueno un turno inventado. Cuarta vez
+     * que muerde la trampa del prefijo en esta rama.
+     */
+    expect(servicio).toMatch(/const turno = await turnoAbiertoDe\(companyId, String\(c\.seller\)\);/);
+    expect(servicio).toMatch(/if \(turno\) \{/);
+    // Y la función de Postgres lo exige también, por si alguien la llama de otro sitio.
+    const sql = read("supabase/migrations/0083_retained_commission.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/v_session\.status <> 'open'/);
+    expect(sql).toMatch(/v_session\.seller_id is distinct from v_seller/);
+  });
+
+  it("si la retención falla, la comisión NO se escribe por el camino normal", () => {
+    /**
+     * Quedaría pendiente una comisión que quizá ya se retiró, y se pagaría dos
+     * veces — que es justo el fallo que toda esta ola evita. El `continue` es
+     * la línea que importa: sin él, el `catch` cae en el `tenantCreate` de
+     * abajo y escribe la comisión pendiente.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    const i = servicio.indexOf("await retenerComision({");
+    expect(i, "no se retiene").toBeGreaterThan(-1);
+    expect(servicio.slice(i, i + 900)).toMatch(/\} catch \(err\) \{[\s\S]{0,300}?continue;/);
+  });
+
+  it("se cuentan las comisiones ESCRITAS, no las calculadas", () => {
+    // Con la retención hay caminos donde una comisión calculada no llega a
+    // escribirse, y devolver `resolved.length` diría que se crearon comisiones
+    // que no existen. Quien llama usa ese número para el registro de la venta.
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    expect(servicio).toMatch(/let escritas = 0;/);
+    expect(servicio).toMatch(/return escritas;/);
+    expect(servicio, "vuelve a contar las resueltas").not.toMatch(/return resolved\.length;/);
+  });
+
+  it("el modo lo decide lo SELLADO en la orden, no la ficha de hoy", () => {
+    // Un contrato que cambie entre la venta y esta llamada dejaría el dinero
+    // movido bajo un modo y la comisión calculada con otro.
+    expect(cuerpoDe("src/lib/booking-service.ts"))
+      .toMatch(/orden\?\.collection_mode === "seller_retains"/);
+  });
+
+  /* ═══════════ Fase 7.5 · el turno del vendedor, por medio de pago */
+
+  it("LA COMISIÓN RETENIDA NO ES UN RETIRO MÁS", () => {
+    /**
+     * Los dos sacan dinero del cajón, pero el primero es lo que el vendedor se
+     * quedó y no tiene que entregar, y el segundo es dinero que salió a otro
+     * sitio. Mezclarlos le dice que entregue de más y, al cuadrar, le apunta el
+     * descuadre a él.
+     */
+    const dominio = cuerpoDe("src/lib/cash-close.ts");
+    expect(dominio).toMatch(/if \(movement\.commission_id\) r\.retained \+= Math\.abs\(raw\);/);
+    expect(dominio).toMatch(/else r\.withdrawals \+= Math\.abs\(raw\);/);
+    // Pero SALE del cajón igual: lo que cambia es qué se enseña, no cuánto hay.
+    // Si dejara de restar, el arqueo le pediría el dinero que ya se llevó.
+    expect(dominio, "el retiro con comisión tiene que seguir restando")
+      .toMatch(/case "expense":\s*case "withdrawal":\s*return -Math\.abs\(raw\);/);
+    // Y el dato llega: sin `commission_id` en la consulta, la línea sale
+    // siempre en cero y la separación no separa nada.
+    expect(cuerpoDe("src/lib/cash-service.ts")).toMatch(/commission_id\?: string/);
+  });
+
+  it("el vendedor puede operar SU caja, y solo la suya", () => {
+    /**
+     * Las rutas pedían rango `cashier` y un `seller` está por debajo: el
+     * promotor de playa —la persona entera para la que existe el modo «retiene
+     * su comisión»— no podía abrir un turno, y sin turno no hay dónde apuntar
+     * lo que se queda.
+     *
+     * La exención es la mínima: la caja cuyo `seller_id` es el suyo. No es un
+     * rango nuevo ni una excepción por rol.
+     */
+    const dominio = cuerpoDe("src/lib/caja-identidad.ts");
+    const i = dominio.indexOf("export function exigeRangoDeCaja");
+    const cuerpo = dominio.slice(i, i + 600);
+    expect(cuerpo, "sin dueño, el rango de siempre").toMatch(/if \(!dueno\.sellerId\) return true;/);
+    expect(cuerpo, "sin ficha, tampoco se libra nadie").toMatch(/if \(!actor\.sellerId\) return true;/);
+    expect(cuerpo).toMatch(/return dueno\.sellerId !== actor\.sellerId;/);
+  });
+
+  it("y las cuatro rutas siguen exigiendo el rango cuando la caja NO es suya", () => {
+    /**
+     * `exigeRangoDeCaja` devuelve `true` cuando hace falta el rango, no al
+     * revés, y eso es deliberado: quien llama escribe
+     * `if (exige…) requireAtLeast(…)`, así que olvidarse deja la ruta CERRADA.
+     * Con el sentido contrario, olvidarse la dejaría abierta de par en par.
+     */
+    for (const ruta of [
+      "src/app/api/cash/sessions/route.ts",
+      "src/app/api/cash/movements/route.ts",
+      "src/app/api/cash/sessions/[id]/close/route.ts",
+      "src/app/api/cash/sessions/[id]/arqueo/route.ts",
+    ]) {
+      expect(cuerpoDe(ruta), `${ruta} dejó de pedir el rango`)
+        .toMatch(/if \(exigeRangoDeCaja\([^)]*\)\) requireAtLeast\(ctx, "cashier"\);/);
+      // Y el rango NO se pide antes de saber de quién es la caja: pedirlo
+      // arriba deja fuera al vendedor de su propio turno, que es de lo que
+      // venimos.
+      expect(cuerpoDe(ruta), `${ruta} pide el rango antes de mirar la caja`)
+        .not.toMatch(/^\s*requireAtLeast\(ctx, "cashier"\);$/m);
+    }
+  });
+
+  it("«mi turno» dice lo que entrega, y no lo recalcula", () => {
+    /**
+     * Lo que entrega es lo ESPERADO, que ya lleva restada su comisión.
+     * Recalcularlo en la pantalla sería una segunda cuenta del mismo dinero, y
+     * la que se equivoque decide lo que el vendedor pone sobre la mesa.
+     */
+    expect(existe("src/app/dashboard/mi-espacio/turno/page.tsx")).toBe(true);
+    const pantalla = cuerpoDe("src/app/dashboard/mi-espacio/turno/page.tsx");
+    expect(pantalla).toMatch(/const entregar = m\.expected;/);
+    expect(pantalla, "la pantalla no puede rehacer la resta")
+      .not.toMatch(/m\.cash_sales\s*-\s*m\.retained/);
+    // Y desglosa por medio de pago, que es el criterio del plan.
+    expect(pantalla).toMatch(/Por medio de pago/);
+    expect(pantalla).toMatch(/m\.card/);
+    expect(pantalla).toMatch(/m\.transfer/);
+    // Está en el menú: una pantalla sin menú es un módulo muerto.
+    expect(read("src/lib/nav.ts")).toContain('href: "/dashboard/mi-espacio/turno"');
+  });
+
+  it("y no vuelve a filtrar por vendedor en el navegador", () => {
+    // La ruta ya devuelve solo lo que este usuario puede ver. Un segundo filtro
+    // en el cliente es una segunda definición de «lo mío», y la que se quede
+    // corta decide — además de ser la que alguien puede quitar desde la
+    // consola del navegador.
+    const pantalla = cuerpoDe("src/app/dashboard/mi-espacio/turno/page.tsx");
+    expect(pantalla).not.toMatch(/\.filter\([^)]*seller/);
   });
 });

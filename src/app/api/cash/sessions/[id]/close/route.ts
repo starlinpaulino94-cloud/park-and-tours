@@ -1,5 +1,9 @@
 import { NextRequest } from "next/server";
-import { requireTenantWrite, requireAtLeast, tenantCreate, tenantFindOne, tenantUpdate } from "@/lib/tenant";
+import {
+  requireTenantWrite, requireAtLeast, tenantCreate, tenantFindOne, tenantUpdate,
+  TenantError, esDeSocio, esAdminDeSocio,
+} from "@/lib/tenant";
+import { exigeRangoDeCaja, noPuedeAbrirLaCaja } from "@/lib/caja-identidad";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { recalcCashSession } from "@/lib/cash";
 import { loadCashClose } from "@/lib/cash-service";
@@ -34,7 +38,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const { id } = await params;
     const ctx = await requireTenantWrite();
     await assertRateLimit({ key: rateLimitKey(req, "cash:close", ctx.userId), limit: 20, windowMs: 60_000 });
-    requireAtLeast(ctx, "cashier");
 
     const body = await readJson<{
       counts?: CountPayload[];
@@ -46,10 +49,38 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       notes?: string;
     }>(req);
 
-    const session = await tenantFindOne<CashSession>(ctx.companyId, "cash_session", id);
+    const session = await tenantFindOne<CashSession & { partner?: unknown; seller?: unknown }>(
+      ctx.companyId, "cash_session", id
+    );
     if (session.status !== "open") {
       throw Object.assign(new Error("La sesión de caja ya está cerrada"), { status: 409 });
     }
+
+    /**
+     * Cierra el turno su dueño (0081).
+     *
+     * `tenantFindOne` solo comprueba la empresa, así que sin esto bastaba
+     * conocer el identificador de una sesión para cerrarle el turno a otro —y
+     * el descuadre, con su aprobación y todo, queda a su nombre—. Misma función
+     * que para abrirla y que para moverla: tres comprobaciones distintas de
+     * «esta caja es tuya» acaban discrepando.
+     */
+    const actorDeCaja = {
+      esDeSocio: esDeSocio(ctx), partnerId: ctx.partnerId,
+      sellerId: ctx.sellerId, esAdminDeSocio: esAdminDeSocio(ctx),
+    };
+    /**
+     * El rango de siempre, SALVO que la caja sea suya (0083).
+     *
+     * Las rutas de caja pedían `cashier` y un `seller` está por debajo: el
+     * promotor de playa —la persona entera para la que existe el modo «retiene
+     * su comisión»— no podía abrir un turno, y sin turno no hay dónde apuntar
+     * lo que se queda ni con qué cuadrar al final del día.
+     */
+    if (exigeRangoDeCaja(session, actorDeCaja)) requireAtLeast(ctx, "cashier");
+
+    const impedimento = noPuedeAbrirLaCaja({ ...session, status: "active" }, actorDeCaja);
+    if (impedimento) throw new TenantError(impedimento, 403);
 
     // Se recalcula ANTES de contar: cerrar contra un esperado viejo convierte
     // en descuadre cualquier cobro registrado mientras el cajero contaba.

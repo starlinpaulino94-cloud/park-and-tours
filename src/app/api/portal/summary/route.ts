@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 import { requireTenant, tenantQuery, requireAtLeast, TenantError, esDeSocio } from "@/lib/tenant";
 import { ok, fail, resolvePeriod } from "@/lib/api-response";
+import { saldoDeSocio } from "@/lib/monedero-service";
+import { esPrepago } from "@/lib/monedero-socio";
 import type { Booking, Commission, Partner, Receivable, Settlement } from "@/lib/types";
 import { refId, isTerminalBookingStatus } from "@/lib/types";
 
@@ -85,6 +87,13 @@ export async function GET(req: NextRequest) {
         currency: partner.currency || ctx.company?.base_currency || "usd",
         credit_limit: partner.credit_limit ?? 0,
         credit_days: partner.credit_days ?? 0,
+        /**
+         * Cómo paga (0080). El portal necesita saberlo para no enseñarle
+         * crédito disponible a quien vende contra un depósito, ni un saldo a
+         * quien vende a deber: son dos contratos excluyentes y enseñar los dos
+         * es invitarle a sumarlos.
+         */
+        payment_mode: esPrepago(partner as { payment_mode?: string | null }) ? "prepaid" : "credit",
         default_commission_pct: partner.default_commission_pct ?? 0,
         status: partner.status,
       },
@@ -97,6 +106,10 @@ export async function GET(req: NextRequest) {
         commission_pending: round2(commissionPending),
         balance: round2(balance),
         credit_available: round2(Math.max((partner.credit_limit ?? 0) - balance, 0)),
+        // El saldo prepago: la suma de su libro de movimientos (0080). Se
+        // calcula siempre —cuesta una consulta— para que un socio que acaba de
+        // pasar a prepago vea su saldo sin esperar a nada.
+        wallet_balance: round2(await saldoDeSocio(ctx.companyId, partnerId)),
         average_ticket: live.length ? round2(sales / live.length) : 0,
       },
       top_products: [...byProduct.values()].sort((a, b) => b.sales - a.sales).slice(0, 8)

@@ -480,6 +480,64 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0083 — la comisión retenida, en una sola escritura",
+    // En dos pasos hay dos finales malos: si se apunta el movimiento y falla la
+    // comisión, el vendedor se llevó su dinero y la comisión sigue pendiente —
+    // entra en la liquidación del mes y se le paga OTRA VEZ.
+    columns: [
+      ["cash_movement", ["commission_id"]],
+    ],
+    // La FUNCIÓN no se comprueba aquí: este verificador solo sabe de tablas y
+    // columnas, y una clave `functions:` que nadie lee sería exactamente el
+    // adorno que esta rama lleva media auditoría quitando. Que exista y que no
+    // la pueda llamar `anon` lo comprueba la verificación de
+    // `supabase/editor/0083_parte_2.sql`, contra la base de verdad.
+  },
+  {
+    migration: "0082 — quién se queda el dinero entre la venta y el servicio",
+    // El sistema solo conocía un modo: paga todo el cliente al operador. Los
+    // otros dos —cobra el punto de venta y debe el neto; el vendedor retiene su
+    // comisión— se parecen en la pantalla de cobro y se distinguen un mes
+    // después, cuando alguien intenta cuadrar quién tiene el dinero.
+    columns: [
+      ["organization_relationships", ["collection_mode"]],
+      ["seller", ["collection_mode"]],
+      ["sales_order", ["collection_mode"]],
+    ],
+  },
+  {
+    migration: "0081 — de quién es el dinero de cada caja",
+    // Las tres tablas de caja llevaban sucursal y usuario, y nada más: no había
+    // forma de decir «esta caja es del mostrador del tour center Coral». Y
+    // `/api/payments` ya perdía el dato hoy — creaba el cobro CON su socio y el
+    // movimiento de caja sin él.
+    columns: [
+      ["cash_register", ["partner_id", "seller_id"]],
+      ["cash_session", ["partner_id", "seller_id"]],
+      ["cash_movement", ["partner_id", "seller_id"]],
+    ],
+  },
+  {
+    migration: "0080 — el saldo prepago del tour center",
+    // El crédito existía y el prepago no: al socio que ingresa por adelantado
+    // había que llevarle el saldo en una libreta y mirarla antes de cada venta.
+    // No hay columna de saldo a propósito — es la suma de este libro, y así no
+    // puede discrepar de sus propios movimientos.
+    tables: ["partner_wallet_movement"],
+    columns: [
+      ["partner_wallet_movement", ["partner_id", "movement_type", "amount", "currency"]],
+      ["organization_relationships", ["payment_mode"]],
+    ],
+  },
+  {
+    migration: "0079 — la bandeja del tour center",
+    // `notification.partner_id` está en la tabla desde 0009 y nadie la escribía
+    // ni la leía: al socio no se le contaba nada de sus propias ventas.
+    columns: [
+      ["notification", ["partner_id"]],
+    ],
+  },
+  {
     migration: "0078 — el modelo comercial del socio",
     // Sin esta columna, un tour center con tarifa NETA cobraba su margen dos
     // veces: una en el precio y otra en la liquidación. No se ve el día de la

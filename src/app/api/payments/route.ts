@@ -124,12 +124,31 @@ export async function POST(req: NextRequest) {
       ? await scheduleRefFor(ctx.companyId, orderId, amount).catch(() => null)
       : null;
 
+    /**
+     * DE QUIÉN ES ESTE DINERO (0081).
+     *
+     * Se calcula UNA vez y se sella en el cobro y en el apunte de caja. Antes
+     * el cobro nacía con su socio —`payment.partner` existe y se rellenaba— y
+     * el `cash_movement` de la línea siguiente lo perdía: desde el momento de
+     * escribirlo, el efectivo de una venta de socio era indistinguible del
+     * propio de la operadora.
+     *
+     * Mientras el socio no pueda abrir caja eso no descuadra nada, porque todo
+     * el efectivo está de verdad en el cajón de la operadora. Deja de ser
+     * cierto en cuanto exista la caja externa, y entonces el arqueo diría que
+     * la operadora tiene un dinero que está en el mostrador de otro.
+     */
+    const socioDelCobro =
+      body.partner_id ||
+      (order && typeof order.partner === "object" ? order.partner?._id : order?.partner) ||
+      null;
+
     const payment = await tenantCreate(ctx.companyId, "payment", {
       order: orderId || undefined,
       schedule: scheduleRef || undefined,
       booking: body.booking_id || undefined,
       customer: body.customer_id || (order && typeof order.customer === "object" ? order.customer._id : order?.customer) || undefined,
-      partner: body.partner_id || (order && typeof order.partner === "object" ? order.partner?._id : order?.partner) || undefined,
+      partner: socioDelCobro || undefined,
       cash_session: cashSessionId || undefined,
       user: ctx.userId,
       reference: idempotencyKey || newPaymentReference(),
@@ -154,6 +173,9 @@ export async function POST(req: NextRequest) {
         cash_session: cashSessionId,
         user: ctx.userId,
         payment: payment._id,
+        // El mismo socio que el cobro: es la fila que el arqueo SUMA, así que
+        // es donde tiene que poder distinguirse de quién es el dinero.
+        partner: socioDelCobro || undefined,
         movement_type: isRefund ? "refund" : "sale",
         amount: isRefund ? -amount : amount,
         currency,

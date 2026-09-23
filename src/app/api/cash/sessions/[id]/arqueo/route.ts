@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireAtLeast } from "@/lib/tenant";
+import { requireTenant, requireAtLeast, TenantError, esDeSocio, esAdminDeSocio } from "@/lib/tenant";
+import { exigeRangoDeCaja, noPuedeAbrirLaCaja } from "@/lib/caja-identidad";
 import { ok, fail } from "@/lib/api-response";
 import { loadCashClose } from "@/lib/cash-service";
 import { recalcCashSession } from "@/lib/cash";
@@ -16,11 +17,37 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const { id } = await params;
     const ctx = await requireTenant();
     await assertRateLimit({ key: rateLimitKey(req, "cash:arqueo", ctx.userId), limit: 120, windowMs: 60_000 });
-    requireAtLeast(ctx, "cashier");
+
+    const payload = await loadCashClose(ctx.companyId, id);
+
+    /**
+     * El arqueo de un turno lo mira su dueño (0081).
+     *
+     * `loadCashClose` acota los movimientos por sesión, así que el arqueo sale
+     * limpio; lo que faltaba es que no lo abra cualquiera. Con la caja externa
+     * eso sería enseñarle a la operadora cuánto efectivo movió un tour center
+     * en su mostrador, y al tour center el de la casa.
+     */
+    const sesion = payload.session as Record<string, unknown>;
+    const actorDeCaja = {
+      esDeSocio: esDeSocio(ctx), partnerId: ctx.partnerId,
+      sellerId: ctx.sellerId, esAdminDeSocio: esAdminDeSocio(ctx),
+    };
+    /**
+     * El rango de siempre, SALVO que la caja sea suya (0083).
+     *
+     * Las rutas de caja pedían `cashier` y un `seller` está por debajo: el
+     * promotor de playa —la persona entera para la que existe el modo «retiene
+     * su comisión»— no podía abrir un turno, y sin turno no hay dónde apuntar
+     * lo que se queda ni con qué cuadrar al final del día.
+     */
+    if (exigeRangoDeCaja(sesion, actorDeCaja)) requireAtLeast(ctx, "cashier");
+
+    const impedimento = noPuedeAbrirLaCaja({ ...sesion, status: "active" }, actorDeCaja);
+    if (impedimento) throw new TenantError(impedimento, 403);
 
     // Una sesión abierta se recalcula al abrir el arqueo: el cajero cuenta
     // contra lo que hay ahora, no contra lo que había en el último cobro.
-    const payload = await loadCashClose(ctx.companyId, id);
     if (payload.session.status === "open") {
       await recalcCashSession(ctx.companyId, id);
       return ok(await loadCashClose(ctx.companyId, id));

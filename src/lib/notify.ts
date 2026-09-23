@@ -37,13 +37,26 @@ export type NotificationType = "info" | "booking" | "payment" | "operation" | "a
 /** Rol mínimo que ve un aviso de empresa. Coincide con el orden de `atLeast`. */
 export type AudienceRole = "owner" | "admin" | "manager" | "operations" | "cashier" | "seller";
 
+/**
+ * A quién va dirigido un aviso.
+ *
+ * `partner` NO es un rol interno y por eso no está en `AudienceRole`: los
+ * avisos del tour center no se reparten por rango —dentro de un tour center
+ * todos los accesos son iguales por construcción (0073)— sino por
+ * IDENTIFICADOR, en la columna `notification.partner_id`. Declararlo aquí sirve
+ * para que el catálogo diga la verdad sobre cada evento; la columna
+ * `audience_role` se queda nula para ellos, que es lo que exige el `check` de
+ * 0044 y lo que impide que un interno los vea por rango.
+ */
+export type Audience = AudienceRole | "partner";
+
 export interface NotifyVars {
   [key: string]: string | number | null | undefined;
 }
 
 export interface NotifyEventDef {
   type: NotificationType;
-  audience: AudienceRole;
+  audience: Audience;
   title: (v: NotifyVars) => string;
   message: (v: NotifyVars) => string;
   link: (v: NotifyVars) => string;
@@ -224,6 +237,103 @@ export const NOTIFY_EVENTS = {
     link: () => "/dashboard/liquidaciones",
   },
 
+  /* ═══════════════════════════════ lo que se le cuenta al tour center */
+
+  /**
+   * LOS AVISOS DEL SOCIO, Y POR QUÉ NO EXISTÍAN.
+   *
+   * `notification.partner_id` está en la tabla desde 0009 y NADIE la escribía
+   * ni la leía — la tercera columna de esta fase que promete un vínculo con el
+   * socio y no lo cumple, después de `authorized_products` y de
+   * `api_key.partner_id`.
+   *
+   * La consecuencia: al tour center no se le contaba nada. Ni que su reserva
+   * quedó confirmada, ni que le movieron la recogida, ni que se la cancelaron,
+   * ni que le emitieron la liquidación. Se enteraba llamando, que es lo que el
+   * portal vino a sustituir.
+   *
+   * Van por IDENTIFICADOR y no por rango: dentro de un tour center todos los
+   * accesos son iguales por construcción (0073), así que un aviso para «el
+   * socio» es para su empresa entera, y un miembro nuevo ve lo de antes de
+   * entrar — que es justo lo que un buzón por persona no da.
+   */
+  partner_booking_confirmed: {
+    type: "booking",
+    audience: "partner",
+    title: (v) => `Reserva confirmada ${v.referencia ?? ""}`.trim(),
+    message: (v) =>
+      [v.producto, v.fecha ? `para el ${v.fecha}` : null, v.pax ? `· ${v.pax} pax` : null,
+       v.cliente ? `· ${v.cliente}` : null].filter(Boolean).join(" "),
+    link: () => "/portal/reservas",
+  },
+
+  /**
+   * La reserva se mueve, y con ella la recogida. Es el aviso más urgente de los
+   * cuatro: el tour center tiene que localizar al turista antes de la hora
+   * vieja, y una hora es lo que hay entre enterarse y que alguien se quede
+   * esperando en el lobby.
+   *
+   * Al cliente ya se le avisaba desde que existe la reprogramación. Al tour
+   * center que hizo la venta —y que es quien tiene el teléfono del turista en
+   * la mano— no.
+   */
+  partner_booking_rescheduled: {
+    type: "operation",
+    audience: "partner",
+    title: (v) => `Cambio de fecha y recogida ${v.referencia ?? ""}`.trim(),
+    message: (v) =>
+      [v.producto, v.antes ? `· antes ${v.antes}` : null, v.ahora ? `· ahora ${v.ahora}` : null,
+       v.lugar ? `· punto de encuentro: ${v.lugar}` : null,
+       v.motivo ? `· ${v.motivo}` : null].filter(Boolean).join(" "),
+    link: () => "/portal/reservas",
+  },
+
+  partner_booking_cancelled: {
+    type: "alert",
+    audience: "partner",
+    title: (v) => `Reserva cancelada ${v.referencia ?? ""}`.trim(),
+    message: (v) =>
+      [v.producto, v.fecha ? `del ${v.fecha}` : null, v.motivo ? `· ${v.motivo}` : null]
+        .filter(Boolean).join(" "),
+    link: () => "/portal/reservas",
+  },
+
+  /**
+   * La liquidación EMITIDA, que hasta ahora no avisaba a nadie —ni al socio ni
+   * dentro de la operadora—. Es el aviso que abre el plazo para revisarla: sin
+   * él, el socio descubre el corte cuando le llega el pago, y discutirlo
+   * entonces es discutir sobre dinero que ya se movió.
+   */
+  partner_settlement_issued: {
+    type: "settlement",
+    audience: "partner",
+    title: (v) => `Liquidación emitida ${v.referencia ?? ""}`.trim(),
+    message: (v) =>
+      `${money(v)}${v.periodo ? ` · ${v.periodo}` : ""}. Revísala y, si no cuadra, ábrele una disputa.`,
+    link: () => "/portal/liquidaciones",
+  },
+
+  /**
+   * Una recarga apuntada. Es la mitad del prepago: un ingreso que el socio no
+   * ve reflejado es una llamada al día siguiente preguntando si llegó — y, si
+   * no llegó, una venta que le rebota por saldo sin que sepa por qué.
+   */
+  partner_wallet_topup: {
+    type: "payment",
+    audience: "partner",
+    title: () => "Recarga registrada",
+    message: (v) => `${money(v)}. Tu saldo disponible es ${money(v, "saldo")}.`,
+    link: () => "/portal/monedero",
+  },
+
+  partner_settlement_paid: {
+    type: "settlement",
+    audience: "partner",
+    title: (v) => `Te pagamos la liquidación ${v.referencia ?? ""}`.trim(),
+    message: (v) => `${money(v)}. El detalle está en tu estado de cuenta.`,
+    link: () => "/portal/liquidaciones",
+  },
+
   /** Un comprobante fiscal anulado. Se justifica ante la DGII, no se esconde. */
   invoice_voided: {
     type: "alert",
@@ -336,7 +446,7 @@ export interface BuiltNotification {
   message: string;
   notification_type: NotificationType;
   link: string;
-  audience_role: AudienceRole;
+  audience_role: Audience;
   event_key: NotifyEventKey;
 }
 
@@ -435,6 +545,25 @@ export function audienceRolesFor(role: string): AudienceRole[] {
   return AUDIENCES.filter((candidate) => ROLE_RANK[candidate] <= rank);
 }
 
+/** Quien pregunta por su bandeja. */
+export interface ActorDeBandeja {
+  userId: string;
+  role: string;
+  /**
+   * Si pertenece a un tour center.
+   *
+   * Lo decide quien llama con `esDeSocio(ctx)`, que es el ÚNICO sitio del
+   * sistema autorizado a mirar el nombre del rol. Repetir aquí la comparación
+   * —`role === "partner"`— reabriría la puerta trasera que cerró 4.2: un
+   * empleado de un tour center con otro rol pasaría de largo. Este módulo es
+   * puro y no puede importar `tenant.ts`, que es `server-only`, así que la
+   * decisión entra como dato.
+   */
+  esDeSocio: boolean;
+  /** El tour center al que pertenece. */
+  partnerId?: string | null;
+}
+
 /**
  * El filtro de la bandeja: lo mío, y lo de la empresa que me toca.
  *
@@ -442,13 +571,77 @@ export function audienceRolesFor(role: string): AudienceRole[] {
  * de caja de anoche le aparecía al vendedor igual que al dueño. Y sin la parte
  * de `audience_role is null`, los avisos escritos antes de 0044 —que no tienen
  * rol— dejarían de verse, que es perder correo por cambiar de buzón.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * DOS BUZONES, NO UNO CON PERMISOS
+ *
+ * El del socio y el de la operadora son buzones distintos y se arman por
+ * caminos distintos, no por rango. Compartirlos con un rango pequeño tenía dos
+ * fallos a la vez:
+ *
+ *  · **Hacia dentro.** El cajón de `audience_role is null` —los avisos
+ *    anteriores a 0044, sin rol— lo alcanza cualquiera. Para un miembro de un
+ *    tour center eso es la bandeja interna de la operadora, que no es suya.
+ *  · **Hacia fuera.** Los avisos dirigidos a un socio llevan `partner_id` y no
+ *    llevan rol, así que por rango no los alcanzaría nunca: el socio no vería
+ *    los suyos ni con el rango más alto.
+ *
+ * Por eso el actor decide el camino entero, igual que en `sellerScopeApplies`.
  */
-export function inboxFilter(userId: string, role: string): Record<string, unknown> {
+/**
+ * ¿Este aviso es de quien lo quiere marcar?
+ *
+ * Vive al lado de `inboxFilter` y no en la ruta porque son la MISMA regla
+ * escrita dos veces si se separan: leer una bandeja y marcar lo que hay en ella
+ * tienen que coincidir, o alguien marca como leído algo que no ve —o, peor, algo
+ * que no es suyo.
+ *
+ * La comprobación de la ruta era `user_id` nulo ⇒ es de empresa ⇒ vale. Con los
+ * avisos de socio eso se convirtió en un agujero: sus filas TAMBIÉN tienen
+ * `user_id` nulo, así que cualquiera de la empresa —y cualquier miembro de otro
+ * tour center— podía marcarle los avisos como leídos y hacerlos desaparecer de
+ * su campana sin que él los hubiera visto.
+ */
+export function puedeMarcar(
+  aviso: { user_id?: string | null; partner_id?: string | null },
+  actor: ActorDeBandeja
+): boolean {
+  if (aviso.user_id) return aviso.user_id === actor.userId;
+  // De un tour center: solo los suyos. Y por identificador — sin ficha, nadie.
+  if (aviso.partner_id) return Boolean(actor.partnerId) && aviso.partner_id === actor.partnerId;
+  // De empresa: interno. Quien es de un socio ya no lo ve en su bandeja, así
+  // que tampoco puede marcarlo.
+  return !actor.esDeSocio;
+}
+
+export function inboxFilter(actor: ActorDeBandeja): Record<string, unknown> {
+  if (actor.esDeSocio) {
+    /**
+     * Lo de su tour center, y lo suyo personal. Nada más.
+     *
+     * Y por IDENTIFICADOR: si no lo tiene, no le toca ningún aviso de socio —
+     * es el mismo criterio que el resto de su ámbito, y devolver aquí el cajón
+     * sin rol sería justamente la bandeja interna de la operadora.
+     */
+    const suyos: Record<string, unknown>[] = [{ user_id: actor.userId }];
+    if (actor.partnerId) suyos.push({ partner_id: actor.partnerId });
+    return { _or: suyos };
+  }
+
   return {
+    /**
+     * Y la operadora NO ve las copias del socio.
+     *
+     * Cada hecho que le importa a los dos escribe dos avisos —uno para la
+     * operación, otro para el tour center—, así que dejar pasar el del socio
+     * duplicaría la campana y el contador. Un aviso que empieza por «te
+     * pagamos la liquidación» tampoco se lee bien desde el lado que paga.
+     */
+    partner_id: null,
     _or: [
-      { user_id: userId },
+      { user_id: actor.userId },
       { user_id: null, audience_role: null },
-      { user_id: null, audience_role: { in: audienceRolesFor(role) } },
+      { user_id: null, audience_role: { in: audienceRolesFor(actor.role) } },
     ],
   };
 }

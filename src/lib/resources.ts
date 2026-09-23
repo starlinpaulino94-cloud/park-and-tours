@@ -114,6 +114,15 @@ export const RESOURCES: Record<string, ResourceDef> = {
       "user", "partner", "branch", "code", "first_name", "last_name", "email", "phone", "whatsapp",
       "seller_role", "commission_pct", "monthly_goal", "max_discount_pct", "currency", "photo_url",
       "hire_date", "status", "notes", "supervisor", "seller_type",
+      /**
+       * Si esta persona retiene su comisión en el acto (0082).
+       *
+       * Escribible con rango `manager`, como el resto de la ficha: decidir que
+       * un promotor cobra su parte en la playa es una decisión comercial, no
+       * una de caja. Lo que NO se puede tocar por aquí es el modo con el que se
+       * cerró una venta ya hecha — ése vive en la orden y no es escribible.
+       */
+      "collection_mode",
     ],
     numeric: ["commission_pct", "monthly_goal", "max_discount_pct"],
     dates: ["hire_date"],
@@ -502,7 +511,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
   cash_session: {
     table: "cash_session",
     search: ["code"],
-    expand: { cash_register: true, branch: true, user: true },
+    expand: { cash_register: true, branch: true, user: true, partner: true, seller: true },
     expandOne: {
       cash_register: true, branch: true, user: true, closed_by: true, approved_by: true,
       cash_movement: { _limit: 300, _sort: { createdAt: "desc" } },
@@ -534,7 +543,9 @@ export const RESOURCES: Record<string, ResourceDef> = {
   cash_movement: {
     table: "cash_movement",
     search: ["concept", "reference"],
-    expand: { cash_session: true, user: true, payment: true },
+    // `partner` y `seller` (0081): de quién es el dinero de este apunte. Sin
+    // ellos, un listado de movimientos no puede decir de qué mostrador salió.
+    expand: { cash_session: true, user: true, payment: true, partner: true, seller: true },
     sort: { movement_at: "desc" },
     writable: [],
     numeric: ["amount"],
@@ -1386,6 +1397,26 @@ export const RESOURCES: Record<string, ResourceDef> = {
     dates: ["last_sync_at"],
     writeRole: "admin",
   },
+  /**
+   * El libro del saldo prepago (0080).
+   *
+   * Nada es escribible por el CRUD genérico, y es deliberado: una recarga entra
+   * por `/api/partners/wallet`, que comprueba que quien la apunta NO es el
+   * socio —quien ve la transferencia en el banco es la operadora—, valida la
+   * moneda contra la del contrato y deja auditoría. Abrir estas columnas al
+   * CRUD sería dar exactamente ese rodeo.
+   *
+   * Y el consumo lo escribe la venta, bajo el índice único que impide
+   * descontar dos veces la misma orden.
+   */
+  partner_wallet_movement: {
+    table: "partner_wallet_movement",
+    search: ["reference"],
+    expand: { partner: true, order: true },
+    sort: { createdAt: "desc" },
+    writable: [],
+    writeRole: "owner",
+  },
   notification: {
     table: "notification",
     search: ["title"],
@@ -1486,6 +1517,23 @@ export const PARTNER_DENEGADAS_A_PROPOSITO: Record<string, string> = {
   seller_bonus: "igual que las metas, y además es dinero de la operadora a su gente",
   seller_link: "el enlace de atribución es de la red de ventas interna; el socio no atribuye por QR todavía",
   seller_attribution: "el embudo del enlace, por lo mismo",
+  /**
+   * Y la caja, desde 0081.
+   *
+   * El socio SÍ tiene caja propia y la base se la deja leer
+   * (`can_read_partner`), pero no por el CRUD genérico: sus pantallas van por
+   * las rutas de `/api/cash`, que además de acotar por socio comprueban que el
+   * turno sea suyo antes de mover o cerrar nada. Abrirlas aquí sería una
+   * segunda puerta al mismo dinero, con la mitad de las comprobaciones — y la
+   * aplicación puede ser más estricta que la base, nunca al revés.
+   *
+   * OJO con escribir `/api/cash` seguido de un asterisco en estas cadenas: abre
+   * un comentario de bloque y el quitacomentarios de las guardas se traga desde
+   * ahí hasta el siguiente cierre. Se tragó estas tres líneas enteras.
+   */
+  cash_register: "su caja va por las rutas de caja, que comprueban el dueño del turno",
+  cash_session: "igual: el arqueo se abre, se mueve y se cierra por su ruta",
+  cash_movement: "la fila que suma el arqueo; se lee dentro de su turno",
 };
 
 export function partnerScopeFor(table: string, partnerId: string | null): PartnerScope {

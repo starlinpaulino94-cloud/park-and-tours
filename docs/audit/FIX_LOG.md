@@ -2459,3 +2459,325 @@ Y la tabla dice dos cosas más que no se preguntaban:
   iguales). Una lista escrita a mano acumula esto en silencio; la guarda que lo
   caza son tres líneas y vale para todas las futuras.
 - **Mutación: quince, las quince muertas.**
+
+### Fase 6.5 — al tour center no se le contaba nada
+- **`notification.partner_id` está en la tabla desde 0009 y NADIE la escribía ni
+  la leía.** Es la tercera columna de esta fase que promete un vínculo con el
+  socio y no lo cumple, después de `authorized_products` (6.1) y de
+  `api_key.partner_id` (6.3). La consecuencia era literal: al tour center no se
+  le contaba **nada** de sus propias ventas — ni que la reserva quedó
+  confirmada, ni que le movieron la fecha y la recogida, ni que se la
+  cancelaron, ni que le emitieron la liquidación, ni que se la pagaron.
+- **Y el turista SÍ recibía sus avisos.** Al cliente se le escribe desde que
+  existen la reserva, la reprogramación y la cancelación. El socio —que es quien
+  tiene el teléfono del turista en la mano y quien lo va a buscar al hotel—
+  quedaba como el último en enterarse de una venta que hizo él.
+- **Emitir una liquidación no avisaba a nadie**, ni al socio ni dentro de la
+  operadora: se creaba el documento y ahí se quedaba. Para el socio es el aviso
+  que ABRE el plazo de revisión; sin él descubre el corte cuando le llega el
+  pago, y discutirlo entonces es discutir sobre dinero que ya se movió — la
+  disputa de 5.4 existe para usarse antes de eso.
+- **`settlement_paid` solo miraba `beneficiary_type === "seller"`**: a un socio
+  liquidado no se le decía nunca que le habían pagado.
+- **Dos buzones, no uno con permisos.** `inboxFilter` compartía la bandeja por
+  rango, y eso fallaba por los dos lados a la vez: **hacia dentro**, el cajón de
+  `audience_role is null` —los avisos anteriores a 0044— lo alcanza cualquiera,
+  y para un miembro de un tour center eso es la bandeja interna de la operadora;
+  **hacia fuera**, los avisos de socio llevan `partner_id` y no llevan rol, así
+  que por rango no los habría alcanzado nunca, ni con el rango más alto.
+- **Y la decisión no se reimplementa: entra como dato.** `notify.ts` es puro y
+  no puede importar `tenant.ts`, que es `server-only`. Escribir aquí
+  `role === "partner"` habría reabierto la puerta trasera de 4.2 — lo cazó esa
+  misma guarda en la primera ejecución. El actor trae `esDeSocio(ctx)` ya
+  resuelto por el único sitio autorizado a mirar el nombre del rol.
+- **El agujero que se abre al crear un actor nuevo, y que cierra en la misma
+  entrega.** La ruta de marcar como leído decía «`user_id` nulo ⇒ es de empresa
+  ⇒ vale». Los avisos de un tour center también tienen `user_id` nulo: esa regla
+  dejaba que un interno —y, peor, **otro tour center**— se los marcara como
+  leídos y se los borrara de la campana antes de que él los viera. Ahora lo
+  decide `puedeMarcar`, que vive al lado de `inboxFilter` porque leer una
+  bandeja y marcar lo que hay en ella son la misma regla escrita dos veces si se
+  separan.
+- **Una sola pantalla para los dos buzones.** Quien decide qué hay dentro es el
+  servidor, así que la bandeja es el mismo componente en el panel y en el
+  portal. Dos copias se habrían separado el día que alguien arreglara el
+  contador en una sola.
+- **Un `badgeKey` en el menú del portal era una promesa muerta**: el dato estaba
+  en `nav.ts`, `app-shell` lo pintaba, y `side-shell` —el atajo que usa el
+  portal— lo tiraba al suelo. Una bandeja sin número de no leídos obliga a
+  entrar a mirar, que es de lo que venimos.
+- **Migración 0079: un índice y una política.** Hasta ahora `notification` tenía
+  solo el aislamiento por empresa, así que la BASE le dejaba a un miembro de un
+  tour center leer la bandeja interna entera de la operadora y solo el filtro de
+  la aplicación lo impedía. **No se usa `can_read_partner`**, y esa es la
+  diferencia que importa: esa función exige que la fila lleve el socio de quien
+  consulta, y los avisos PERSONALES de un miembro del tour center no llevan
+  ninguno — con ella, el socio dejaría de ver los suyos propios.
+- **El socio entra en la clave de dedupe por la SEMILLA**, no por un trozo nuevo:
+  añadir un quinto campo cambiaría la clave de todos los avisos ya escritos y el
+  índice único dejaría pasar una copia de cada uno.
+- **Mutación: quince, las quince muertas.**
+
+### Fase 6.6 — el prepago no existía, y el crédito sí
+- **Lo primero fue mirar qué había.** El control de crédito funciona desde 0031:
+  `creditCheck` comprueba el techo con lo que el socio debe según sus documentos
+  abiertos, y la venta se para. Nada de eso hacía falta tocarlo.
+- **Lo que no había es lo contrario**: el socio que ingresa por adelantado y va
+  gastando, que es como trabaja media costa — transfieren el lunes y venden toda
+  la semana contra ese depósito. Sin esto había que llevarle el saldo en una
+  libreta y mirarla antes de cada venta. Como el cupo antes de 6.4 y el contrato
+  antes de 6.1: el acuerdo existía fuera del sistema.
+- **EL SALDO NO SE GUARDA: SE SUMA.** No hay columna `balance`. Una columna con
+  el saldo es un número que puede discrepar de sus propios movimientos, y cuando
+  discrepa nadie sabe cuál de los dos es el bueno. Un saldo derivado se
+  recalcula. (Había un `balance: 0` en el sembrador de demostración que no iba a
+  ninguna columna — ni en `PARTNER_RELATIONSHIP_COLUMNS` ni en
+  `PARTNER_ORG_COLUMNS`: era justo esa columna imaginaria.)
+- **EL IMPORTE SIEMPRE ES POSITIVO; el signo lo pone el TIPO.** Con importes con
+  signo, una recarga de −500 vacía el monedero sin que nada parezca raro: en el
+  listado se lee como una recarga. Lo hace cumplir un `check` en la base, porque
+  el día que alguien inserte por SQL la aplicación no está delante.
+- **Y el ajuste SIEMPRE resta.** Un ajuste que suma es una recarga y tiene que
+  entrar por la puerta de las recargas, donde queda el número de la
+  transferencia — si no, es la forma de regalarle saldo a un socio sin que se
+  vea de dónde salió.
+- **El socio no puede escribir en su propio monedero**, y por eso son DOS rutas
+  y no una con permisos. Quien apunta una recarga es quien VE la transferencia
+  en el banco, y eso es la operadora. Si el socio pudiera, el saldo dejaría de
+  significar «dinero ingresado» para significar «lo que el socio dice que
+  ingresó», y con eso vendería sin haber pagado. Ni siquiera puede LEER la ruta
+  interna: acepta el socio por parámetro, y el saldo de un socio dice cuánto
+  ingresa y cuánto vende.
+- **El consumo no se apunta a mano.** Lo escribe la venta, con su orden colgada,
+  y el CRUD genérico no tiene ni una columna escribible en esa tabla. Un consumo
+  sin venta detrás baja el saldo y no deja nada que enseñar cuando el socio
+  pregunte por qué.
+- **Una venta descuenta UNA vez, y lo hace cumplir un índice único** — no una
+  comprobación de la aplicación: dos instancias a la vez le ganan siempre. Sin
+  él, un reintento cobra dos veces la misma reserva.
+- **Se comprueba ANTES de escribir y se descuenta DESPUÉS**, igual que el cupo:
+  descontar antes y que la saga se compensara dejaría al socio pagando una
+  reserva que no llegó a nacer. Y se descuenta con el TOTAL de verdad, no con la
+  estimación que sirvió para comprobar — cobrar por la estimación dejaría el
+  saldo distinto de lo que el socio ve en su factura.
+- **La cancelación mira el LIBRO, no el contrato de hoy.** Un socio que pasó de
+  prepago a crédito entre la venta y la cancelación recibiría un abono por una
+  venta que nunca le descontó, o al revés se quedaría sin su devolución. Y
+  devuelve lo de ESA reserva, no el total de la orden.
+- **La moneda es lo que más calla.** Un monedero en dólares al que se le apunta
+  una recarga en pesos suma 30.000 a un saldo de dólares. Se rechaza y no se
+  convierte — convertir sería inventarse un tipo de cambio que nadie pactó y
+  enterrarlo en una fila. La moneda sale del contrato, no del cuerpo de la
+  petición: dejar que quien apunta la elija es exactamente cómo entra esa
+  recarga.
+- **Y la primera versión de esa comprobación no podía fallar nunca**: comparaba
+  el movimiento consigo mismo. La moneda del monedero entra ahora como parámetro
+  aparte, y hay una mutación que lo vigila.
+- **El saldo se suma sobre TODOS los movimientos, no sobre la página que se
+  devuelve.** Un saldo por página crece solo cuando el socio pasa de quinientos
+  movimientos, y crece hacia arriba —se pierden consumos viejos—, que es el lado
+  caro del error.
+- **Prepago y crédito son EXCLUYENTES**, declarados en la relación como el
+  modelo de precio de 6.2. Comprobar los dos sería pedirle al socio prepago que
+  además tenga crédito. Y **lo desconocido es crédito**: es lo que hacen hoy
+  todos los socios, y entender el hueco como prepago les cortaría la venta a
+  todos de golpe el día del despliegue, porque todos los monederos nacen a cero.
+- **Una recarga apuntada avisa al socio** (6.5). Un ingreso que él no ve
+  reflejado es una llamada al día siguiente preguntando si llegó — y, si no
+  llegó, una venta que le rebota por saldo sin que sepa por qué.
+- **Mutación: veinte, las veinte muertas.**
+
+### Fase 7.1/7.2 — la caja no sabía de quién era el dinero
+- **Las tres tablas de caja llevaban sucursal y usuario, y nada más.** No había
+  forma de decir «esta caja es del mostrador del tour center Coral» ni «este
+  turno es del vendedor de la playa»: el dinero de la calle no cabía en el
+  modelo, así que o no existía o entraba en el cajón de la operadora.
+- **Y hay un sitio donde ya se perdía HOY, sin esperar a la caja externa.**
+  `/api/payments` creaba el cobro CON su socio —`payment.partner` existe y se
+  rellenaba— y en la línea siguiente abría el `cash_movement` sin él. Desde el
+  momento de escribirlo, el efectivo de una venta de socio era indistinguible
+  del propio de la operadora. Mientras el socio no pueda abrir caja eso no
+  descuadra nada; deja de ser cierto en cuanto exista la caja externa.
+- **`/api/cash/sessions` armaba su propio filtro y no pasaba por ningún ámbito**:
+  listaba TODAS las sesiones de la empresa. Con la caja externa son dos fallos a
+  la vez — al interno le enseñaría el efectivo de los tour centers como propio,
+  y a un miembro de un tour center el de la operadora y el de las demás.
+- **El arqueo interno exige `partner` NULO, no la ausencia de filtro.** El
+  criterio del plan es que no incluya NI UN movimiento de caja de socio, y eso
+  hay que escribirlo: omitir el filtro —que es lo que hace la política de la
+  base, donde el interno lo ve todo— haría que el arqueo sumara el efectivo de
+  los tour centers como propio.
+- **Y lo hace cumplir la BASE, no el acordarse de copiarlo.** Un disparador
+  rechaza el movimiento cuyo dueño no sea el de su turno. El arqueo suma los
+  movimientos de SU turno, así que basta con eso — y no se consigue acordándose
+  de pasarlo bien en las tres rutas que escriben. Con `is distinct from` y no
+  `<>`: con nulos, que es el caso normal, `<>` devuelve nulo y no salta nunca.
+- **Un turno no cambia de dueño a mitad**, también por disparador. Mover el
+  socio de una sesión abierta reasigna de golpe todo su efectivo, y en la
+  dirección cara: una caja de socio que se vuelve de la operadora mete en el
+  arqueo un dinero que nadie tiene.
+- **`tenantFindOne` solo comprueba la empresa**, así que bastaba conocer el
+  identificador de una sesión para meterle un retiro, cerrarle el turno a otro o
+  abrir su arqueo — y el descuadre, con su aprobación, queda a nombre de quien
+  sí estuvo ahí. Las cuatro rutas usan ahora la MISMA función: tres
+  comprobaciones distintas de «esta caja es tuya» acaban discrepando.
+- **El socio no abre la caja de la operadora, ni al revés.** La segunda
+  dirección es la que no se piensa: dejarle abrirla metería su efectivo en el
+  cajón de la casa —el descuadre que toda esta fase existe para evitar— y el
+  arqueo interno lo contaría como propio.
+- **La caja no se abre al CRUD genérico**, y la decisión queda escrita: la base
+  se la deja leer al socio (`can_read_partner`), pero sus pantallas van por las
+  rutas de caja, que además comprueban el dueño del turno. Una segunda puerta al
+  mismo dinero con la mitad de las comprobaciones. La aplicación puede ser más
+  estricta que la base; nunca al revés.
+- **Diez de diecisiete mutaciones no mordían, y las diez eran fallos de las
+  guardas.** Cinco comprobaban la LLAMADA y no el efecto —borrar el `throw` y
+  dejar la llamada las pasaba—; dos daban por bueno un disparador **renombrado**
+  porque `..._off` contiene el nombre original; una encontraba su texto en otro
+  sitio del mismo fichero; una comprobaba que el filtro se calcula pero no que
+  se use. Y la décima destapó una trampa nueva: **`/api/cash` seguido de un
+  asterisco dentro de una cadena abre un comentario de bloque**, y el
+  quitacomentarios de las guardas se tragó tres líneas de la lista de tablas
+  denegadas — la guarda buscaba entonces en las definiciones de recursos, donde
+  el nombre sí aparece.
+- **Mutación: diecisiete, las diecisiete muertas.**
+
+### Fase 7.3 — tres modos de cobro, y el sistema solo conocía uno
+- **El único que existía era «paga todo el cliente al operador».** Los otros dos
+  —cobra el punto de venta y debe el neto; el vendedor retiene su comisión y el
+  cliente paga el resto al subir— se parecen bastante en la pantalla de cobro y
+  se distinguen un mes después, cuando alguien intenta cuadrar qué se cobró,
+  quién lo tiene y a quién se le debe.
+- **Se declara en TRES sitios, y cada uno tiene su motivo.** Los dos primeros
+  son del CONTRATO con el tour center —la misma agencia puede cobrar ella con
+  una operadora y no con otra—, así que van en la relación, al lado de
+  `pricing_model` (0078) y `payment_mode` (0080). El tercero es de la PERSONA:
+  un promotor retiene y el cajero del mostrador no, trabajando los dos para la
+  misma operadora.
+- **Y la VENTA guarda el que se le aplicó.** Es la lección de la cancelación del
+  monedero (6.6): un contrato que cambia entre la venta y el cobro dejaría el
+  dinero movido bajo un modo y la liquidación calculada con otro, y nadie sabría
+  cuál de los dos fue el que pasó. No es escribible por CRUD — editable, se
+  podría reescribir a posteriori dónde estuvo el dinero de una venta liquidada.
+- **El contrato del socio gana a la ficha del vendedor, que es el orden
+  contrario al que parece.** Un vendedor de un tour center que retiene puede
+  existir, pero mientras el contrato diga que cobra el punto de venta, el dinero
+  es del mostrador y no suyo: dejar que su ficha gane haría que retuviera de un
+  dinero que la operadora nunca va a ver pasar.
+- **`pos_collects` no cabe en una ficha de persona**, y el `check` de la base lo
+  impide: el punto de venta es el tour center, no el vendedor. Ofrecerlo en su
+  ficha invitaría a declarar ahí algo que luego decide el contrato, y las dos
+  declaraciones acabarían discrepando.
+- **La comisión retenida nunca pasa del total.** Con una comisión mal
+  configurada —un porcentaje de más, una regla fija por encima del precio— el
+  vendedor retendría más de lo que cobró y el cliente subiría a la guagua con
+  saldo NEGATIVO: con dinero a devolver por una excursión que aún no ha hecho.
+- **Lo desconocido es «paga el cliente al operador»**, en las tres columnas. Es
+  lo que el sistema hace hoy con absolutamente todas las ventas; nacer en otro
+  modo cambiaría de golpe, el día del despliegue, dónde está el dinero de todo
+  lo que ya existe. La venta admite nulo a propósito: rellenar un histórico con
+  un modo que nadie declaró sería afirmar algo sobre ventas viejas que nadie
+  comprobó.
+- **Dos guardas no mordían.** Una rebanaba el recurso de la venta desde
+  `  order: {`, que sale ANTES en el fichero como expansión de otro recurso —la
+  guarda leía cincuenta líneas por encima del recurso que quería mirar y daba
+  por buena una lista de escribibles que ni había visto. La otra no existía: un
+  campo del formulario que el recurso no acepta se rellena, se guarda sin
+  quejarse y no cambia nada, que es el mismo silencio de `authorized_products`
+  antes de 6.1.
+- **Mutación: catorce, las catorce muertas.**
+
+### Fase 7.4 — la comisión retenida: o las dos cosas, o ninguna
+- **El criterio del plan no se puede cumplir desde la aplicación.** El cliente
+  de Supabase habla por HTTP y cada inserción es su propia transacción: entre
+  marcar la comisión como cobrada y apuntar el movimiento de caja cabe un fallo
+  de red, un reinicio del proceso y un despliegue. Y una compensación —«si falla
+  la segunda, deshaz la primera»— es otro par de pasos que también puede
+  quedarse a medias.
+- **Los dos finales malos, y los dos son caros.** Si se apunta el movimiento y
+  falla la comisión, el vendedor se llevó su dinero y la comisión sigue en
+  `pending`: **entra en la liquidación del mes y se le paga otra vez**. Si se
+  marca la comisión y falla el movimiento, el arqueo del turno cuadra de menos y
+  el vendedor aparece debiendo un dinero que ya era suyo. Ninguno se ve el día
+  de la venta: el primero se ve pagando dos veces, el segundo discutiendo un
+  descuadre.
+- **Así que las dos inserciones viven en una función de Postgres** (0083), como
+  ya hacía `reserve_departure_capacity` con el cupo, y la aplicación solo la
+  llama. La comisión **nace** en `paid`: crearla pendiente para actualizarla
+  después son otra vez dos pasos, y el hueco entre ellos es exactamente por
+  donde se cuela la liquidación que la paga por segunda vez.
+- **El movimiento es un `withdrawal`, no un cobro negativo.** El depósito del
+  turista entra como venta por su camino normal; esto es la parte que el
+  vendedor no entrega. Así el turno cuadra solo: entró el depósito, salió la
+  comisión, y lo que queda por entregar es la diferencia.
+- **Una reserva se retiene UNA vez.** El `for update` sobre el turno serializa
+  a dos peticiones simultáneas —el doble clic de siempre— y la segunda encuentra
+  ya escrita la retención de la primera. Y una comisión cobrada **sin** su
+  movimiento no se tapa con otro apunte: esa combinación solo puede venir de una
+  escritura por fuera, así que se para y se avisa.
+- **La función falla CERRADA.** Es `security definer`, así que se salta la RLS:
+  el ámbito se comprueba a mano dentro, y `anon` y `authenticated` no pueden
+  llamarla. Es la lección de 0017, donde dos funciones de cupo se podían invocar
+  sin credenciales con solo el uuid de una salida de otro tenant.
+- **Los datos van en UN objeto y no en trece argumentos.** Con trece —cinco
+  `uuid` seguidos— intercambiar dos compila, se ejecuta y escribe la comisión de
+  otro vendedor sobre otra reserva sin que nada se queje. Misma razón por la que
+  el ámbito del vendedor dejó de recibir cuatro cadenas en fila.
+- **Sin turno abierto NO se retiene, y no se inventa uno.** El dinero que el
+  vendedor se queda tiene que salir de algún arqueo, o al cerrar el día nadie
+  sabe cuánto entregó y cuánto se quedó. Sin turno, la comisión sigue su camino
+  normal y se liquida a fin de mes: peor para él, pero es lo único que no
+  descuadra nada.
+- **Y si la retención falla, la comisión no se escribe por el camino normal.**
+  Quedaría pendiente una comisión que quizá ya se retiró, que es el mismo pago
+  doble con otro disfraz.
+- **Se cuentan las comisiones ESCRITAS, no las calculadas.** La función devolvía
+  `resolved.length`; con la retención hay caminos donde una comisión calculada
+  no llega a escribirse, y ese número lo usa quien llama para el registro de la
+  venta.
+- **Una clave `functions:` en el verificador de migraciones se quitó antes de
+  nacer**: ese script solo sabe de tablas y columnas, así que habría sido
+  exactamente el adorno que media auditoría lleva quitando. Que la función
+  exista y que `anon` no la pueda llamar se comprueba contra la base de verdad,
+  en la verificación de su parte del editor.
+- **Dos guardas no mordían**, las dos de familias ya conocidas: una comprobaba
+  que la palabra `insert into cash_movement (` estuviera, no que la inserción
+  llegara a su `returning`; la otra daba por bueno un turno inventado porque
+  `... || "cs-inventada"` es un prefijo válido de lo que buscaba.
+- **Mutación: dieciocho, las dieciocho muertas.**
+
+### Fase 7.5 — el turno del vendedor, que no podía existir
+- **Las rutas de caja pedían rango `cashier`, y un `seller` está por debajo.**
+  Así que el promotor de playa —la persona entera para la que existe el modo
+  «retiene su comisión»— no podía abrir un turno; y sin turno no hay dónde
+  apuntar lo que se queda ni con qué cuadrar al final del día. Se llevaba en una
+  libreta, como el cupo antes de 6.4 y el saldo antes de 6.6.
+- **La exención es la mínima**: un vendedor opera la caja cuyo `seller_id` es el
+  suyo, y ninguna otra. No es un rango nuevo ni una excepción por rol — es la
+  misma regla de propiedad que ya decide todo lo demás en ese módulo, y por eso
+  vive en él y no repartida por las rutas.
+- **Y está escrita en el sentido que perdona el olvido.** `exigeRangoDeCaja`
+  devuelve `true` cuando hace falta el rango, así que quien llama escribe
+  `if (exige…) requireAtLeast(…)`: olvidarse deja la ruta **cerrada**. Con el
+  sentido contrario, olvidarse la dejaría abierta de par en par.
+- **Un retiro con comisión no es un retiro a secas.** Los dos sacan dinero del
+  cajón, pero el primero es lo que el vendedor se quedó y no tiene que entregar.
+  Mezclarlos le dice que entregue de más y, al cuadrar, le apunta el descuadre a
+  él. Ahora tiene su propia línea — y sigue restando del esperado, porque lo que
+  cambia es qué se le enseña, no cuánto hay en la caja.
+- **`/dashboard/mi-espacio/turno` cuadra por medio de pago**, que es el criterio
+  del plan: lo cobrado en efectivo, lo que entró por tarjeta y transferencia
+  —que no está en su bolsillo y por eso se dice—, lo que se quedó de comisión y
+  lo que le toca entregar.
+- **Y no recalcula la resta.** Lo que entrega es el ESPERADO del arqueo, que ya
+  lleva restada su comisión: rehacer la cuenta en la pantalla serían dos cuentas
+  del mismo dinero, y la que se equivoque decide lo que el vendedor pone sobre
+  la mesa. Tampoco vuelve a filtrar por vendedor en el navegador — un segundo
+  filtro en el cliente es una segunda definición de «lo mío», y además es la que
+  cualquiera puede quitar desde la consola.
+- **Una guarda existente lo paró**: una pantalla que enseña registros sin decir
+  cómo se crean. Y tiene razón — el vendedor no abre su propio turno, se lo abre
+  quien le entrega el fondo. Queda apuntado con ese motivo, porque un botón de
+  «abrir turno» aquí le dejaría declararse el fondo de apertura contra el que
+  luego se le cuadra.
+- **Mutación: catorce, las catorce muertas.**

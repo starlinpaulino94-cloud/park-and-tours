@@ -37,6 +37,16 @@ export interface NotifyInput {
    */
   userId?: string | null;
   /**
+   * Para un TOUR CENTER entero.
+   *
+   * `notification.partner_id` está en la tabla desde 0009 y nadie la escribía:
+   * al socio no se le contaba nada. Va a la empresa y no a cada persona porque
+   * dentro de un tour center todos los accesos son iguales por construcción
+   * (0073), y porque así un miembro que entra hoy ve lo de la semana pasada —
+   * que es justo lo que un buzón por persona no da.
+   */
+  partnerId?: string | null;
+  /**
    * Distingue dos avisos del mismo evento cuando no hay una fila que los
    * distinga: el del plan lo usa para repetirse una vez al mes por métrica.
    */
@@ -52,19 +62,31 @@ export async function notify(input: NotifyInput): Promise<void> {
     const { error } = await supabaseService().from("notification").insert({
       organization_id: input.companyId,
       user_id: input.userId ?? null,
+      partner_id: input.partnerId ?? null,
       title: built.title,
       message: built.message || null,
       notification_type: built.notification_type,
       link: built.link,
-      // Un aviso personal no necesita rol: ya tiene nombre y apellido.
-      audience_role: input.userId ? null : built.audience_role,
+      /**
+       * Un aviso personal no necesita rol: ya tiene nombre y apellido. Y uno de
+       * socio TAMPOCO puede llevarlo: el `check` de 0044 solo admite los seis
+       * roles internos, así que un `audience_role: "partner"` haría fallar el
+       * insert entero y el aviso se perdería en silencio. El destinatario de
+       * esos va en `partner_id`, que es donde el buzón lo busca.
+       */
+      audience_role: input.userId || input.partnerId ? null : built.audience_role,
       event_key: built.event_key,
       entity_type: input.entityType ?? null,
       entity_id: input.entityId ?? null,
       dedupe_key: dedupeKeyFor(input.event, {
         entityId: input.entityId,
         userId: input.userId,
-        seed: input.dedupeSeed,
+        /**
+         * El socio entra por la semilla y no por un campo nuevo, a propósito:
+         * añadir un sexto trozo a la clave cambiaría la de TODOS los avisos ya
+         * escritos, y el índice único dejaría pasar una copia de cada uno.
+         */
+        seed: input.dedupeSeed ?? input.partnerId ?? null,
       }),
       read_status: false,
     });

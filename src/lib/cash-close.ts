@@ -31,6 +31,16 @@ export interface CashMovementInput {
   movement_type?: string | null;
   amount?: number | null;
   currency?: string | null;
+  /**
+   * La comisión que este retiro se llevó (0083).
+   *
+   * Un retiro con comisión NO es lo mismo que un retiro a secas, aunque los dos
+   * saquen dinero del cajón: el primero es lo que el vendedor se quedó y no
+   * tiene que entregar; el segundo es dinero que salió a otro sitio. Mezclarlos
+   * le dice al vendedor que entregue de más y, al cuadrar, le apunta el
+   * descuadre a él.
+   */
+  commission_id?: string | null;
 }
 
 /** Cobro tal como vive en `payment`, acotado a lo que el arqueo necesita. */
@@ -58,6 +68,14 @@ export interface CurrencySummary {
   /** Solo lo que entró y salió del cajón en billetes. */
   cash_sales: number;
   cash_refunds: number;
+  /**
+   * Lo que el vendedor se quedó de comisión en este turno.
+   *
+   * Sale de los retiros que llevan comisión, y se cuenta APARTE de
+   * `withdrawals`: es la diferencia entre «entregas 300» y «cobraste 300, te
+   * quedas 45, entregas 255».
+   */
+  retained: number;
   expenses: number;
   withdrawals: number;
   deposits: number;
@@ -212,7 +230,7 @@ export function summarizeCash(
     if (!found) {
       found = {
         currency: key, opening: 0, sales: 0, refunds: 0,
-        cash_sales: 0, cash_refunds: 0, expenses: 0,
+        cash_sales: 0, cash_refunds: 0, retained: 0, expenses: 0,
         withdrawals: 0, deposits: 0, adjustments: 0,
         card: 0, transfer: 0, other_methods: 0, expected: 0,
       };
@@ -231,7 +249,13 @@ export function summarizeCash(
       case "sale": r.sales += raw; r.cash_sales += raw; break;
       case "refund": r.refunds += Math.abs(raw); r.cash_refunds += Math.abs(raw); break;
       case "expense": r.expenses += Math.abs(raw); break;
-      case "withdrawal": r.withdrawals += Math.abs(raw); break;
+      case "withdrawal":
+        // El retiro que se llevó una comisión se cuenta aparte, pero SIGUE
+        // saliendo del cajón: `expected` lo resta igual, abajo. Lo que cambia
+        // es qué se le enseña al vendedor, no cuánto hay.
+        if (movement.commission_id) r.retained += Math.abs(raw);
+        else r.withdrawals += Math.abs(raw);
+        break;
       case "deposit": r.deposits += Math.abs(raw); break;
       case "adjustment": r.adjustments += raw; break;
       default: break;
@@ -266,6 +290,7 @@ export function summarizeCash(
     r.expenses = round2(r.expenses);
     r.withdrawals = round2(r.withdrawals);
     r.deposits = round2(r.deposits);
+    r.retained = round2(r.retained);
     r.adjustments = round2(r.adjustments);
     r.card = round2(r.card);
     r.transfer = round2(r.transfer);

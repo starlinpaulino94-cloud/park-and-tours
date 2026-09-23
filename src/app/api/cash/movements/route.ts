@@ -1,5 +1,9 @@
 import { NextRequest } from "next/server";
-import { requireTenantWrite, requireAtLeast, tenantCreate, tenantFindOne } from "@/lib/tenant";
+import {
+  requireTenantWrite, requireAtLeast, tenantCreate, tenantFindOne,
+  TenantError, esDeSocio, esAdminDeSocio,
+} from "@/lib/tenant";
+import { exigeRangoDeCaja, noPuedeAbrirLaCaja, duenoDeLaCaja } from "@/lib/caja-identidad";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { recalcCashSession } from "@/lib/cash";
 import { isKnownCurrency } from "@/lib/cash-close";
@@ -14,7 +18,6 @@ export async function POST(req: NextRequest) {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
     await assertRateLimit({ key: rateLimitKey(req, "cash:movement", ctx.userId), limit: 60, windowMs: 60_000 });
-    requireAtLeast(ctx, "cashier");
 
     const body = await readJson<{
       cash_session_id?: string; movement_type?: string; amount?: number;
@@ -40,10 +43,43 @@ export async function POST(req: NextRequest) {
       throw Object.assign(new Error("Moneda no válida"), { status: 400 });
     }
 
-    const session = await tenantFindOne<CashSession>(ctx.companyId, "cash_session", body.cash_session_id);
+    const session = await tenantFindOne<CashSession & { partner?: unknown; seller?: unknown }>(
+      ctx.companyId, "cash_session", body.cash_session_id
+    );
     if (session.status !== "open") {
       throw Object.assign(new Error("La sesión de caja está cerrada"), { status: 409 });
     }
+
+    /**
+     * Y TIENE QUE SER SU TURNO (0081).
+     *
+     * `tenantFindOne` solo comprueba la empresa, así que sin esto bastaba con
+     * conocer el identificador de una sesión para meterle un retiro: el
+     * descuadre le salía al cajero que estaba ahí. Con la caja externa además
+     * cruzaría el dinero entre mostradores.
+     *
+     * Misma regla que para abrirla, y por eso es la misma función: dos
+     * comprobaciones distintas para «esta caja es tuya» acaban discrepando.
+     */
+    const actorDeCaja = {
+      esDeSocio: esDeSocio(ctx), partnerId: ctx.partnerId,
+      sellerId: ctx.sellerId, esAdminDeSocio: esAdminDeSocio(ctx),
+    };
+    /**
+     * El rango de siempre, SALVO que la caja sea suya (0083).
+     *
+     * Las rutas de caja pedían `cashier` y un `seller` está por debajo: el
+     * promotor de playa —la persona entera para la que existe el modo «retiene
+     * su comisión»— no podía abrir un turno, y sin turno no hay dónde apuntar
+     * lo que se queda ni con qué cuadrar al final del día.
+     */
+    if (exigeRangoDeCaja(session, actorDeCaja)) requireAtLeast(ctx, "cashier");
+
+    const impedimento = noPuedeAbrirLaCaja({ ...session, status: "active" }, actorDeCaja);
+    if (impedimento) throw new TenantError(impedimento, 403);
+
+    // El dueño sale del TURNO, nunca del cuerpo de la petición.
+    const dueno = duenoDeLaCaja(session);
 
     // El ajuste conserva su signo: uno que solo puede sumar no es un ajuste,
     // es una entrada, y deja al cajero sin forma de corregir un sobrante mal
@@ -54,6 +90,8 @@ export async function POST(req: NextRequest) {
     const movement = await tenantCreate(ctx.companyId, "cash_movement", {
       cash_session: body.cash_session_id,
       user: ctx.userId,
+      partner: dueno.partnerId ?? undefined,
+      seller: dueno.sellerId ?? undefined,
       movement_type: movementType,
       amount: signedAmount,
       // La moneda la manda el cajero: la misma caja recibe pesos y dólares, y

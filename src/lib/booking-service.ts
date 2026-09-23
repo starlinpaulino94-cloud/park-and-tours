@@ -17,6 +17,10 @@ import { notify } from "@/lib/notify-service";
 import { formatDate } from "@/lib/format";
 import { ensureSchedule, refreshAllocation } from "@/lib/schedule-service";
 import { creditCheck, holdUntil } from "@/lib/collections";
+import { esPrepago } from "@/lib/monedero-socio";
+import { modoDeCobro, elVendedorRetiene, type ModoDeCobro } from "@/lib/modo-de-cobro";
+import { retenerComision, turnoAbiertoDe } from "@/lib/comision-retenida";
+import { assertSaldo, descontarVenta } from "@/lib/monedero-service";
 import { accrueBookingCosts, cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { reserveForSale, stockableOffers } from "@/lib/stock-commitment-service";
 import { assertAllotment, consumeAllotment } from "@/lib/allotment-service";
@@ -464,8 +468,9 @@ export async function createOrderWithBookings(
    * cuando hay vendedor: la venta directa, que es la mitad de las que se
    * registran, no paga nada.
    */
+  let fichaDelVendedor: Record<string, unknown> | null = null;
   if (attributedSeller) {
-    const [fichaDelVendedor] = await tenantQuery<Record<string, unknown>>(companyId, "seller", {
+    [fichaDelVendedor] = await tenantQuery<Record<string, unknown>>(companyId, "seller", {
       _filter: { _id: attributedSeller }, _limit: 1,
     });
     const desajuste = desajusteDeAtribucion(fichaDelVendedor ?? null, input.partner_id ?? null);
@@ -563,6 +568,24 @@ export async function createOrderWithBookings(
   // created so far (releasing their seats) and void the order — so a failure
   // can never leave a "phantom" order with live seats but zero total, or a B2B
   // sale with no receivable that nobody would ever collect.
+  /**
+   * Se recuerda para el final, cuando hay que descontar: volver a leer la
+   * relación allí abriría la puerta a que el modo hubiera cambiado entre la
+   * comprobación y el cobro, y entonces se cobraría sin haber comprobado.
+   */
+  let prepago = false;
+  /** La relación comercial del socio, para decidir el modo de cobro abajo. */
+  let relacionDelSocio: { collection_mode?: string | null } | null = null;
+  /**
+   * Y con qué modo de cobro se cierra ESTA venta (0082).
+   *
+   * Se sella en la orden porque un contrato que cambie entre la venta y el
+   * cobro dejaría el dinero movido bajo un modo y la liquidación calculada con
+   * otro — la misma lección que la cancelación del monedero, que mira el libro
+   * y no el contrato de hoy.
+   */
+  let modoDelCobro: ModoDeCobro = "operator_collects";
+
   // ---- límite de crédito del socio (0039) --------------------------------
   // `credit_limit` llevaba desde la migración 0002 sin que nada lo mirara: se
   // podía vender a crédito a un tour center sin techo, y el descubierto solo
@@ -572,7 +595,29 @@ export async function createOrderWithBookings(
     const creditTerms = (await tenantQuery<Partner>(companyId, "partner", {
       _filter: { _id: input.partner_id }, _limit: 1,
     }))[0];
-    if (Number(creditTerms?.credit_limit ?? 0) > 0) {
+    relacionDelSocio = (creditTerms ?? null) as { collection_mode?: string | null } | null;
+
+    /**
+     * ── EL SALDO PREPAGO (0080) ──────────────────────────────────────────
+     *
+     * El otro modo de pagar, y son EXCLUYENTES: o se vende a deber con un
+     * techo, o se vende contra un depósito ya ingresado. Comprobar los dos a
+     * la vez sería pedirle al socio prepago que además tenga crédito.
+     *
+     * Y lo desconocido es crédito, que es lo que hacen hoy todos los socios:
+     * entender el hueco como prepago les cortaría la venta a todos de golpe el
+     * día del despliegue, porque todos los monederos nacen a cero.
+     *
+     * Se comprueba ANTES de escribir nada, como el crédito, y con el mismo
+     * total estimado. El descuento se apunta al FINAL, cuando la venta ya
+     * existe: descontar antes y que la saga se compensara dejaría al socio
+     * pagando una reserva que no llegó a nacer.
+     */
+    prepago = esPrepago(creditTerms as { payment_mode?: string | null });
+    if (prepago) {
+      const estimate = await estimateOrderTotal(companyId, input, currency, exchangeRate, attributedSeller);
+      await assertSaldo(companyId, input.partner_id, estimate);
+    } else if (Number(creditTerms?.credit_limit ?? 0) > 0) {
       const open = await tenantQuery<{ balance?: number; amount?: number; paid_amount?: number }>(
         companyId, "receivable", {
           _filter: { partner: input.partner_id, status: { nin: ["paid", "written_off"] } },
@@ -603,8 +648,22 @@ export async function createOrderWithBookings(
     }
   }
 
+  /**
+   * El modo con el que se cierra esta venta (0082), decidido con las dos
+   * declaraciones y no con una: el contrato del socio manda sobre la ficha del
+   * vendedor, o un vendedor de un tour center retendría de un dinero que la
+   * operadora nunca va a ver pasar.
+   */
+  modoDelCobro = modoDeCobro({
+    relacion: relacionDelSocio,
+    vendedor: fichaDelVendedor as { collection_mode?: string | null } | null,
+  });
+
   const order = await tenantCreate<Order>(companyId, "order", {
     order_number: await uniqueCode(companyId, "order", "order_number", newOrderNumber),
+    // Se sella y no se toca: lo que manda es lo que pasó, no lo que se pacta
+    // después.
+    collection_mode: modoDelCobro,
     customer: input.customer_id,
     // La sucursal de quien vende, salvo que la venta diga otra. Sin esto, la
     // venta del tour center nacía sin sucursal y el corte por punto de venta
@@ -1097,6 +1156,33 @@ export async function createOrderWithBookings(
         pax: booking.pax_total,
       },
     });
+
+    /**
+     * Y AL TOUR CENTER, que es quien hizo la venta.
+     *
+     * `notification.partner_id` está en la tabla desde 0009 y nadie la
+     * escribía: al socio no se le contaba nada de sus propias reservas. Se
+     * enteraba entrando a mirar o llamando, que es lo que el portal vino a
+     * sustituir.
+     *
+     * Va a la EMPRESA y no a quien la tecleó: dentro de un tour center todos
+     * los accesos son iguales por construcción (0073), y el que atiende al
+     * turista mañana no es el que vendió hoy.
+     */
+    if (input.partner_id) {
+      await notify({
+        companyId,
+        partnerId: input.partner_id,
+        event: "partner_booking_confirmed",
+        entityType: "booking",
+        entityId: booking._id,
+        vars: {
+          referencia: booking.booking_number,
+          fecha: booking.travel_date ? formatDate(booking.travel_date) : null,
+          pax: booking.pax_total,
+        },
+      });
+    }
   }
 
   // ---- apuntar el consumo en el cupo del socio (0054) --------------------
@@ -1109,6 +1195,39 @@ export async function createOrderWithBookings(
   // venta que ya está hecha; la diferencia se ve en la matriz al día siguiente.
   for (const [, use] of allotmentUse) {
     await consumeAllotment(companyId, use.row, use.seats);
+  }
+
+  /**
+   * ---- descontar la venta del monedero prepago (0080) --------------------
+   *
+   * Aquí, con el TOTAL de verdad y no con la estimación que se usó para
+   * comprobar el saldo: la estimación existe para no armar la venta entera y
+   * descubrir al final que no cabía, pero cobrar por ella dejaría el saldo
+   * distinto de lo que el socio va a ver en su factura.
+   *
+   * Al final y fuera de la saga, por lo mismo que el cupo: en este punto el
+   * cliente ya tiene su reserva y su voucher, y revertir todo por no poder
+   * escribir una fila de saldo cambiaría un descuadre —visible en el listado al
+   * día siguiente— por una reserva perdida con el turista delante.
+   *
+   * Y una orden descuenta UNA vez: lo hace cumplir un índice único de 0080, no
+   * una comprobación de aquí, porque dos instancias a la vez le ganan siempre a
+   * una comprobación en la aplicación.
+   */
+  if (input.partner_id && prepago) {
+    await descontarVenta(
+      companyId,
+      {
+        partnerId: input.partner_id,
+        tipo: "consumption",
+        importe: totals.total,
+        moneda: currency,
+        orderId: order._id,
+        nota: `Venta ${order.order_number}`,
+        userId: ctx.userId,
+      },
+      currency
+    );
   }
 
   console.log(`[booking-service] orden ${order.order_number} creada · ${bookings.length} reservas · total ${totals.total} ${currency}`);
@@ -1367,10 +1486,87 @@ export async function generateCommissionsForBooking(
     beneficiaries
   );
 
+  /**
+   * ── LA COMISIÓN RETENIDA (0082/0083) ────────────────────────────────────
+   *
+   * Cuando la venta se cerró con `seller_retains`, la comisión del VENDEDOR no
+   * nace pendiente: nace cobrada, porque él ya se la quedó en la playa. Y nace
+   * en la misma escritura que el movimiento de caja que la saca del cajón.
+   *
+   * El modo sale de la ORDEN —donde se selló al vender— y no de la ficha de
+   * hoy: un contrato que cambie entre la venta y esta llamada dejaría el dinero
+   * movido bajo un modo y la comisión calculada con otro.
+   *
+   * Solo la del vendedor. La del supervisor y la del socio siguen su camino:
+   * el que retiene es quien tiene el billete en la mano.
+   */
+  const ordenId = refId(booking.order);
+  const [orden] = ordenId
+    ? await tenantQuery<{ collection_mode?: string | null }>(companyId, "order", {
+        _filter: { _id: ordenId }, _limit: 1,
+      })
+    : [];
+  const retiene = elVendedorRetiene(modoDeCobro({
+    relacion: partnerRow as { collection_mode?: string | null } | undefined,
+    vendedor: sellerRow as { collection_mode?: string | null } | undefined,
+  })) || orden?.collection_mode === "seller_retains";
+
+  /**
+   * Se cuentan las ESCRITAS, no las resueltas.
+   *
+   * Antes se devolvía `resolved.length`, que es cuántas se calcularon. Con la
+   * retención hay caminos donde una comisión calculada no llega a escribirse
+   * —la que falla al retener—, y devolver el número de antes diría que se
+   * crearon comisiones que no existen. Quien llama usa ese número para el
+   * registro de la venta.
+   */
+  let escritas = 0;
+
   for (const c of resolved) {
+    if (retiene && c.beneficiary_type === "seller" && c.seller) {
+      /**
+       * Sin turno abierto NO se retiene, y no se inventa uno: el dinero que el
+       * vendedor se queda tiene que salir de algún arqueo, o al cerrar el día
+       * nadie sabe cuánto entregó y cuánto se quedó. Sin turno, la comisión
+       * sigue su camino normal y se le liquidará al final del mes — que es peor
+       * para él, pero es lo único que no descuadra nada.
+       */
+      const turno = await turnoAbiertoDe(companyId, String(c.seller));
+      if (turno) {
+        try {
+          await retenerComision({
+            companyId,
+            bookingId: booking._id,
+            orderId: ordenId,
+            sellerId: String(c.seller),
+            cashSessionId: turno,
+            total: Number(booking.total_amount ?? c.base_amount ?? 0),
+            comision: c.amount,
+            currency: c.currency,
+            beneficiaryName: c.beneficiary_name,
+            baseAmount: c.base_amount,
+            percentage: c.percentage,
+            serviceDate: meta.travelDate,
+            snapshot: c.snapshot,
+            userId: ctx.userId,
+          });
+          escritas += 1;
+          continue;
+        } catch (err) {
+          /**
+           * Y si la retención falla, la comisión NO se escribe por el camino
+           * normal: quedaría pendiente una comisión que quizá ya se retiró, y
+           * se pagaría dos veces. Se deja constancia y se para esta.
+           */
+          console.error(`[comision] no se pudo retener la de ${c.beneficiary_name}:`, err);
+          continue;
+        }
+      }
+    }
+
     await tenantCreate(companyId, "commission", {
       booking: booking._id,
-      order: refId(booking.order),
+      order: ordenId,
       rule: c.rule || undefined,
       seller: c.seller || undefined,
       partner: c.partner || undefined,
@@ -1407,8 +1603,9 @@ export async function generateCommissionsForBooking(
       adjustment_total: 0,
       net_amount: c.amount,
     });
+    escritas += 1;
   }
-  return resolved.length;
+  return escritas;
 }
 
 /** Recomputes an order's paid/balance totals and derives its status from its bookings. */

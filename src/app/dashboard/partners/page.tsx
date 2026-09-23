@@ -109,6 +109,32 @@ export default function PartnersPage() {
           ] },
         { name: "default_commission_pct", label: "Comisión estándar", type: "number", suffix: "%" },
         { name: "currency", label: "Moneda", type: "select", options: CURRENCY_OPTIONS },
+        /**
+         * Cómo PAGA este socio, y va justo encima del límite de crédito por el
+         * mismo motivo que el modelo comercial va encima de la comisión: con
+         * «prepago» esas dos casillas dejan de aplicarse, y verlas juntas evita
+         * rellenar las dos creyendo que se suman.
+         */
+        { name: "payment_mode", label: "Forma de pago", type: "select", defaultValue: "credit",
+          help: "Con «prepago» cada venta descuenta de su saldo y no hay descubierto: sin saldo no vende.",
+          options: [
+            { value: "credit", label: "A crédito (vende ahora, paga después)" },
+            { value: "prepaid", label: "Prepago (ingresa y va gastando)" },
+          ] },
+        /**
+         * Y QUIÉN COBRA al turista. Va junto a la forma de pago porque son las
+         * dos mitades de la misma pregunta —quién tiene el dinero y cuándo— y
+         * declararlas lejos una de otra es cómo se pactan dos cosas que no
+         * encajan.
+         */
+        { name: "collection_mode", label: "Quién cobra al turista", type: "select",
+          defaultValue: "operator_collects",
+          help: "Con «cobra el punto de venta», su efectivo no pasa por tu caja y te debe el neto.",
+          options: [
+            { value: "operator_collects", label: "El cliente paga todo al operador" },
+            { value: "pos_collects", label: "Cobra el punto de venta y debe el neto" },
+            { value: "seller_retains", label: "Su vendedor retiene la comisión; el cliente paga el resto al subir" },
+          ] },
         { name: "credit_limit", label: "Límite de crédito", type: "number" },
         { name: "credit_days", label: "Días de crédito", type: "number" },
         { name: "contract_from", label: "Contrato desde", type: "date" },

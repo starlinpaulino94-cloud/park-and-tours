@@ -34,7 +34,10 @@ export interface CashClosePayload {
 
 export async function loadCashClose(companyId: string, sessionId: string): Promise<CashClosePayload> {
   const session = await tenantFindOne<CashSession & Record<string, unknown>>(
-    companyId, "cash_session", sessionId, { cash_register: true, branch: true, user: true }
+    companyId, "cash_session", sessionId,
+    // `partner` y `seller` expandidos: quien lea este arqueo tiene que poder
+    // decir de qué mostrador es el dinero sin volver a la base (0081).
+    { cash_register: true, branch: true, user: true, partner: true, seller: true }
   );
 
   const [movements, payments, counts] = await Promise.all([
@@ -51,7 +54,10 @@ export async function loadCashClose(companyId: string, sessionId: string): Promi
 
   const primary = String(session.currency || "usd").toLowerCase();
   const summaries = summarizeCash(
-    movements as { movement_type?: string; amount?: number; currency?: string }[],
+    // `commission_id` incluido: sin él, la comisión que el vendedor se quedó
+    // se cuenta como un retiro cualquiera y su arqueo le pide un dinero que ya
+    // se llevó (0083).
+    movements as { movement_type?: string; amount?: number; currency?: string; commission_id?: string }[],
     payments,
     [primary]
   );
