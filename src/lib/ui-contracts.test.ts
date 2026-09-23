@@ -2783,7 +2783,10 @@ describe("el alcance por sucursal", () => {
       .toMatch(/return ok\(projectRow\(def\.table, ctx, record\)\);/);
 
     expect(sinComentariosDe("src/app/api/export/[resource]/route.ts"))
-      .toMatch(/buildExport\(resource, projectRows\(def\.table, ctx, rows\)\)/);
+      // Con la lista blanca del socio detrás desde 5.5: lo que la regla sujeta
+      // es que el recorte por campos siga envolviendo a las filas, no la forma
+      // exacta de la llamada.
+      .toMatch(/buildExport\(resource, projectRows\(def\.table, ctx, rows\), \{/);
   });
 
   it("las pantallas distinguen «no puedo verlo» de «vale cero»", () => {
@@ -3046,6 +3049,7 @@ describe("las notificaciones internas", () => {
     ["payment_refunded", "src/app/api/payments/route.ts"],
     ["cash_close_mismatch", "src/app/api/cash/sessions/[id]/close/route.ts"],
     ["settlement_confirmed", "src/app/api/settlements/[id]/confirm/route.ts"],
+    ["settlement_disputed", "src/app/api/settlements/[id]/dispute/route.ts"],
     ["invoice_voided", "src/lib/invoice-service.ts"],
     ["receivable_overdue", "src/app/api/cron/collections/route.ts"],
     ["quote_accepted", "src/app/api/quotes/[id]/decide/route.ts"],
@@ -3834,13 +3838,24 @@ describe("la marca: que los documentos sean de la empresa, no nuestros", () => {
   });
 
   it("los seis documentos llevan la marca, no solo algunos", () => {
-    // Seis builders y seis llamantes: bastaba con que uno se olvidara para que
-    // ESE documento saliera del color de casa sin que nadie supiera por qué.
+    /**
+     * Seis builders y seis llamantes: bastaba con que uno se olvidara para que
+     * ESE documento saliera del color de casa sin que nadie supiera por qué.
+     *
+     * El voucher pasa una marca distinta desde la Fase 5 —la del tour center
+     * que vendió—, así que se cuenta `brandFor(` y no `brandFor(company,`. Lo
+     * que la regla persigue es que ninguno se quede SIN marca, y eso se sigue
+     * midiendo igual; la de abajo comprueba que ese caso es el del socio y no
+     * una marca cualquiera.
+     */
     const src = read("src/lib/pdf/documents.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
     const creates = src.match(/await PdfBuilder\.create\(\{/g) ?? [];
-    const brands = src.match(/await brandFor\(company, "/g) ?? [];
+    const brands = src.match(/await brandFor\(/g) ?? [];
     expect(creates.length).toBeGreaterThanOrEqual(6);
     expect(brands.length).toBe(creates.length);
+    // Y solo uno puede apartarse de la marca de la empresa.
+    expect((src.match(/await brandFor\(company, "/g) ?? []).length).toBe(creates.length - 1);
+    expect(src).toMatch(/await brandFor\(data\.brand_override \?\? company, "voucher"\)/);
   });
 
   it("bajar el logo nunca puede dejar sin documento", () => {
@@ -6009,5 +6024,306 @@ describe("/portal/vendedores", () => {
     const ruta = cuerpoDe("src/app/api/portal/sellers/route.ts");
     expect(ruta).toMatch(/projectRows\("seller", ctx,/);
     expect(ruta, "no arma su propio ámbito de socio").not.toMatch(/partnerScopeFor|PARTNER_OWNED/);
+  });
+});
+
+describe("la cartera propia del tour center", () => {
+  it("`customer` entra como PROPIA del socio, no como compartida", () => {
+    /**
+     * Sin `customer` en su ámbito el socio no podía terminar una venta —la
+     * orden exige cliente—. Con él compartido habría visto la cartera ENTERA
+     * de la operadora: nombres, teléfonos y correos, a la vista de sus
+     * revendedores. Es la misma trampa que con `seller`, con datos personales
+     * de terceros dentro.
+     */
+    const recursos = sinComentariosDe("src/lib/resources.ts");
+    const propias = recursos.slice(
+      recursos.indexOf("const PARTNER_OWNED_TABLES"),
+      recursos.indexOf("const PARTNER_SHARED_TABLES"));
+    const compartidas = recursos.slice(
+      recursos.indexOf("const PARTNER_SHARED_TABLES"),
+      recursos.indexOf("export type PartnerScope"));
+    expect(propias, "propia").toMatch(/"customer"/);
+    expect(compartidas, "y nunca compartida").not.toMatch(/"customer"/);
+  });
+
+  /**
+   * El bloque del recurso `customer`, delimitado por su `table`.
+   *
+   * `"  customer: {"` a secas no vale: esa misma cadena aparece antes dentro de
+   * las expansiones de otros recursos, así que el corte salía de un sitio que
+   * no era y una comprobación de «esto NO aparece» pasaba por mirar donde no
+   * había nada. Un `not.toMatch` sobre el trozo equivocado siempre pasa.
+   */
+  const bloqueDeCliente = () => {
+    const recursos = sinComentariosDe("src/lib/resources.ts");
+    const i = recursos.indexOf('customer: {\n    table: "customer"');
+    expect(i, "no se encontró el recurso customer").toBeGreaterThan(-1);
+    return recursos.slice(i, recursos.indexOf('lead: {\n    table: "lead"'));
+  };
+
+  it("y de quién es un cliente no se escribe desde el formulario", () => {
+    // Con `partner` en la lista blanca, un tour center daría de alta clientes
+    // a nombre de otro —o de la operadora— y se los quitaría de la cartera.
+    const bloque = bloqueDeCliente();
+    expect(bloque.slice(bloque.indexOf("writable"))).not.toMatch(/"partner"/);
+  });
+
+  it("el alta del portal sella el socio desde el contexto", () => {
+    const ruta = cuerpoDe("src/app/api/portal/customers/route.ts");
+    expect(ruta, "solo el socio").toMatch(/if \(!esDeSocio\(ctx\) \|\| !ctx\.partnerId\)[\s\S]{0,120}throw/);
+    expect(ruta, "el sello").toMatch(/payload\.partner_id = ctx\.partnerId/);
+    // Y por lista blanca: el cuerpo no puede traer campos que nadie declaró.
+    expect(ruta, "lista blanca").toMatch(/for \(const campo of CAMPOS\)/);
+    expect(ruta, "y no se copia el cuerpo entero").not.toMatch(/\.\.\.body/);
+  });
+
+  it("el socio ve la ficha del cliente, no su historial con la operadora", () => {
+    /**
+     * `customer.expandOne` arrastra órdenes, reservas y oportunidades: todo lo
+     * que esa persona le ha comprado nunca a la operadora, incluido lo que
+     * compró por otro canal. Y apoyarse en que la RLS filtre esas expansiones
+     * no vale — la capa de datos habla por el rol de servicio cuando la RLS
+     * está apagada, y entonces no filtra nadie.
+     */
+    expect(bloqueDeCliente()).toMatch(/expandOnePartner: \{ hotel: true \}/);
+    const detalle = cuerpoDe("src/app/api/erp/[resource]/[id]/route.ts");
+    expect(detalle).toMatch(/\(esDeSocio\(ctx\) && def\.expandOnePartner\)/);
+  });
+
+  it("la migración 0075 pone la política en la MISMA entrega", () => {
+    /**
+     * El riesgo transversal del plan: cada tabla que se abre a un actor nuevo
+     * necesita su política en la misma fase. Aquí es más fuerte todavía — sin
+     * ella la aplicación filtraría por socio y la BASE diría que ese socio
+     * puede leer la cartera entera, y una política que contradice a la
+     * aplicación es la que alguien cita cuando se discute qué pasó.
+     *
+     * `seller` va en el mismo saco: 5.1 la abrió al socio en la aplicación y
+     * dejó la política como estaba. Se salda aquí.
+     */
+    const sql = read("supabase/migrations/0075_partner_customers.sql");
+    expect(sql, "la columna").toMatch(/add column if not exists partner_id/);
+    expect(sql, "las dos tablas").toMatch(/array\['customer', 'seller'\]/);
+    expect(sql, "y la política por socio").toMatch(/app\.can_read_partner\(partner_id\)/);
+  });
+
+  it("y el relleno no se inventa dueños", () => {
+    /**
+     * Sin relleno, la política le esconde al socio los clientes de sus PROPIAS
+     * reservas: hoy ve el nombre en cada una y mañana vería un hueco. Con un
+     * relleno ambicioso le regalaría clientes que también compraron por otro
+     * canal. Solo cuando no hay ninguna duda.
+     */
+    const sql = read("supabase/migrations/0075_partner_customers.sql");
+    expect(sql, "un único socio").toMatch(/having count\(distinct o\.partner_id\) = 1/);
+    expect(sql, "y ninguna compra directa")
+      .toMatch(/count\(\*\) filter \(where o\.partner_id is null\) = 0/);
+    // Y no se filtran las órdenes sin socio en el `where`: filtrarlas sacaría
+    // del grupo justo las que hacen ambiguo el caso.
+    const cte = sql.slice(sql.indexOf("with unico as"), sql.indexOf("group by o.customer_id"));
+    expect(cte, "el where no esconde las directas").not.toMatch(/and o\.partner_id is not null/);
+  });
+});
+
+describe("el portal deja de ser solo lectura", () => {
+  it("la pantalla no decide precio, cupo ni crédito", () => {
+    /**
+     * Las tres cosas vienen del servidor: el neto del motor de precios con el
+     * canal `b2b_portal`, las plazas del catálogo, y el crédito lo vuelve a
+     * comprobar la venta con los documentos abiertos al escribir. Lo que se
+     * pinta es un espejo — uno que decidiera por su cuenta sería la segunda
+     * verdad que se desincroniza sola, y aquí eso es prometerle una plaza a un
+     * cliente que ya no existe.
+     */
+    const pantalla = sinComentariosDe("src/app/portal/reservar/page.tsx");
+    expect(pantalla, "el precio sale del catálogo").toMatch(/p\.price\?\.unit_price \?\? 0/);
+    expect(pantalla, "no hay tarifa escrita a mano").not.toMatch(/resolvePrice|price_rule|margin/);
+    // El total es una suma de lo que mandó el servidor, no una fórmula con
+    // descuentos ni comisiones inventadas en el navegador.
+    expect(pantalla).toMatch(/l\.unit_price \* \(l\.adults \+ l\.children\)/);
+  });
+
+  it("y no manda el socio en el cuerpo de la venta", () => {
+    /**
+     * Lo pone el servidor desde el contexto. Mandarlo daría la impresión de que
+     * la pantalla lo decide, y el día que alguien cambiara ese valor en la
+     * petición se descubriría que no servía de nada — o, peor, que sí.
+     */
+    const pantalla = sinComentariosDe("src/app/portal/reservar/page.tsx");
+    const envio = pantalla.slice(pantalla.indexOf('api.post<{ order'), pantalla.indexOf("setConfirmando(false)"));
+    expect(envio).not.toMatch(/partner_id/);
+    // Ni el precio: un `unit_price_override` desde el portal sería «pon tú el
+    // precio». La ruta lo borra igual; esto es para que no se intente.
+    expect(envio).not.toMatch(/unit_price|override/);
+  });
+
+  it("el crédito que se enseña se llama estimación y no bloquea", () => {
+    // El saldo vivo cambia con cada cobro y quien decide es el servidor al
+    // escribir. Un veto aquí haría que el socio dejara de vender por un número
+    // viejo; el aviso le dice dónde está sin decidir por él.
+    const pantalla = cuerpoDe("src/app/portal/reservar/page.tsx");
+    expect(pantalla, "se calcula el exceso").toMatch(/Math\.max\(total - credito\.credit_available, 0\)/);
+    // Y el botón de confirmar no lo mira.
+    const boton = pantalla.slice(pantalla.indexOf("disabled={confirmando"));
+    expect(boton.slice(0, 120)).not.toMatch(/exceso/);
+  });
+
+  it("y la venta del socio sigue sin poder saltarse su crédito", () => {
+    // Estaba desde antes y es lo que hace que el aviso de arriba pueda ser solo
+    // un aviso. Se sujeta aquí para que no se caiga al abrir el portal a vender.
+    expect(cuerpoDe("src/app/api/orders/route.ts"))
+      .toMatch(/if \(esDeSocio\(ctx\)\) delete body\.allow_over_credit/);
+    expect(cuerpoDe("src/app/api/orders/route.ts"))
+      .toMatch(/if \(esDeSocio\(ctx\) && ctx\.partnerId\) body\.partner_id = ctx\.partnerId/);
+  });
+});
+
+describe("el voucher que entrega el tour center", () => {
+  it("sale con la marca del socio y SIN el neto", () => {
+    /**
+     * `booking.total_amount` de una venta B2B es lo que el tour center le paga
+     * a la operadora, no lo que el turista pagó en el mostrador. Imprimirlo le
+     * enseña al cliente el margen de quien se lo acaba de vender, en el papel
+     * que ese mismo vendedor le está poniendo en la mano.
+     */
+    const ruta = cuerpoDe("src/app/api/bookings/[id]/voucher/route.ts");
+    expect(ruta, "la marca").toMatch(/brand_override: brandingDeSocio\(socio, ctx\.company\)/);
+    expect(ruta, "y el neto fuera").toMatch(/hide_amounts: Boolean\(socio\)/);
+  });
+
+  it("y la condición es de la RESERVA, no de quién la descarga", () => {
+    /**
+     * El mismo PDF lo puede bajar la operadora y reenviárselo, o salir por el
+     * correo automático. Acabe como acabe, el papel termina en la mano del
+     * turista. Con `esDeSocio(ctx)` el neto se escaparía por los otros dos
+     * caminos sin que nadie lo notara.
+     */
+    const ruta = cuerpoDe("src/app/api/bookings/[id]/voucher/route.ts");
+    const i = ruta.indexOf("hide_amounts:");
+    expect(ruta.slice(i, i + 60)).not.toMatch(/esDeSocio/);
+    expect(ruta).toMatch(/const socio = expanded\(booking\.partner\)/);
+  });
+
+  it("el importe no se pone a cero: el bloque entero desaparece", () => {
+    // Un total en cero dice «esto no costó nada», que es otra afirmación falsa.
+    const doc = cuerpoDe("src/lib/pdf/documents.ts");
+    const i = doc.indexOf("if (data.hide_amounts) {");
+    expect(i, "no está la rama").toBeGreaterThan(-1);
+    const rama = doc.slice(i, doc.indexOf("} else {", i));
+    expect(rama, "no imprime importes").not.toMatch(/formatMoney/);
+    expect(rama, "pero sí dice algo").toMatch(/pdf\.notice/);
+  });
+
+  it("la identidad es del socio y las condiciones de la operadora", () => {
+    /**
+     * Al revés produciría un documento que promete en nombre de quien no puede
+     * cumplir. Y la ficha del socio no tiene condiciones, así que sin esto el
+     * voucher del tour center saldría sin letra pequeña justo en el caso en que
+     * más falta hace.
+     */
+    const doc = cuerpoDe("src/lib/pdf/documents.ts");
+    expect(doc).toMatch(/terms: documentBrand\(company, "voucher"\)\.terms/);
+    const marca = cuerpoDe("src/lib/branding.ts");
+    const i = marca.indexOf("export function brandingDeSocio");
+    const fn = marca.slice(i, marca.indexOf("export function brandingGaps"));
+    expect(fn, "el pie es de la operadora").toMatch(/document_footer: operadora\?\.document_footer/);
+    expect(fn, "y sin nombre no se sustituye nada").toMatch(/if \(!nombre\) return null/);
+  });
+});
+
+describe("la disputa de una liquidación", () => {
+  it("la abre el beneficiario, con la comprobación que ya existía", () => {
+    /**
+     * Su propio comentario anticipaba esta ruta: «lo hacen tres caminos —la
+     * pantalla, el PDF y, más adelante, la disputa—». Una cuarta copia de la
+     * misma pregunta es la que un día dice algo distinto.
+     */
+    const ruta = cuerpoDe("src/app/api/settlements/[id]/dispute/route.ts");
+    expect(ruta).toMatch(/assertSettlementBeneficiary\(ctx, settlement\)/);
+    expect(ruta, "no se reescribe el ámbito").not.toMatch(/beneficiary_type|ctx\.partnerId ===/);
+  });
+
+  it("el destinatario se GUARDA, no solo se avisa", () => {
+    /**
+     * Guardarlo es lo que permite que la pantalla diga quién la está mirando y
+     * que la operadora la reasigne. Un aviso enviado y no registrado deja la
+     * disputa sin dueño en cuanto alguien lo marca como leído.
+     */
+    const ruta = cuerpoDe("src/app/api/settlements/[id]/dispute/route.ts");
+    expect(ruta).toMatch(/dispute_assignee: destinatario/);
+    expect(ruta, "y el aviso va a esa persona").toMatch(/userId: destinatario \?\? undefined/);
+    // Y la respuesta dice si hay alguien: el caso sin destinatario hay que
+    // evitarlo, no disimularlo.
+    expect(ruta).toMatch(/dispute_assigned: Boolean\(destinatario\)/);
+  });
+
+  it("y la pantalla lo dice cuando no hay nadie asignado", () => {
+    // Dejar al tour center creyendo que alguien la está mirando es peor que
+    // decirle que insista.
+    expect(sinComentariosDe("src/app/portal/liquidaciones/page.tsx"))
+      .toMatch(/dispute_assigned[\s\S]{0,200}insiste/);
+  });
+
+  it("una liquidación PAGADA se puede disputar", () => {
+    // «Me pagaste menos de lo acordado» solo se descubre cobrando: cerrarlo al
+    // pagar convertiría el pago en un finiquito unilateral.
+    const regla = sinComentariosDe("src/lib/disputa.ts");
+    const cerrados = regla.slice(regla.indexOf("const CERRADOS"), regla.indexOf("export interface VetoDisputa"));
+    expect(cerrados).not.toMatch(/paid/);
+    expect(cerrados, "anulada y ya disputada, no").toMatch(/void:[\s\S]*disputed:/);
+  });
+
+  it("y la CRUD genérica sigue sin poder tocar el estado", () => {
+    // La disputa cambia `status`, y ése no está en la lista blanca de nadie:
+    // pagar y disputar pasan por sus rutas, que hacen lo demás.
+    const recursos = sinComentariosDe("src/lib/resources.ts");
+    const bloque = recursos.slice(
+      recursos.indexOf('settlement: {\n    table: "settlement"'),
+      recursos.indexOf('payable: {\n    table: "payable"'));
+    expect(bloque).toMatch(/writable: \["notes"\]/);
+  });
+});
+
+describe("la exportación del socio", () => {
+  it("falla por OMISIÓN: sin lista declarada, no exporta", () => {
+    /**
+     * Es toda la gracia de la regla. `exportColumns` arma las cabeceras con las
+     * claves que TRAEN las filas —lo correcto para el ERP interno, donde quien
+     * exporta quiere todo lo suyo— y eso convierte cada columna nueva de cada
+     * tabla en una fuga silenciosa hacia el archivo de un actor externo.
+     *
+     * Comprobado sobre el `throw` y no sobre la llamada, que ya ha mordido
+     * varias veces en esta rama.
+     */
+    const ruta = cuerpoDe("src/app/api/export/[resource]/route.ts");
+    expect(ruta).toMatch(/const columnasDelSocio = esDeSocio\(ctx\) \? columnasParaSocio\(resource\) : null/);
+    expect(ruta).toMatch(/if \(esDeSocio\(ctx\) && !columnasDelSocio\) \{[\s\S]{0,260}throw new TenantError/);
+    // Y la lista llega al exportador: comprobar que se calcula y no usarla
+    // sería la forma más silenciosa de que esto no hiciera nada.
+    expect(ruta).toMatch(/fields: columnasDelSocio \?\? undefined/);
+  });
+
+  it("y el ERP interno sigue exportando todo lo suyo", () => {
+    // La regla es para el actor externo. Aplicarla dentro rompería la promesa
+    // de «llévate tus datos», que es de lo que trata esa pantalla.
+    const ruta = cuerpoDe("src/app/api/export/[resource]/route.ts");
+    expect(ruta).toMatch(/esDeSocio\(ctx\) \? columnasParaSocio/);
+  });
+
+  it("la lista blanca manda sobre las claves de los datos", () => {
+    /**
+     * Y ANTES de recorrer las filas, no filtrando el resultado: así el orden es
+     * el declarado y no el que traigan los datos, que cambia entre dos
+     * exportaciones del mismo listado según qué fila venga primero con qué
+     * campos rellenos. Un archivo cuyas columnas bailan no se compara con el
+     * del mes pasado.
+     */
+    const exportador = cuerpoDe("src/lib/export.ts");
+    const i = exportador.indexOf("if (options.fields) {");
+    expect(i, "no está la rama de lista blanca").toBeGreaterThan(-1);
+    expect(i, "va antes de deducir columnas de las filas")
+      .toBeLessThan(exportador.indexOf("const seen: string[] = []"));
+    expect(exportador.slice(i, i + 420)).toMatch(/options\.fields\s*\n?\s*\.filter/);
   });
 });

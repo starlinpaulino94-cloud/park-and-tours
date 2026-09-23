@@ -2113,3 +2113,143 @@ daba error: los tres producían números equivocados en silencio.
   faltaba el caso del socio en blanco, que da un mensaje distinto («es de otro
   tour center» cuando no eligió ninguno) y manda a quien vende a buscar cuál es
   el otro.
+
+### Fase 5.3a — la cartera propia del tour center
+- **Lo que bloqueaba la venta desde el portal, y no era la venta.** `POST
+  /api/orders` acepta al socio desde hace tiempo y le fuerza su `partner_id`.
+  Lo que no podía era **terminar**: exige `customer_id`, y el socio no tenía
+  forma de crear ni de buscar un cliente. `customer` no estaba en su ámbito
+  —lo habría visto entero, que es la cartera de la operadora con teléfonos y
+  correos— y el CRUD genérico le deniega toda escritura. La pieza que faltaba
+  era una columna: de quién es cada cliente.
+- **Migración 0075**: `customer.partner_id`, su índice, y **la política en la
+  misma entrega**. Aquí es más fuerte que el riesgo transversal del plan: sin
+  ella la aplicación filtraría por socio y la BASE diría que ese socio puede
+  leer la cartera entera — y una política que contradice a la aplicación es la
+  que alguien cita el día que se discute qué pasó.
+- **`seller` va en el mismo saco, y es deuda de 5.1**: aquella ola la abrió al
+  socio en la aplicación y dejó la política como estaba. Se salda aquí.
+- **El relleno no se inventa dueños.** Sin relleno, la política le esconde al
+  socio los clientes de sus PROPIAS reservas: hoy ve el nombre en cada una y
+  mañana vería un hueco. Con un relleno ambicioso le regalaría clientes que
+  también compraron por otro canal. Solo se asigna cuando **todas** las compras
+  del cliente son de un mismo socio y **ninguna** es directa — y las directas no
+  se filtran en el `where`, porque filtrarlas sacaría del grupo justo los casos
+  ambiguos y el `having` los daría por inexistentes.
+- **El alta la sella el servidor.** `customer.partner_id` no está en la lista
+  blanca de escritura de nadie; la ruta del portal lo pone desde el contexto. Si
+  viniera del cuerpo, un tour center daría de alta clientes a nombre de otro y
+  se los quitaría de la cartera al siguiente. Y por lista blanca de campos, no
+  copiando el cuerpo.
+- **El socio ve la ficha, no el historial.** `customer.expandOne` arrastra
+  órdenes, reservas y oportunidades: todo lo que esa persona le ha comprado
+  nunca a la operadora, por cualquier canal. Se declara una expansión propia
+  para el socio en vez de confiar en que la RLS filtre — la capa de datos habla
+  por el rol de servicio cuando la RLS está apagada, y entonces no filtra nadie.
+- **Y una guarda que pasaba por mirar donde no había nada**: el trozo del
+  recurso `customer` se cortaba buscando `"  customer: {"`, que aparece antes
+  dentro de las expansiones de otros recursos. Un `not.toMatch` sobre el trozo
+  equivocado siempre pasa. Ahora se ancla en su `table`.
+- **Mutación: diez, las diez muertas.**
+
+### Fase 5.3b — el portal reserva
+- **`/portal/reservar`**: el catálogo con el neto del socio, las plazas reales,
+  su crédito disponible y su propia cartera de clientes, en una pantalla.
+- **Lo que la pantalla NO hace, que es la parte que importa:** no calcula
+  precios, no comprueba cupo y no decide si el crédito llega. El neto lo da el
+  motor de precios con el canal `b2b_portal`, las plazas las da el catálogo, y
+  el crédito lo vuelve a comprobar la venta con los documentos abiertos en el
+  momento de escribir. Lo que se pinta es un **espejo**; uno que decidiera por
+  su cuenta sería la segunda verdad que se desincroniza sola, y aquí eso es
+  prometerle una plaza a un cliente que ya no existe.
+- **El aviso de crédito no bloquea.** El saldo vivo cambia con cada cobro y
+  quien decide es el servidor al escribir; un veto en pantalla haría que el
+  socio dejara de vender por un número viejo. Y sigue sin poder saltárselo: la
+  ruta le borra `allow_over_credit` desde antes, y eso es lo que permite que el
+  aviso sea solo un aviso.
+- **Tampoco manda el socio ni el precio en el cuerpo.** Los pone el servidor.
+  Mandarlos daría la impresión de que la pantalla lo decide, y el día que
+  alguien cambiara ese valor en la petición se descubriría que no servía de
+  nada — o, peor, que sí.
+- **Y una guarda vieja cazó un error nuevo en el acto**: escribí
+  `available_pax ?? 0` al pintar las plazas. La regla que nació de una captura
+  del usuario —un cupo que nadie ha calculado no es un agotado— saltó en la
+  primera ejecución. Pasa por `plazasParaMostrar`, que dice «cupo sin definir»
+  en vez de un cero rojo que le diría al tour center que no puede vender una
+  salida vacía.
+- **Mutación: seis, las seis muertas.**
+
+### Fase 5.4 — el voucher del tour center, y la disputa que no existía
+- **El neto iba impreso en el papel que el socio le da al turista.**
+  `booking.total_amount` de una venta B2B es lo que el tour center le paga a la
+  operadora, no lo que el cliente pagó en el mostrador. El voucher lo imprimía:
+  **el margen de quien se lo acaba de vender, en el documento que ese mismo
+  vendedor le está poniendo en la mano.**
+- **La condición es de la RESERVA, no de quién la descarga.** El mismo PDF lo
+  puede bajar la operadora y reenviárselo, o salir por el correo automático;
+  acabe como acabe, termina en la mano del turista. Con `esDeSocio(ctx)` el neto
+  se habría escapado por los otros dos caminos sin que nadie lo notara.
+- **Y no se pone a cero: el bloque entero desaparece.** Un total en cero dice
+  «esto no costó nada», que es otra afirmación falsa. En su lugar va la línea
+  que remite a quien cobró.
+- **La marca es del socio; las condiciones y el pie, de la operadora.** El
+  turista compró en el mostrador del tour center y no sabe que detrás hay otra
+  empresa — un logo ajeno le hace dudar de lo que acaba de pagar, o le enseña a
+  quién llamar la próxima vez sin pasar por quien se lo vendió. Al revés sería
+  peor: un documento que promete en nombre de quien no puede cumplir. **El color
+  de marca no se hereda**, porque la ficha del socio no tiene dónde guardarlo y
+  arrastrar el de la operadora pintaría el papel del tour center con los colores
+  de quien no lo firma.
+- **La disputa: el estado existía y no se podía alcanzar.** `settlement.status`
+  admite `disputed` desde 0006, la interfaz lo sabe traducir, y
+  **`dispute_reason` lleva ahí sin que nadie la escriba desde 0040**. La
+  pantalla del portal decía literalmente «contacta con tu gestor»: de esa
+  llamada no quedaba nada — ni el motivo, ni la fecha, ni quién se comprometió a
+  mirarlo.
+- **Migración 0076** añade lo que faltaba: cuándo, quién del tour center, y **a
+  quién le toca resolverla**. Ese último es el que el plan pedía con esas
+  palabras y el que evita el final habitual: un aviso a «los administradores»
+  que todos ven y ninguno coge.
+- **El destinatario se guarda, no solo se avisa.** Un aviso enviado y no
+  registrado deja la disputa sin dueño en cuanto alguien lo marca como leído. Y
+  cuando no hay nadie asignado **se dice**: dejar al tour center creyendo que
+  alguien la está mirando es peor que decirle que insista.
+- **Una liquidación PAGADA se puede disputar**, y es el caso que más importa:
+  «me pagaste menos de lo acordado» solo se descubre cobrando. Cerrarlo al pagar
+  convertiría el pago en un finiquito unilateral.
+- **Quién puede: la comprobación que ya existía.** `assertSettlementBeneficiary`
+  es la misma que abre el estado de cuenta y el PDF — su propio comentario ya
+  anticipaba esta ruta. Una cuarta copia de la misma pregunta es la que un día
+  dice algo distinto.
+- **Mutación: catorce, las catorce muertas.**
+
+### Fase 5.5 — la exportación del socio, por lista blanca que falla por omisión
+- **El exportador no sabe recortar columnas, y el recorte por campos tampoco
+  alcanza.** `exportColumns` arma las cabeceras con **las claves que traigan las
+  filas**: es lo correcto para el ERP interno —quien exporta quiere todo lo que
+  tiene— y exactamente lo contrario de lo que hace falta para un actor externo.
+  `field-projection` quita lo que se declaró sensible; aquí el problema era lo
+  que **no se declaró nada**, o sea cada columna que se añada a cualquier tabla
+  a partir de mañana.
+- **Falla por omisión, y ésa es toda la gracia.** Un recurso sin lista devuelve
+  un 403 que se entiende. La alternativa —exportar todo mientras nadie declare
+  nada— convierte cada tabla nueva en una fuga silenciosa que se descubre cuando
+  ya está en el Excel de alguien.
+- **`null` no es «ninguna columna»: es «esto no se ha decidido».** Una lista
+  vacía habría producido un archivo con cabeceras y sin datos, que parece un
+  error del sistema en vez de una decisión.
+- **Y el orden es el declarado**, resuelto antes de recorrer las filas. Con el
+  orden de las claves, las columnas cambian entre dos exportaciones del mismo
+  listado según qué fila venga primero con qué campos rellenos — y un archivo
+  cuyas columnas bailan no se puede comparar con el del mes pasado.
+- **La lista se valida contra el ESQUEMA, no contra `resources.ts`.** Los
+  recursos declaran lo que se escribe, y `booking` escribe seis campos de los
+  treinta que se leen. La guarda nueva se apoya en el esquema que
+  `schema-contract.test.ts` ya reconstruye leyendo las migraciones.
+- **Y cazó cuatro campos míos mal escritos en la primera ejecución**: las
+  columnas de la orden no se llaman como las de la reserva (`total`,
+  `paid_total`, `balance`, no `*_amount`) y la de la comisión es `percentage`,
+  no `rate`. Escritas de oído, esas cuatro columnas simplemente no habrían
+  salido en el archivo — y nadie lo habría notado, porque el socio no sabe qué
+  columnas debería tener y quien las declaró no vuelve a mirar.
+- **Mutación: ocho, las ocho muertas.**

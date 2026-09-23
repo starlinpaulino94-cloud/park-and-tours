@@ -54,6 +54,26 @@ export interface VoucherData {
    * no lee no es un documento, es un papel.
    */
   language?: string | null;
+  /**
+   * La marca del tour center que vendió, cuando la venta es suya.
+   *
+   * El turista compró en su mostrador y no sabe que detrás hay una operadora.
+   * `null` deja el documento como siempre.
+   */
+  brand_override?: CompanyBranding | null;
+  /**
+   * EL NETO NO VIAJA EN EL PAPEL QUE ENTREGA EL SOCIO.
+   *
+   * `total_amount` de una reserva B2B es lo que el tour center le paga a la
+   * operadora, no lo que el turista pagó en el mostrador. Imprimirlo le enseña
+   * al cliente el margen de quien se lo vendió — en el documento que ese mismo
+   * vendedor le está poniendo en la mano.
+   *
+   * Y no se pone a cero: un total en cero dice «esto no costó nada», que es
+   * otra afirmación falsa. El bloque entero desaparece y en su lugar va una
+   * línea que remite a quien cobró.
+   */
+  hide_amounts?: boolean;
   booking_number?: string | null;
   voucher_code?: string | null;
   status?: string | null;
@@ -99,7 +119,17 @@ export async function buildVoucherPdf(company: CompanyInfo | null, data: Voucher
   // nunca es una clave de diccionario en un documento impreso.
   const locale = normalizeLocale(data.language) ?? DEFAULT_LOCALE;
   const t = translator(DOC_DICTIONARY, locale);
-  const { brand, logo } = await brandFor(company, "voucher");
+  /**
+   * La identidad es del socio; las condiciones y el pie, de la operadora.
+   *
+   * `brandFor` sacaría las condiciones de la ficha del socio —que no las
+   * tiene—, así que el documento saldría sin la letra pequeña justo en el
+   * caso en que más falta hace. Se toman aparte.
+   */
+  const { brand: marca, logo } = await brandFor(data.brand_override ?? company, "voucher");
+  const brand = data.brand_override
+    ? { ...marca, terms: documentBrand(company, "voucher").terms }
+    : marca;
   const pdf = await PdfBuilder.create({
     kind: "VOUCHER",
     reference: data.booking_number,
@@ -152,19 +182,26 @@ export async function buildVoucherPdf(company: CompanyInfo | null, data: Voucher
     pdf.gap(10);
   }
 
-  pdf.eyebrow(t("doc.amount"));
-  pdf.row(t("doc.total"), formatMoney(data.total_amount ?? 0, currency), { strong: true });
-  pdf.row(t("doc.paid"), formatMoney(data.paid_amount ?? 0, currency));
-  const balance = data.balance_amount ?? 0;
-  pdf.row(t("doc.balance"), formatMoney(balance, currency));
-  pdf.gap(6);
-
-  if (balance > 0.009) {
-    // Que el cliente lo sepa antes de subir al vehículo evita la discusión en la
-    // puerta, que es donde peor se resuelve.
-    pdf.notice(t("doc.balanceNotice", { amount: formatMoney(balance, currency) }));
-  } else {
+  if (data.hide_amounts) {
+    // Ni el total ni el saldo: los dos son de la relación entre el tour center
+    // y la operadora, no de lo que el turista pagó. Se le dice con quién
+    // arregla cualquier cobro, que es lo único que le sirve.
     pdf.notice(t("doc.showNotice"));
+  } else {
+    pdf.eyebrow(t("doc.amount"));
+    pdf.row(t("doc.total"), formatMoney(data.total_amount ?? 0, currency), { strong: true });
+    pdf.row(t("doc.paid"), formatMoney(data.paid_amount ?? 0, currency));
+    const balance = data.balance_amount ?? 0;
+    pdf.row(t("doc.balance"), formatMoney(balance, currency));
+    pdf.gap(6);
+
+    if (balance > 0.009) {
+      // Que el cliente lo sepa antes de subir al vehículo evita la discusión en
+      // la puerta, que es donde peor se resuelve.
+      pdf.notice(t("doc.balanceNotice", { amount: formatMoney(balance, currency) }));
+    } else {
+      pdf.notice(t("doc.showNotice"));
+    }
   }
 
   pdf.block(t("doc.includes"), data.inclusions);

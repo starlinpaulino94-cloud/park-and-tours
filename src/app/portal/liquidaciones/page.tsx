@@ -16,6 +16,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { COMMISSION_STATUS, GENERIC_STATUS, SETTLEMENT_STATUS } from "@/lib/labels";
 import { formatDate, formatMoney, formatNumber, formatPercent } from "@/lib/format";
 import type { Commission, Receivable, Settlement } from "@/lib/types";
+import { Textarea } from "@/components/ui/textarea";
 
 export default function PortalSettlementsPage() {
   const { isStaff, partnerId } = usePortal();
@@ -204,10 +205,20 @@ export default function PortalSettlementsPage() {
                     <span className="tf-num">{formatMoney(detail.pending_total, detail.currency)}</span></li>
                 </ul>
                 {detail.notes && <p className="text-sm text-muted-foreground">{detail.notes}</p>}
-                <p className="rounded-lg border border-dashed border-border bg-muted/40 p-3 text-xs text-muted-foreground">
-                  Si no estás de acuerdo con alguna cifra, contacta con tu gestor: el operador puede marcar la
-                  liquidación en disputa sin alterar las comisiones ya devengadas.
-                </p>
+                {/*
+                  * ANTES AQUÍ PONÍA «CONTACTA CON TU GESTOR».
+                  *
+                  * El estado `disputed` existía desde la primera migración de
+                  * finanzas y no había forma de ponerlo, así que la pantalla
+                  * mandaba a llamar por teléfono. De esa llamada no quedaba
+                  * nada: ni el motivo, ni la fecha, ni quién se comprometió a
+                  * mirarlo. Ahora la disputa se abre desde aquí y queda con
+                  * nombre y con destinatario.
+                  */}
+                <Disputa
+                  settlement={detail}
+                  onAbierta={(actualizada) => { setDetail(actualizada); void load(); }}
+                />
               </div>
             </>
           )}
@@ -219,5 +230,78 @@ export default function PortalSettlementsPage() {
           description="En cuanto vendas tu primera excursión verás aquí la comisión generada y su liquidación." />
       )}
     </div>
+  );
+}
+
+/**
+ * EL BOTÓN DE DISPUTA.
+ *
+ * Pide el motivo antes de nada: `disputed` a secas es una etiqueta que obliga a
+ * llamar para enterarse —o sea, exactamente lo que este botón viene a quitar—.
+ * El servidor exige lo mismo; esto es para que no se descubra al pulsar.
+ *
+ * Y cuando la disputa queda SIN destinatario se dice. Es el caso que hay que
+ * evitar, no el que hay que disimular: dejar al tour center creyendo que
+ * alguien la está mirando es peor que decirle que insista.
+ */
+function Disputa({
+  settlement, onAbierta,
+}: {
+  settlement: Settlement;
+  onAbierta: (s: Settlement) => void;
+}) {
+  const [abriendo, setAbriendo] = useState(false);
+  const [motivo, setMotivo] = useState("");
+  const [enviando, setEnviando] = useState(false);
+
+  if (settlement.status === "disputed") {
+    return (
+      <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
+        <p className="font-medium">Esta liquidación está en disputa.</p>
+        {settlement.dispute_reason && <p className="mt-1 text-muted-foreground">{settlement.dispute_reason}</p>}
+      </div>
+    );
+  }
+  if (settlement.status === "void") return null;
+
+  const enviar = async () => {
+    setEnviando(true);
+    const res = await api.post<Settlement & { dispute_assigned?: boolean }>(
+      `/api/settlements/${settlement._id}/dispute`, { reason: motivo }
+    );
+    setEnviando(false);
+    if (!res.ok) {
+      toast.error(res.error?.message || "No se pudo abrir la disputa");
+      return;
+    }
+    toast.success(
+      res.data?.dispute_assigned
+        ? "Disputa abierta. Tu operador ya tiene a alguien asignado."
+        : "Disputa abierta. Tu operador todavía no tiene a nadie asignado: insiste si no te contestan."
+    );
+    setAbriendo(false);
+    setMotivo("");
+    if (res.data) onAbierta(res.data);
+  };
+
+  return abriendo ? (
+    <div className="space-y-2 rounded-lg border border-border p-3">
+      <Textarea
+        value={motivo}
+        onChange={(e) => setMotivo(e.target.value)}
+        placeholder="¿Qué es lo que no cuadra? Por ejemplo: faltan las dos reservas del día 12."
+        rows={3}
+      />
+      <div className="flex gap-2">
+        <Button size="sm" onClick={enviar} disabled={enviando}>
+          {enviando ? "Enviando…" : "Abrir disputa"}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => setAbriendo(false)}>Cancelar</Button>
+      </div>
+    </div>
+  ) : (
+    <Button variant="outline" size="sm" onClick={() => setAbriendo(true)}>
+      <Icon name="MessageSquareWarning" className="mr-2 size-4" /> No estoy de acuerdo
+    </Button>
   );
 }

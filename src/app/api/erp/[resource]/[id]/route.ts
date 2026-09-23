@@ -37,7 +37,15 @@ export async function GET(_req: NextRequest, { params }: Params) {
     const ctx = await requireTenant();
     await assertRateLimit({ key: rateLimitKey(_req, `erp:read:${def.table}`, ctx.userId), limit: 240, windowMs: 60_000 });
     assertCanReadTable(ctx, def.table);
-    const record = await tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id, def.expandOne || def.expand || {});
+    /**
+     * El socio recibe la expansión que le corresponde, no siempre la profunda.
+     *
+     * Hoy solo la declara `customer`, y por un motivo concreto: su `expandOne`
+     * arrastra el historial completo del cliente. Lo demás no cambia.
+     */
+    const expansion = (esDeSocio(ctx) && def.expandOnePartner)
+      || def.expandOne || def.expand || {};
+    const record = await tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id, expansion);
     assertRowInScope(def.table, ctx, record);
     // El mismo recorte que el listado y la exportación: abrir la ficha no puede
     // enseñar lo que la lista esconde.

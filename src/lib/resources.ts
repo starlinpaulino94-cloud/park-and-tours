@@ -16,6 +16,20 @@ export interface ResourceDef {
   expand?: Record<string, unknown>;
   /** Relations expanded on the detail endpoint (defaults to `expand`). */
   expandOne?: Record<string, unknown>;
+  /**
+   * Lo que se expande en el detalle CUANDO quien consulta viene de un socio.
+   *
+   * Existe por un caso y se documenta para que no se use por otros: la ficha de
+   * cliente arrastra en `expandOne` su historial completo —órdenes, reservas y
+   * oportunidades—, que es «todo lo que esta persona le ha comprado nunca a la
+   * operadora». El tour center tiene derecho a su ficha, no a la relación
+   * entera. Y apoyarse en que la RLS filtre esas expansiones no vale: la capa
+   * de datos habla por el rol de servicio cuando la RLS está apagada, y
+   * entonces no filtra nadie.
+   *
+   * Sin declararlo, el detalle se comporta como siempre.
+   */
+  expandOnePartner?: Record<string, unknown>;
   /** Default sort. */
   sort?: Record<string, "asc" | "desc">;
   /** Fields accepted from the client on create/update. */
@@ -303,6 +317,10 @@ export const RESOURCES: Record<string, ResourceDef> = {
       order: { _limit: 50, _sort: { createdAt: "desc" } },
       lead: { _limit: 20, _sort: { createdAt: "desc" } },
     },
+    // El socio ve la ficha, no el historial: esas tres expansiones son todo lo
+    // que ese cliente le ha comprado nunca a la operadora, incluido lo que
+    // compró por otro canal. `assigned_seller` tampoco: es un vendedor interno.
+    expandOnePartner: { hotel: true },
     sort: { createdAt: "desc" },
     writable: [
       "hotel", "assigned_seller", "first_name", "last_name", "email", "phone", "whatsapp", "nationality",
@@ -1397,6 +1415,19 @@ const PARTNER_OWNED_TABLES = new Set([
    * alguien lo cambiaría.
    */
   "seller",
+  /**
+   * LA CARTERA, DE CADA UNO LA SUYA.
+   *
+   * Sin esto el socio no podía terminar una venta: `POST /api/orders` exige
+   * `customer_id` y él no tenía forma de buscar ni de crear un cliente.
+   * Abrirle `customer` sin acotar habría sido lo contrario del problema — la
+   * cartera ENTERA de la operadora, con teléfonos y correos, a la vista de sus
+   * revendedores.
+   *
+   * Propia por `partner` (migración 0075): los clientes de la operadora tienen
+   * ese campo nulo y no salen. La operadora los sigue viendo todos.
+   */
+  "customer",
 ]);
 // Read-only shared catalog a partner may browse (no partner dimension).
 // NOTE: `product` is intentionally NOT here — the product table carries
