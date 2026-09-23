@@ -480,6 +480,20 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0083 — la comisión retenida, en una sola escritura",
+    // En dos pasos hay dos finales malos: si se apunta el movimiento y falla la
+    // comisión, el vendedor se llevó su dinero y la comisión sigue pendiente —
+    // entra en la liquidación del mes y se le paga OTRA VEZ.
+    columns: [
+      ["cash_movement", ["commission_id"]],
+    ],
+    // La FUNCIÓN no se comprueba aquí: este verificador solo sabe de tablas y
+    // columnas, y una clave `functions:` que nadie lee sería exactamente el
+    // adorno que esta rama lleva media auditoría quitando. Que exista y que no
+    // la pueda llamar `anon` lo comprueba la verificación de
+    // `supabase/editor/0083_parte_2.sql`, contra la base de verdad.
+  },
+  {
     migration: "0082 — quién se queda el dinero entre la venta y el servicio",
     // El sistema solo conocía un modo: paga todo el cliente al operador. Los
     // otros dos —cobra el punto de venta y debe el neto; el vendedor retiene su

@@ -2686,3 +2686,62 @@ Y la tabla dice dos cosas más que no se preguntaban:
   quejarse y no cambia nada, que es el mismo silencio de `authorized_products`
   antes de 6.1.
 - **Mutación: catorce, las catorce muertas.**
+
+### Fase 7.4 — la comisión retenida: o las dos cosas, o ninguna
+- **El criterio del plan no se puede cumplir desde la aplicación.** El cliente
+  de Supabase habla por HTTP y cada inserción es su propia transacción: entre
+  marcar la comisión como cobrada y apuntar el movimiento de caja cabe un fallo
+  de red, un reinicio del proceso y un despliegue. Y una compensación —«si falla
+  la segunda, deshaz la primera»— es otro par de pasos que también puede
+  quedarse a medias.
+- **Los dos finales malos, y los dos son caros.** Si se apunta el movimiento y
+  falla la comisión, el vendedor se llevó su dinero y la comisión sigue en
+  `pending`: **entra en la liquidación del mes y se le paga otra vez**. Si se
+  marca la comisión y falla el movimiento, el arqueo del turno cuadra de menos y
+  el vendedor aparece debiendo un dinero que ya era suyo. Ninguno se ve el día
+  de la venta: el primero se ve pagando dos veces, el segundo discutiendo un
+  descuadre.
+- **Así que las dos inserciones viven en una función de Postgres** (0083), como
+  ya hacía `reserve_departure_capacity` con el cupo, y la aplicación solo la
+  llama. La comisión **nace** en `paid`: crearla pendiente para actualizarla
+  después son otra vez dos pasos, y el hueco entre ellos es exactamente por
+  donde se cuela la liquidación que la paga por segunda vez.
+- **El movimiento es un `withdrawal`, no un cobro negativo.** El depósito del
+  turista entra como venta por su camino normal; esto es la parte que el
+  vendedor no entrega. Así el turno cuadra solo: entró el depósito, salió la
+  comisión, y lo que queda por entregar es la diferencia.
+- **Una reserva se retiene UNA vez.** El `for update` sobre el turno serializa
+  a dos peticiones simultáneas —el doble clic de siempre— y la segunda encuentra
+  ya escrita la retención de la primera. Y una comisión cobrada **sin** su
+  movimiento no se tapa con otro apunte: esa combinación solo puede venir de una
+  escritura por fuera, así que se para y se avisa.
+- **La función falla CERRADA.** Es `security definer`, así que se salta la RLS:
+  el ámbito se comprueba a mano dentro, y `anon` y `authenticated` no pueden
+  llamarla. Es la lección de 0017, donde dos funciones de cupo se podían invocar
+  sin credenciales con solo el uuid de una salida de otro tenant.
+- **Los datos van en UN objeto y no en trece argumentos.** Con trece —cinco
+  `uuid` seguidos— intercambiar dos compila, se ejecuta y escribe la comisión de
+  otro vendedor sobre otra reserva sin que nada se queje. Misma razón por la que
+  el ámbito del vendedor dejó de recibir cuatro cadenas en fila.
+- **Sin turno abierto NO se retiene, y no se inventa uno.** El dinero que el
+  vendedor se queda tiene que salir de algún arqueo, o al cerrar el día nadie
+  sabe cuánto entregó y cuánto se quedó. Sin turno, la comisión sigue su camino
+  normal y se liquida a fin de mes: peor para él, pero es lo único que no
+  descuadra nada.
+- **Y si la retención falla, la comisión no se escribe por el camino normal.**
+  Quedaría pendiente una comisión que quizá ya se retiró, que es el mismo pago
+  doble con otro disfraz.
+- **Se cuentan las comisiones ESCRITAS, no las calculadas.** La función devolvía
+  `resolved.length`; con la retención hay caminos donde una comisión calculada
+  no llega a escribirse, y ese número lo usa quien llama para el registro de la
+  venta.
+- **Una clave `functions:` en el verificador de migraciones se quitó antes de
+  nacer**: ese script solo sabe de tablas y columnas, así que habría sido
+  exactamente el adorno que media auditoría lleva quitando. Que la función
+  exista y que `anon` no la pueda llamar se comprueba contra la base de verdad,
+  en la verificación de su parte del editor.
+- **Dos guardas no mordían**, las dos de familias ya conocidas: una comprobaba
+  que la palabra `insert into cash_movement (` estuviera, no que la inserción
+  llegara a su `returning`; la otra daba por bueno un turno inventado porque
+  `... || "cs-inventada"` es un prefijo válido de lo que buscaba.
+- **Mutación: dieciocho, las dieciocho muertas.**

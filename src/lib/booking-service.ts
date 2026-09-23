@@ -18,7 +18,8 @@ import { formatDate } from "@/lib/format";
 import { ensureSchedule, refreshAllocation } from "@/lib/schedule-service";
 import { creditCheck, holdUntil } from "@/lib/collections";
 import { esPrepago } from "@/lib/monedero-socio";
-import { modoDeCobro, type ModoDeCobro } from "@/lib/modo-de-cobro";
+import { modoDeCobro, elVendedorRetiene, type ModoDeCobro } from "@/lib/modo-de-cobro";
+import { retenerComision, turnoAbiertoDe } from "@/lib/comision-retenida";
 import { assertSaldo, descontarVenta } from "@/lib/monedero-service";
 import { accrueBookingCosts, cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { reserveForSale, stockableOffers } from "@/lib/stock-commitment-service";
@@ -1485,10 +1486,87 @@ export async function generateCommissionsForBooking(
     beneficiaries
   );
 
+  /**
+   * ── LA COMISIÓN RETENIDA (0082/0083) ────────────────────────────────────
+   *
+   * Cuando la venta se cerró con `seller_retains`, la comisión del VENDEDOR no
+   * nace pendiente: nace cobrada, porque él ya se la quedó en la playa. Y nace
+   * en la misma escritura que el movimiento de caja que la saca del cajón.
+   *
+   * El modo sale de la ORDEN —donde se selló al vender— y no de la ficha de
+   * hoy: un contrato que cambie entre la venta y esta llamada dejaría el dinero
+   * movido bajo un modo y la comisión calculada con otro.
+   *
+   * Solo la del vendedor. La del supervisor y la del socio siguen su camino:
+   * el que retiene es quien tiene el billete en la mano.
+   */
+  const ordenId = refId(booking.order);
+  const [orden] = ordenId
+    ? await tenantQuery<{ collection_mode?: string | null }>(companyId, "order", {
+        _filter: { _id: ordenId }, _limit: 1,
+      })
+    : [];
+  const retiene = elVendedorRetiene(modoDeCobro({
+    relacion: partnerRow as { collection_mode?: string | null } | undefined,
+    vendedor: sellerRow as { collection_mode?: string | null } | undefined,
+  })) || orden?.collection_mode === "seller_retains";
+
+  /**
+   * Se cuentan las ESCRITAS, no las resueltas.
+   *
+   * Antes se devolvía `resolved.length`, que es cuántas se calcularon. Con la
+   * retención hay caminos donde una comisión calculada no llega a escribirse
+   * —la que falla al retener—, y devolver el número de antes diría que se
+   * crearon comisiones que no existen. Quien llama usa ese número para el
+   * registro de la venta.
+   */
+  let escritas = 0;
+
   for (const c of resolved) {
+    if (retiene && c.beneficiary_type === "seller" && c.seller) {
+      /**
+       * Sin turno abierto NO se retiene, y no se inventa uno: el dinero que el
+       * vendedor se queda tiene que salir de algún arqueo, o al cerrar el día
+       * nadie sabe cuánto entregó y cuánto se quedó. Sin turno, la comisión
+       * sigue su camino normal y se le liquidará al final del mes — que es peor
+       * para él, pero es lo único que no descuadra nada.
+       */
+      const turno = await turnoAbiertoDe(companyId, String(c.seller));
+      if (turno) {
+        try {
+          await retenerComision({
+            companyId,
+            bookingId: booking._id,
+            orderId: ordenId,
+            sellerId: String(c.seller),
+            cashSessionId: turno,
+            total: Number(booking.total_amount ?? c.base_amount ?? 0),
+            comision: c.amount,
+            currency: c.currency,
+            beneficiaryName: c.beneficiary_name,
+            baseAmount: c.base_amount,
+            percentage: c.percentage,
+            serviceDate: meta.travelDate,
+            snapshot: c.snapshot,
+            userId: ctx.userId,
+          });
+          escritas += 1;
+          continue;
+        } catch (err) {
+          /**
+           * Y si la retención falla, la comisión NO se escribe por el camino
+           * normal: quedaría pendiente una comisión que quizá ya se retiró, y
+           * se pagaría dos veces. Se deja constancia y se para esta.
+           */
+          console.error(`[comision] no se pudo retener la de ${c.beneficiary_name}:`, err);
+          continue;
+        }
+      }
+    }
+
     await tenantCreate(companyId, "commission", {
       booking: booking._id,
-      order: refId(booking.order),
+      order: ordenId,
       rule: c.rule || undefined,
       seller: c.seller || undefined,
       partner: c.partner || undefined,
@@ -1525,8 +1603,9 @@ export async function generateCommissionsForBooking(
       adjustment_total: 0,
       net_amount: c.amount,
     });
+    escritas += 1;
   }
-  return resolved.length;
+  return escritas;
 }
 
 /** Recomputes an order's paid/balance totals and derives its status from its bookings. */

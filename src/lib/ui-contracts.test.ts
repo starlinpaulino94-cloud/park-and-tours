@@ -7221,4 +7221,133 @@ describe("el socio que integra por API", () => {
     // Y llegan a la relación comercial, que es donde vive el del socio.
     expect(cuerpoDe("src/lib/partners.ts")).toMatch(/collection_mode: "collection_mode"/);
   });
+
+  /* ═══════════ Fase 7.4 · la comisión retenida, o las dos cosas o ninguna */
+
+  it("LAS DOS INSERCIONES ESTÁN EN LA MISMA FUNCIÓN", () => {
+    /**
+     * El criterio del plan, y no se consigue desde la aplicación: el cliente de
+     * Supabase habla por HTTP y cada inserción es su propia transacción. Entre
+     * marcar la comisión y apuntar el movimiento cabe un fallo de red, un
+     * reinicio y un despliegue, y una compensación es otro par de pasos que
+     * también puede quedarse a medias.
+     *
+     * En dos pasos hay dos finales malos: el vendedor se lleva su dinero y la
+     * comisión sigue pendiente —entra en la liquidación del mes y se le paga
+     * OTRA VEZ—, o la comisión queda cobrada y el arqueo cuadra de menos.
+     */
+    const sql = read("supabase/migrations/0083_retained_commission.sql").replace(/^\s*--.*$/gm, "");
+    const i = sql.indexOf("create or replace function public.retain_seller_commission");
+    expect(i, "no existe la función").toBeGreaterThan(-1);
+    const cuerpo = sql.slice(i);
+    expect(cuerpo).toMatch(/insert into commission \([\s\S]{0,900}?returning id into v_commission;/);
+    /**
+     * Y la del movimiento HASTA su `returning`: con `toMatch(/insert into
+     * cash_movement \(/)` bastaba con que la palabra estuviera, así que
+     * romperle el cuerpo —o borrarlo entero por debajo— pasaba la guarda.
+     */
+    expect(cuerpo).toMatch(/insert into cash_movement \([\s\S]{0,700}?returning id into v_movement;/);
+    // Con el vínculo puesto: sin él no hay forma de comprobar el criterio, y
+    // un reintento sacaría el dinero otra vez.
+    expect(cuerpo).toMatch(/commission_id, movement_type/);
+    expect(cuerpo, "el movimiento tiene que sacar el dinero del cajón").toMatch(/'withdrawal'/);
+    // Y la comisión NACE cobrada: crearla pendiente para actualizarla después
+    // son otra vez dos pasos, y el hueco entre ellos es por donde se cuela la
+    // liquidación que la paga por segunda vez.
+    expect(cuerpo, "la comisión no puede nacer pendiente").toMatch(/'paid',/);
+    expect(
+      cuerpo.slice(cuerpo.indexOf("insert into commission ("), cuerpo.indexOf("insert into cash_movement ("))
+    ).not.toMatch(/'pending'/);
+  });
+
+  it("la función que mueve dinero falla CERRADA y no la llama cualquiera", () => {
+    /**
+     * Es `security definer`, así que se salta la RLS: el ámbito se comprueba a
+     * mano dentro. Es la lección de 0017, donde dos funciones de cupo se podían
+     * llamar sin credenciales con solo el uuid de una salida de otro tenant.
+     */
+    const sql = read("supabase/migrations/0083_retained_commission.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/app\.current_org_id\(\) <> p_org/);
+    expect(sql).toMatch(/errcode = 'insufficient_privilege'/);
+    expect(sql, "anon no puede llamarla").toMatch(/from anon, public, authenticated;/);
+    expect(sql).toMatch(/to service_role;/);
+  });
+
+  it("una reserva se retiene UNA vez", () => {
+    /**
+     * Un reintento —el doble clic de siempre— sacaría el dinero dos veces. El
+     * `for update` sobre el turno serializa a los dos llamantes y el segundo
+     * encuentra ya escrita la retención del primero.
+     */
+    const sql = read("supabase/migrations/0083_retained_commission.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/from cash_session cs[\s\S]{0,200}?for update;/);
+    expect(sql, "no se busca una retención previa").toMatch(/and c\.status = 'paid'/);
+    expect(sql).toMatch(/'already', true/);
+    // Y una comisión cobrada SIN su movimiento no se tapa con otro apunte: se
+    // para, porque esa combinación solo puede venir de una escritura por fuera.
+    expect(sql).toMatch(/if v_previo\.movement_id is null then/);
+  });
+
+  it("los datos de la comisión viajan en UN objeto", () => {
+    /**
+     * Con trece argumentos —cinco `uuid` seguidos— intercambiar dos compila, se
+     * ejecuta y escribe la comisión de otro vendedor sobre otra reserva sin que
+     * nada se queje. Misma razón por la que el ámbito del vendedor dejó de
+     * recibir cuatro cadenas en fila.
+     */
+    const sql = read("supabase/migrations/0083_retained_commission.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/p_commission\s+jsonb/);
+    expect(cuerpoDe("src/lib/comision-retenida.ts")).toMatch(/p_commission: \{/);
+  });
+
+  it("sin turno abierto NO se retiene, y no se inventa uno", () => {
+    /**
+     * El dinero que el vendedor se queda tiene que salir de algún arqueo, o al
+     * cerrar el día nadie sabe cuánto entregó y cuánto se quedó. Sin turno, la
+     * comisión sigue su camino normal y se le liquidará al final del mes — peor
+     * para él, pero es lo único que no descuadra nada.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    /**
+     * Con el punto y coma al final: sin él, `... || "cs-inventada"` es un
+     * prefijo válido y la guarda daba por bueno un turno inventado. Cuarta vez
+     * que muerde la trampa del prefijo en esta rama.
+     */
+    expect(servicio).toMatch(/const turno = await turnoAbiertoDe\(companyId, String\(c\.seller\)\);/);
+    expect(servicio).toMatch(/if \(turno\) \{/);
+    // Y la función de Postgres lo exige también, por si alguien la llama de otro sitio.
+    const sql = read("supabase/migrations/0083_retained_commission.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/v_session\.status <> 'open'/);
+    expect(sql).toMatch(/v_session\.seller_id is distinct from v_seller/);
+  });
+
+  it("si la retención falla, la comisión NO se escribe por el camino normal", () => {
+    /**
+     * Quedaría pendiente una comisión que quizá ya se retiró, y se pagaría dos
+     * veces — que es justo el fallo que toda esta ola evita. El `continue` es
+     * la línea que importa: sin él, el `catch` cae en el `tenantCreate` de
+     * abajo y escribe la comisión pendiente.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    const i = servicio.indexOf("await retenerComision({");
+    expect(i, "no se retiene").toBeGreaterThan(-1);
+    expect(servicio.slice(i, i + 900)).toMatch(/\} catch \(err\) \{[\s\S]{0,300}?continue;/);
+  });
+
+  it("se cuentan las comisiones ESCRITAS, no las calculadas", () => {
+    // Con la retención hay caminos donde una comisión calculada no llega a
+    // escribirse, y devolver `resolved.length` diría que se crearon comisiones
+    // que no existen. Quien llama usa ese número para el registro de la venta.
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    expect(servicio).toMatch(/let escritas = 0;/);
+    expect(servicio).toMatch(/return escritas;/);
+    expect(servicio, "vuelve a contar las resueltas").not.toMatch(/return resolved\.length;/);
+  });
+
+  it("el modo lo decide lo SELLADO en la orden, no la ficha de hoy", () => {
+    // Un contrato que cambie entre la venta y esta llamada dejaría el dinero
+    // movido bajo un modo y la comisión calculada con otro.
+    expect(cuerpoDe("src/lib/booking-service.ts"))
+      .toMatch(/orden\?\.collection_mode === "seller_retains"/);
+  });
 });
