@@ -2543,6 +2543,46 @@ describe("el alcance por sucursal", () => {
     expect(aterrizaje).toMatch(/ctx\?\.role === "seller"\) redirect\("\/dashboard\/mi-espacio"\)/);
   });
 
+  it("el estado de cuenta lo decide la FILA, y cada beneficiario tiene el suyo", () => {
+    /**
+     * Dos reglas, y la segunda es la que se olvida.
+     *
+     *  1. Abierta a su beneficiario, el rango deja de decidir: bastaría con
+     *     cambiar el identificador de la dirección para bajarse la liquidación
+     *     de un proveedor.
+     *  2. Y el documento del proveedor NO es el del vendedor con otro nombre:
+     *     lleva el coste de cada servicio y las retenciones dentro. Servírselo
+     *     a un vendedor le entrega el margen de la empresa en un PDF.
+     */
+    for (const rel of [
+      "src/app/api/settlements/[id]/statement/route.ts",
+      "src/app/api/settlements/[id]/statement/pdf/route.ts",
+    ]) {
+      const src = sinComentariosDe(rel);
+      expect(src, rel).toMatch(/assertSettlementBeneficiary\(ctx, cabecera\)/);
+      // Y ya no se apoya en el rango, que es lo que dejó de decidir.
+      expect(src, `${rel} sigue decidiendo por rango`).not.toMatch(/requireAtLeast\(ctx, "manager"\)/);
+    }
+
+    // La pantalla sirve el estado de cuenta del vendedor cuando toca…
+    expect(sinComentariosDe("src/app/api/settlements/[id]/statement/route.ts"))
+      .toMatch(/kind === "seller"\) return ok\(await loadSellerStatement/);
+    // …y el PDF del proveedor se niega antes que entregar el que hay a mano.
+    expect(sinComentariosDe("src/app/api/settlements/[id]/statement/pdf/route.ts"))
+      .toMatch(/beneficiaryOf\(cabecera\)\?\.kind === "seller"/);
+
+    // El del vendedor se escribe APARTE: el del proveedor lee `booking_cost`
+    // —el coste— y el suyo lee `commission`.
+    // Sin comentarios: este fichero EXPLICA en su cabecera por qué no lee
+    // `booking_cost`, y una guarda que se dispara con la explicación en vez de
+    // con el código comprueba lo contrario de lo que cree.
+    const suyo = sinComentariosDe("src/lib/seller-settlement-service.ts");
+    expect(suyo).toMatch(/"commission"/);
+    expect(suyo, "el estado de cuenta del vendedor no puede leer costes").not.toMatch(/booking_cost/);
+    // Y enseña el porcentaje CONGELADO, no el vigente en la ficha.
+    expect(suyo).toMatch(/percentage: Number\(row\.percentage \?\? 0\)/);
+  });
+
   it("el recorte de columnas se aplica en los TRES sitios que sirven filas", () => {
     /**
      * Listado, detalle y exportación. Dejar uno sin migrar es el fallo que
