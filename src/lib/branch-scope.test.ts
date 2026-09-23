@@ -97,12 +97,18 @@ describe("el listado y su exportación comparten el corte", () => {
   });
 
   it("sin sucursal, el filtro queda exactamente como antes", () => {
-    const filter = buildListFilter(def, ctxWith(null), new URLSearchParams()) as Record<string, unknown>;
+    /**
+     * Con rango de gerencia: desde que existe el ámbito del vendedor
+     * (`seller-scope.ts`), un contexto de rol `seller` SÍ se acota aunque no
+     * tenga sucursal, y esta prueba habla de la sucursal. Mezclar los dos aquí
+     * haría que un fallo en uno se leyera como un fallo en el otro.
+     */
+    const filter = buildListFilter(def, ctxWith(null, "manager"), new URLSearchParams()) as Record<string, unknown>;
     expect(filter._and).toBeUndefined();
   });
 
   it("un recurso de catálogo no se acota ni con sucursal", () => {
-    const filter = buildListFilter(RESOURCES.product, ctxWith("b1"), new URLSearchParams()) as Record<string, unknown>;
+    const filter = buildListFilter(RESOURCES.product, ctxWith("b1", "manager"), new URLSearchParams()) as Record<string, unknown>;
     expect(filter._and).toBeUndefined();
   });
 });

@@ -34,6 +34,16 @@ export interface TenantContext {
    * la muralla entre empresas sigue siendo la RLS por `organization_id`.
    */
   branchId?: string | null;
+  /**
+   * La ficha de vendedor de esta persona, o null cuando su cuenta no está
+   * vinculada a ninguna.
+   *
+   * Solo se resuelve para el rol `seller`, que es el único que se acota por
+   * ella (`seller-scope.ts`). Sale de `seller.user_id` en CADA petición y no
+   * del token: una ficha que se vincula, se desvincula o se desactiva tiene
+   * efecto en la siguiente petición, sin esperar a que el token se renueve.
+   */
+  sellerId?: string | null;
   company: Company | null;
   /** true while a superadmin is operating inside a tenant (always audited). */
   impersonating?: boolean;

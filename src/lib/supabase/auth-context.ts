@@ -188,6 +188,40 @@ async function loadMembershipClaims(userId: string, orgId: string): Promise<AppC
   }
 }
 
+/**
+ * LA FICHA DE VENDEDOR DE ESTA CUENTA.
+ *
+ * Es lo que convierte «este usuario tiene rol de vendedor» en «este usuario ES
+ * el vendedor tal», y sin eso el ámbito del vendedor (`seller-scope.ts`) no
+ * tiene por dónde acotar. El vínculo vive en `seller.user_id` y se pone desde
+ * la ficha del vendedor.
+ *
+ * Se consulta en cada petición y SOLO para el rol `seller` —una consulta por
+ * clave indexada, y únicamente para el rango más bajo—. Va por consulta y no
+ * como dato del token a propósito: vincular, desvincular o desactivar una ficha
+ * tiene efecto en la petición siguiente. Metido en el token, un vendedor
+ * desvinculado seguiría viendo lo de su ficha hasta que su sesión se renovara.
+ *
+ * Un fallo aquí devuelve null, y null NO abre nada: el ámbito acota entonces a
+ * las filas sin vendedor. Falla cerrado.
+ */
+async function loadSellerId(orgId: string, userId: string): Promise<string | null> {
+  try {
+    const sb = supabaseService();
+    const { data } = await sb
+      .from("seller")
+      .select("id")
+      .eq("organization_id", orgId)
+      .eq("user_id", userId)
+      .eq("status", "active")
+      .limit(1)
+      .maybeSingle();
+    return data?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function loadClaimsFromPrimaryMembership(userId: string): Promise<AppClaims | null> {
   try {
     const sb = supabaseService();
@@ -267,6 +301,10 @@ export async function getSupabaseTenantContext(): Promise<TenantContext | null> 
   );
   if (!ctx) return null;
   if (mfaPending) ctx.mfaPending = true;
+
+  // Solo para el rango que se acota por ella: para todos los demás el dato no
+  // se usa, y consultarlo sería una ida a la base por petición a cambio de nada.
+  if (ctx.role === "seller") ctx.sellerId = await loadSellerId(ctx.companyId!, user.id);
 
   if (ctx.role === "superadmin") {
     const target = (await cookies()).get(IMPERSONATION_COOKIE)?.value;

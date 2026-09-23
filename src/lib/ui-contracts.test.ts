@@ -2274,8 +2274,101 @@ describe("el alcance por sucursal", () => {
   });
 
   it("se combina con «y»: dos grupos de «o» en el mismo objeto se pisan", () => {
+    /**
+     * Ya no es un ámbito, son dos —sucursal y vendedor—, y por eso la comprueba
+     * es la PROPIEDAD y no la línea literal: cada uno entra como un elemento
+     * distinto de `_and`. Fusionados en un solo objeto, el segundo `_or`
+     * pisaría al primero y decidiría él solo; con `_and` el traductor los
+     * aplica uno tras otro y se cumplen los dos.
+     */
     const shared = read("src/lib/erp-query.ts");
-    expect(shared).toMatch(/_and: \[filter, branchFilter\]/);
+    expect(shared).toMatch(/_and: \[filter, \.\.\.scopes\]/);
+    expect(shared).toMatch(/\[branchFilter, sellerFilter\]\.filter\(Boolean\)/);
+    // Y nadie los mete dentro del mismo objeto con `Object.assign`.
+    expect(shared).not.toMatch(/Object\.assign\(filter, branchFilter\)/);
+    expect(shared).not.toMatch(/Object\.assign\(filter, sellerFilter\)/);
+  });
+
+  it("el ámbito del vendedor se aplica donde se lee, no solo donde se lista", () => {
+    /**
+     * EL AGUJERO: «el vendedor ve las ventas de todos».
+     *
+     * Acotar solo el listado genérico habría sido cosmético. Estas cuatro
+     * puertas dan a las mismas ventas, y cada una tenía que cerrarse:
+     *
+     *  · `/api/erp/:recurso` y `/api/export/:recurso` — comparten
+     *    `buildListFilter`, así que se cierran las dos de una vez.
+     *  · `/api/erp/:recurso/:id` — el detalle NO pasa por el filtro del
+     *    listado: `tenantFindOne` solo comprueba la empresa. Sin guarda
+     *    bastaba con el identificador de la venta de un compañero, que sale
+     *    impreso en cualquier voucher.
+     *  · `/api/orders` y `/api/quotes` — arman su propio filtro y no pasan por
+     *    `buildListFilter`. Son, además, las que leen las pantallas.
+     */
+    expect(read("src/lib/erp-query.ts")).toMatch(/sellerFilterFor\(def\.table, ctx\.role, ctx\.sellerId\)/);
+
+    const detalle = read("src/app/api/erp/[resource]/[id]/route.ts");
+    // En la lectura…
+    expect(detalle).toMatch(/assertSellerCanRead\(def\.table, ctx\.role, ctx\.sellerId, record\)/);
+    // …y en la escritura, porque `order` se edita con rango de vendedor y
+    // `seller` es uno de sus campos editables: sin esto, un vendedor podía
+    // coger la venta de un compañero y reatribuírsela sin haberla podido ver.
+    expect(detalle).toMatch(/isSellerScoped\(def\.table\) && ctx\.role === "seller"/);
+    expect(detalle).toMatch(/assertSellerCanRead\(def\.table, ctx\.role, ctx\.sellerId, actual\)/);
+
+    for (const [file, tabla] of [
+      ["src/app/api/orders/route.ts", "order"],
+      ["src/app/api/quotes/route.ts", "quote"],
+    ] as const) {
+      const fuente = read(file);
+      expect(fuente, file).toMatch(
+        new RegExp(`sellerFilterFor\\("${tabla}", ctx\\.role, ctx\\.sellerId\\)`)
+      );
+      // Y el resultado se APLICA. Comprobar solo la llamada dejaba pasar la
+      // peor versión del fallo: el ámbito calculado y tirado a la basura una
+      // línea después, con el nombre de la función a la vista de quien revisa.
+      expect(fuente, file).toMatch(/if \(sellerScope\) Object\.assign\(filter, sellerScope\);/);
+    }
+  });
+
+  it("saber QUÉ vendedor es quien llama sale de la base en cada petición", () => {
+    /**
+     * El vínculo vive en `seller.user_id`. Va por consulta y no en el token a
+     * propósito: vincular, desvincular o desactivar una ficha tiene efecto en
+     * la petición siguiente. Metido en el token, un vendedor desvinculado
+     * seguiría viendo lo de su ficha hasta que su sesión se renovara.
+     */
+    const auth = read("src/lib/supabase/auth-context.ts");
+    expect(auth).toMatch(/\.eq\("user_id", userId\)/);
+    expect(auth).toMatch(/ctx\.role === "seller"\) ctx\.sellerId = await loadSellerId/);
+    // Y el panel usa ESE dato, no una segunda consulta que pueda discrepar.
+    expect(read("src/app/api/dashboard/route.ts")).toMatch(/ctx\.sellerId \?\? null/);
+  });
+
+  it("la ficha del vendedor deja vincular la cuenta con la que entra", () => {
+    /**
+     * Sin este campo el arreglo dejaría a TODOS los vendedores fuera de sus
+     * propias ventas: el sistema no tendría forma de saber cuáles son suyas.
+     * La columna existía en la base desde 0005 y no había pantalla que la
+     * pusiera.
+     */
+    const pantalla = read("src/app/dashboard/vendedores/page.tsx");
+    expect(pantalla).toMatch(/name: "user", label: "Cuenta de acceso"/);
+    expect(pantalla).toMatch(/optionsPath: "\/api\/team/);
+    // Y se ve de un vistazo quién sigue sin vincular.
+    expect(pantalla).toMatch(/Sin vincular/);
+  });
+
+  it("editar una ficha no borra la referencia que el listado no trajo", () => {
+    /**
+     * El formulario abre con la fila del LISTADO, que solo expande lo que su
+     * recurso declara; lo demás llega como `<campo>_id`. Antes el campo salía
+     * vacío y al guardar viajaba `null`: editarle el teléfono a un vendedor le
+     * desvinculaba la cuenta, en silencio.
+     */
+    const form = read("src/components/tf/resource-form.tsx");
+    expect(form).toMatch(/record\?\.\[`\$\{f\.name\}_id`\]/);
+    expect(form).toMatch(/if \(record && known\) payload\[f\.name\] = null;/);
   });
 
   it("la venta nace en la sucursal de quien vende", () => {

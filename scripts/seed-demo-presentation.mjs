@@ -262,14 +262,14 @@ async function ensureDemoUsers(demoOrgId, slug, password) {
       });
       if (error) throw new Error(`crear ${email}: ${error.message}`);
       user = data.user;
-      creadas.push({ email, role: perfil.role, nuevo: true });
+      creadas.push({ email, role: perfil.role, nuevo: true, userId: user.id });
     } else {
       const { error } = await sb.auth.admin.updateUserById(user.id, {
         password,
         user_metadata: { name: perfil.name, demo: true },
       });
       if (error) throw new Error(`actualizar ${email}: ${error.message}`);
-      creadas.push({ email, role: perfil.role, nuevo: false });
+      creadas.push({ email, role: perfil.role, nuevo: false, userId: user.id });
     }
 
     const { data: existing, error: memErr } = await sb
@@ -289,6 +289,47 @@ async function ensureDemoUsers(demoOrgId, slug, password) {
     if (upErr) throw new Error(`membresía de ${email}: ${upErr.message}`);
   }
   return creadas;
+}
+
+/**
+ * VINCULA LA CUENTA DE VENDEDOR DE LA DEMO CON UNA FICHA DE VENDEDOR.
+ *
+ * Desde que el ámbito del vendedor existe (`src/lib/seller-scope.ts`), lo que
+ * ve esa cuenta depende de `seller.user_id`: sin vínculo solo vería las ventas
+ * SIN vendedor asignado, y en esta demostración todas lo tienen. Es decir, la
+ * pantalla que existe para enseñar «el vendedor solo ve lo suyo» habría
+ * enseñado una lista vacía, que no demuestra nada y parece una avería.
+ *
+ * Se elige la ficha con MÁS ventas para que la demostración tenga cuerpo, y se
+ * respeta un vínculo que ya exista: reasignarlo en cada ejecución movería la
+ * demo de sitio sin avisar.
+ */
+async function linkDemoSeller(orgId, cuentas) {
+  const cuenta = cuentas.find((c) => c.role === "seller");
+  if (!cuenta?.userId) return null;
+
+  const { data: yaVinculada } = await sb
+    .from("seller").select("id,first_name,last_name")
+    .eq("organization_id", orgId).eq("user_id", cuenta.userId).maybeSingle();
+  if (yaVinculada?.id) return { ...yaVinculada, email: cuenta.email, nueva: false };
+
+  const { data: fichas } = await sb
+    .from("seller").select("id,first_name,last_name")
+    .eq("organization_id", orgId).eq("status", "active").is("user_id", null);
+  if (!fichas?.length) return null;
+
+  const { data: ventas } = await sb
+    .from("sales_order").select("seller_id").eq("organization_id", orgId).not("seller_id", "is", null);
+  const cuenta_por_ficha = new Map();
+  for (const v of ventas || []) cuenta_por_ficha.set(v.seller_id, (cuenta_por_ficha.get(v.seller_id) || 0) + 1);
+
+  const elegida = [...fichas].sort(
+    (a, b) => (cuenta_por_ficha.get(b.id) || 0) - (cuenta_por_ficha.get(a.id) || 0)
+  )[0];
+
+  const { error } = await sb.from("seller").update({ user_id: cuenta.userId }).eq("id", elegida.id);
+  if (error) throw new Error(`vincular la cuenta de vendedor: ${error.message}`);
+  return { ...elegida, email: cuenta.email, nueva: true, ventas: cuenta_por_ficha.get(elegida.id) || 0 };
 }
 
 /** Un identificador de URL estable a partir del nombre de la empresa real. */
@@ -447,6 +488,7 @@ async function main() {
     console.log(`La empresa demo de «${realOrg.name}» ya tiene catálogo; se completan los módulos que falten.`);
     console.log("Para regenerarla entera: npm run seed:demo-presentation -- --reset\n");
     await correrModulos(sb, orgId, realOrg);
+    await reportarVinculoVendedor(await linkDemoSeller(orgId, cuentas));
     await resumen(sb, orgId, realOrg);
     return;
   }
@@ -641,7 +683,20 @@ async function main() {
 
   await correrModulos(sb, orgId, realOrg);
 
+  // Después de sembrar las ventas: la ficha que se vincula es la que más tiene.
+  await reportarVinculoVendedor(await linkDemoSeller(orgId, cuentas));
+
   await resumen(sb, orgId, realOrg);
+}
+
+/** Deja dicho en pantalla con qué vendedor entra la cuenta de demostración. */
+async function reportarVinculoVendedor(vinculo) {
+  if (!vinculo) {
+    console.log("⚠ No se pudo vincular la cuenta de vendedor a ninguna ficha: esa cuenta verá solo las ventas sin vendedor asignado.");
+    return;
+  }
+  const nombre = [vinculo.first_name, vinculo.last_name].filter(Boolean).join(" ");
+  console.log(`Cuenta de vendedor (${vinculo.email}) → ficha «${nombre}»${vinculo.nueva ? "" : " (ya estaba vinculada)"}.`);
 }
 
 /**

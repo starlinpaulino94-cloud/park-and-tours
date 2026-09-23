@@ -7,10 +7,12 @@ import {
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { refId } from "@/lib/types";
+import type { AppRole } from "@/lib/auth";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { assertModule } from "@/lib/plan-service";
 import { assertPayloadAssignable } from "@/lib/hr-service";
+import { sellerCanReadRow, sellerFieldFor, isSellerScoped } from "@/lib/seller-scope";
 
 type Params = { params: Promise<{ resource: string; id: string }> };
 
@@ -25,6 +27,29 @@ function assertPartnerCanRead(table: string, partnerId: string | null, record: R
   if (scope.kind === "own") {
     const value = scope.field === "_id" ? (record._id as string) : refId(record[scope.field]);
     if (value !== scope.partnerId) throw new TenantError("Registro fuera de tu ámbito", 403);
+  }
+}
+
+/**
+ * El ámbito del vendedor sobre UNA fila (`seller-scope.ts`).
+ *
+ * El filtro del listado no protege el detalle: `tenantFindOne` solo comprueba
+ * la empresa. Sin esto, acotar la lista habría sido cosmético —bastaba con
+ * pedir `/api/erp/order/<id>` con el identificador de la venta de un compañero,
+ * que aparece en cualquier informe o voucher, para abrirla entera.
+ *
+ * Es la pareja de `assertPartnerCanRead`, que hace lo mismo para el portal B2B.
+ */
+function assertSellerCanRead(
+  table: string,
+  role: AppRole,
+  sellerId: string | null | undefined,
+  record: Record<string, unknown>
+) {
+  const field = sellerFieldFor(table);
+  const rowSellerId = field ? refId(record[field]) : null;
+  if (!sellerCanReadRow(table, role, sellerId, rowSellerId)) {
+    throw new TenantError("Este registro es de otro vendedor", 403);
   }
 }
 
@@ -43,6 +68,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
     }
     const record = await tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id, def.expandOne || def.expand || {});
     if (ctx.role === "partner") assertPartnerCanRead(def.table, ctx.partnerId, record);
+    assertSellerCanRead(def.table, ctx.role, ctx.sellerId, record);
     return ok(record);
   } catch (err) {
     return fail(err);
@@ -64,6 +90,19 @@ export async function PUT(req: NextRequest, { params }: Params) {
     if (ctx.role === "partner") throw new TenantError("No tienes permisos para modificar este recurso", 403);
     if (def.writeRole) requireAtLeast(ctx, def.writeRole);
     if (def.module) assertModule(ctx, def.module);
+
+    /**
+     * El ámbito del vendedor TAMBIÉN al escribir.
+     *
+     * Solo en lectura, la mitad del agujero seguía abierta: `order` se escribe
+     * con rango de vendedor y entre sus campos editables está `seller`. Es
+     * decir, un vendedor podía coger la venta de un compañero y ponerse a sí
+     * mismo —reatribuyéndose la comisión— sin haberla podido ni ver.
+     */
+    if (isSellerScoped(def.table) && ctx.role === "seller") {
+      const actual = await tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id);
+      assertSellerCanRead(def.table, ctx.role, ctx.sellerId, actual);
+    }
 
     // Propiedad por fila: la RLS aísla por empresa, no por persona. Sin esto un
     // vendedor podía cerrar o reasignar la tarea de cualquier compañero.

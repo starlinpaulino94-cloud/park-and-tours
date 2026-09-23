@@ -1272,3 +1272,81 @@ daba error: los tres producían números equivocados en silencio.
   POS, dejar de mandar el día de inicio, permitir añadir un itinerario
   bloqueado, tratar un producto normal como paquete, y que el aforo cero
   cuente como agotado.
+
+### AUD-M32 — El vendedor veía las ventas de TODOS
+- **Lo que se reportó, literal:** «el vendedor ve las ventas de todos».
+- **Era cierto, y por cuatro puertas distintas.** El rol `seller` es el rango
+  más bajo del ERP interno y aun así leía la empresa entera. La RLS aísla por
+  `organization_id` —empresas, no personas—, el ámbito del socio B2B solo mira
+  al rol `partner` y el de sucursal solo mira la sucursal. Ninguno preguntaba
+  quién vendió. Las cuatro puertas:
+  1. `/api/erp/order|quote|lead|…` — el listado genérico.
+  2. `/api/export/:recurso` — el MISMO filtro, así que exportaba lo mismo a
+     Excel. Una cartera completa en un archivo.
+  3. `/api/erp/:recurso/:id` — el detalle no pasa por el filtro del listado:
+     `tenantFindOne` solo comprueba la empresa. Bastaba el identificador de la
+     venta de un compañero, que sale impreso en cualquier voucher.
+  4. `/api/orders` y `/api/quotes` — arman su propio filtro y no comparten
+     `buildListFilter`. Son, además, las que leen las pantallas de verdad.
+  No hacía falta tocar la interfaz para verlo: bastaba con la dirección. El
+  menú nunca ha sido la barrera.
+- **Y además se podía ESCRIBIR sobre lo ajeno.** `order` se edita con rango de
+  vendedor y `seller` es uno de sus campos editables: un vendedor podía coger
+  la venta de un compañero y ponerse a sí mismo —reatribuyéndose la comisión—
+  sin haberla podido ni ver.
+- **Fallaba también al revés, y eso explica el panel vacío.** `/api/dashboard`
+  ya acotaba por vendedor buscando `seller.user = <usuario>`… pero NADA en el
+  sistema escribía ese vínculo: el campo existía en la base desde 0005 y no
+  había pantalla que lo pusiera. Así que el panel de todo vendedor consultaba
+  con un identificador nulo y salía vacío, mientras el listado de al lado le
+  enseñaba las ventas de la empresa entera.
+
+- **La regla: «lo mío, o lo de nadie»** (`src/lib/seller-scope.ts`). Un vendedor
+  ve lo suyo y lo que no está atribuido a ningún vendedor; nunca lo de otro. Las
+  filas sin vendedor siguen visibles a propósito: el punto de venta NO sella al
+  vendedor —sale del desplegable, que es opcional—, así que esconderlas le
+  negaría al vendedor su propia venta un segundo después de hacerla, y borraría
+  del mapa el histórico, el portal público y lo que carga un administrador.
+- **Sin ficha vinculada NO se abre el ámbito.** No saber quién es el vendedor
+  acota a «lo de nadie», nunca a «todo»: si abriera, bastaría con no vincular la
+  ficha para conservar el agujero. Misma postura que ya tenía el panel, que con
+  vendedor desconocido consulta con un identificador nulo.
+- **Y se puede vincular la cuenta.** La ficha del vendedor gana «Cuenta de
+  acceso» (selector sobre `/api/team`) y el listado enseña «Sin vincular» en
+  ámbar, porque es lo primero que hay que arreglar de una ficha. El vínculo se
+  resuelve desde la base en CADA petición y no en el token: desvincular o
+  desactivar una ficha tiene efecto en la siguiente petición, no cuando la
+  sesión se renueve. `0069` lo hace único por empresa — con dos fichas
+  apuntando a la misma cuenta, qué ventas vería esa persona dependería de cuál
+  devolviera la base primero, y un ámbito que cambia según el orden de las filas
+  no es un ámbito.
+- **Se arregló de paso un borrado silencioso del formulario genérico.** El
+  formulario abre con la fila del LISTADO, que solo expande las relaciones que
+  su recurso declara; las demás llegan como `<campo>_id`. El campo salía vacío
+  y al guardar viajaba `null`: editarle el teléfono a un vendedor le habría
+  desvinculado la cuenta sin decir nada. Ahora lee también la referencia cruda
+  y nunca manda `null` por un campo que la fila no traía.
+
+- **Lo que NO se acota, y por qué.** `customer` (el libro de clientes es
+  operativo: acotarlo haría que el vendedor B no encontrara al cliente de A y
+  lo diera de alta otra vez — un directorio duplicado es peor que la exposición
+  que evitaría), `waitlist_entry` (quien atiende cuando se libera una plaza
+  tiene que poder llamar al siguiente aunque lo apuntara quien hoy libra), el
+  directorio de vendedores (lo sensible ahí no son las filas sino dos columnas
+  —`commission_pct` y `monthly_goal`—, y eso se arregla recortando campos, no
+  filas: **queda pendiente**) y `payment_schedule` (no tiene columna de
+  vendedor; el informe de cobros sí se acota, sobre la orden ya expandida).
+- **Residuo consciente:** una venta que nadie atribuyó la siguen viendo todos
+  los vendedores. Es dato de la empresa, no de un compañero. Cerrarlo de verdad
+  exige sellar al vendedor al vender, y eso cambia a quién se le paga la
+  comisión: es una decisión de negocio, no de este arreglo.
+- **Pruebas:** 21 nuevas en `seller-scope.test.ts` (qué se acota y qué no, a
+  quién, el filtro, la fila concreta, y que los ámbitos de sucursal y vendedor
+  se acumulen sin pisarse) + 4 contratos que leen las rutas.
+- **Mutación:** catorce, las catorce muertas — entre ellas abrir el ámbito
+  cuando no hay ficha, quitar la guarda del detalle en lectura y en escritura,
+  fusionar los dos ámbitos en un objeto (donde el segundo `_or` pisa al
+  primero) y —la que primero NO mordió— calcular el ámbito en `/api/orders` y
+  tirarlo a la basura una línea después, con el nombre de la función a la vista
+  de quien revisa. Esa guarda se reescribió para exigir que el resultado se
+  APLIQUE, no solo que la función se llame.
