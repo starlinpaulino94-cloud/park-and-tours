@@ -22,7 +22,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const ctx = await requireTenant();
     await assertRateLimit({ key: rateLimitKey(req, "quotes:pdf", ctx.userId), limit: 60, windowMs: 60_000 });
 
-    const { quote, options, lines } = await loadQuoteBundle(ctx.companyId, id);
+    const { quote, options, lines } = await loadQuoteBundle(ctx.companyId, id, ctx);
     // Los totales se recalculan antes de imprimir: el papel que sale por la
     // puerta no puede llevar un número más viejo que sus propias líneas.
     const totals = await recalculateQuote(ctx.companyId, id);

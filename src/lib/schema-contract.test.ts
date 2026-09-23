@@ -527,6 +527,37 @@ describe("el esquema cubre todo lo que la aplicación escribe", () => {
     expect(sinInventariar, "tablas nuevas que el verificador de migraciones no comprueba").toEqual([]);
   });
 
+  it("el inventario no declara nada que el verificador ignore", () => {
+    /**
+     * Una clave que el verificador no lee parece una garantía y no lo es: se
+     * escribe `indexes: [...]`, nadie la comprueba nunca, y la siguiente
+     * persona da por hecho que ese índice está verificado. Es el mismo fallo
+     * que «el formulario pedía la sucursal y la API la tiraba», en pequeño.
+     *
+     * Las claves que el verificador consume están en `verify-migrations.mjs`:
+     * `tables`, `columns`, `enums` y `rpc`. Cualquier otra, o se implementa, o
+     * se quita.
+     */
+    const lee = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
+    const verificador = lee("scripts/verify-migrations.mjs");
+    const consumidas = new Set(["migration", "tables", "columns", "enums", "rpc"]);
+    for (const clave of consumidas) {
+      if (clave === "migration") continue;
+      expect(verificador, `el verificador no lee '${clave}'`).toContain(`group.${clave}`);
+    }
+
+    const inventario = lee("scripts/migration-checks.mjs");
+    // Las claves que aparecen al principio de una línea dentro de una entrada.
+    const declaradas = new Set(
+      [...inventario.matchAll(/^\s{4}(\w+):/gm)].map((m) => m[1])
+    );
+    const huerfanas = [...declaradas].filter((k) => !consumidas.has(k)).sort();
+    expect(
+      huerfanas,
+      "claves del inventario que nadie comprueba: impleméntalas en verify-migrations.mjs o quítalas"
+    ).toEqual([]);
+  });
+
   it("tampoco se queda atrás cuando una migración solo añade columnas", async () => {
     /**
      * ────────────────────────────────────────────────────────────────────────

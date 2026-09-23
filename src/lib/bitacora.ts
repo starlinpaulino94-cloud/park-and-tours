@@ -110,6 +110,7 @@ export const ACCION: Record<string, string> = {
   mfa_reset: "Verificación en dos pasos restablecida",
   octo_booking_reserved: "Reserva de OTA retenida",
   payment_schedule_set: "Calendario de pagos fijado",
+  partner_terms_accepted: "Condiciones comerciales aceptadas por el socio",
   payroll_exported: "Nómina exportada",
   payroll_generated: "Nómina generada",
   plan_created: "Plan creado",
@@ -133,6 +134,8 @@ export const ACCION: Record<string, string> = {
   task_completed: "Tarea completada",
   team_member_created: "Miembro del equipo creado",
   team_member_invited: "Miembro del equipo invitado",
+  seller_account_linked: "Cuenta de acceso vinculada a un vendedor",
+  seller_link_created: "Enlace de venta creado",
   team_member_updated: "Miembro del equipo editado",
   year_closed: "Cierre de año",
 };

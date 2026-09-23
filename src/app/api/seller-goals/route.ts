@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireTenant, requireTenantWrite, requireAtLeast } from "@/lib/tenant";
+import { NADIE } from "@/lib/seller-scope";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { goalsWithProgress, awardGoalBonus } from "@/lib/seller-goals-service";
@@ -27,6 +28,22 @@ import { goalsWithProgress, awardGoalBonus } from "@/lib/seller-goals-service";
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
+
+    /**
+     * La rama del propio vendedor IGNORA el parámetro de la consulta.
+     *
+     * Es la diferencia entre «filtrar» y «acotar». Si se aceptara `?seller=` y
+     * luego se comprobara que coincide, bastaría con un fallo de comparación
+     * —o con que alguien añada un camino nuevo— para leer las metas y los bonos
+     * de un compañero. Ignorándolo, ese parámetro no existe para él: no hay
+     * comparación que pueda salir mal.
+     *
+     * Y quien no tiene ficha vinculada no ve las de nadie, no ve «todas».
+     */
+    if (ctx.role === "seller") {
+      return ok({ goals: await goalsWithProgress(ctx.companyId, { sellerId: ctx.sellerId ?? NADIE }) });
+    }
+
     requireAtLeast(ctx, "manager");
     const sellerId = new URL(req.url).searchParams.get("seller");
     return ok({ goals: await goalsWithProgress(ctx.companyId, { sellerId }) });

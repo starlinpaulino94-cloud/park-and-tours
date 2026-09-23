@@ -1,5 +1,7 @@
 import { NextRequest } from "next/server";
-import { requireTenantWrite } from "@/lib/tenant";
+import { requireTenantWrite, tenantQuery, esDeSocio } from "@/lib/tenant";
+import { ventaSelladaPorVendedor } from "@/lib/seller-scope";
+import { excesoDeDescuento, mensajeExceso } from "@/lib/techo-descuento";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { resolvePrice, billablePax } from "@/lib/pricing";
 import type { Channel } from "@/lib/types";
@@ -30,8 +32,28 @@ export async function POST(req: NextRequest) {
     const items = (body.items || []).filter((i) => i.product_id);
     if (items.length === 0) throw Object.assign(new Error("Añade al menos un producto"), { status: 400 });
 
+    /**
+     * El techo de descuento, TAMBIÉN al cotizar.
+     *
+     * Lo definitivo lo decide la creación de la orden, que es donde se cobra.
+     * Aquí se comprueba igual porque esta ruta es la que el punto de venta
+     * llama mientras el cajero teclea: dejar que el carrito enseñe un total con
+     * un 40 % y rechazarlo al confirmar es discutir con el cliente delante por
+     * un precio que el sistema ya le había enseñado.
+     */
+    if (ventaSelladaPorVendedor(ctx) && ctx.sellerId) {
+      const [fichaPropia] = await tenantQuery<{ max_discount_pct?: number | null }>(
+        ctx.companyId, "seller", { _filter: { _id: ctx.sellerId }, _limit: 1 }
+      );
+      const exceso = excesoDeDescuento(
+        items.map((i) => ({ product_id: i.product_id, discount_pct: i.discount_pct })),
+        fichaPropia?.max_discount_pct
+      );
+      if (exceso) throw Object.assign(new Error(mensajeExceso(exceso)), { status: 403 });
+    }
+
     // Portal users are always priced with their own partner's B2B rules.
-    const partnerId = ctx.role === "partner" && ctx.partnerId ? ctx.partnerId : body.partner_id || null;
+    const partnerId = esDeSocio(ctx) && ctx.partnerId ? ctx.partnerId : body.partner_id || null;
 
     const lines = await Promise.all(
       items.map(async (item) => {

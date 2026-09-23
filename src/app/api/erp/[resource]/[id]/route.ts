@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireTenantWrite, tenantFindOne, tenantUpdate, tenantDelete, requireAtLeast, atLeast, TenantError } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, tenantFindOne, tenantUpdate, tenantDelete, requireAtLeast, atLeast, TenantError, esDeSocio } from "@/lib/tenant";
 import {
-  getResource, sanitizePayload, partnerScopeFor, readRoleFor,
+  getResource, sanitizePayload, partnerScopeFor, assertCanReadTable,
   ownershipFieldFor, OWNERSHIP_OVERRIDE_ROLE,
 } from "@/lib/resources";
 import { ok, fail, readJson } from "@/lib/api-response";
@@ -13,6 +13,9 @@ import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { assertModule } from "@/lib/plan-service";
 import { assertPayloadAssignable } from "@/lib/hr-service";
 import { sellerCanReadRow, sellerFieldFor, isSellerScoped } from "@/lib/seller-scope";
+import { protectedFieldChanges, protectedFieldMessage, hasProtectedFields } from "@/lib/field-write-role";
+import { assertSellerUserLinkable } from "@/lib/seller-identity";
+import { projectRow } from "@/lib/field-projection";
 
 type Params = { params: Promise<{ resource: string; id: string }> };
 
@@ -61,15 +64,13 @@ export async function GET(_req: NextRequest, { params }: Params) {
 
     const ctx = await requireTenant();
     await assertRateLimit({ key: rateLimitKey(_req, `erp:read:${def.table}`, ctx.userId), limit: 240, windowMs: 60_000 });
-    // AUD-004 follow-up: same read authorization as the list endpoint.
-    if (ctx.role !== "partner") {
-      const rr = readRoleFor(def.table);
-      if (rr) requireAtLeast(ctx, rr);
-    }
+    assertCanReadTable(ctx, def.table);
     const record = await tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id, def.expandOne || def.expand || {});
-    if (ctx.role === "partner") assertPartnerCanRead(def.table, ctx.partnerId, record);
+    if (esDeSocio(ctx)) assertPartnerCanRead(def.table, ctx.partnerId, record);
     assertSellerCanRead(def.table, ctx.role, ctx.sellerId, record);
-    return ok(record);
+    // El mismo recorte que el listado y la exportación: abrir la ficha no puede
+    // enseñar lo que la lista esconde.
+    return ok(projectRow(def.table, ctx, record));
   } catch (err) {
     return fail(err);
   }
@@ -87,7 +88,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
     await assertRateLimit({ key: rateLimitKey(req, `erp:update:${def.table}`, ctx.userId), limit: 90, windowMs: 60_000 });
     // AUD-004: a partner is read-only in the generic ERP (some resources have
     // no writeRole, which would otherwise let any authenticated user write).
-    if (ctx.role === "partner") throw new TenantError("No tienes permisos para modificar este recurso", 403);
+    if (esDeSocio(ctx)) throw new TenantError("No tienes permisos para modificar este recurso", 403);
     if (def.writeRole) requireAtLeast(ctx, def.writeRole);
     if (def.module) assertModule(ctx, def.module);
 
@@ -122,6 +123,27 @@ export async function PUT(req: NextRequest, { params }: Params) {
     const body = await readJson(req);
     const payload = sanitizePayload(def, body);
     if (Object.keys(payload).length === 0) throw new TenantError("No se enviaron datos válidos", 400);
+
+    /**
+     * Los campos que mueven dinero de una persona a otra.
+     *
+     * `order` se edita con rango de vendedor y entre sus campos editables está
+     * `seller`; `seller.user` es la llave que decide de quién son las ventas y
+     * hoy la escribía cualquier gerente. El rango por RECURSO no distingue
+     * entre anotar una nota y cambiar a quién se le paga: eso lo hace
+     * `field-write-role.ts`.
+     *
+     * Se compara contra la fila actual y no contra la presencia del campo: el
+     * formulario genérico manda todos sus campos en cada guardado, también los
+     * que nadie tocó, así que rechazar por «viene el campo» convertiría
+     * cualquier edición en un 403 incomprensible.
+     */
+    if (hasProtectedFields(def.table)) {
+      const actual = await tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id);
+      const bloqueados = protectedFieldChanges(def.table, ctx.role, payload, actual);
+      if (bloqueados.length > 0) throw new TenantError(protectedFieldMessage(bloqueados), 403);
+      await assertSellerUserLinkable(ctx.companyId, payload, id);
+    }
 
     // 0051 — la misma guarda que al crear. Sin ella, bastaba con crear el turno
     // vacío y asignarle después la persona para saltarse el bloqueo entero.
@@ -177,7 +199,7 @@ export async function DELETE(req: NextRequest, { params }: Params) {
 
     const ctx = await requireTenantWrite();
     await assertRateLimit({ key: rateLimitKey(req, `erp:delete:${def.table}`, ctx.userId), limit: 30, windowMs: 60_000 });
-    if (ctx.role === "partner") throw new TenantError("No tienes permisos para eliminar este recurso", 403);
+    if (esDeSocio(ctx)) throw new TenantError("No tienes permisos para eliminar este recurso", 403);
     if (def.module) assertModule(ctx, def.module);
     requireAtLeast(ctx, def.writeRole === "seller" ? "manager" : def.writeRole || "manager");
 

@@ -1,6 +1,7 @@
 import type { ModuleKey } from "@/lib/types";
 import "server-only";
 import type { AppRole } from "@/lib/auth";
+import { TenantError, atLeast, esDeSocio } from "@/lib/tenant";
 
 /**
  * Registry of tables exposed through the generic REST layer
@@ -155,7 +156,20 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["slug", "name", "campaign"],
     expand: { seller: true, product: true },
     sort: { created_at: "desc" },
-    writable: ["seller", "slug", "name", "channel", "product", "campaign", "status"],
+    /**
+     * `slug` NO es escribible, y esa es la decisión de 0071.
+     *
+     * Es único EN TODO EL SISTEMA —el índice es global, no por empresa—, así
+     * que aceptarlo del navegador permitiría dos cosas: ocupar los nombres
+     * bonitos del espacio compartido, y sobre todo IMITAR el de un compañero
+     * (`MARISOL1` frente a `MARIS0L1`) para llevarse sus visitas. El cliente
+     * teclea lo que ve en un cartel; no comprueba nada.
+     *
+     * Lo genera el servidor en `POST /api/attribution/links`. `seller` tampoco
+     * se puede reapuntar: cambiarlo es trasladar la atribución —el dinero— de
+     * una persona a otra, y eso lo gobierna `field-write-role.ts`.
+     */
+    writable: ["seller", "name", "channel", "product", "campaign", "status"],
     writeRole: "manager",
   },
   /**
@@ -410,6 +424,11 @@ export const RESOURCES: Record<string, ResourceDef> = {
     // again. Commission state changes only through `/api/commissions/bulk` and
     // `/api/settlements/generate`.
     writable: ["notes"],
+    // `service_date` es de solo lectura —la escribe el devengo— pero SÍ se
+    // declara como fecha: es por donde la pantalla del vendedor corta períodos,
+    // y un campo no declarado no es filtrable.
+    dates: ["service_date", "generated_at"],
+    numeric: ["base_amount", "percentage", "amount"],
     writeRole: "manager",
     module: "commissions",
   },
@@ -1448,7 +1467,13 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
   payment: "cashier", cash_session: "cashier", cash_movement: "cashier", cash_count: "cashier",
   // Commercial/accounting figures, costs and margins — managers and up.
   commission: "manager", settlement: "manager", receivable: "manager", payable: "manager",
-  payment_schedule: "seller", booking_cost: "manager",
+  // `payment_schedule` estaba en `seller`, y esa tabla NO tiene columna de
+  // vendedor —el suyo está en la orden, tabla unida, que la capa de consulta no
+  // sabe filtrar—. Es decir: cualquier vendedor leía el calendario de cobros de
+  // toda la empresa, con quién debe qué y cuándo. El informe de cobros
+  // (`/api/reports/collections`) sí se acota, sobre la orden ya expandida; lo
+  // que no se podía acotar era el CRUD genérico, así que sube de rango.
+  payment_schedule: "manager", booking_cost: "manager",
   commission_rule: "manager", product_cost: "manager", price_rule: "manager",
   ledger_account: "manager", ledger_entry: "manager", invoice: "manager",
   expense: "manager", tax_profile: "manager", purchase_order: "manager", purchase_order_line: "manager",
@@ -1473,6 +1498,64 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
 /** Minimum role required to READ a resource (for non-partner roles). */
 export function readRoleFor(table: string): AppRole | null {
   return READ_ROLE[table] ?? null;
+}
+
+/**
+ * LO QUE UN VENDEDOR PUEDE LEER DE SU PROPIO DINERO.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ HACÍA FALTA UNA EXCEPCIÓN
+ *
+ * `READ_ROLE` se evalúa ANTES que el ámbito por fila. Da igual que
+ * `seller-scope.ts` sepa acotar las comisiones de un vendedor: la compuerta las
+ * reserva a gerencia y devuelve 403 antes de que el filtro llegue a aplicarse.
+ * Por eso el vendedor no veía ni su propia comisión.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * ESTA LISTA NO ES `SELLER_SCOPED`, Y ESA ES LA DECISIÓN
+ *
+ * Lo cómodo habría sido eximir «las tablas que el ámbito ya acota». Habría sido
+ * un agujero: `SELLER_SCOPED` incluye `price_rule` y `commission_rule`, que
+ * también se acotan por vendedor pero cuyo contenido es el tarifario y el
+ * esquema de comisiones de TODA la empresa y de sus socios.
+ *
+ * Así que la exención va sobre una lista propia, corta y escrita a mano, con
+ * una prueba que falla si alguien mete algo aquí sin que el ámbito lo acote —y
+ * otra que comprueba que las reglas comerciales siguen fuera—.
+ *
+ * Las tres que están son las del dinero de la persona, y las tres son
+ * ESTRICTAS en el ámbito (`SELLER_ESTRICTAS`): una fila sin vendedor ahí es de
+ * un socio o de un proveedor, no «de nadie», así que abrirlas no abre de paso
+ * lo ajeno.
+ */
+const SELLER_READABLE = new Set(["commission", "settlement", "payable"]);
+
+export function sellerCanReadTable(table: string): boolean {
+  return SELLER_READABLE.has(table);
+}
+
+/**
+ * La autorización de LECTURA de una tabla, en un solo sitio.
+ *
+ * La escribían por su cuenta el listado, el detalle y la exportación, con la
+ * misma condición copiada tres veces. Copiada, basta con que una se quede
+ * atrás para que un rol lea por un camino lo que el otro le niega —y la que se
+ * queda atrás suele ser la exportación, que es la que se lleva TODO—.
+ */
+export function assertCanReadTable(
+  ctx: { role: AppRole; sellerId?: string | null },
+  table: string
+): void {
+  // El ámbito del socio lo aplica `buildListFilter`; su rango fallaría aquí.
+  if (esDeSocio(ctx)) return;
+  // Y el del vendedor sobre lo suyo, acotado fila a fila por `seller-scope.ts`.
+  if (ctx.role === "seller" && sellerCanReadTable(table)) return;
+
+  const rr = readRoleFor(table);
+  if (!rr) return;
+  if (!atLeast(ctx.role, rr)) {
+    throw new TenantError("No tienes permisos para realizar esta acción", 403);
+  }
 }
 
 /**

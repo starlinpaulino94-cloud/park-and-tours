@@ -8,6 +8,7 @@ import type { AppRole } from "@/lib/auth";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { roleDecision, memberState } from "@/lib/team";
+import { resolveMembershipOrg } from "@/lib/team-invite";
 
 /**
  * El rol que se va a otorgar, comprobado contra el de QUIEN lo otorga.
@@ -52,6 +53,10 @@ function mapUser(user: any, membership: any) {
     // «pendiente» en la base es «invitado, sin aceptar» para quien lo lee.
     state: memberState(membership.status),
     company_id: membership.organization_id,
+    // De qué tour center es, cuando no es de la operadora. La pantalla lo
+    // necesita para poder decirlo, y `mapUser` es el único sitio que sabe de
+    // dónde cuelga cada membresía.
+    partner_org_id: membership.organization_id,
     createdAt: user.created_at,
     updatedAt: user.updated_at,
   };
@@ -64,10 +69,31 @@ export async function GET(req: NextRequest) {
     await assertRateLimit({ key: rateLimitKey(req, "team:list", ctx.userId), limit: 60, windowMs: 60_000 });
 
     const sb = supabaseService();
+
+    /**
+     * El equipo son las personas de la operadora Y las de sus tour centers.
+     *
+     * La membresía de un usuario de portal cuelga de la organización del SOCIO,
+     * no de la operadora. Listando solo por `ctx.companyId`, el alta funcionaría
+     * y la pantalla seguiría sin enseñar a esa persona: el administrador
+     * volvería a darla de alta, se toparía con «ya pertenece a esta empresa» y
+     * no tendría forma de entender por qué.
+     *
+     * Se listan las organizaciones que cuelgan de esta operadora —y solo esas,
+     * por `tenant_org_id`— para que el aislamiento entre inquilinos no dependa
+     * de esta consulta.
+     */
+    const { data: socios } = await sb
+      .from("organizations")
+      .select("id")
+      .eq("tenant_org_id", ctx.companyId)
+      .eq("kind", "partner");
+    const orgIds = [ctx.companyId, ...((socios ?? []).map((o) => o.id as string))];
+
     const { data: memberships, error } = await sb
       .from("organization_memberships")
       .select("*")
-      .eq("organization_id", ctx.companyId)
+      .in("organization_id", orgIds)
       .order("created_at", { ascending: false })
       .limit(300);
     if (error) throw error;
@@ -98,7 +124,7 @@ export async function POST(req: NextRequest) {
 
     const body = await readJson<{
       email?: string; name?: string; password?: string; role?: string;
-      phone?: string | null; branch?: string | null;
+      phone?: string | null; branch?: string | null; partner_id?: string | null;
     }>(req);
     // La sucursal la pedía el formulario desde el principio y la API la tiraba:
     // el administrador la elegía, no pasaba nada, y creía que ya había separado
@@ -108,7 +134,25 @@ export async function POST(req: NextRequest) {
     const name = (body.name || "").trim();
     const password = body.password || "";
     if (!email || !name) throw new TenantError("El nombre y el email son obligatorios", 400);
-    const role = assertRole(ctx, body.role || "seller");
+    const rolePedido = assertRole(ctx, body.role || "seller");
+
+    /**
+     * De dónde cuelga la membresía.
+     *
+     * El formulario pedía «Tour center» desde el principio y lo enviaba; esta
+     * ruta no contenía la palabra `partner_id` en ninguna línea, así que lo
+     * descartaba y creaba la membresía sobre la operadora. Resultado: **ningún
+     * tour center podía entrar**, el administrador creía haberle dado acceso, y
+     * lo que había creado era un usuario más de su propia empresa.
+     *
+     * `resolveMembershipOrg` valida que sea un socio Y de esta operadora —sin
+     * lo segundo, un administrador engancha a alguien a un socio de otra
+     * operadora y ese usuario sale con la empresa equivocada en el token— y
+     * fuerza el rol a socio mientras el aislamiento siga decidiéndose por el
+     * nombre del rol.
+     */
+    const destino = await resolveMembershipOrg(ctx, body.partner_id, rolePedido);
+    const role = destino.role;
 
     const sb = supabaseService();
     const existing = await findAuthUserByEmail(sb, email);
@@ -119,7 +163,7 @@ export async function POST(req: NextRequest) {
         .from("organization_memberships")
         .select("id, status")
         .eq("user_id", existing.id)
-        .eq("organization_id", ctx.companyId)
+        .eq("organization_id", destino.organizationId)
         .maybeSingle();
       if (loadError) throw loadError;
 
@@ -146,7 +190,7 @@ export async function POST(req: NextRequest) {
         if (countError) throw countError;
         const { error: memberError } = await sb.from("organization_memberships").insert({
           user_id: existing.id,
-          organization_id: ctx.companyId,
+          organization_id: destino.organizationId,
           role,
           status: "active",
           is_primary: (count ?? 0) === 0,
@@ -178,7 +222,7 @@ export async function POST(req: NextRequest) {
 
     const { error: memberError } = await sb.from("organization_memberships").insert({
       user_id: userId,
-      organization_id: ctx.companyId,
+      organization_id: destino.organizationId,
       role,
       status: "active",
       is_primary: true,

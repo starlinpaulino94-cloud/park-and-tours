@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, tenantQuery, requireAtLeast, TenantError } from "@/lib/tenant";
+import { requireTenant, tenantQuery, requireAtLeast, TenantError, esDeSocio } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import { resolvePrice } from "@/lib/pricing";
 import type { Departure, Partner, Product, ProductModality } from "@/lib/types";
@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
     const sp = req.nextUrl.searchParams;
     // AUD-006: a staff user needs manager+ to inspect another partner's catalog.
     let partnerId: string | null;
-    if (ctx.role === "partner") {
+    if (esDeSocio(ctx)) {
       partnerId = ctx.partnerId;
     } else {
       const requested = sp.get("partner_id");

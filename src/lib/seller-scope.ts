@@ -104,8 +104,53 @@ export const SELLER_SCOPED: Record<string, string> = {
   seller_attribution: "seller",
 };
 
+/**
+ * DONDE «SIN VENDEDOR» NO SIGNIFICA «DE LA EMPRESA».
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * EL FALLO QUE ESTO EVITA, Y QUE ESTUVO A PUNTO DE COLARSE
+ *
+ * La regla «lo mío, o lo de nadie» es correcta para la VENTA: una orden sin
+ * vendedor es una venta directa de la empresa —entró por la web, la registró un
+ * administrador, viene del histórico— y esconderla sería perder el pasado.
+ *
+ * En el dinero es al revés, y la diferencia no se ve hasta que se mira el
+ * esquema. `commission`, `settlement` y `payable` tienen `beneficiary_type`:
+ * una fila sin `seller_id` no es «de nadie», es **de otro beneficiario** —de un
+ * socio o de un proveedor—. Con la regla indulgente, abrirle las comisiones a
+ * un vendedor le habría abierto de paso TODAS las comisiones de los tour
+ * centers y TODAS las facturas de los proveedores, porque en esas filas el
+ * vendedor es nulo.
+ *
+ * Lo mismo con las reglas: una `price_rule` o una `commission_rule` sin
+ * vendedor es la regla GENERAL de la empresa, no una regla huérfana.
+ *
+ * Así que aquí la ausencia se lee como exclusión, no como pertenencia.
+ */
+export const SELLER_ESTRICTAS = new Set([
+  "commission", "settlement", "payable", "commission_rule", "price_rule",
+  "seller_goal", "seller_bonus", "seller_link", "seller_attribution",
+]);
+
+/**
+ * El identificador que no es de nadie.
+ *
+ * Cuando la tabla es estricta y no se sabe qué vendedor es quien llama, el
+ * filtro tiene que no traer NADA. Se usa un uuid imposible en vez de un
+ * mecanismo aparte porque así el «no hay nada que enseñarte» viaja como un
+ * filtro normal y funciona igual en el listado, en la exportación y dentro de
+ * un `_and`. Es el mismo recurso que ya usa el panel para el vendedor
+ * desconocido (`dashboard-metrics.ts`).
+ */
+export const NADIE = "00000000-0000-0000-0000-000000000000";
+
 export function isSellerScoped(table: string): boolean {
   return Object.prototype.hasOwnProperty.call(SELLER_SCOPED, table);
+}
+
+/** ¿Una fila sin vendedor es de la empresa (no) o de otro beneficiario (sí)? */
+export function esEstricta(table: string): boolean {
+  return SELLER_ESTRICTAS.has(table);
 }
 
 /** Solo el rango más bajo se acota; de `cashier` hacia arriba se ve la empresa. */
@@ -129,7 +174,13 @@ export function sellerFilterFor(
   if (!sellerScopeApplies(role)) return null;
   const field = SELLER_SCOPED[table];
   if (!field) return null;
-  // Sin ficha vinculada: solo lo que no es de ningún vendedor.
+
+  // En las tablas del dinero, una fila sin vendedor es de OTRO beneficiario:
+  // ahí solo lo suyo, y sin ficha vinculada, nada.
+  if (esEstricta(table)) return { [field]: sellerId || NADIE };
+
+  // En la venta, una fila sin vendedor es de la empresa. Sin ficha vinculada,
+  // solo esas: no saber quién eres nunca abre el ámbito.
   if (!sellerId) return { [field]: null };
   return { _or: [{ [field]: sellerId }, { [field]: null }] };
 }
@@ -155,9 +206,93 @@ export function sellerCanReadRow(
 ): boolean {
   if (!sellerScopeApplies(role)) return true;
   if (!isSellerScoped(table)) return true;
-  // Sin vendedor en la fila, la misma regla que en el listado: es de la empresa.
-  if (!rowSellerId) return true;
+  // En las tablas del dinero, sin vendedor en la fila la respuesta es NO: esa
+  // comisión o esa factura son de un socio o de un proveedor.
+  if (!rowSellerId) return !esEstricta(table);
   return Boolean(sellerId) && rowSellerId === sellerId;
+}
+
+/**
+ * ¿HAY UNA PERSONA CON RANGO DE VENDEDOR DETRÁS DE ESTA VENTA?
+ *
+ * De esta pregunta depende quién cobra la comisión, así que merece ser una
+ * función con nombre y no una condición suelta.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ NO BASTA CON MIRAR EL ROL
+ *
+ * Dos motores del sistema fabrican un contexto con rol `seller` y SIN usuario,
+ * a propósito y documentado en su propio código: el motor de la web pública
+ * (`public-booking-service.ts`) y el de las reservas de revendedor
+ * (`octo-service.ts`). El rol ahí es «el rango mínimo que permite vender», no
+ * una persona.
+ *
+ * Sellar por el rol a secas rompería justo lo que más importa: en la venta web
+ * la atribución la resuelve la COOKIE del visitante —es lo único que encuentra
+ * al conserje que compartió el enlace—, y sellarla al vendedor del contexto
+ * (que no existe) la habría puesto en `null` y apagado el motor de atribución
+ * entero, sin ningún error que lo delatara. El identificador de usuario vacío
+ * es la marca que esos dos motores ya usan para decir «aquí no hay nadie».
+ */
+export function ventaSelladaPorVendedor(
+  ctx: { role: AppRole; userId?: string | null }
+): boolean {
+  return sellerScopeApplies(ctx.role) && Boolean(ctx.userId);
+}
+
+/**
+ * El vendedor que se le pone a lo que esta persona crea.
+ *
+ * Hermano de `branchStampFor`, y por el mismo motivo: lo que registra un
+ * vendedor nace a su nombre. La diferencia está en que aquí el sello PISA lo
+ * que venga en el payload en vez de respetarlo —un gerente creando algo para
+ * otro vendedor está en su derecho y no se sella, pero un vendedor eligiendo a
+ * otro vendedor no es una decisión legítima: es regalar o quedarse una
+ * comisión—.
+ *
+ * Con la ficha sin vincular el sello es `null`, que es la verdad: el sistema no
+ * sabe quién es. No se deja pasar el valor del cuerpo, porque entonces bastaría
+ * con no vincular la ficha para poder atribuirse lo que sea.
+ */
+export function sellerStampFor(
+  table: string,
+  ctx: { role: AppRole; userId?: string | null; sellerId?: string | null },
+  payload: Record<string, unknown>
+): Record<string, unknown> {
+  const field = SELLER_SCOPED[table];
+  if (!field || field === "_id") return payload;
+  if (!ventaSelladaPorVendedor(ctx)) return payload;
+  return { ...payload, [field]: ctx.sellerId ?? null };
+}
+
+/**
+ * LA MISMA REGLA, PERO PARA ACTUAR SOBRE UNA FILA.
+ *
+ * El ámbito nació de lectura, y con eso solo quedaba cerrada la mitad: las
+ * acciones con impacto económico sobre una reserva o una cotización ajena
+ * viven en rutas propias que nunca pasan por el CRUD genérico y solo miraban
+ * el RANGO. `/api/bookings/:id/cancel` pedía rango de vendedor y no miraba de
+ * quién era la reserva —y cancelar anula la comisión de quien vendió—.
+ *
+ * Lanza un error con `status` en vez de importar `TenantError`, para que este
+ * módulo siga siendo puro y comprobable sin servidor. Es el mismo patrón que ya
+ * usan las rutas de venta.
+ */
+export function assertSellerOwnsRow(
+  table: string,
+  ctx: { role: AppRole; userId?: string | null; sellerId?: string | null },
+  record: Record<string, unknown> | null | undefined,
+  etiqueta = "Este registro"
+): void {
+  if (!sellerScopeApplies(ctx.role)) return;
+  const field = SELLER_SCOPED[table];
+  if (!field || !record) return;
+  const valor = record[field];
+  const rowSellerId = valor && typeof valor === "object"
+    ? ((valor as { _id?: string })._id ?? null)
+    : ((valor as string | null | undefined) ?? null);
+  if (sellerCanReadRow(table, ctx.role, ctx.sellerId, rowSellerId)) return;
+  throw Object.assign(new Error(`${etiqueta} es de otro vendedor`), { status: 403 });
 }
 
 /** El campo que identifica al vendedor de la fila, o null si la tabla no lo tiene. */

@@ -289,7 +289,15 @@ export function resolveDashboardPermissions(
     canViewCash: false,
     canViewGlobalRankings: false,
     forcedSellerId: ids.sellerId || "00000000-0000-0000-0000-000000000000",
-    forcedPartnerId: role === "partner" ? ids.partnerId || undefined : undefined,
+    /**
+     * El identificador, no el nombre del rol.
+     *
+     * Con `role === "partner"`, un empleado de un tour center dado de alta como
+     * `seller` habría recibido el panel de la OPERADORA con sus cifras —tiene
+     * identificador de socio, pero no ese rol—. Quien tiene socio se acota,
+     * diga lo que diga su rol.
+     */
+    forcedPartnerId: ids.partnerId || undefined,
   };
 }
 

@@ -1350,3 +1350,581 @@ daba error: los tres producían números equivocados en silencio.
   tirarlo a la basura una línea después, con el nombre de la función a la vista
   de quien revisa. Esa guarda se reescribió para exigir que el resultado se
   APLIQUE, no solo que la función se llame.
+
+### Fase 1.1 del plan del ecosistema — la venta es de quien la hace
+- **Lo que faltaba.** El ámbito del vendedor (AUD-M32) nació de LECTURA. Con eso
+  quedaba cerrada la mitad: el desplegable «Vendedor» del punto de venta
+  listaba al equipo entero y quien vendía podía **elegir a cualquiera**. Podía
+  regalarle su venta a un compañero o quedarse la de otro, y detrás va la
+  comisión. Acotar lo que se LEE mientras la atribución se elige a mano no
+  acota nada.
+- **Y tres puertas de escritura más.** `/api/bookings/:id/cancel` y
+  `/reschedule` pedían rango de vendedor y **no miraban de quién era la
+  reserva** —cancelar anula la comisión de quien vendió, así que un vendedor le
+  borraba el mes a un compañero con una llamada—. Y todas las rutas de
+  `/api/quotes/:id/*` (enviar, revisar, decidir, convertir, editar líneas y
+  alternativas) compartían un cargador que tampoco lo miraba.
+
+- **El sello vive en el servicio, no en la ruta.** `createOrderWithBookings` es
+  el único camino que crea reservas —lo usan el punto de venta, la conversión
+  de cotización, la web, el revendedor, la lista de espera y la demo—. Puesto
+  en la ruta, la siguiente que creara órdenes habría nacido sin sellar.
+- **EL ERROR QUE CASI COMETO, Y QUE VALE POR TODO LO DEMÁS.** Sellar por
+  `ctx.role === "seller"` habría sido correcto en apariencia y catastrófico en
+  la práctica: `public-booking-service.ts` y `octo-service.ts` **fabrican un
+  contexto con rol `seller` y sin usuario**, a propósito y documentado en su
+  propio código. El sello por rol habría puesto `seller_id` en `null` en TODA
+  venta web y apagado el motor de atribución entero —la cookie del visitante es
+  lo único que encuentra al conserje que compartió el enlace— sin un solo error
+  que lo delatara. La pregunta la responde `ventaSelladaPorVendedor`, que exige
+  persona (usuario), y hay una prueba que fija los dos motores sin sesión.
+- **El sello PISA lo que venga en el cuerpo**, al revés que el de sucursal. Un
+  gerente creando algo para otra sucursal está en su derecho; un vendedor
+  eligiendo a otro vendedor no es una decisión legítima. Y con la ficha sin
+  vincular sella a nadie sin dejar pasar el valor del cuerpo: si lo dejara
+  pasar, bastaría con no vincular la ficha para atribuirse lo que sea.
+- **`field-write-role.ts`: permiso por CAMPO.** `writeRole` es del recurso
+  entero, y `order` lo tiene en `seller` —tiene que tenerlo— con `seller` y
+  `partner` entre sus campos editables: el mismo rango que permite anotar una
+  nota permitía cambiar a quién se le paga. `seller.user` sube a `admin`: es la
+  única columna que traslada ventas, comisiones y liquidación de una persona a
+  otra con un cambio. Subir el recurso entero habría roto el alta de vendedores
+  por gerencia.
+- **Se prohíbe CAMBIAR, no enviar.** El formulario genérico manda todos sus
+  campos en cada guardado, también los que nadie tocó: rechazar por «viene el
+  campo» habría convertido editarle una nota a una venta en un 403
+  incomprensible. Se compara contra la fila actual y por `refId`, porque una
+  referencia viaja unas veces como uuid y otras como objeto expandido.
+- **`seller-identity.ts`**: la cuenta que se vincula tiene que ser de esta
+  empresa y no estar ya en otra ficha. El índice único de 0069 ya lo impide en
+  la base, pero ahí el fallo sale como una restricción que nadie entiende; aquí
+  sale diciendo con qué ficha choca. Un fallo de lectura NO se convierte en
+  permiso: al revés, un corte de red serviría para colar una llave.
+- **El cargador de cotizaciones pide el contexto OBLIGATORIO.** Opcional, la
+  siguiente ruta se olvidaría de pasarlo y no lo notaría nadie; obligatorio, el
+  compilador obliga a decidir. `null` significa «uso interno, sin persona
+  detrás» y solo lo usa el recálculo, que corre después de una escritura ya
+  autorizada.
+- **Pruebas:** 10 nuevas en `seller-scope.test.ts` (sello, quién lo activa, fila
+  ajena con referencia expandida), 11 en `field-write-role.test.ts` y 3
+  contratos que leen las rutas. Tres guardas ajenas saltaron por el camino y se
+  reescribieron para enunciar la regla nueva en vez de la línea vieja.
+- **Mutación:** dieciséis, quince muertas a la primera. La que no mordió fue,
+  otra vez, **la misma familia**: quitar el `throw` dejando la llamada a
+  `protectedFieldChanges` en pie —el veredicto calculado y tirado a la basura
+  una línea después, con el nombre de la función a la vista de quien revisa—.
+  Es el segundo caso idéntico en dos olas; la guarda ahora exige que el
+  resultado se ACTÚE, no solo que la función se llame.
+
+### Fase 1.2 y 1.3 — el inventario de rutas, y recortar columnas sin negar tablas
+- **El inventario, convertido en guarda.** `/api/orders` y `/api/quotes` se
+  cerraron a mano porque no pasan por `buildListFilter`. «A mano» no se
+  sostiene: la siguiente ruta que consulte una tabla con dimensión de vendedor
+  nacería sin ámbito y nadie lo notaría, porque **un filtro que falta no da
+  error — devuelve la empresa entera**. `seller-scope-rutas.test.ts` recorre
+  TODAS las rutas de la API y exige que cada una que toque esas tablas esté en
+  uno de tres casos: pide rango por encima de vendedor, aplica el ámbito, o
+  está en una lista de excepciones **con su motivo escrito**.
+- **Resultado del barrido: una sola ruta abierta de verdad.** `/api/payments`,
+  y se deja abierta a propósito —cobrar es operativo: el cliente llega al
+  mostrador a pagar una venta que pudo hacer cualquiera del equipo, y exigir que
+  sea del vendedor que atiende lo dejaría sin poder pagar—. Residuo consciente y
+  escrito: la respuesta devuelve la orden actualizada. Las demás (check-in,
+  cierre de salida, comisiones, liquidaciones, rentabilidad, QR) piden rango por
+  encima de vendedor; `/api/portal/summary` está acotada por socio y sin socio
+  responde 403.
+- **La excepción caduca sola**: hay una prueba que comprueba que cada ruta
+  excusada siga existiendo y siga tocando esas tablas. Una excepción que
+  sobrevive a la ruta que excusaba es una puerta abierta con permiso escrito.
+
+- **`field-projection.ts`: se PROYECTA, no se bloquea.** `READ_ROLE` decide
+  sobre la tabla entera, y con `product` eso no vale —un vendedor sin catálogo
+  no puede vender y el punto de venta se queda sin nada que enseñar—. Lo que
+  sobra no es la tabla: son columnas. Fuera `base_cost` del producto, `cost` de
+  la modalidad, y `commission_pct`, `monthly_goal` y `max_discount_pct` de los
+  compañeros —la ficha PROPIA se exceptúa, porque el apartado del vendedor
+  existe justamente para enseñarle su comisión—.
+- **El recorte baja por las expansiones.** Recortar solo la fila de arriba
+  habría sido teatro: una reserva expande su producto con el coste dentro y una
+  orden expande su vendedor con la comisión dentro. Se resuelve a qué recurso
+  apunta cada relación con el mismo mapa que usa la expansión, así que una
+  expansión nueva hereda el recorte en vez de volver a arrastrar el coste.
+- **Se BORRA la clave, no se pone a cero.** Un coste en cero no es «no puedes
+  verlo»: es «esta excursión no cuesta nada», y el margen que se dibuja a partir
+  de ahí sale del 100 %. Tres pantallas pasaron de `?? 0` a «—».
+- **Y en los TRES sitios**: listado, detalle y exportación. El exportador no
+  sabe recortar por su cuenta; un archivo con el coste de cada excursión
+  mientras la pantalla no lo enseña es el fallo que nadie revisa.
+- **`payment_schedule` sube a `manager`.** Estaba en `seller` y esa tabla no
+  tiene columna de vendedor —el suyo está en la orden, tabla unida, que la capa
+  de consulta no sabe filtrar—: cualquier vendedor leía el calendario de cobros
+  de toda la empresa.
+- **UN FALLO MÍO, CAZADO POR MI PROPIA GUARDA.** Declaré
+  `product_modality.base_cost`. Esa columna se llama `cost`: el recorte no
+  habría recortado nada, sin un solo error. Lo cazó la prueba que valida cada
+  campo declarado contra el recurso real —la misma idea que ya protege al
+  ámbito por fila—, y por eso está escrita antes que el código.
+- **Mutación:** doce en las dos olas, las doce muertas — entre ellas poner a
+  cero en vez de borrar, dejar de bajar por las expansiones, tratar toda ficha
+  como «la propia», que la exportación deje de recortar mientras la pantalla sí,
+  y volver a escribir mal el campo de la modalidad.
+
+### Fase 1.4 — la identidad del vendedor deja de depender de que alguien se acuerde
+- **El paso que se olvida siempre.** Dar de alta a un vendedor eran tres pasos
+  en dos pantallas: crear la ficha en Vendedores, invitar la cuenta en
+  Configuración → Equipo, y volver a la ficha a vincularla. El tercero es el
+  que decide si esa persona ve sus ventas o no ve ninguna, **no falla si se
+  olvida y no avisa**: el vendedor entra y se encuentra un sistema vacío. Ahora
+  `POST /api/sellers/invite` hace los tres de una vez, y la fila de quien no
+  tiene cuenta ofrece el botón justo donde se nota que falta.
+- **Pide rango de administración, y no es un descuido.** La ficha la crea
+  gerencia, pero esto hace dos cosas que gerencia no puede hacer por separado:
+  crear una cuenta de acceso y escribir `seller.user_id`, que
+  `field-write-role.ts` reserva a administración.
+- **`team-invite.ts`: lo que las dos altas hacen igual, en un solo sitio.** Lo
+  escribía entera `/api/team/invite`. Copiado, la divergencia es cuestión de
+  tiempo y se nota en lo peor —el tope del plan comprobado en un camino y no en
+  el otro, o una invitación que no queda en la bitácora—. El orden también es
+  la política: el tope del plan ANTES de tocar Supabase Auth (al revés quedaría
+  una cuenta creada sin membresía, invisible en el equipo e imposible de volver
+  a invitar porque el correo ya existiría) y la membresía nace **pendiente**,
+  porque una invitación no es un acceso.
+- **`ctx.sellerId` para todo el personal interno, no solo para el rango bajo.**
+  En una operadora pequeña el gerente y el dueño también venden: sin este dato
+  su apartado propio no existiría, o peor, existiría vacío. No les acota nada
+  —`sellerScopeApplies` solo mira al rango más bajo—, les da su vista. Se salta
+  para el socio y para el superadministrador **incluso mientras impersona**:
+  quien entra a mirar una empresa ajena no es vendedor de ella, así que no
+  aterriza en el apartado de nadie ni se le acota lo que ve, que es justo para
+  lo que sirve impersonar (y queda auditado).
+- **`/api/me` devuelve `sellerId`.** El shell decidía a dónde llevar a cada
+  quien mirando solo el rol, y con eso no se puede: son TRES estados —gerente
+  que vende, vendedor con ficha, vendedor sin ficha— y solo este dato los
+  distingue. Al tercero hay que decírselo, no mandarlo a una pantalla en blanco.
+- **El backfill se PROPONE, no se aplica.** `supabase/editor/vinculo_vendedores_*`
+  empareja por correo y devuelve filas para revisar una por una. El correo no es
+  identidad: se teclea en dos sitios, se reutiliza y cambia. Un emparejamiento
+  automático que acierte el 95 % significa que **a una persona de cada veinte le
+  aparecen las ventas —y la comisión— de otra**, y eso no se descubre leyendo un
+  registro: se descubre el día de pago. No llevan número de migración porque no
+  son copia de ninguna; una guarda ajena lo exigía y tenía razón.
+- **Mutación:** ocho, seis muertas a la primera. Las dos que no:
+  - el tope del plan comprobado DESPUÉS de crear la cuenta — y la causa era, por
+    **cuarta vez en esta rama**, que `indexOf` encontraba el nombre de la
+    función en su línea de `import`. Ahora hay un helper (`cuerpoDe`) que quita
+    la cabecera antes de comparar posiciones, y está escrito por qué;
+  - la membresía invitada naciendo activa: esa propiedad **nunca había tenido
+    guarda**, ni antes de extraer el servicio. Ahora la tiene.
+
+### Fase 1.5 — el apartado del vendedor, y el menú deja de ser la barrera
+- **Dónde aterriza cada quien.** Todo el mundo caía en el panel de la empresa.
+  Para quien vende a comisión eso son ocupación de salidas, canales y alertas de
+  caja —nada de lo cual es suyo— con sus tres cifras escondidas en medio. Y si
+  además su cuenta no estaba vinculada, el panel salía **vacío sin decir por
+  qué**: parece una avería y es una configuración a medio hacer. Ahora el rango
+  más bajo del ERP aterriza en `/dashboard/mi-espacio`; de `cashier` hacia
+  arriba no se desvía a nadie, y quien además vende llega por el menú.
+- **TRES situaciones, no dos.** Gerente que vende, vendedor con ficha, y cuenta
+  sin ficha. La tercera no se distinguía: las mismas pantallas, todas vacías,
+  sin forma de saber si es que no había vendido nada o es que el sistema no
+  sabía quién era. Ahora hay una pantalla que lo explica **y dice quién lo
+  arregla**, porque quien la lee no puede hacerlo solo: hace falta rango de
+  administración.
+- **Las cifras salen de `/api/dashboard`, que YA fuerza el ámbito en servidor.**
+  Montar una ruta nueva habría significado un segundo sitio donde equivocarse
+  sobre qué es «lo suyo», y los dos acabarían discrepando. La lista tampoco
+  manda un filtro por vendedor desde el navegador: un filtro que decide qué ve
+  cada quien y viaja en la dirección es un filtro que se puede quitar.
+- **`page-guard.tsx`: guardas de rol en el SERVIDOR.** De 129 pantallas, 5
+  miraban el rol, y ninguna de ellas era de las que enseñan dinero. El menú
+  esconde `/dashboard/comisiones`; la URL, no. La API sí se defiende, así que lo
+  que se veía era una pantalla rota llena de errores en vez de un «esto no es
+  para ti» — pero apoyarse en eso es apoyarse en que ninguna de las rutas que
+  esa pantalla llama tenga un hueco.
+- **Va en un `layout.tsx` y no en cada página.** Las pantallas son de cliente y
+  no pueden leer la sesión; convertir cada una en pareja servidor+cliente serían
+  dos ficheros por pantalla y un sitio más donde olvidarse. Un layout de dos
+  líneas corre en el servidor, no toca la página y **cubre sus subpáginas**:
+  `vendedores` protege metas, bonos, tipos y atribución de una vez, y una
+  pantalla nueva dentro de una carpeta protegida nace protegida.
+- **Se explica, no se redirige.** Un desvío silencioso hace pensar que el enlace
+  está roto y que hay que volver a intentarlo.
+- **Ocho carpetas protegidas**: vendedores, comisiones, liquidaciones, partners,
+  personal, rentabilidad, deudas y catálogo/costos.
+- **Guardas ajenas que saltaron**: siete del panel ejecutivo (el panel se movió
+  a `_components/panel-empresa.tsx` para que `page.tsx` pudiera ser de servidor
+  y decidir el aterrizaje) y la que exige que toda pantalla con registros diga
+  cómo se crean —las dos de Mi espacio quedan anotadas como derivadas, con su
+  motivo: una venta se hace en el punto de venta, y un botón de «nuevo» en el
+  apartado del vendedor le dejaría **crearse su propia comisión**.
+- **Mutación:** siete, las siete muertas.
+
+### Fase 1.6 — probar la RUTA y la SESIÓN, no solo la regla
+- **Lo que faltaba, dicho con precisión.** Las 31 pruebas de `seller-scope.ts`
+  comprueban que la REGLA es correcta. Ninguna comprobaba que la ruta la LLAME
+  —que es otra cosa, y ya falló una vez: `/api/orders` arma su propio filtro y
+  se quedó fuera del armador compartido—. Y **un filtro que falta no da error:
+  devuelve la empresa entera.**
+- **13 pruebas contra la RUTA** (`erp-ambito-vendedor.test.ts`). Se falsea solo
+  el suelo —`tenantQuery`, `tenantCount`, `tenantFindOne`— y corre de verdad
+  todo lo de arriba: la autorización por rango, el armador del filtro, el
+  ámbito y el recorte de columnas. Lo que se comprueba es lo único que importa:
+  **qué filtro llega a la base y qué sale por la respuesta**. Incluye la
+  exportación, donde se verifica que el CSV de un vendedor no trae el coste y
+  el de un gerente sí.
+- **3 pruebas con un navegador y una sesión REAL**
+  (`vendedor-aislamiento.spec.ts`). Es la única de toda la cadena que ejerce el
+  vínculo cuenta↔ficha: entra una persona con su contraseña, el enganche de la
+  base le mete el rol en el token y `auth-context` resuelve su ficha
+  consultando `seller.user_id`. Fallaría si el enganche dejara de inyectar el
+  rol o si ese vínculo dejara de consultarse, que es justo lo que ninguna
+  prueba con `mock` puede ver. Las tres afirmaciones son «no»: no aterriza en
+  el panel de la empresa, no ve la venta de su compañero —ni en pantalla ni
+  pidiéndosela a la API—, y no entra a comisiones tecleando la URL.
+- **El E2E siembra ahora DOS cuentas.** El aislamiento no se puede probar con
+  la de propietario: ve todo por definición. La del vendedor se **deriva** de la
+  otra (`algo@x` → `algo+vendedor@x`) para que herede la garantía de ser una
+  dirección dedicada.
+- **Mutación:** siete contra las pruebas de ruta —las siete muertas, y estas no
+  leen código fuente: ejercitan los manejadores— y tres contra el sembrador. La
+  que no mordió: quitar la comprobación de «esta cuenta no es de nadie» a la
+  cuenta derivada. **Era un agujero real, no un hueco de cobertura**: con el
+  alias `+`, esa dirección es real y llega al mismo buzón, así que cualquiera
+  puede haberla registrado — y el arranque le habría reescrito la contraseña en
+  cada ejecución de CI, en silencio. Es exactamente el fallo que ese fichero
+  existe para no repetir. Ahora tiene su prueba.
+
+### Fase 2 — el bolsillo del vendedor
+- **La compuerta se evalúa ANTES que el ámbito**, y ese es el error conceptual
+  más caro de este dominio: daba igual que `seller-scope.ts` supiera acotar las
+  comisiones, `READ_ROLE` las reservaba a gerencia y devolvía 403 antes de que
+  el filtro llegara a aplicarse. Por eso el vendedor no veía ni su propia
+  comisión.
+- **Dos trampas al abrirla, y la segunda no estaba en el plan.** La primera sí:
+  eximir «las tablas que el ámbito ya acota» habría incluido `price_rule` y
+  `commission_rule`, o sea el tarifario y el esquema de comisiones de toda la
+  empresa. La segunda apareció al mirar el esquema: `commission`, `settlement`
+  y `payable` llevan `beneficiary_type`, así que **una fila sin `seller_id` no
+  es «de nadie», es de un socio o de un proveedor**. La regla «lo mío o lo de
+  nadie» —correcta para la venta, donde una orden sin vendedor es de la
+  empresa— les habría abierto de paso todas las comisiones de los tour centers
+  y todas las facturas de los proveedores. El ámbito tiene ahora dos modos.
+- **Y la compuerta pasa a vivir en una función** (`assertCanReadTable`). Estaba
+  copiada en el listado, el detalle y la exportación; desde que tiene ramas por
+  actor, tres copias divergen, y la que se queda atrás suele ser la exportación.
+- **CORRECCIÓN A MI PROPIO PLAN.** Escribí que cada tabla que se abriera
+  necesitaría su política de RLS «o la pantalla saldría vacía». Es falso para
+  las tablas existentes: la política que instala `enable_tenant_rls` es por
+  organización y **no mira el rol**. Abrir las comisiones no necesitó una sola
+  línea de SQL. El enunciado solo vale para tablas nuevas.
+- **0070 — la comisión sabe de qué día es.** El mercado liquida por fecha de
+  TOUR y no de venta; la fecha de salida vive dos tablas más allá y la capa de
+  consulta no filtra por columna de tabla unida. Se copia UNA vez al devengar y
+  no sigue a la reserva si se reprograma: mover esa fecha movería el período de
+  liquidación de un dinero ya devengado, que quizá ya se pagó.
+- **El estado de cuenta lo decide la FILA, no el rango.** Abierto a su
+  beneficiario, el rango deja de decidir y bastaría con cambiar el identificador
+  de la dirección para bajarse la liquidación de un proveedor. Y el documento
+  del proveedor **no es el del vendedor con otro nombre**: lleva el coste y las
+  retenciones dentro. `assertSettlementBeneficiary` comprueba el TIPO antes que
+  el identificador, porque los uuid son de tablas distintas y compararlos entre
+  clases es preguntar «¿este uuid aparece en algún sitio de la fila?».
+- **Los cuatro avisos van a la PERSONA.** «Te aprobaron la comisión» repartido
+  por audiencia de rol se lo manda a todos los vendedores: cada uno recibe lo de
+  sus compañeros, ninguno encuentra lo suyo, y todos acaban sabiendo cuánto
+  cobran los demás. Sin cuenta vinculada no se avisa a nadie —un aviso personal
+  sin persona no puede convertirse en un aviso para todo el mundo— y nunca se
+  avisa a quien acaba de hacer la acción.
+- **Las metas IGNORAN el parámetro de la consulta.** Es la diferencia entre
+  filtrar y acotar: aceptar `?seller=` y comprobar después deja un fallo de
+  comparación entre el vendedor y las metas de un compañero.
+
+- **Tres cosas que arreglé de mi propio método**, y las tres del mismo tipo —una
+  guarda que parece proteger y no protege—:
+  1. Un `Boolean(ctx.sellerId)` que ninguna mutación podía matar, porque
+     `beneficiaryOf` ya rechaza una fila sin identificador. Código que finge.
+  2. **El mutador daba «NO MUERDE» cuando la sustitución no encontraba su
+     texto**: acusaba a la guarda de un fallo inexistente y escondía que no se
+     había probado nada. Ahora falla ruidosamente si el fichero no cambia, y
+     detecta el resultado por código de salida y no buscando una palabra.
+  3. Una guarda que buscaba `userId,` en una VENTANA de caracteres alrededor de
+     la llamada: atrapaba cualquier `userId,` que anduviera cerca por otro
+     motivo. Ahora mira dentro de la llamada a `notify({`.
+- **Y una guarda mía que se disparó con un comentario** en vez de con el código:
+  el fichero del estado de cuenta del vendedor EXPLICA por qué no lee
+  `booking_cost`, y la comprobación leía el fichero entero.
+- **Mutación:** veintiuna a lo largo de la fase, las veintiuna muertas tras
+  reescribir cuatro guardas.
+
+### Fase 3 (parte) — el enlace es suyo, y el techo de descuento existe de verdad
+- **El embudo y el QR se abren a su dueño.** Todo el motor de atribución estaba
+  escrito y funcionando —`/e/[slug]`, cookies, `seller_link`, `funnelReport`— y
+  lo único que lo cerraba era una guarda de rango. Un cartel que no se puede
+  descargar no se pega en ningún mostrador.
+- **Y `assertSellerOwnsRow` NO servía para abrirlo.** Aquel es un ÁMBITO, y un
+  ámbito deja pasar a quien no es vendedor —a un gerente no hay nada que
+  acotarle—: usarlo aquí habría dejado entrar también a caja y a operaciones,
+  que no tienen ficha y para quienes «nada que acotar» significa «lo ven todo».
+  Hace falta la pregunta contraria (`assertGerenciaOVendedorDe`): esto era de
+  gerencia y se le abre a UNA persona más, la dueña de la fila.
+- **El embudo del vendedor ignora `?seller=`**, igual que las metas: aceptarlo y
+  comprobar después deja un fallo de comparación entre él y el embudo de un
+  compañero, que dice cuánta gente trae.
+- **0071 — el slug lo genera el servidor.** `seller_link_slug_key` es único EN
+  TODO EL SISTEMA, no por empresa, y aceptarlo del navegador permitía dos cosas:
+  **ocupar** los nombres del espacio compartido —incluidos los de otras empresas
+  alojadas aquí— y, peor, **imitar** el de un compañero (`MARISOL1` frente a
+  `MARIS0L1`) para llevarse sus visitas. El cliente teclea lo que ve en un
+  cartel: no comprueba nada. Sale de `writable`, nace en la ruta, y si choca se
+  reintenta — el choque es normal cuando el espacio es compartido.
+- Más el techo de 25 enlaces activos por vendedor (sin tope, una cuenta fabrica
+  miles de slugs del espacio de nombres ajeno), `created_by` —quien lo creó deja
+  de coincidir con de quién es— y la creación anotada en la bitácora: un enlace
+  reparte atribución, o sea dinero, y el día que aparezcan veinte de la nada la
+  pregunta es quién los hizo.
+
+- **EL TECHO DE DESCUENTO, QUE NO EXISTÍA.** `seller.max_discount_pct` está en
+  el esquema desde 0005, la pantalla lo pide y se guarda; **no se aplicaba en
+  ningún cálculo**. La operadora configuraba un techo, creía haber acotado lo
+  que sus vendedores regalan, y el sistema aceptaba un 90 % igual que un 5 %. Es
+  de la misma familia que «el formulario pedía la sucursal y la API la tiraba»:
+  un campo que promete algo que no ocurre es peor que no ofrecerlo, porque quien
+  lo rellena deja de vigilarlo a mano.
+- **Sin techo declarado no hay techo, pero un cero declarado sí lo es.** `null`
+  es «nadie lo configuró» y no se convierte en cero: si la ausencia valiera
+  cero, activar esto le quitaría de golpe la capacidad de descontar a todas las
+  empresas que nunca rellenaron el campo —que son todas, porque el campo no
+  hacía nada—. Y «esta persona no puede descontar» tiene que poder expresarse.
+- **Es una autorización de QUIEN VENDE, no del dueño de la venta.** Un gerente
+  registrando una venta ejerce la suya; si fuera la de la ficha atribuida,
+  bastaría con atribuirle la venta a alguien sin techo para saltárselo.
+- **En los dos sitios**: la creación de la orden, que es donde se cobra, y la
+  cotización, porque el punto de venta cotiza mientras el cajero teclea y
+  enseñar un total con un 40 % para rechazarlo al confirmar es discutir con el
+  cliente delante por un precio que el sistema ya le había enseñado.
+- **Guardas ajenas que saltaron**: la etiqueta en castellano del evento nuevo,
+  el inventario de columnas de la migración, el inventario de rutas —que no
+  reconocía la guarda nueva y por eso dio por desprotegido el QR— y **una mía**,
+  que exigía que un campo protegido sea escribible: al quitar `seller` de
+  `writable` la protección quedaba decorativa. Se resolvió al revés de lo
+  esperado: gerencia SÍ debe poder reasignar un cartel impreso cuando la persona
+  se va, así que el campo vuelve a ser escribible y lo que se prohíbe es que lo
+  reapunte el vendedor.
+- **Y otra mía mal escrita**: prohibía la palabra `slug` en todo el bloque del
+  recurso, y buscar POR slug es legítimo —es lo que se teclea de un cartel—.
+  Ahora mira solo dentro de `writable`.
+- **Mutación:** once, las once muertas.
+
+### Fase 3.3 — la pantalla del enlace, y un ciclo de vida que ya estaba resuelto
+- **`/dashboard/mi-espacio/enlace`**: crear el enlace, copiarlo, descargar el
+  PNG del QR y ver el embudo de los últimos 30 días. **No tiene campo para el
+  slug**, y no es un olvido: se dice en pantalla que la dirección la genera el
+  sistema, para que nadie lo busque y crea que falta algo.
+- **EL CICLO DE VIDA YA ESTABA, Y MEJOR DE LO QUE YO LO HABÍA PLANEADO.** El
+  plan pedía un disparador que pusiera los enlaces en inactivo al desactivar la
+  ficha del vendedor. **No hace falta**: `resolveLinkBySlug` comprueba el estado
+  del VENDEDOR en cada resolución, así que desactivar la ficha deja de atribuir
+  al instante y por todos sus enlaces a la vez. Guardar además un estado por
+  fila sería una segunda fuente de verdad que puede desincronizarse —y
+  asimétrica, porque reactivar al vendedor no reactivaría los carteles—.
+- **Y el cartel impreso que sobrevive meses en un lobby no se rompe**: un slug
+  que ya no resuelve manda a la portada, igual que cualquier enlace roto, y el
+  cliente sigue pudiendo comprar. Lo que se pierde es la atribución, que es
+  justo lo que se quería perder. Un 404 habría sido peor por dos motivos: deja
+  al cliente sin comprar, y distingue los slugs que existen de los que no.
+- **El límite de tasa de `/e/[slug]` también existía ya** (120/hora), con el
+  detalle bien pensado de que topar el límite sigue llevando al cliente a
+  comprar: lo que se pierde es el registro de la visita, no la venta.
+- En vez de duplicar nada, esas cuatro propiedades quedan **fijadas con
+  guardas**, para que nadie las «optimice» creyendo que sobran. Cuatro
+  mutaciones, las cuatro muertas.
+
+### Fase 3.4 (segunda mitad) — la ruta que NO hizo falta
+- El plan pedía `GET /api/seller-portal/catalog` para servirle al vendedor un
+  catálogo sin coste. **Al mirarlo, no hacía falta**: los dos caminos que ya
+  existen están limpios, y por motivos distintos.
+  · `/api/pos/context` arma una **lista blanca** —nombra campo por campo lo que
+    devuelve—, así que el coste no viaja por construcción y una columna nueva en
+    `product` no se cuela sola.
+  · `/api/erp/product` lo recorta con `field-projection.ts` (Fase 1.3).
+- Una tercera ruta habría sido **un tercer sitio donde equivocarse**. Lo que se
+  añade es la guarda que impide que la lista blanca se convierta en un `...p`
+  «para no repetir campos», que es exactamente como se pierden estas cosas.
+- **Lo que sí queda sin hacer**, y se dice en vez de darlo por cerrado: la
+  **comisión estimada por producto** en el catálogo del vendedor. Exige correr
+  el motor de comisiones por producto de forma especulativa y, sin regla
+  aplicable, es una cifra inventada — el propio plan pedía declararla
+  «estimada» por eso. Se prefiere no enseñarla a enseñar un número que el
+  vendedor va a tomar por un compromiso.
+- Mutación: tres, las tres muertas.
+
+### Fase 4.1 — ningún tour center podía entrar, y nadie lo sabía
+- **El fallo, en una línea:** `src/app/api/team/route.ts` **no contenía la
+  palabra `partner_id` en ninguna línea**. El formulario de Configuración →
+  Equipo pedía «Tour center» desde el principio y lo enviaba; la API lo
+  descartaba y creaba la membresía sobre la operadora. Como el identificador de
+  socio solo se emite cuando la organización de la membresía es de tipo socio,
+  ese usuario llegaba al portal sin socio y recibía 403.
+- Es decir: el administrador creía haberle dado acceso a su tour center, y lo
+  que había creado era **un usuario más de su propia empresa**, con el rol que
+  fuera. Mismo patrón que «el formulario pedía la sucursal y la API la tiraba»,
+  con más consecuencias.
+- **Y la invitación era peor todavía**: ni siquiera MANDABA el dato, así que un
+  socio no podía entrar ni por el camino en el que él mismo pone su contraseña.
+- **Dos comprobaciones, y la segunda es la que importa.** Que sea un socio
+  —colgarla de otra cosa no emite identificador de socio y esa persona acabaría
+  en el ERP interno creyendo todos que está en el portal— y **que sea de esta
+  operadora**: los identificadores son uuid y el formulario los manda tal cual,
+  así que sin comprobarlo un administrador engancha a alguien a un socio de OTRA
+  operadora. No es un error de escritura: es cruzar el aislamiento entre
+  inquilinos por el único sitio donde se puede.
+- **EL CERROJO.** El ámbito del socio se decide hoy por `ctx.role === "partner"`
+  mientras el identificador de socio se rellena para cualquier rol: un empleado
+  de un tour center dado de alta como `seller` o `cashier` entraría al **ERP
+  interno** de la operadora. Así que al colgar de un socio el rol se **fuerza**
+  a socio. Es una línea, y permite arreglar la puerta hoy sin esperar a
+  sustituir las condiciones repetidas.
+- **El inventario real de esas condiciones son 29 sitios, no «al menos ocho»
+  como decía el plan.** Queda corregido; la sustitución va en 4.2.
+- **Y el equipo lista también a los suyos.** La membresía de un usuario de
+  portal cuelga de la organización del SOCIO: listando solo por la operadora, el
+  alta funcionaría y la pantalla seguiría sin enseñar a esa persona — el
+  administrador volvería a darla de alta, se toparía con «ya pertenece a esta
+  empresa» y no tendría forma de entender por qué. Se acota por `tenant_org_id`
+  para que el aislamiento no dependa de esa consulta.
+- **Mutación:** seis, las seis muertas.
+
+### Fase 4.2 — el aislamiento deja de depender del nombre del rol
+- **La regla pasa a ser una sola:** identificador de socio presente ⇒ acotado,
+  diga lo que diga el rol. Vive en `esDeSocio()` (`src/lib/tenant.ts`) y
+  sustituye las **29 comparaciones** `ctx.role === "partner"` repartidas por 20
+  ficheros — rutas de venta, manifiestos, vouchers, PDF de arqueo y de estado de
+  cuenta, subida de ficheros, cotizador, portal, ERP genérico y los tres
+  `layout` del servidor.
+- **Por qué importaba:** el identificador de socio se rellena para CUALQUIER
+  rol; lo emite `auth-context` en cuanto la membresía cuelga de una organización
+  de tipo socio. Un empleado de un tour center dado de alta como `seller` o
+  `cashier` tenía socio y **ninguna de las 29 condiciones lo reconocía como de
+  fuera**: entraba al ERP interno de la operadora. Hoy era latente —el cerrojo
+  de 4.1 fuerza el rol al colgar de un socio—, pero una puerta que depende de
+  que otra siga cerrada no está cerrada.
+- **Sigue mirando el rol también, y no es redundancia por si acaso.** Varios
+  servicios FABRICAN contextos a mano —el motor público, el de revendedor, el
+  sembrador— y ninguno rellena `isPartnerMember`. Mirar las dos cosas hace que
+  la sustitución sea segura en todos ellos sin tener que encontrarlos uno a uno,
+  que es justo el barrido donde se escapa el que falta.
+- **Tres sitios se dejan comparando por nombre, con su motivo escrito:**
+  `tenant.ts` (es la definición), `portal-context.tsx` (componente de cliente;
+  `tenant.ts` es `server-only` y no se puede importar ahí) y
+  `configuracion/page.tsx` (es el rol que se **asigna** en el formulario, no el
+  de quien llama).
+- **La guarda que importa no es la lista, es el barrido.** Enumerar los veinte
+  ficheros protege lo ya arreglado; lo que reabre la puerta es un fichero NUEVO
+  que vuelva a escribir la comparación, y de ése nadie se acuerda de añadirlo a
+  ninguna lista. Así que la regla recorre todo `src`, cuenta las comparaciones
+  por fichero y las compara contra las tres perdonadas **con su recuento**: sin
+  el recuento, un fichero perdonado una vez queda perdonado para siempre y puede
+  ir acumulando comparaciones nuevas debajo de la excepción vieja.
+- **Y una prueba de conducta, no de texto** (`socio-identidad.test.ts`): las
+  guardas de contrato comprueban que los veinte puntos LLAMAN a `esDeSocio`, y
+  eso no vale nada si la función contesta mal — podría devolver `false` siempre
+  y las veinte llamadas seguirían en su sitio. Incluye el fallo simétrico: un
+  `partnerId` vacío no puede contar como socio, o el personal interno se queda
+  fuera de su propio ERP.
+- **Migración 0072**: `app.can_read_partner()` deja de mirar el rol en la base de
+  datos también, por el mismo motivo y para que las dos capas digan lo mismo.
+- **Mutación: trece, las trece muertas** — ocho contra las guardas de contrato
+  (incluida un fichero nuevo con la comparación vieja, para probar el barrido) y
+  cinco contra la prueba de conducta.
+
+### Fase 4.3 — el ciclo de vida del socio deja de ser decorativo
+- **`pending` existía y no hacía nada.** `organizations.status` admite
+  `pending`, `suspended`, `inactive` y `blocked` desde la primera migración, y
+  el formulario de socios los ofrece en su desplegable. **No los miraba nadie**:
+  el enganche del token comprueba el estado de la MEMBRESÍA, no el de la
+  organización del socio, así que un tour center marcado como pendiente —o
+  suspendido— seguía entrando al portal y reservando con normalidad. Un estado
+  que no se comprueba no es un estado: es una etiqueta.
+- **Dónde se aplica:** `requireTenant`, por donde pasa toda ruta. Mismo sitio y
+  mismo motivo que el segundo factor. Y con `code: PARTNER_INACTIVE`, para que
+  la pantalla pueda distinguir «tu empresa aún no está activa» de «no tienes
+  permiso», que son dos conversaciones con dos personas distintas.
+- **El estado va por consulta y no en el token**, como la ficha de vendedor: en
+  el token, suspender a un socio tardaría hasta una hora en surtir efecto. Una
+  consulta por clave primaria y solo para quien viene de un socio.
+- **Y el cargador falla CERRADO, que aquí no es lo mismo que en los demás.**
+  `loadSellerId` devuelve null y null ACOTA; si un fallo de red aquí devolviera
+  «activo», un socio suspendido volvería a operar con solo tirar la consulta.
+- **El portal explica en vez de romperse.** Una contraseña correcta seguida de
+  un portal que falla en cada recuadro sin decir por qué termina en una llamada
+  a la operadora para reportar una avería que no existe. El muro va **antes** de
+  consultar nada, y no ofrece ninguna acción porque no hay ninguna que dependa
+  de quien lo lee.
+- **El estado por defecto de un socio nuevo sigue siendo `active`, a propósito.**
+  El propio criterio de hecho de esta fase pide que un usuario creado con un
+  socio seleccionado entre «sin que nadie toque la base»; nacer en `pending`
+  lo incumpliría. Lo que cambia es que el estado, cuando se elige, **muerde**.
+- **Condiciones aceptadas: DOS versiones, no una fecha.** «Hay fecha de
+  aceptación» no significa «aceptó esto»: la operadora cambia el texto y la
+  firma vieja se queda acreditando otra cosa — que es justo el papel que alguien
+  sacaría en una discusión sobre una comisión. Aceptadas es
+  `terms_accepted_version = terms_version`. Y la versión sube **solo si el texto
+  cambió**: subirla en cada guardado haría llegar «las condiciones han
+  cambiado» cada vez que alguien corrige un teléfono, y a la tercera vez nadie
+  las vuelve a leer.
+- **La aceptación la escribe un solo sitio** (`POST /api/portal/terms`), la
+  firma el socio —nunca el personal interno que entra a auditar el portal, que
+  estaría firmando en nombre de otra empresa— y sella la versión **que lee el
+  servidor**, no una que mande el cliente.
+- **Y no basta con sacarla de la lista blanca.** El reparto del formulario tiene
+  una rama final de cajón de sastre: todo lo que no encaja en ninguna lista cae
+  en `metadata`. Sacar las cuatro columnas de la lista de escritura no las
+  bloqueaba, las desviaba. Se descartan, y hay una prueba que lo afirma sobre
+  los tres destinos.
+- **Migración 0073 — el cerrojo en la base, y cierra DOS puertas.** Rol de socio
+  si y solo si organización de socio. La primera mitad ya la aplicaba la
+  aplicación desde 4.1; **la segunda no estaba cerrada en ningún sitio del
+  servidor**: una membresía con rol `partner` sobre la operadora sale sin
+  identificador de socio, y «sin identificador» es exactamente lo que
+  `app.can_read_partner` entiende por «ve todo». El formulario de Configuración
+  lo impedía, pero solo en el navegador. Queda cerrado también en
+  `resolveMembershipOrg`.
+- **Y una parte 0 en el editor** que lista las membresías que ya incumplen. El
+  disparador es `before insert or update`, así que no rompe filas existentes:
+  lo que fallará es la próxima edición de una de ellas, y es mejor tener la
+  lista ahora que descubrirla el día que un administrador no pueda guardar.
+- **Mutación: dieciséis, las dieciséis muertas.** Una no mordía —quitar las
+  columnas del descarte las desviaba a `metadata` sin que ninguna guarda se
+  quejara— y se arregló con una prueba de conducta sobre el reparto, no
+  relajando nada.
+
+### Fase 4.4a — la ficha del socio deja de llevar dentro lo que la operadora piensa de él
+- **El eje nuevo.** `HIDDEN_BELOW` recorta por RANGO, y eso no sirve aquí: para
+  esconderle al socio —rango 10— las notas que la operadora escribe sobre él
+  habría que pedir `manager`, y entonces tampoco las vería operaciones ni caja,
+  que son quienes trabajan con ellas a diario. `OCULTO_AL_SOCIO` es un eje
+  distinto, no un umbral más alto.
+- **`metadata` va en la lista, y es la mitad que convierte el recorte en teatro
+  si se olvida.** La ficha del socio se reconstruye desde `organizations`, y esa
+  fila arrastra su `metadata` entera — que es donde vive `notes`. Borrar `notes`
+  de arriba y dejar el saco debajo deja el mismo texto en la respuesta, una
+  clave más adentro.
+- **Baja por las expansiones**, que es como el socio recibe su ficha en la
+  práctica: su pantalla de reservas expande el socio de cada una. La recursión
+  ya existía del recorte por rango, así que sale gratis y una expansión nueva la
+  hereda.
+- **No se exime por ser su propia fila.** El vendedor sí se exime en su ficha
+  —su comisión es suya— y por analogía sería fácil hacer lo mismo aquí; sería
+  exactamente al revés. Los dos ejes se escriben por separado y `propia` toca
+  uno solo, para que la analogía no tenga dónde agarrarse. Y hay una guarda
+  sobre `ES_PROPIA` en vez de solo sobre la salida: hoy el recorte sale bien
+  PORQUE esa entrada no existe, y mirar solo el resultado pasaría el día que
+  alguien la añada.
+- **Lo que el socio SÍ sigue viendo**: su comisión, su crédito y sus condiciones
+  comerciales. Son la relación que ha firmado, no una nota sobre él. Y
+  `/api/portal/summary` ya devolvía una lista blanca explícita de campos, así
+  que por ahí no había fuga.
+- **Mutación: ocho, siete muertas.** La octava —eximir también el eje del socio
+  para la fila propia— es un no-op mientras `ES_PROPIA` no tenga entrada para
+  `partner`; la regresión real es añadirla, y ésa sí muere. Se deja dicho en vez
+  de contarla como muerta.

@@ -9,6 +9,7 @@ import {
 import { getSupabaseTenantContext } from "@/lib/supabase/auth-context";
 import { subscriptionState, blockMessage } from "@/lib/plan";
 import { splitExpand, expandRows } from "@/lib/supabase/expand";
+import { vetoDeSocio } from "@/lib/partner-lifecycle";
 
 /**
  * Multi-tenant security core.
@@ -27,6 +28,26 @@ export interface TenantContext {
   companyId: string | null;
   /** set for B2B portal users. */
   partnerId: string | null;
+  /**
+   * SI ESTA PERSONA ES DE UN SOCIO, DERIVADO DEL TIPO DE SU ORGANIZACIÓN.
+   *
+   * ──────────────────────────────────────────────────────────────────────────
+   * POR QUÉ NO BASTA `role === "partner"`
+   *
+   * El aislamiento del portal se decidía en 29 sitios comparando el NOMBRE del
+   * rol. El identificador de socio, en cambio, se rellena para CUALQUIER rol:
+   * lo emite `auth-context` en cuanto la membresía cuelga de una organización
+   * de tipo socio, sea el rol el que sea.
+   *
+   * O sea que un empleado de un tour center dado de alta como `seller` o
+   * `cashier` tendría socio y entraría al ERP interno de la operadora, porque
+   * ninguna de esas 29 condiciones lo reconocería como de fuera.
+   *
+   * `isPartnerMember` se deriva del TIPO de la organización —del mismo sitio
+   * que el identificador— y por eso no puede discrepar de él. La regla pasa a
+   * ser: **identificador de socio presente ⇒ acotado**, diga lo que diga el rol.
+   */
+  isPartnerMember?: boolean;
   /**
    * Sucursal de la persona, o null cuando trabaja para toda la empresa.
    *
@@ -55,6 +76,15 @@ export interface TenantContext {
    * sesión, porque cerrarla obligaría a escribir la contraseña otra vez.
    */
   mfaPending?: boolean;
+  /**
+   * El estado de la organización del SOCIO, cuando quien llama es de un socio.
+   *
+   * No es `ctx.company.status`: ésa es la de la operadora. La del socio no
+   * llegaba al contexto por ningún camino, y por eso `pending`, `suspended` y
+   * `blocked` no hacían nada —el enganche del token mira el estado de la
+   * MEMBRESÍA, que estaba activa—. `null` para el personal interno.
+   */
+  partnerStatus?: string | null;
 }
 
 /** Cookie used by the audited superadmin impersonation flow. */
@@ -116,6 +146,23 @@ export async function requireTenant(): Promise<TenantContext & { companyId: stri
       403
     );
   }
+  /**
+   * El socio apagado no opera, y se le dice por qué.
+   *
+   * Va aquí, en el paso por el que entra TODA ruta, y no en cada una: el
+   * estado del socio no es una regla de una pantalla, es si esa empresa puede
+   * usar el sistema. Mismo sitio y mismo motivo que el segundo factor.
+   *
+   * Y con `code`, para que la pantalla del portal pueda distinguir «pendiente
+   * de activación» de un permiso que falta y enseñar la explicación en vez de
+   * un 403 pelado.
+   */
+  if (ctx.partnerId) {
+    const veto = vetoDeSocio(ctx.partnerStatus);
+    if (veto) {
+      throw Object.assign(new TenantError(veto.mensaje, 403), { code: "PARTNER_INACTIVE" });
+    }
+  }
   return ctx as TenantContext & { companyId: string };
 }
 
@@ -166,6 +213,41 @@ const ROLE_RANK: Record<AppRole, number> = {
   seller: 20,
   partner: 10,
 };
+
+/**
+ * ¿ESTA PERSONA ES DE UN SOCIO? LA REGLA, EN UN SOLO SITIO.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LA PUERTA TRASERA QUE ESTO CIERRA
+ *
+ * El aislamiento del portal se decidía en 29 sitios comparando el NOMBRE del
+ * rol (`ctx.role === "partner"`). El identificador de socio, en cambio, se
+ * rellena para CUALQUIER rol: lo emite `auth-context` en cuanto la membresía
+ * cuelga de una organización de tipo socio.
+ *
+ * Es decir: un empleado de un tour center dado de alta como `seller` o
+ * `cashier` tendría socio y entraría al ERP INTERNO de la operadora, porque
+ * ninguna de esas 29 condiciones lo reconocería como de fuera. Hoy es latente
+ * —el alta de socios estaba rota y el cerrojo de 4.1 fuerza el rol—, pero una
+ * puerta que depende de que otra cosa siga rota no está cerrada.
+ *
+ * La regla pasa a ser: **identificador de socio presente ⇒ acotado**, diga lo
+ * que diga el rol.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ SIGUE MIRANDO EL ROL TAMBIÉN
+ *
+ * No es redundancia por si acaso: varios servicios FABRICAN contextos a mano
+ * —el motor público, el de revendedor, el sembrador— y ninguno rellena
+ * `isPartnerMember`. Mirar las dos cosas hace que la sustitución sea segura en
+ * todos ellos sin tener que encontrarlos uno a uno, que es justo el tipo de
+ * barrido donde se escapa el que falta.
+ */
+export function esDeSocio(
+  ctx: { role: AppRole; partnerId?: string | null; isPartnerMember?: boolean }
+): boolean {
+  return Boolean(ctx.isPartnerMember) || Boolean(ctx.partnerId) || ctx.role === "partner";
+}
 
 export function hasRole(role: AppRole, ...allowed: AppRole[]): boolean {
   return allowed.includes(role);

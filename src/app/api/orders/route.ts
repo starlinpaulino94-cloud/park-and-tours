@@ -1,7 +1,10 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireTenantWrite, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, requireAtLeast, tenantQuery, tenantCount, esDeSocio } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { sellerFilterFor } from "@/lib/seller-scope";
+import { notify } from "@/lib/notify-service";
+import { usuarioDeVendedor } from "@/lib/seller-identity";
+import { refId } from "@/lib/types";
 import { assertWithinLimit } from "@/lib/plan-service";
 import { createOrderWithBookings, type CreateOrderInput } from "@/lib/booking-service";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -41,14 +44,14 @@ export async function POST(req: NextRequest) {
     // no decide cuánto descubierto aguanta la empresa. Y el portal del socio
     // nunca puede saltárselo, se pida como se pida.
     if (body.allow_over_credit) {
-      if (ctx.role === "partner") delete body.allow_over_credit;
+      if (esDeSocio(ctx)) delete body.allow_over_credit;
       else requireAtLeast(ctx, "manager");
     }
     // Las condiciones de cobro salen de la cotización, no del navegador: aquí
     // permitirían regalarse un anticipo de cero y un saldo a un año.
     delete body.terms;
     // Portal users always sell on behalf of their own partner.
-    if (ctx.role === "partner" && ctx.partnerId) body.partner_id = ctx.partnerId;
+    if (esDeSocio(ctx) && ctx.partnerId) body.partner_id = ctx.partnerId;
 
     // El techo de reservas del mes se mide con TODAS las que trae la orden, no
     // de una en una: una orden de cinco reservas con cuatro de hueco tiene que
@@ -56,6 +59,36 @@ export async function POST(req: NextRequest) {
     await assertWithinLimit(ctx, "max_bookings_month", Math.max(1, (body.items || []).length));
 
     const result = await createOrderWithBookings(ctx, body);
+
+    /**
+     * «Esta venta es tuya», al vendedor al que se le atribuyó.
+     *
+     * Importa sobre todo cuando NO estuvo delante: la venta web que le atribuye
+     * su enlace, la que registra el mostrador a su nombre. Sin aviso, se entera
+     * al mirar la pantalla —si mira—, y una venta que el vendedor no sabe que
+     * tiene es una comisión que no va a reclamar.
+     *
+     * A la PERSONA, y nunca a quien acaba de venderla: ya lo sabe.
+     */
+    const suyo = refId((result.order as { seller?: unknown }).seller);
+    if (suyo) {
+      const userId = await usuarioDeVendedor(ctx.companyId, suyo);
+      if (userId && userId !== ctx.userId) {
+        await notify({
+          companyId: ctx.companyId,
+          userId,
+          event: "sale_attributed",
+          entityType: "order",
+          entityId: result.order._id,
+          vars: {
+            referencia: result.order.order_number ?? "",
+            monto: result.order.total ?? 0,
+            moneda: result.order.currency ?? "usd",
+          },
+        });
+      }
+    }
+
     // La venta ya está hecha. La confirmación y el voucher salen en cuanto esta
     // respuesta llegue al punto de venta, sin que el cajero espere a Resend con
     // el cliente delante.
@@ -74,7 +107,7 @@ export async function GET(req: NextRequest) {
     const sp = req.nextUrl.searchParams;
     const filter: Record<string, unknown> = {};
     if (sp.get("status")) filter.status = sp.get("status");
-    if (ctx.role === "partner" && ctx.partnerId) filter.partner = ctx.partnerId;
+    if (esDeSocio(ctx) && ctx.partnerId) filter.partner = ctx.partnerId;
     // Esta ruta arma su propio filtro y NO pasa por `buildListFilter`, así que
     // el ámbito del vendedor hay que aplicarlo aquí a mano. Sin esto, acotar
     // `/api/erp/order` no habría servido de nada: la pantalla de ventas lee por

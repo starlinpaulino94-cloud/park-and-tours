@@ -39,7 +39,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<{ reason?: string; valid_until?: string }>(req);
-    const { quote, options, lines } = await loadQuoteBundle(ctx.companyId, id);
+    const { quote, options, lines } = await loadQuoteBundle(ctx.companyId, id, ctx);
 
     const blocker = reviseBlocker(quote);
     if (blocker) throw Object.assign(new Error(BLOCK_MESSAGE[blocker]), { status: 409 });

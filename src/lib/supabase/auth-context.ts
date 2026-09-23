@@ -5,7 +5,7 @@ import { supabaseService } from "@/lib/supabase/service";
 import type { AppRole } from "@/lib/auth";
 import { mfaGate, hasVerifiedFactor } from "@/lib/mfa";
 import type { Company } from "@/lib/types";
-import type { TenantContext } from "@/lib/tenant";
+import { esDeSocio, type TenantContext } from "@/lib/tenant";
 
 /**
  * Supabase Auth → TenantContext (M3).
@@ -97,6 +97,15 @@ export function mapClaimsToContext(
     role,
     companyId: claims.org_id,
     partnerId: claims.partner_id || null,
+    /**
+     * Del MISMO sitio que el identificador, y por eso no pueden discrepar: los
+     * dos salen de que la organización de la membresía sea de tipo socio.
+     *
+     * Se guarda como campo propio en vez de dejar que cada sitio haga
+     * `Boolean(ctx.partnerId)` porque así la regla tiene un nombre, se puede
+     * buscar, y el día que un actor nuevo necesite lo mismo hay dónde ponerlo.
+     */
+    isPartnerMember: Boolean(claims.partner_id),
     branchId: claims.branch_id || null,
     company,
   };
@@ -222,6 +231,36 @@ async function loadSellerId(orgId: string, userId: string): Promise<string | nul
   }
 }
 
+/**
+ * EL ESTADO DE LA EMPRESA DEL SOCIO.
+ *
+ * Una consulta por clave primaria, y SOLO para quien viene de un socio: el
+ * personal interno no paga nada por esto. Va por consulta y no como dato del
+ * token por lo mismo que la ficha de vendedor: desactivar o suspender a un
+ * tour center tiene que surtir efecto en la petición siguiente, no cuando a su
+ * sesión le toque renovarse dentro de una hora.
+ *
+ * FALLA CERRADO, y aquí eso importa más que en ningún otro cargador de este
+ * fichero: `loadSellerId` devuelve null y null ACOTA, pero si un fallo de red
+ * aquí devolviera «activo», un socio suspendido seguiría operando por el
+ * simple expediente de que la consulta se cayera. Devuelve la cadena vacía,
+ * que no es `active` y por tanto veta.
+ */
+async function loadPartnerStatus(partnerId: string): Promise<string> {
+  try {
+    const sb = supabaseService();
+    const { data, error } = await sb
+      .from("organizations")
+      .select("status")
+      .eq("id", partnerId)
+      .maybeSingle();
+    if (error) return "";
+    return (data?.status as string) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 async function loadClaimsFromPrimaryMembership(userId: string): Promise<AppClaims | null> {
   try {
     const sb = supabaseService();
@@ -302,9 +341,35 @@ export async function getSupabaseTenantContext(): Promise<TenantContext | null> 
   if (!ctx) return null;
   if (mfaPending) ctx.mfaPending = true;
 
-  // Solo para el rango que se acota por ella: para todos los demás el dato no
-  // se usa, y consultarlo sería una ida a la base por petición a cambio de nada.
-  if (ctx.role === "seller") ctx.sellerId = await loadSellerId(ctx.companyId!, user.id);
+  /**
+   * La ficha de vendedor, para todo el personal interno.
+   *
+   * El rol `seller` la necesita porque su ámbito se acota por ella. Los rangos
+   * de arriba la necesitan por otra razón: en una operadora pequeña el gerente
+   * y el dueño TAMBIÉN venden, y sin este dato su apartado propio no existiría
+   * —o peor, existiría vacío—. No les acota nada (`sellerScopeApplies` solo
+   * mira al rango más bajo): les da su propia vista sin quitarles el ERP.
+   *
+   * Cuesta una consulta indexada por petición para el personal interno. Se
+   * salta para el socio B2B, que no tiene ficha, y para el superadministrador
+   * —incluso mientras impersona—: quien entra a mirar una empresa ajena no es
+   * ningún vendedor de ella, así que no aterriza en el apartado de nadie ni se
+   * le acota lo que ve, que es justo para lo que sirve impersonar (y queda
+   * auditado).
+   */
+  // Del socio, tenga el rol que tenga: un empleado de un tour center dado de
+  // alta como `seller` no es vendedor de la operadora y buscarle ficha sería
+  // una consulta por petición para no encontrar nunca nada.
+  if (!esDeSocio(ctx) && ctx.role !== "superadmin") {
+    ctx.sellerId = await loadSellerId(ctx.companyId!, user.id);
+  }
+
+  // Se resuelve por `partnerId` y no por `esDeSocio`: lo que hay que consultar
+  // es el estado de UNA organización concreta, y sin identificador no hay
+  // ninguna a la que preguntar.
+  if (ctx.partnerId) {
+    ctx.partnerStatus = await loadPartnerStatus(ctx.partnerId);
+  }
 
   if (ctx.role === "superadmin") {
     const target = (await cookies()).get(IMPERSONATION_COOKIE)?.value;

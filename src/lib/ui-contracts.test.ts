@@ -14,6 +14,21 @@ import path from "node:path";
 
 const ROOT = path.resolve(__dirname, "../..");
 const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
+/** El fichero sin comentarios: una guarda no puede darse por cumplida por lo
+ *  que un comentario MENCIONA, solo por lo que el código HACE. Varios bloques
+ *  declaran el suyo; este es el de los que no. */
+const sinComentariosDe = (rel: string) =>
+  read(rel).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+/**
+ * El fichero SIN su cabecera de `import`.
+ *
+ * Para comparar el ORDEN de dos llamadas. Sin quitar los imports, `indexOf`
+ * encuentra el nombre de la función en la línea que la importa y la guarda pasa
+ * dijera lo que dijera el cuerpo. Ha mordido cuatro veces en esta rama; existe
+ * para que no muerda una quinta.
+ */
+const cuerpoDe = (rel: string) =>
+  sinComentariosDe(rel).replace(/^\s*import[\s\S]*?from\s+"[^"]+";\s*$/gm, "");
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -116,7 +131,13 @@ describe("encabezado de Mi día", () => {
 
 describe("Panel ejecutivo", () => {
   it("el encabezado solo declara el título del módulo", () => {
-    const page = read("src/app/dashboard/page.tsx");
+    /**
+     * El panel vive ahora en `_components/panel-empresa.tsx`: `page.tsx` pasó a
+     * ser un componente de SERVIDOR que decide a dónde aterriza cada quien —el
+     * rango más bajo del ERP va a su propio apartado— y que no podía serlo
+     * mientras el panel entero fuera de cliente.
+     */
+    const page = read("src/app/dashboard/_components/panel-empresa.tsx");
     expect(page).toContain('title="Panel ejecutivo"');
     expect(page).not.toContain('eyebrow="Dirección"');
     expect(page).not.toContain("Todo lo que está pasando");
@@ -124,7 +145,7 @@ describe("Panel ejecutivo", () => {
   });
 
   it("no duplica Ventas de hoy ni usa mensajes motivacionales", () => {
-    const page = read("src/app/dashboard/page.tsx");
+    const page = read("src/app/dashboard/_components/panel-empresa.tsx");
     expect(page).not.toContain("Ventas de hoy");
     expect(page).not.toContain("empujar ventas");
   });
@@ -163,7 +184,7 @@ describe("Panel ejecutivo", () => {
     expect(route).toContain("series: permissions.canViewRevenue ? asRows(summary?.series) : []");
     expect(route).toContain("by_channel: permissions.canViewRevenue ? asRows(summary?.by_channel) : []");
     // La UI no renderiza la sección de evolución/canales sin canViewRevenue.
-    const page = read("src/app/dashboard/page.tsx");
+    const page = read("src/app/dashboard/_components/panel-empresa.tsx");
     expect(page).toContain("data.permissions.canViewRevenue && (");
   });
 
@@ -208,7 +229,7 @@ describe("Panel ejecutivo", () => {
 
   it("M2 — la API y la UI exponen el efectivo por divisa", () => {
     expect(read("src/app/api/dashboard/route.ts")).toContain("cash_by_currency: permissions.canViewCash");
-    const page = read("src/app/dashboard/page.tsx");
+    const page = read("src/app/dashboard/_components/panel-empresa.tsx");
     expect(page).toContain("function cashHint");
     expect(page).toContain("cash_by_currency");
   });
@@ -402,8 +423,14 @@ describe("Panel ejecutivo", () => {
     // Una reserva cancelada no viaja: contarla manda al guía a buscar a alguien
     // que no existe y da la salida por llena.
     expect(service).toContain("DEAD_BOOKING_STATUSES");
-    // Es una lista de clientes: un partner no ve las reservas de la competencia.
-    expect(route).toMatch(/role === "partner"/);
+    /**
+     * Es una lista de clientes: un socio no ve las reservas de la competencia.
+     *
+     * Se comprueba `esDeSocio` y no el nombre del rol: un empleado de un tour
+     * center dado de alta como `seller` TIENE identificador de socio y no ese
+     * rol, así que por el nombre se habría llevado el manifiesto entero.
+     */
+    expect(route).toMatch(/esDeSocio\(ctx\)/);
 
     // Y está hecha para imprimirse.
     expect(page).toContain("window.print()");
@@ -909,7 +936,7 @@ describe("Panel ejecutivo", () => {
     // Y saltárselo es decisión de gestión, nunca del portal del socio.
     const route = read("src/app/api/orders/route.ts");
     expect(route).toMatch(/allow_over_credit[\s\S]{0,200}requireAtLeast\(ctx, "manager"\)/);
-    expect(route).toMatch(/partner"\)\s*delete body\.allow_over_credit/);
+    expect(route).toMatch(/esDeSocio\(ctx\)\)\s*delete body\.allow_over_credit/);
   });
 
   it("Proveedores — el costo sabe de quién es, y sale del mismo cálculo que el margen", () => {
@@ -1284,7 +1311,7 @@ describe("Panel ejecutivo", () => {
   });
 
   it("B1/B2/B6 — la vista persiste en la URL, filtra por rol y cancela peticiones", () => {
-    const page = read("src/app/dashboard/page.tsx");
+    const page = read("src/app/dashboard/_components/panel-empresa.tsx");
     // B1: sincroniza periodo/rankBy/filtros con la URL.
     expect(page).toContain("window.history.replaceState");
     expect(page).toContain("window.location.search");
@@ -1306,7 +1333,7 @@ describe("Panel ejecutivo", () => {
     // 'otros' es un bucket sintético del RPC, no un canal: se etiqueta en la
     // pantalla y NO en CHANNEL, que alimenta selects atados al enum
     // sales_channel y rechazaría ese valor.
-    expect(read("src/app/dashboard/page.tsx")).toContain("function channelLabel");
+    expect(read("src/app/dashboard/_components/panel-empresa.tsx")).toContain("function channelLabel");
     expect(read("src/lib/labels.ts")).not.toContain('otros: def("Otros"');
   });
 
@@ -1317,7 +1344,7 @@ describe("Panel ejecutivo", () => {
   });
 
   it("los filtros del dashboard usan opciones legibles y no campos manuales por ID", () => {
-    const page = read("src/app/dashboard/page.tsx");
+    const page = read("src/app/dashboard/_components/panel-empresa.tsx");
     expect(page).toContain("function OptionFilter");
     expect(page).toContain('/api/erp/${resource}?limit=100&includeTotal=false');
     expect(page).toContain('aria-label={label}');
@@ -1866,7 +1893,10 @@ describe("las cuentas del equipo", () => {
     expect(team).toMatch(/assertRole\(ctx, body\.role \|\| "seller"\)/);
     expect(team).toMatch(/assertRole\(ctx, body\.role\)/);
     const invite = read("src/app/api/team/invite/route.ts");
-    expect(invite).toMatch(/roleDecision\(ctx\.role, body\.role \|\| "seller"\)/);
+    // La decisión de rol vive en el servicio que comparten las DOS altas
+    // (equipo y vendedores): copiada, una de las dos se quedaría sin ella.
+    expect(read("src/lib/team-invite.ts")).toMatch(/roleDecision\(ctx\.role, input\.role \|\| "seller"\)/);
+    expect(invite).toMatch(/inviteTeamMember\(\{/);
   });
 
   it("la invitación nace PENDIENTE: un correo no es un acceso", () => {
@@ -1931,7 +1961,23 @@ describe("las cuentas del equipo", () => {
   it("la invitación reserva plaza del plan", () => {
     // Si no contara, un plan de cinco aceptaría veinte invitaciones y el tope
     // saltaría delante de alguien que ya recibió el correo.
-    expect(read("src/app/api/team/invite/route.ts")).toMatch(/assertWithinLimit\(ctx, "max_users"\)/);
+    // Y se comprueba en el servicio compartido, así que el alta de vendedores
+    // —que crea cuenta igual— no puede saltárselo por haber nacido después.
+    const servicio = read("src/lib/team-invite.ts");
+    expect(servicio).toMatch(/assertWithinLimit\(ctx, "max_users"\)/);
+    // Antes de tocar Supabase Auth: al revés quedaría una cuenta creada sin
+    // membresía, invisible en el equipo e imposible de volver a invitar.
+    const cuerpo = cuerpoDe("src/lib/team-invite.ts");
+    expect(cuerpo.indexOf("assertWithinLimit")).toBeLessThan(cuerpo.indexOf("inviteUserByEmail"));
+    /**
+     * Y la membresía nace PENDIENTE. Solo las activas resuelven inquilino, así
+     * que una invitación sin aceptar no abre ninguna puerta: si el correo acaba
+     * en la bandeja equivocada, quien lo reciba no entra a nada.
+     */
+    expect(cuerpo).toMatch(/status: "pending"/);
+    for (const ruta of ["src/app/api/team/invite/route.ts", "src/app/api/sellers/invite/route.ts"]) {
+      expect(read(ruta), ruta).toMatch(/inviteTeamMember\(\{/);
+    }
     expect(read("src/lib/plan-service.ts")).toMatch(/\.in\("status", \["active", "pending"\]\)/);
   });
 });
@@ -2259,7 +2305,23 @@ describe("el alcance por sucursal", () => {
     const team = read("src/app/api/team/route.ts");
     expect(team).toMatch(/branch_id: branchId/);
     expect(team).toMatch(/patch\.branch_id/);
-    expect(read("src/app/api/team/invite/route.ts")).toMatch(/branch_id: \(body\.branch/);
+
+    /**
+     * Y lo mismo con el TOUR CENTER, que era el mismo fallo y más grave.
+     *
+     * El formulario lo pedía y lo enviaba; la API no contenía la palabra
+     * `partner_id` en ninguna línea. Resultado: NINGÚN tour center podía
+     * entrar, el administrador creía haberle dado acceso, y lo que había creado
+     * era un usuario más de su propia empresa.
+     */
+    expect(team).toMatch(/resolveMembershipOrg\(ctx, body\.partner_id, rolePedido\)/);
+    expect(team, "la membresía sigue colgando siempre de la operadora")
+      .not.toMatch(/organization_id: ctx\.companyId,\s*\n\s*role,/);
+    // Invitar era el único camino que ni siquiera lo MANDABA.
+    expect(read("src/app/api/team/invite/route.ts")).toMatch(/partnerId: body\.partner_id/);
+    expect(read("src/app/dashboard/configuracion/page.tsx"))
+      .toMatch(/partner_id: form\.partner_id \|\| null,\n\s*\}\);/);
+    expect(read("src/lib/team-invite.ts")).toMatch(/branch_id: \(input\.branch \|\| ""\)\.trim\(\) \|\| null/);
   });
 
   it("el listado y su exportación aplican el MISMO corte", () => {
@@ -2331,6 +2393,420 @@ describe("el alcance por sucursal", () => {
     }
   });
 
+  it("la venta se sella a quien vende, en el servicio y no en cada ruta", () => {
+    /**
+     * El desplegable «Vendedor» del punto de venta listaba al equipo entero y
+     * quien vendía podía elegir a cualquiera: regalar su venta o quedarse la de
+     * otro. Detrás va la comisión.
+     *
+     * El sello vive en `createOrderWithBookings`, que es el ÚNICO camino que
+     * crea reservas —lo usan el punto de venta, la conversión de cotización, la
+     * web, el revendedor, la lista de espera y la demo—. Puesto en la ruta, la
+     * siguiente que creara órdenes nacería sin sellar.
+     */
+    const servicio = sinComentariosDe("src/lib/booking-service.ts");
+    expect(servicio).toMatch(/ventaSelladaPorVendedor\(ctx\)/);
+    expect(servicio).toMatch(/selladaPorPersona \? ctx\.sellerId/);
+
+    // Y la pantalla no ofrece lo que la API va a ignorar: ofrecer una opción
+    // que no se cumple es peor que no ofrecerla.
+    const contexto = read("src/app/api/pos/context/route.ts");
+    expect(contexto).toMatch(/visibleSellers = ventaSelladaPorVendedor\(ctx\)/);
+    expect(contexto).toMatch(/seller_locked: ventaSelladaPorVendedor\(ctx\)/);
+    expect(read("src/app/dashboard/pos/page.tsx")).toMatch(/ctx\?\.seller_locked \?/);
+  });
+
+  it("el CRUD genérico sella al crear y protege los campos que mueven dinero", () => {
+    const crear = sinComentariosDe("src/app/api/erp/[resource]/route.ts");
+    // La comprobación va ANTES del sello, para que el sello propio no se lea
+    // como un intento de cambiar el campo…
+    // Se comparan las LLAMADAS y no la primera aparición: los `import` del
+    // principio del fichero harían pasar esta guarda dijera lo que dijera el
+    // cuerpo de la función.
+    expect(
+      crear.indexOf("protectedFieldChanges(def.table")
+    ).toBeLessThan(crear.indexOf("sellerStampFor(def.table"));
+    // …y lo que se escribe es lo sellado, no el payload de antes.
+    expect(crear).toMatch(/tenantCreate\(ctx\.companyId, def\.table, sellado\)/);
+    expect(crear).toMatch(/assertSellerUserLinkable\(ctx\.companyId, sellado\)/);
+
+    const editar = sinComentariosDe("src/app/api/erp/[resource]/[id]/route.ts");
+    expect(editar).toMatch(/protectedFieldChanges\(def\.table, ctx\.role, payload, actual\)/);
+    // Y el resultado se ACTÚA. Comprobar solo la llamada deja pasar la peor
+    // versión del fallo —el veredicto calculado y tirado a la basura una línea
+    // después, con el nombre de la función a la vista de quien revisa—, que es
+    // exactamente cómo se coló una vez en `/api/orders`.
+    for (const fuente of [crear, editar]) {
+      expect(fuente).toMatch(
+        /if \(bloqueados\.length > 0\) throw new TenantError\(protectedFieldMessage\(bloqueados\), 403\);/
+      );
+    }
+    expect(editar).toMatch(/assertSellerUserLinkable\(ctx\.companyId, payload, id\)/);
+    // Se compara contra la fila ACTUAL y no contra la presencia del campo.
+    expect(editar).toMatch(/hasProtectedFields\(def\.table\)/);
+  });
+
+  it("las acciones con impacto económico sobre una fila ajena se cierran", () => {
+    /**
+     * El ámbito nació de lectura, y con eso quedaba cerrada la mitad: cancelar,
+     * reprogramar y todo lo que se hace sobre una cotización viven en rutas
+     * propias que nunca pasan por el CRUD genérico y solo miraban el RANGO.
+     * Cancelar anula la comisión de quien vendió.
+     */
+    for (const file of [
+      "src/app/api/bookings/[id]/cancel/route.ts",
+      "src/app/api/bookings/[id]/reschedule/route.ts",
+    ]) {
+      expect(read(file), file).toMatch(/assertSellerOwnsRow\("booking", ctx,/);
+    }
+
+    /**
+     * Y en las cotizaciones la guarda va en el cargador que TODAS comparten,
+     * con el contexto como parámetro OBLIGATORIO: opcional, la siguiente ruta
+     * se olvidaría de pasarlo y no lo notaría nadie.
+     */
+    const servicio = sinComentariosDe("src/lib/quote-service.ts");
+    expect(servicio).toMatch(/assertSellerOwnsRow\("quote", ctx,/);
+    expect(servicio).not.toMatch(/ctx\?:/);
+    const rutas = walk(path.join(ROOT, "src/app/api/quotes/[id]"))
+      .filter((f) => f.endsWith("route.ts"));
+    expect(rutas.length, "no se encontraron rutas de cotización").toBeGreaterThan(5);
+    let conCargador = 0;
+    for (const file of rutas) {
+      const src = readFileSync(file, "utf8");
+      if (!src.includes("loadQuoteBundle")) continue;
+      conCargador += 1;
+      expect(src, file).toMatch(/loadQuoteBundle\([^)]*ctx\)/);
+    }
+    expect(conCargador, "ninguna ruta usa el cargador").toBeGreaterThan(5);
+  });
+
+  it("la cuenta y el vínculo se crean en una sola operación", () => {
+    /**
+     * Dar de alta a un vendedor eran tres pasos en dos pantallas: ficha,
+     * invitación y vínculo. El tercero es el que decide si esa persona ve sus
+     * ventas o no ve ninguna, y es el que se olvida —no falla, no avisa, y el
+     * vendedor entra a un sistema vacío—.
+     */
+    const ruta = sinComentariosDe("src/app/api/sellers/invite/route.ts");
+    // Pide administración: crea una cuenta Y escribe la llave de identidad.
+    expect(ruta).toMatch(/requireAtLeast\(ctx, "admin"\)/);
+    expect(ruta).toMatch(/inviteTeamMember\(\{/);
+    expect(ruta).toMatch(/assertSellerUserLinkable\(ctx\.companyId, \{ user: invitado\.userId \}, sellerId\)/);
+    // El vínculo va DESPUÉS de invitar: al revés quedaría una ficha apuntando a
+    // una cuenta que no existe.
+    // Se comparan las LLAMADAS: los `import` del principio harían pasar esta
+    // guarda dijera lo que dijera el cuerpo. (Tercera vez que muerde el mismo
+    // detalle; queda escrito para no repetirlo.)
+    const cuerpoRuta = cuerpoDe("src/app/api/sellers/invite/route.ts");
+    expect(cuerpoRuta.indexOf("inviteTeamMember({")).toBeLessThan(cuerpoRuta.indexOf("tenantUpdate<Seller>"));
+    // Y queda en la bitácora, con su texto en castellano.
+    expect(ruta).toMatch(/action: "seller_account_linked"/);
+    expect(read("src/lib/bitacora.ts")).toMatch(/seller_account_linked:/);
+
+    // La pantalla lo ofrece justo donde se nota que falta: en la fila de quien
+    // no tiene cuenta.
+    const pantalla = read("src/app/dashboard/vendedores/page.tsx");
+    expect(pantalla).toMatch(/rowActions=\{\(s: any\) => \(s\.user \|\| s\.user_id \? null :/);
+    expect(pantalla).toMatch(/api\.post<[^>]*>\("\/api\/sellers\/invite"/);
+  });
+
+  it("las pantallas que enseñan dinero se niegan en el SERVIDOR", () => {
+    /**
+     * De 129 pantallas del panel, 5 miraban el rol en servidor y ninguna de
+     * ellas era de las que enseñan dinero. El menú esconde
+     * `/dashboard/comisiones` a quien no tiene rango; la URL, no.
+     *
+     * La guarda va en un `layout.tsx` porque las pantallas son de cliente y no
+     * pueden leer la sesión — y de paso **cubre también sus subpáginas**:
+     * `vendedores` protege metas, bonos, tipos y atribución de una vez.
+     */
+    for (const carpeta of [
+      "vendedores", "comisiones", "liquidaciones", "partners",
+      "personal", "rentabilidad", "deudas", "catalogo/costos",
+    ]) {
+      const layout = read(`src/app/dashboard/${carpeta}/layout.tsx`);
+      expect(layout, carpeta).toMatch(/export default guardedLayout\("manager"\)/);
+    }
+    // Se EXPLICA, no se redirige: un desvío silencioso hace pensar que el
+    // enlace está roto y que hay que volver a intentarlo.
+    const guarda = sinComentariosDe("src/lib/page-guard.tsx");
+    expect(guarda).toMatch(/if \(atLeast\(ctx\.role, minimo\)\) return <>\{children\}<\/>;/);
+    expect(guarda).toMatch(/EmptyState/);
+  });
+
+  it("el apartado del vendedor distingue las TRES situaciones posibles", () => {
+    /**
+     * Gerente que vende, vendedor con ficha, y cuenta sin ficha. La tercera no
+     * se distinguía: quien entraba sin ficha veía las mismas pantallas, todas
+     * vacías, sin forma de saber si es que no había vendido nada o es que el
+     * sistema no sabía quién era. Dos cosas muy distintas con la misma pinta.
+     */
+    const resumen = read("src/app/dashboard/mi-espacio/page.tsx");
+    expect(resumen).toMatch(/if \(!sellerId\) \{/);
+    expect(resumen).toMatch(/<SinFicha \/>/);
+    // Y el aviso dice QUIÉN lo arregla: quien lo lee no puede hacerlo solo.
+    const aviso = read("src/app/dashboard/mi-espacio/_components/sin-ficha.tsx");
+    expect(aviso).toMatch(/administrador/);
+    expect(aviso).toMatch(/Cuenta de acceso/);
+
+    // Las cifras salen de `/api/dashboard`, que YA fuerza el ámbito en el
+    // servidor: una ruta nueva sería un segundo sitio donde equivocarse sobre
+    // qué es «lo suyo», y los dos acabarían discrepando.
+    expect(resumen).toMatch(/api\.get<Panel>\("\/api\/dashboard/);
+    // Y la lista NO manda un filtro por vendedor desde el navegador: un filtro
+    // que decide qué ve cada quien y viaja en la dirección se puede quitar.
+    const ventas = read("src/app/dashboard/mi-espacio/ventas/page.tsx");
+    expect(ventas).toMatch(/api\.get<Venta\[\]>\(`\/api\/orders\?limit=/);
+    expect(ventas).not.toMatch(/seller=/);
+
+    // El rango más bajo aterriza en su apartado, y eso se decide en servidor.
+    const aterrizaje = sinComentariosDe("src/app/dashboard/page.tsx");
+    expect(aterrizaje).toMatch(/ctx\?\.role === "seller"\) redirect\("\/dashboard\/mi-espacio"\)/);
+  });
+
+  it("el estado de cuenta lo decide la FILA, y cada beneficiario tiene el suyo", () => {
+    /**
+     * Dos reglas, y la segunda es la que se olvida.
+     *
+     *  1. Abierta a su beneficiario, el rango deja de decidir: bastaría con
+     *     cambiar el identificador de la dirección para bajarse la liquidación
+     *     de un proveedor.
+     *  2. Y el documento del proveedor NO es el del vendedor con otro nombre:
+     *     lleva el coste de cada servicio y las retenciones dentro. Servírselo
+     *     a un vendedor le entrega el margen de la empresa en un PDF.
+     */
+    for (const rel of [
+      "src/app/api/settlements/[id]/statement/route.ts",
+      "src/app/api/settlements/[id]/statement/pdf/route.ts",
+    ]) {
+      const src = sinComentariosDe(rel);
+      expect(src, rel).toMatch(/assertSettlementBeneficiary\(ctx, cabecera\)/);
+      // Y ya no se apoya en el rango, que es lo que dejó de decidir.
+      expect(src, `${rel} sigue decidiendo por rango`).not.toMatch(/requireAtLeast\(ctx, "manager"\)/);
+    }
+
+    // La pantalla sirve el estado de cuenta del vendedor cuando toca…
+    expect(sinComentariosDe("src/app/api/settlements/[id]/statement/route.ts"))
+      .toMatch(/kind === "seller"\) return ok\(await loadSellerStatement/);
+    // …y el PDF del proveedor se niega antes que entregar el que hay a mano.
+    expect(sinComentariosDe("src/app/api/settlements/[id]/statement/pdf/route.ts"))
+      .toMatch(/beneficiaryOf\(cabecera\)\?\.kind === "seller"/);
+
+    // El del vendedor se escribe APARTE: el del proveedor lee `booking_cost`
+    // —el coste— y el suyo lee `commission`.
+    // Sin comentarios: este fichero EXPLICA en su cabecera por qué no lee
+    // `booking_cost`, y una guarda que se dispara con la explicación en vez de
+    // con el código comprueba lo contrario de lo que cree.
+    const suyo = sinComentariosDe("src/lib/seller-settlement-service.ts");
+    expect(suyo).toMatch(/"commission"/);
+    expect(suyo, "el estado de cuenta del vendedor no puede leer costes").not.toMatch(/booking_cost/);
+    // Y enseña el porcentaje CONGELADO, no el vigente en la ficha.
+    expect(suyo).toMatch(/percentage: Number\(row\.percentage \?\? 0\)/);
+  });
+
+  it("el slug del enlace lo genera el SERVIDOR", () => {
+    /**
+     * `seller_link_slug_key` es único EN TODO EL SISTEMA, no por empresa.
+     * Aceptarlo del navegador permite dos cosas distintas:
+     *
+     *  · OCUPAR los nombres del espacio compartido, incluidos los de otras
+     *    empresas alojadas aquí;
+     *  · IMITAR el de un compañero —`MARISOL1` frente a `MARIS0L1`— y llevarse
+     *    sus visitas. El cliente teclea lo que ve en un cartel: no comprueba
+     *    nada.
+     */
+    const recurso = sinComentariosDe("src/lib/resources.ts");
+    const bloqueLink = /seller_link: \{([\s\S]*?)\n  \},/.exec(recurso)?.[1] ?? "";
+    expect(bloqueLink, "no se encontró el recurso seller_link").not.toBe("");
+    // Solo en `writable`: buscar POR slug es legítimo —es lo que se teclea de
+    // un cartel— y prohibir la palabra en todo el bloque habría prohibido eso
+    // de paso. Lo que no puede es ESCRIBIRSE.
+    const escribibles = /writable: \[([\s\S]*?)\]/.exec(bloqueLink)?.[1] ?? "";
+    expect(escribibles, "no se encontró writable en seller_link").not.toBe("");
+    expect(escribibles, "el slug no puede escribirse desde el CRUD").not.toMatch(/"slug"/);
+
+    const ruta = sinComentariosDe("src/app/api/attribution/links/route.ts");
+    expect(ruta).toMatch(/const slug = await slugLibre\(/);
+    // El cuerpo de la petición NO decide el slug.
+    expect(ruta, "el slug viaja en el cuerpo").not.toMatch(/body\.slug/);
+    // Ni de quién es el enlace, cuando quien lo pide es un vendedor.
+    expect(ruta).toMatch(/sellerId = ctx\.sellerId;/);
+    // Y queda en la bitácora: un enlace reparte atribución, o sea dinero.
+    expect(ruta).toMatch(/action: "seller_link_created"/);
+    expect(read("src/lib/bitacora.ts")).toMatch(/seller_link_created:/);
+  });
+
+  it("el enlace y su QR se abren a su dueño, no a cualquier rango", () => {
+    /**
+     * `assertSellerOwnsRow` no sirve para ABRIR: es un ámbito, y un ámbito deja
+     * pasar a quien no es vendedor —a un gerente no hay nada que acotarle—, así
+     * que usarlo aquí habría dejado entrar también a caja y a operaciones, que
+     * no tienen ficha y para quienes «nada que acotar» significa «lo ven todo».
+     */
+    const qr = sinComentariosDe("src/app/api/attribution/links/[id]/qr/route.ts");
+    expect(qr).toMatch(/assertGerenciaOVendedorDe\(ctx, refId\(link\.seller\)/);
+    expect(qr, "el QR sigue decidiendo por rango").not.toMatch(/requireAtLeast\(ctx, "manager"\)/);
+
+    // Y el embudo se fuerza al vendedor del contexto, ignorando la consulta.
+    const embudo = sinComentariosDe("src/app/api/attribution/route.ts");
+    const rama = embudo.slice(embudo.indexOf('if (ctx.role === "seller")'), embudo.indexOf("} else {"));
+    expect(rama).toMatch(/sellerId = ctx\.sellerId \?\? NADIE/);
+    expect(rama, "la rama del vendedor lee la consulta").not.toMatch(/searchParams/);
+  });
+
+  it("el techo de descuento se aplica en el SERVIDOR, y en los dos sitios", () => {
+    /**
+     * `seller.max_discount_pct` existía desde 0005, la pantalla lo pedía
+     * («Descuento máximo autorizado»), se guardaba — y no se aplicaba en ningún
+     * cálculo. La operadora creía haber acotado lo que sus vendedores regalan y
+     * el sistema aceptaba un 90 % igual que un 5 %.
+     *
+     * Va en los dos sitios a propósito: lo definitivo lo decide la creación de
+     * la orden, que es donde se cobra, pero el punto de venta cotiza mientras
+     * el cajero teclea, y enseñar un total con un 40 % para rechazarlo al
+     * confirmar es discutir con el cliente delante por un precio que el sistema
+     * ya le había enseñado.
+     */
+    for (const rel of ["src/lib/booking-service.ts", "src/app/api/pricing/quote/route.ts"]) {
+      const src = sinComentariosDe(rel);
+      expect(src, rel).toMatch(/excesoDeDescuento\(/);
+      // Y el veredicto se ACTÚA, no se calcula y se tira.
+      expect(src, `${rel} calcula el exceso y no lo aplica`)
+        .toMatch(/if \(exceso\) throw Object\.assign\(new Error\(mensajeExceso\(exceso\)\)/);
+    }
+
+    // La pantalla puede pintarlo en rojo; lo que impide el descuento es el
+    // servidor. Nunca al revés.
+    const regla = sinComentariosDe("src/lib/techo-descuento.ts");
+    expect(regla, "sin techo declarado no puede haber techo").toMatch(/techo == null/);
+  });
+
+  it("desactivar a un vendedor apaga su enlace SIN tocar ninguna fila", () => {
+    /**
+     * EL CICLO DE VIDA YA ESTABA RESUELTO, Y MEJOR DE LO PLANEADO.
+     *
+     * El plan pedía un disparador que pusiera los enlaces en inactivo al
+     * desactivar la ficha. No hace falta: `resolveLinkBySlug` comprueba el
+     * estado del VENDEDOR en cada resolución, así que un vendedor desactivado
+     * deja de atribuir al instante y por todos sus enlaces a la vez.
+     *
+     * Guardar además un estado en cada fila sería una segunda fuente de verdad
+     * que puede quedarse desincronizada —y que sería asimétrica: reactivar al
+     * vendedor no reactivaría los carteles—. Esta guarda existe para que nadie
+     * «optimice» quitando la comprobación creyendo que sobra.
+     *
+     * Y el cartel impreso que sobrevive meses en un lobby no se rompe: un slug
+     * que ya no resuelve manda a la portada, igual que cualquier enlace roto, y
+     * el cliente sigue pudiendo comprar. Lo que se pierde es la atribución, que
+     * es justo lo que se quería perder.
+     */
+    const servicio = sinComentariosDe("src/lib/attribution-service.ts");
+    expect(servicio).toMatch(/if \(!seller \|\| seller\.status !== "active"\) return null;/);
+    expect(servicio).toMatch(/\.eq\("status", "active"\)/);
+
+    const puerta = sinComentariosDe("src/app/e/[slug]/route.ts");
+    // A la portada, no a un 404 que enseñe qué slugs valen.
+    expect(puerta).toMatch(/if \(!link\) return NextResponse\.redirect\(home, 302\);/);
+    // Y con límite de tasa, que ya existía: sin él, probar slugs ajenos mide la
+    // actividad de un competidor alojado en el mismo sistema.
+    expect(puerta).toMatch(/assertRateLimit\(\{ key: rateLimitKey\(req, "attr:visit"\)/);
+  });
+
+  it("el catálogo que ve quien vende no lleva costes por NINGÚN camino", () => {
+    /**
+     * El plan pedía una ruta nueva (`/api/seller-portal/catalog`) para servirle
+     * al vendedor un catálogo sin coste. Al mirarlo no hacía falta: los dos
+     * caminos que ya existen están limpios, y por motivos distintos.
+     *
+     *  · `/api/pos/context` arma una LISTA BLANCA —nombra campo por campo lo
+     *    que devuelve—, así que el coste no viaja por construcción y una
+     *    columna nueva en `product` no se cuela sola.
+     *  · `/api/erp/product` lo recorta con `field-projection.ts`.
+     *
+     * Una tercera ruta habría sido un tercer sitio donde equivocarse. Esta
+     * guarda existe para que la lista blanca no se convierta en un `...p`
+     * «para no repetir campos», que es como se pierden estas cosas.
+     */
+    const pos = sinComentariosDe("src/app/api/pos/context/route.ts");
+    const catalogo = pos.slice(pos.indexOf("const catalog = products.map"), pos.indexOf("const bundleCatalog"));
+    expect(catalogo, "no se encontró el mapeo del catálogo").not.toBe("");
+    expect(catalogo, "el catálogo del punto de venta lleva el coste").not.toMatch(/base_cost/);
+    expect(catalogo, "la modalidad lleva el coste").not.toMatch(/\bcost\b/);
+    // Y sigue siendo lista blanca: nada de derramar el producto entero.
+    expect(catalogo, "el catálogo derrama el producto entero").not.toMatch(/\.\.\.p[,\s}]/);
+
+    // El del socio tampoco, que es de donde salió la regla.
+    expect(sinComentariosDe("src/app/api/portal/catalog/route.ts")).not.toMatch(/base_cost/);
+  });
+
+  it("el alta de un socio valida el socio, y el cerrojo fuerza el rol", () => {
+    const servicio = sinComentariosDe("src/lib/team-invite.ts");
+    // Que sea un socio…
+    expect(servicio).toMatch(/data\.kind !== "partner"/);
+    // …y DE ESTA OPERADORA. Sin esto, un administrador engancha a alguien a un
+    // socio de otra y ese usuario sale con la empresa equivocada en el token:
+    // es cruzar el aislamiento entre inquilinos por el único sitio donde se
+    // puede.
+    expect(servicio).toMatch(/data\.tenant_org_id !== ctx\.companyId/);
+    // El cerrojo: mientras el ámbito se decida por el NOMBRE del rol, un
+    // empleado de un tour center con rol `seller` entraría al ERP interno.
+    expect(servicio).toMatch(/return \{ organizationId: data\.id as string, role: "partner", esSocio: true \};/);
+
+    // Y el equipo lista también a los suyos, o el alta funciona y la pantalla
+    // sigue sin enseñar a esa persona.
+    const team = sinComentariosDe("src/app/api/team/route.ts");
+    expect(team).toMatch(/\.eq\("tenant_org_id", ctx\.companyId\)/);
+    expect(team).toMatch(/\.in\("organization_id", orgIds\)/);
+  });
+
+  it("el recorte de columnas se aplica en los TRES sitios que sirven filas", () => {
+    /**
+     * Listado, detalle y exportación. Dejar uno sin migrar es el fallo que
+     * nadie revisa: un archivo con el coste de cada excursión mientras la
+     * pantalla no lo enseña se acepta porque «lo exportó el sistema».
+     *
+     * Y `READ_ROLE` no sirve aquí: negar `product` dejaría al vendedor sin
+     * catálogo y rompería el punto de venta. Se proyecta, no se bloquea.
+     */
+    const listado = sinComentariosDe("src/app/api/erp/[resource]/route.ts");
+    expect(listado).toMatch(/return ok\(projectRows\(def\.table, ctx, rows\), \{ total \}\);/);
+    expect(listado).toMatch(/projectRows\(def\.table, ctx, pageRows\)/);
+
+    expect(sinComentariosDe("src/app/api/erp/[resource]/[id]/route.ts"))
+      .toMatch(/return ok\(projectRow\(def\.table, ctx, record\)\);/);
+
+    expect(sinComentariosDe("src/app/api/export/[resource]/route.ts"))
+      .toMatch(/buildExport\(resource, projectRows\(def\.table, ctx, rows\)\)/);
+  });
+
+  it("las pantallas distinguen «no puedo verlo» de «vale cero»", () => {
+    /**
+     * El recorte BORRA la clave. Con `?? 0` la pantalla convertía la ausencia
+     * en una afirmación falsa sobre el negocio —una excursión que no cuesta
+     * nada, un margen del 100 %, un compañero con 0 % de comisión— y nadie
+     * habría sabido que estaba leyendo un hueco.
+     */
+    const productos = read("src/app/dashboard/productos/page.tsx");
+    expect(productos).toMatch(/p\.base_cost == null \? "—"/);
+    expect(productos).toMatch(/if \(p\.base_cost == null\) return "—";/);
+    expect(productos).not.toMatch(/base_cost \?\? 0/);
+
+    const vendedores = read("src/app/dashboard/vendedores/page.tsx");
+    expect(vendedores).toMatch(/s\.commission_pct == null \? "—"/);
+    expect(vendedores).toMatch(/s\.monthly_goal == null \? "—"/);
+
+    expect(read("src/app/dashboard/configuracion/page.tsx")).toMatch(/m\.cost == null \? "—"/);
+  });
+
+  it("el calendario de cobros deja de estar abierto al vendedor", () => {
+    // `payment_schedule` no tiene columna de vendedor —el suyo está en la
+    // orden, tabla unida—, así que no se puede acotar: sube de rango.
+    const recursos = read("src/lib/resources.ts");
+    expect(recursos).toMatch(/payment_schedule: "manager"/);
+    expect(recursos).not.toMatch(/payment_schedule: "seller"/);
+  });
+
   it("saber QUÉ vendedor es quien llama sale de la base en cada petición", () => {
     /**
      * El vínculo vive en `seller.user_id`. Va por consulta y no en el token a
@@ -2340,7 +2816,17 @@ describe("el alcance por sucursal", () => {
      */
     const auth = read("src/lib/supabase/auth-context.ts");
     expect(auth).toMatch(/\.eq\("user_id", userId\)/);
-    expect(auth).toMatch(/ctx\.role === "seller"\) ctx\.sellerId = await loadSellerId/);
+    /**
+     * Se resuelve para TODO el personal interno, no solo para el rango más
+     * bajo: en una operadora pequeña el gerente y el dueño también venden, y
+     * sin este dato su apartado propio no existiría. No les acota nada
+     * —`sellerScopeApplies` solo mira al rango más bajo—, les da su vista.
+     *
+     * Y se salta para el socio y para el superadministrador, incluso mientras
+     * impersona: quien entra a mirar una empresa ajena no es vendedor de ella.
+     */
+    expect(auth).toMatch(/!esDeSocio\(ctx\) && ctx\.role !== "superadmin"/);
+    expect(auth).toMatch(/ctx\.sellerId = await loadSellerId\(ctx\.companyId!, user\.id\)/);
     // Y el panel usa ESE dato, no una segunda consulta que pueda discrepar.
     expect(read("src/app/api/dashboard/route.ts")).toMatch(/ctx\.sellerId \?\? null/);
   });
@@ -2550,7 +3036,66 @@ describe("las notificaciones internas", () => {
     ["allotment_released", "src/app/api/cron/allotments/route.ts"],
     ["waitlist_offer", "src/lib/waitlist-service.ts"],
     ["survey_detractor", "src/lib/voice-service.ts"],
+    // Los cuatro del vendedor. Van a la PERSONA (`userId`) y no a la audiencia
+    // de rol: repartidos por rol, cada vendedor recibiría los avisos de las
+    // ventas de sus compañeros y, de paso, sabría cuánto cobran.
+    ["sale_attributed", "src/app/api/orders/route.ts"],
+    ["commission_approved", "src/app/api/commissions/bulk/route.ts"],
+    ["settlement_paid", "src/app/api/settlements/[id]/pay/route.ts"],
+    ["booking_cancelled_for_seller", "src/app/api/bookings/[id]/cancel/route.ts"],
   ];
+
+  it("las metas del vendedor IGNORAN el parámetro de la consulta", () => {
+    /**
+     * Es la diferencia entre «filtrar» y «acotar». Si la rama del vendedor
+     * aceptara `?seller=` y luego comprobara que coincide, bastaría un fallo de
+     * comparación —o un camino nuevo que se olvide de comprobar— para leer las
+     * metas y los bonos de un compañero. Ignorándolo, ese parámetro no existe
+     * para él: no hay comparación que pueda salir mal.
+     */
+    const src = read("src/app/api/seller-goals/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const rama = src.slice(src.indexOf('if (ctx.role === "seller")'), src.indexOf('requireAtLeast(ctx, "manager")'));
+    expect(rama, "la rama del vendedor no existe").toContain("goalsWithProgress");
+    expect(rama).toMatch(/sellerId: ctx\.sellerId \?\? NADIE/);
+    expect(rama, "la rama del vendedor lee la consulta").not.toMatch(/searchParams/);
+  });
+
+  it("los avisos del vendedor van con nombre y apellido, no por rol", () => {
+    /**
+     * Es la diferencia entre enterarse y no enterarse. «Te aprobaron la
+     * comisión» mandado a la audiencia `seller` se lo manda a TODOS los
+     * vendedores de la empresa: cada uno recibe lo de sus compañeros, ninguno
+     * encuentra lo suyo entre el ruido, y todos acaban sabiendo cuánto cobran
+     * los demás.
+     *
+     * `notify` pone `audience_role` en null cuando hay `userId`, así que lo que
+     * hay que fijar es que los cuatro se emitan SIEMPRE con usuario.
+     */
+    for (const [event, file] of [
+      ["sale_attributed", "src/app/api/orders/route.ts"],
+      ["commission_approved", "src/app/api/commissions/bulk/route.ts"],
+      ["settlement_paid", "src/app/api/settlements/[id]/pay/route.ts"],
+      ["booking_cancelled_for_seller", "src/app/api/bookings/[id]/cancel/route.ts"],
+    ] as const) {
+      const src = read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+      /**
+       * Se mira DENTRO de la llamada a `notify`, no en una ventana de
+       * caracteres alrededor: una ventana atrapa cualquier `userId,` que ande
+       * cerca por otro motivo, y entonces la guarda pasa aunque el aviso se
+       * emita sin usuario. (Pasó: esta comprobación no mordía.)
+       */
+      const donde = src.indexOf(`event: "${event}"`);
+      expect(donde, `${event} no se emite desde ${file}`).toBeGreaterThan(-1);
+      const inicio = src.lastIndexOf("notify({", donde);
+      expect(inicio, `${event} no se emite con notify({`).toBeGreaterThan(-1);
+      const llamada = src.slice(inicio, donde);
+      expect(llamada, `${event} se emite sin usuario`).toMatch(/\buserId,/);
+      // Y sin cuenta vinculada NO se avisa a nadie: un aviso personal sin
+      // persona no puede convertirse en un aviso para todo el mundo.
+      expect(src, `${event} no comprueba que haya cuenta`).toMatch(/usuarioDeVendedor\(/);
+      expect(src, `${event} avisa aunque no haya cuenta`).toMatch(/if \(!?userId/);
+    }
+  });
 
   it("cada evento del catálogo se dispara desde algún sitio", () => {
     // Un evento en el catálogo que nadie emite es una promesa que el sistema no
@@ -2699,11 +3244,25 @@ describe("las exportaciones", () => {
   });
 
   it("la exportación aplica la MISMA autorización de lectura que el listado", () => {
-    // Sin esto, un rol que no puede ver un recurso en pantalla se lo llevaría
-    // entero en un archivo.
-    const route = read("src/app/api/export/[resource]/route.ts");
-    expect(route).toMatch(/readRoleFor\(def\.table\)/);
-    expect(route).toMatch(/requireAtLeast\(ctx, rr\)/);
+    /**
+     * Sin esto, un rol que no puede ver un recurso en pantalla se lo llevaría
+     * entero en un archivo.
+     *
+     * Y ya no basta con que las TRES rutas contengan la misma condición
+     * copiada: desde que hay excepciones por actor —el socio, y el vendedor
+     * sobre su propio dinero— la condición tiene ramas, y tres copias de algo
+     * con ramas divergen. Lo que se comprueba ahora es que las tres llamen a
+     * la MISMA función y que ninguna se guarde una copia propia.
+     */
+    for (const file of [
+      "src/app/api/erp/[resource]/route.ts",
+      "src/app/api/erp/[resource]/[id]/route.ts",
+      "src/app/api/export/[resource]/route.ts",
+    ]) {
+      const route = read(file);
+      expect(route, file).toMatch(/assertCanReadTable\(ctx, def\.table\)/);
+      expect(route, `${file} se guarda una copia de la regla`).not.toMatch(/readRoleFor\(def\.table\)/);
+    }
   });
 
   it("el listado y su exportación comparten el armado del filtro", () => {
@@ -2840,13 +3399,16 @@ describe("RR. HH.: que lo que se teclea sirva para algo", () => {
       "src/app/api/erp/[resource]/[id]/route.ts",
     ]) {
       const src = read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
-      expect(src, file).toMatch(/await assertPayloadAssignable\(ctx\.companyId, def\.table, payload\)/);
+      // `sellado` en la creación: es el mismo payload con el vendedor de quien
+      // crea ya puesto (`sellerStampFor`). Lo que importa es que se compruebe
+      // LO QUE SE VA A ESCRIBIR, no una copia anterior.
+      expect(src, file).toMatch(/await assertPayloadAssignable\(ctx\.companyId, def\.table, (payload|sellado)\)/);
     }
   });
 
   it("la comprobación va ANTES de escribir, no después", () => {
     for (const [file, escritura] of [
-      ["src/app/api/erp/[resource]/route.ts", "await tenantCreate(ctx.companyId, def.table, payload)"],
+      ["src/app/api/erp/[resource]/route.ts", "await tenantCreate(ctx.companyId, def.table, sellado)"],
       ["src/app/api/erp/[resource]/[id]/route.ts", "await tenantUpdate(ctx.companyId, def.table, id, payload)"],
     ] as const) {
       const src = read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
@@ -3924,12 +4486,34 @@ describe("Quién trajo al cliente (0058)", () => {
     expect(bloque).toMatch(/writable:\s*\[\s*\]/);
   });
 
-  it("un vendedor escogido a mano no lo pisa el histórico", () => {
-    // Pisar la elección de quien está delante del cliente sería discutirle a
-    // quien vendió quién vendió.
+  it("un vendedor escogido a mano no lo pisa el histórico, y a quien vende no lo pisa nadie", () => {
+    /**
+     * Dos reglas que conviven, y la segunda llegó después.
+     *
+     *  1. Quien está delante del cliente decide: pisar su elección con el
+     *     histórico sería discutirle a quien vendió quién vendió.
+     *  2. Pero si quien vende ES un vendedor, no elige: la venta se sella a su
+     *     nombre. Elegir a otro era regalar —o quedarse— una comisión.
+     *
+     * Y el sello NO puede apagar el motor de atribución de la web: ahí no hay
+     * persona, la cookie del visitante es lo único que encuentra al conserje
+     * que compartió el enlace, y por eso la pregunta la responde
+     * `ventaSelladaPorVendedor` (que exige usuario) y no el rol a secas.
+     */
     const src = sinComentarios("src/lib/booking-service.ts");
-    expect(src).toMatch(/let attributedSeller = input\.seller_id \|\| null;/);
-    expect(src).toMatch(/if \(!attributedSeller\) \{\s*const attribution = await resolveOrderAttribution/);
+    expect(src).toMatch(/const selladaPorPersona = ventaSelladaPorVendedor\(ctx\);/);
+    expect(src).toMatch(
+      /let attributedSeller = selladaPorPersona \? ctx\.sellerId \?\? null : input\.seller_id \|\| null;/
+    );
+    // El histórico sigue corriendo cuando no hay nadie delante…
+    expect(src).toMatch(
+      /if \(!attributedSeller && !selladaPorPersona\) \{\s*const attribution = await resolveOrderAttribution/
+    );
+    // …y los dos motores sin sesión siguen sin usuario, que es la marca de la
+    // que depende todo lo anterior.
+    for (const file of ["src/lib/public-booking-service.ts", "src/lib/octo-service.ts"]) {
+      expect(sinComentarios(file), file).toMatch(/userId: ""/);
+    }
   });
 
   it("la compra se anota una sola vez aunque se cobre a plazos", () => {
@@ -4246,6 +4830,10 @@ describe("cada pantalla dice cómo se crea lo que enseña", () => {
     "/dashboard/reportes/actividad": "bitácora: la escribe el sistema en cada acción y es inmutable; un botón de «nuevo evento» sería justo lo que una auditoría no puede permitir",
     "/dashboard/analitica/cohortes": "cohortes: se calculan",
     "/dashboard/rentabilidad": "márgenes: se calculan de ventas y costes",
+    "/dashboard/mi-espacio": "el apartado del vendedor: es una FOTO de lo suyo —lo vendido, la comisión, la meta—; una venta se hace en el punto de venta, y la comisión y la meta las genera el sistema. Un botón de «nuevo» aquí dejaría al vendedor crearse su propia comisión",
+    "/dashboard/mi-espacio/enlace": "su enlace y su QR: el enlace SÍ se crea aquí, pero con un botón propio y sin formulario de recurso —el slug no se elige, lo genera el servidor—, así que el detector de «cómo se crea esto» no lo reconoce",
+    "/dashboard/mi-espacio/comisiones": "sus comisiones: las genera el devengo al confirmarse la venta y las liquida gerencia. Un botón de «nueva» aquí sería dejar que el vendedor se escriba su propia comisión, que es exactamente lo que este apartado no puede permitir",
+    "/dashboard/mi-espacio/ventas": "sus ventas ya hechas: se crean en el punto de venta, que es donde está el cliente; esta pantalla las mira, no las inventa",
     "/dashboard/distribucion/matriz": "vista cruzada de disponibilidad ya existente",
     "/dashboard/distribucion/canales": "un canal no se crea, se conecta: aparece cuando un revendedor reserva por OCTO; se habilita en Integraciones",
     "/dashboard/inicio/notificaciones": "avisos: los emite el sistema",
@@ -4839,5 +5427,224 @@ describe("ninguna acción sin bitácora", () => {
     const src = read("src/app/api/erp/[resource]/[id]/route.ts");
     const i = src.indexOf("record_updated");
     expect(src.slice(i, i + 400)).toMatch(/campos/);
+  });
+});
+
+describe("el aislamiento del socio no depende del nombre del rol", () => {
+  /**
+   * Los ficheros que decidían «esto es de un socio» comparando `ctx.role` con
+   * la cadena `"partner"`. Están enumerados uno a uno a propósito: una regla
+   * que solo dijera «esDeSocio aparece en algún sitio» se cumpliría con que
+   * quedara UNA sola llamada, y las otras dieciocho podrían volver al nombre
+   * del rol sin que nada se quejara.
+   */
+  const PUNTOS_DE_AISLAMIENTO = [
+    "src/app/api/bookings/[id]/voucher/route.ts",
+    "src/app/api/cash/sessions/[id]/arqueo/pdf/route.ts",
+    "src/app/api/departures/[id]/manifest/pdf/route.ts",
+    "src/app/api/departures/[id]/manifest/route.ts",
+    "src/app/api/erp/[resource]/[id]/route.ts",
+    "src/app/api/erp/[resource]/route.ts",
+    "src/app/api/orders/[id]/schedule/route.ts",
+    "src/app/api/orders/route.ts",
+    "src/app/api/portal/catalog/route.ts",
+    "src/app/api/portal/summary/route.ts",
+    "src/app/api/pricing/quote/route.ts",
+    "src/app/api/settlements/[id]/statement/pdf/route.ts",
+    "src/app/api/storage/upload/route.ts",
+    "src/app/dashboard/layout.tsx",
+    "src/app/dashboard/mi-espacio/layout.tsx",
+    "src/app/page.tsx",
+    "src/app/portal/layout.tsx",
+    "src/lib/erp-query.ts",
+    "src/lib/resources.ts",
+    "src/lib/supabase/auth-context.ts",
+  ];
+
+  /**
+   * Lo que TODAVÍA compara con el nombre del rol, con su motivo y su recuento.
+   *
+   * El recuento importa tanto como la lista: sin él, un fichero perdonado una
+   * vez queda perdonado para siempre y puede ir acumulando comparaciones
+   * nuevas debajo de la excepción vieja.
+   */
+  const COMPARACIONES_PERDONADAS: Record<string, { veces: number; porque: string }> = {
+    "src/lib/tenant.ts": {
+      veces: 1,
+      porque: "es LA definición: esDeSocio() es el único sitio que puede mirar el nombre",
+    },
+    "src/app/portal/portal-context.tsx": {
+      veces: 1,
+      porque: "componente de cliente; tenant.ts es `server-only` y no se puede importar aquí",
+    },
+    "src/app/dashboard/configuracion/page.tsx": {
+      veces: 3,
+      porque: "es el rol que se ASIGNA en el formulario, no el de quien llama",
+    },
+  };
+
+  it("cada punto de aislamiento pregunta por esDeSocio", () => {
+    const mudos = PUNTOS_DE_AISLAMIENTO.filter((rel) => !/esDeSocio\s*\(/.test(sinComentariosDe(rel)));
+    expect(mudos, "estos ficheros decidían el aislamiento del socio y ya no preguntan").toEqual([]);
+  });
+
+  it("y ninguno de ellos ha vuelto a comparar el nombre del rol", () => {
+    const recaidos = PUNTOS_DE_AISLAMIENTO.filter((rel) =>
+      /\brole\s*(?:===|!==)\s*"partner"/.test(sinComentariosDe(rel)));
+    expect(recaidos, "aquí conviven las dos reglas; la del nombre gana en silencio").toEqual([]);
+  });
+
+  it("el barrido de todo src no encuentra comparaciones nuevas por nombre", () => {
+    /**
+     * La guarda de verdad. Las dos de arriba protegen lo que YA se arregló;
+     * esta protege lo que todavía no existe: un fichero nuevo que vuelva a
+     * escribir `ctx.role === "partner"` reabre la misma puerta trasera y nadie
+     * se acordará de añadirlo a la lista de arriba.
+     */
+    const encontradas: Record<string, number> = {};
+    for (const file of walk(path.join(ROOT, "src"))) {
+      const rel = path.relative(ROOT, file).replace(/\\/g, "/");
+      const n = (sinComentariosDe(rel).match(/\brole\s*(?:===|!==)\s*"partner"/g) || []).length;
+      if (n) encontradas[rel] = n;
+    }
+    const esperadas = Object.fromEntries(
+      Object.entries(COMPARACIONES_PERDONADAS).map(([rel, e]) => [rel, e.veces]));
+    expect(encontradas, "compara el rol por su nombre; usa esDeSocio(ctx)").toEqual(esperadas);
+  });
+
+  it("esDeSocio se cree el identificador, no solo el rol", () => {
+    /**
+     * Si la función se quedara en `ctx.role === "partner"` las veinte llamadas
+     * de arriba seguirían ahí y no querrían decir nada: la sustitución entera
+     * se apoya en que el identificador mande.
+     */
+    const cuerpo = cuerpoDe("src/lib/tenant.ts");
+    const i = cuerpo.indexOf("export function esDeSocio");
+    expect(i, "esDeSocio ya no está en tenant.ts").toBeGreaterThan(-1);
+    const fn = cuerpo.slice(i, i + 400);
+    expect(fn, "una membresía que cuelga de una organización socia").toMatch(/ctx\.isPartnerMember/);
+    expect(fn, "un socio asignado directamente").toMatch(/ctx\.partnerId/);
+  });
+
+  it("y el identificador se rellena para cualquier rol, no solo para «partner»", () => {
+    // Sin esto, `isPartnerMember` sería siempre falso y la regla volvería a
+    // depender del nombre por la puerta de atrás.
+    const auth = sinComentariosDe("src/lib/supabase/auth-context.ts");
+    expect(auth).toMatch(/isPartnerMember:\s*Boolean\(claims\.partner_id\)/);
+    expect(sinComentariosDe("src/lib/tenant.ts")).toMatch(/isPartnerMember\??:\s*boolean/);
+  });
+});
+
+describe("el ciclo de vida del socio", () => {
+  it("el estado del socio llega al contexto, y por consulta", () => {
+    /**
+     * Como dato del token tardaría hasta una hora en surtir efecto: suspender
+     * a un tour center que está haciendo algo que no debe no puede esperar a
+     * que su sesión se renueve. Mismo razonamiento que la ficha de vendedor.
+     */
+    const auth = sinComentariosDe("src/lib/supabase/auth-context.ts");
+    expect(auth, "el cargador").toMatch(/async function loadPartnerStatus/);
+    expect(auth, "se llama al armar el contexto")
+      .toMatch(/ctx\.partnerStatus = await loadPartnerStatus\(ctx\.partnerId\)/);
+    expect(sinComentariosDe("src/lib/tenant.ts")).toMatch(/partnerStatus\?:\s*string \| null/);
+  });
+
+  it("y el cargador falla CERRADO", () => {
+    /**
+     * `loadSellerId` puede devolver null porque null ACOTA. Aquí no: si un
+     * fallo de red devolviera «activo», un socio suspendido seguiría operando
+     * con solo tirar la consulta. Ninguna rama de este cargador puede producir
+     * la cadena `active`.
+     */
+    const cuerpo = cuerpoDe("src/lib/supabase/auth-context.ts");
+    const i = cuerpo.indexOf("async function loadPartnerStatus");
+    const fn = cuerpo.slice(i, cuerpo.indexOf("async function loadClaimsFromPrimaryMembership"));
+    expect(fn, "el error de la consulta").toMatch(/if \(error\) return ""/);
+    expect(fn, "la excepción").toMatch(/catch \{\s*return ""/);
+    expect(fn, "y la fila ausente").toMatch(/\?\?\s*""/);
+  });
+
+  it("el veto se aplica en requireTenant, por donde pasa toda ruta", () => {
+    // Comprobado sobre el `throw` y no sobre la llamada: afirmar que
+    // `vetoDeSocio` aparece dejaría borrar el lanzamiento y conservar la
+    // llamada muerta. Ha mordido tres veces en esta rama.
+    const cuerpo = cuerpoDe("src/lib/tenant.ts");
+    const i = cuerpo.indexOf("export async function requireTenant");
+    const fn = cuerpo.slice(i, cuerpo.indexOf("export async function requireTenantWrite"));
+    expect(fn).toMatch(/const veto = vetoDeSocio\(ctx\.partnerStatus\)/);
+    expect(fn).toMatch(/if \(veto\)[\s\S]{0,160}throw[\s\S]{0,160}PARTNER_INACTIVE/);
+  });
+
+  it("y el portal explica antes de consultar nada", () => {
+    /**
+     * Una contraseña correcta seguida de un portal que falla en cada recuadro
+     * sin decir por qué termina en una llamada a la operadora para reportar
+     * una avería que no existe. Y el muro va ANTES de la consulta: pedir datos
+     * que no se van a dibujar es trabajo para enseñar un párrafo.
+     */
+    const layout = cuerpoDe("src/app/portal/layout.tsx");
+    expect(layout).toMatch(/if \(veto\) return <SocioSinAcceso/);
+    expect(layout.indexOf("SocioSinAcceso"))
+      .toBeLessThan(layout.indexOf("tenantQuery"));
+  });
+
+  it("la aceptación de condiciones no es un campo más de la ficha", () => {
+    /**
+     * Si `terms_accepted_*` estuviera en la lista blanca de escritura del CRUD
+     * del socio, la operadora podría fechar desde su propia pantalla una firma
+     * en nombre del tour center. Una aceptación que el sistema puede fabricar
+     * no acredita nada.
+     */
+    const partners = sinComentariosDe("src/lib/partners.ts");
+    const mapa = partners.slice(
+      partners.indexOf("PARTNER_RELATIONSHIP_COLUMNS"),
+      partners.indexOf("PARTNER_DERIVED_FIELDS"));
+    for (const campo of ["terms_version", "terms_accepted_version", "terms_accepted_at", "terms_accepted_by"]) {
+      expect(mapa, campo).not.toMatch(new RegExp(campo));
+    }
+    // Y tampoco por el camino del recurso genérico.
+    const recurso = sinComentariosDe("src/lib/resources.ts");
+    const bloque = recurso.slice(recurso.indexOf("  partner: {"), recurso.indexOf("  seller: {"));
+    expect(bloque.slice(bloque.indexOf("writable"))).not.toMatch(/terms_/);
+  });
+
+  it("acepta el socio, y sobre la versión que lee el servidor", () => {
+    const ruta = sinComentariosDe("src/app/api/portal/terms/route.ts");
+    // El personal interno entra al portal a auditar lo que el socio ve; desde
+    // ahí, aceptar sería firmar en nombre de otra empresa.
+    expect(ruta, "solo el socio").toMatch(/if \(!esDeSocio\(ctx\) \|\| !ctx\.partnerId\)[\s\S]{0,120}throw/);
+    // La versión sale de la fila, nunca del cuerpo: si viniera en la petición,
+    // un socio podría firmar una versión que ya no rige, o una que nadie ha
+    // publicado todavía.
+    expect(ruta, "la versión firmada").toMatch(/terms_accepted_version:\s*rel\.terms_version/);
+    expect(ruta, "quién firmó").toMatch(/terms_accepted_by:\s*ctx\.userId/);
+    expect(ruta, "no lee el cuerpo").not.toMatch(/req\.json\(\)/);
+  });
+
+  it("la migración 0073 exige rol de socio si y solo si organización de socio", () => {
+    /**
+     * Las dos mitades, y la segunda no estaba cerrada en ningún sitio del
+     * servidor: un rol `partner` sobre la operadora sale SIN identificador de
+     * socio, y «sin identificador» es lo que `app.can_read_partner` entiende
+     * por «ve todo».
+     */
+    const sql = read("supabase/migrations/0073_partner_lifecycle.sql");
+    expect(sql, "empleado de socio con otro rol")
+      .toMatch(/org_kind = 'partner' and new\.role <> 'partner'/);
+    expect(sql, "rol de socio sin socio")
+      .toMatch(/org_kind is distinct from 'partner' and new\.role = 'partner'/);
+    expect(sql, "y el disparador existe")
+      .toMatch(/create trigger memberships_role_matches_org/);
+    // Lee `organizations`, que tiene RLS: sin `definer`, `kind` sale nulo para
+    // quien no puede leer esa fila y el cerrojo no salta nunca.
+    expect(sql, "security definer").toMatch(/security definer/);
+  });
+
+  it("y el servidor exige la misma equivalencia al dar de alta", () => {
+    const cuerpo = cuerpoDe("src/lib/team-invite.ts");
+    const i = cuerpo.indexOf("export async function resolveMembershipOrg");
+    const fn = cuerpo.slice(i, i + 1400);
+    expect(fn, "rol de socio sin tour center").toMatch(/rolePedido === "partner"[\s\S]{0,200}throw/);
+    expect(fn, "y el cerrojo de siempre").toMatch(/role: "partner", esSocio: true/);
   });
 });

@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, TenantError } from "@/lib/tenant";
+import { requireTenant, TenantError, esDeSocio } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { loadManifest, personName } from "@/lib/manifest-service";
@@ -24,7 +24,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     await assertRateLimit({ key: rateLimitKey(req, "departures:manifest", ctx.userId), limit: 120, windowMs: 60_000 });
     // Un partner vería el manifiesto de toda la salida, incluidas las reservas
     // de la competencia: es una lista de clientes ajenos.
-    if (ctx.role === "partner") throw new TenantError("El manifiesto es de uso interno", 403);
+    if (esDeSocio(ctx)) throw new TenantError("El manifiesto es de uso interno", 403);
 
     const m = await loadManifest(ctx.companyId, id);
     const dep = m.departure;

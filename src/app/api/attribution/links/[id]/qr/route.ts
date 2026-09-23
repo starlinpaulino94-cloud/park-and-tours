@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 import QRCode from "qrcode";
-import { requireTenant, requireAtLeast, tenantFindOne } from "@/lib/tenant";
+import { requireTenant, tenantFindOne } from "@/lib/tenant";
+import { assertGerenciaOVendedorDe } from "@/lib/seller-identity";
+import { refId } from "@/lib/types";
 import { fail } from "@/lib/api-response";
 import { linkUrl } from "@/lib/attribution";
 
@@ -27,15 +29,24 @@ import { linkUrl } from "@/lib/attribution";
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const ctx = await requireTenant();
-    requireAtLeast(ctx, "manager");
     const { id } = await params;
 
     // `tenantFindOne` verifica que el enlace es de esta empresa antes de nada:
     // sin eso, un id ajeno imprimiría el QR de la competencia.
-    const link = await tenantFindOne<{ slug?: string; name?: string }>(
+    const link = await tenantFindOne<{ slug?: string; name?: string; seller?: unknown }>(
       ctx.companyId, "seller_link", id
     );
     if (!link?.slug) throw Object.assign(new Error("El enlace no existe"), { status: 404 });
+
+    /**
+     * Y de quién es. El QR se abre a su dueño además de a gerencia, porque un
+     * cartel que no se puede descargar no se pega en ningún mostrador.
+     *
+     * Se comprueba DESPUÉS de cargarlo —hace falta saber de quién es— y por eso
+     * la carga anterior no puede traer nada sensible: solo el slug, el nombre y
+     * el vendedor.
+     */
+    assertGerenciaOVendedorDe(ctx, refId(link.seller), "Este enlace");
 
     const origin = new URL(_req.url).origin;
     const png = await QRCode.toBuffer(linkUrl(origin, link.slug), {

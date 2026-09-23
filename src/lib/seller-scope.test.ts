@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   sellerFilterFor, sellerCanReadRow, isSellerScoped, sellerFieldFor,
   sellerScopeApplies, SELLER_SCOPED,
+  ventaSelladaPorVendedor, sellerStampFor, assertSellerOwnsRow,
+  esEstricta, SELLER_ESTRICTAS, NADIE,
 } from "@/lib/seller-scope";
 import { buildListFilter } from "@/lib/erp-query";
 import { RESOURCES } from "@/lib/resources";
@@ -178,5 +180,160 @@ describe("el listado y su exportación comparten el corte", () => {
   it("el catálogo sigue entero para el vendedor", () => {
     const filter = buildListFilter(RESOURCES.product, ctx(), new URLSearchParams()) as Record<string, unknown>;
     expect(filter._and).toBeUndefined();
+  });
+});
+
+describe("quién sella la venta", () => {
+  const persona = { role: "seller" as const, userId: "u1", sellerId: "v1" };
+  const web = { role: "seller" as const, userId: "", sellerId: null };
+
+  it("una persona con rango de vendedor, sí", () => {
+    expect(ventaSelladaPorVendedor(persona)).toBe(true);
+  });
+
+  it("los motores sin sesión, NO", () => {
+    /**
+     * El motor de la web pública y el de reservas de revendedor fabrican un
+     * contexto con rol `seller` y sin usuario, a propósito. Sellar por el rol a
+     * secas habría puesto `seller_id` en null en toda venta web y apagado el
+     * motor de atribución entero —la cookie del visitante es lo único que
+     * encuentra al conserje que compartió el enlace— sin ningún error que lo
+     * delatara.
+     */
+    expect(ventaSelladaPorVendedor(web)).toBe(false);
+  });
+
+  it("de cajero hacia arriba, NO", () => {
+    // Registrar la venta de otro es trabajo normal en el mostrador.
+    for (const role of ["cashier", "manager", "admin", "owner"] as const) {
+      expect(ventaSelladaPorVendedor({ role, userId: "u1" }), role).toBe(false);
+    }
+  });
+});
+
+describe("el sello al crear", () => {
+  const persona = { role: "seller" as const, userId: "u1", sellerId: "v1" };
+
+  it("pone al vendedor de quien crea", () => {
+    expect(sellerStampFor("lead", persona, { name: "Ana" })).toEqual({ name: "Ana", seller: "v1" });
+  });
+
+  it("PISA el que venía en el cuerpo", () => {
+    /**
+     * Aquí está la diferencia con el sello de sucursal, que respeta lo elegido:
+     * un gerente creando algo para otra sucursal está en su derecho, pero un
+     * vendedor eligiendo a otro vendedor no es una decisión legítima — es
+     * regalar o quedarse una comisión.
+     */
+    expect(sellerStampFor("lead", persona, { seller: "v2" })).toEqual({ seller: "v1" });
+  });
+
+  it("sin ficha vinculada sella a nadie, y tampoco deja pasar lo del cuerpo", () => {
+    // Si dejara pasar el valor del cuerpo, bastaría con no vincular la ficha
+    // para poder atribuirse lo que sea.
+    const sinFicha = { role: "seller" as const, userId: "u1", sellerId: null };
+    expect(sellerStampFor("lead", sinFicha, { seller: "v2" })).toEqual({ seller: null });
+  });
+
+  it("no sella lo que no tiene dimensión de vendedor, ni a quien manda", () => {
+    expect(sellerStampFor("product", persona, { name: "Saona" })).toEqual({ name: "Saona" });
+    expect(sellerStampFor("lead", { role: "manager", userId: "u1" }, { seller: "v2" })).toEqual({ seller: "v2" });
+  });
+});
+
+describe("actuar sobre una fila ajena", () => {
+  const persona = { role: "seller" as const, userId: "u1", sellerId: "v1" };
+
+  it("la reserva de otro se rechaza con 403", () => {
+    // Cancelar anula la comisión de quien vendió: sin esto, un vendedor le
+    // borraba el mes a un compañero con una llamada.
+    try {
+      assertSellerOwnsRow("booking", persona, { seller: "v2" }, "Esta reserva");
+      throw new Error("no lanzó");
+    } catch (err) {
+      expect((err as Error).message).toBe("Esta reserva es de otro vendedor");
+      expect((err as { status?: number }).status).toBe(403);
+    }
+  });
+
+  it("la suya y la de nadie pasan, y la referencia expandida también", () => {
+    expect(() => assertSellerOwnsRow("booking", persona, { seller: "v1" })).not.toThrow();
+    expect(() => assertSellerOwnsRow("booking", persona, { seller: null })).not.toThrow();
+    // La fila puede traer la relación expandida como objeto: comparar en crudo
+    // habría dejado pasar la de otro.
+    expect(() => assertSellerOwnsRow("booking", persona, { seller: { _id: "v2" } })).toThrow();
+    expect(() => assertSellerOwnsRow("booking", persona, { seller: { _id: "v1" } })).not.toThrow();
+  });
+
+  it("un gerente actúa sobre cualquiera", () => {
+    expect(() => assertSellerOwnsRow("booking", { role: "manager", userId: "u1" }, { seller: "v2" })).not.toThrow();
+  });
+});
+
+describe("donde «sin vendedor» NO significa «de la empresa»", () => {
+  /**
+   * EL FALLO QUE ESTAS PRUEBAS EVITAN.
+   *
+   * La regla «lo mío o lo de nadie» es correcta para la VENTA: una orden sin
+   * vendedor entró por la web o la registró un administrador, y esconderla
+   * sería perder el pasado.
+   *
+   * En el dinero es al revés, y no se ve hasta mirar el esquema: `commission`,
+   * `settlement` y `payable` tienen `beneficiary_type`, así que una fila sin
+   * `seller_id` no es «de nadie» — es de un SOCIO o de un PROVEEDOR. Abrirle
+   * las comisiones a un vendedor con la regla indulgente le habría abierto
+   * todas las comisiones de los tour centers y todas las facturas de los
+   * proveedores de una vez.
+   */
+
+  it("la venta es indulgente: lo suyo y lo de la empresa", () => {
+    expect(esEstricta("order")).toBe(false);
+    expect(sellerFilterFor("order", "seller", "v1")).toEqual({
+      _or: [{ seller: "v1" }, { seller: null }],
+    });
+  });
+
+  it("el dinero es estricto: SOLO lo suyo", () => {
+    for (const tabla of ["commission", "settlement", "payable"]) {
+      expect(esEstricta(tabla), tabla).toBe(true);
+      expect(sellerFilterFor(tabla, "seller", "v1"), tabla).toEqual({ seller: "v1" });
+    }
+  });
+
+  it("las reglas generales de la empresa tampoco son «de nadie»", () => {
+    // Una `price_rule` sin vendedor es la tarifa general: con la regla
+    // indulgente, el vendedor habría leído el tarifario entero.
+    for (const tabla of ["price_rule", "commission_rule"]) {
+      expect(sellerFilterFor(tabla, "seller", "v1"), tabla).toEqual({ seller: "v1" });
+    }
+  });
+
+  it("en una tabla estricta, sin ficha vinculada no se trae NADA", () => {
+    // Un filtro imposible, no la ausencia de filtro: no saber quién eres no
+    // puede significar «te lo enseño todo».
+    expect(sellerFilterFor("commission", "seller", null)).toEqual({ seller: NADIE });
+  });
+
+  it("y una fila sin vendedor NO se abre en una tabla estricta", () => {
+    expect(sellerCanReadRow("commission", "seller", "v1", null)).toBe(false);
+    expect(sellerCanReadRow("settlement", "seller", "v1", null)).toBe(false);
+    // Mientras que en la venta sí, que es de lo que depende el punto de venta.
+    expect(sellerCanReadRow("order", "seller", "v1", null)).toBe(true);
+  });
+
+  it("toda tabla estricta está declarada como acotada", () => {
+    // Una estricta que no esté en el mapa de ámbito no se acota en absoluto:
+    // la declaración de estrictez sería decorativa.
+    for (const tabla of SELLER_ESTRICTAS) {
+      expect(isSellerScoped(tabla), `${tabla} no está en SELLER_SCOPED`).toBe(true);
+    }
+  });
+
+  it("y las tablas de la venta NO están entre las estrictas", () => {
+    // Meterlas ahí escondería al vendedor su propia venta sin atribuir, un
+    // segundo después de hacerla.
+    for (const tabla of ["order", "booking", "quote", "lead"]) {
+      expect(SELLER_ESTRICTAS.has(tabla), tabla).toBe(false);
+    }
   });
 });

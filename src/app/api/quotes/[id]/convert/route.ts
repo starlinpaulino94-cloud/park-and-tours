@@ -41,7 +41,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       channel?: string; capacity_override?: boolean; override_reason?: string; branch?: string;
     }>(req);
 
-    const { quote, options, lines } = await loadQuoteBundle(ctx.companyId, id);
+    const { quote, options, lines } = await loadQuoteBundle(ctx.companyId, id, ctx);
 
     const blocker = convertBlocker(
       quote,
@@ -180,7 +180,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const { id } = await params;
     const ctx = await requireTenant();
     await assertRateLimit({ key: rateLimitKey(req, "quotes:convert:check", ctx.userId), limit: 240, windowMs: 60_000 });
-    const { quote, options, lines } = await loadQuoteBundle(ctx.companyId, id);
+    const { quote, options, lines } = await loadQuoteBundle(ctx.companyId, id, ctx);
     const blocker = convertBlocker(
       quote,
       lines.map((l) => ({
