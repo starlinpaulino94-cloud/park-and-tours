@@ -3093,6 +3093,7 @@ describe("las notificaciones internas", () => {
     ["partner_booking_rescheduled", "src/app/api/bookings/[id]/reschedule/route.ts"],
     ["partner_settlement_issued", "src/app/api/settlements/generate/route.ts"],
     ["partner_settlement_paid", "src/app/api/settlements/[id]/pay/route.ts"],
+    ["partner_wallet_topup", "src/app/api/partners/wallet/route.ts"],
     ["booking_created", "src/lib/booking-service.ts"],
     ["booking_cancelled", "src/lib/booking-cancel-service.ts"],
     ["booking_rescheduled", "src/app/api/bookings/[id]/reschedule/route.ts"],
@@ -6805,5 +6806,155 @@ describe("el socio que integra por API", () => {
     const entrada = PORTAL_NAV.find((n) => n.href === "/portal/avisos");
     expect(entrada, "el socio no encuentra su bandeja").toBeTruthy();
     expect(entrada?.badgeKey).toBe("notifications");
+  });
+
+  /* ═══════════════════════════════ Fase 6.6 · el saldo prepago */
+
+  it("EL SOCIO NO PUEDE ESCRIBIR EN SU PROPIO MONEDERO", () => {
+    /**
+     * La puerta de atrás evidente de esta ola. Quien apunta una recarga es
+     * quien VE la transferencia en el banco, y eso es la operadora. Si el socio
+     * pudiera escribir en su monedero, el saldo dejaría de significar «dinero
+     * ingresado» para significar «lo que el socio dice que ingresó» — y con eso
+     * vendería sin haber pagado.
+     *
+     * Son DOS rutas y no una con permisos: una ruta que lee y escribe acaba
+     * teniendo un camino que se salta la comprobación.
+     */
+    const interna = cuerpoDe("src/app/api/partners/wallet/route.ts");
+    // En las DOS mitades, no solo en la que escribe: el saldo de un socio dice
+    // cuánto ingresa y cuánto vende, y esta ruta acepta el socio por parámetro.
+    expect((interna.match(/if \(esDeSocio\(ctx\)\) throw new TenantError/g) || []).length)
+      .toBeGreaterThanOrEqual(2);
+    expect(interna).toMatch(/requireAtLeast\(ctx, "manager"\)/);
+
+    // Y la del portal no escribe: ni POST, ni PUT, ni PATCH.
+    const portal = cuerpoDe("src/app/api/portal/monedero/route.ts");
+    expect(portal, "el portal no puede recargar").not.toMatch(/export async function (POST|PUT|PATCH|DELETE)/);
+  });
+
+  it("el consumo lo apunta la venta, nunca una persona", () => {
+    /**
+     * Un consumo escrito a mano es un saldo que baja sin venta detrás, y no
+     * habría nada que enseñarle al socio cuando pregunte por qué. Lo escribe la
+     * venta, con su orden colgada y bajo el índice único que impide descontar
+     * dos veces la misma.
+     */
+    const ruta = cuerpoDe("src/app/api/partners/wallet/route.ts");
+    expect(ruta).toMatch(/TIPOS_A_MANO = new Set<TipoDeMovimiento>\(\["topup", "adjustment", "refund"\]\)/);
+    expect(ruta).toMatch(/if \(!TIPOS_A_MANO\.has\(tipo\)\)/);
+    // Y el CRUD genérico tampoco: la tabla no tiene ni una columna escribible.
+    expect(cuerpoDe("src/lib/resources.ts"))
+      .toMatch(/partner_wallet_movement: \{[\s\S]{0,400}?writable: \[\],/);
+  });
+
+  it("una venta descuenta UNA vez, y lo hace cumplir la base", () => {
+    /**
+     * Un reintento —la saga que se compensa y vuelve a entrar, un cliente que
+     * da dos veces al botón— descontaría dos veces la misma venta y el socio
+     * pagaría el doble. Dos instancias a la vez le ganan siempre a una
+     * comprobación hecha en la aplicación.
+     */
+    const sql = read("supabase/migrations/0080_partner_wallet.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/create unique index if not exists partner_wallet_consumption_once_idx/);
+    expect(sql).toMatch(/where movement_type = 'consumption' and order_id is not null/);
+  });
+
+  it("el importe siempre es positivo, y también en la base", () => {
+    /**
+     * El signo lo pone el TIPO. Con importes con signo, una recarga de −500
+     * vacía el monedero sin que nada parezca raro: en el listado se lee como
+     * una recarga. La regla vive también en la base porque el día que alguien
+     * inserte por SQL la aplicación no está delante.
+     */
+    const sql = read("supabase/migrations/0080_partner_wallet.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/amount\s+numeric\(14,2\) not null check \(amount > 0\)/);
+    // Y no hay columna de saldo: el saldo es la suma del libro.
+    expect(sql, "un saldo guardado se descuadra con sus propios movimientos")
+      .not.toMatch(/\bbalance\b/);
+  });
+
+  it("el prepago y el crédito son EXCLUYENTES al vender", () => {
+    /**
+     * Comprobar los dos sería pedirle al socio prepago que además tenga
+     * crédito. Y lo desconocido es crédito: es lo que hacen hoy todos los
+     * socios, y entender el hueco como prepago les cortaría la venta a todos
+     * de golpe, porque todos los monederos nacen a cero.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    expect(servicio).toMatch(/if \(prepago\) \{[\s\S]{0,300}?await assertSaldo\(/);
+    expect(servicio, "son excluyentes, no acumulativos")
+      .toMatch(/\} else if \(Number\(creditTerms\?\.credit_limit \?\? 0\) > 0\)/);
+    // Y lo desconocido es crédito, decidido en un solo sitio.
+    expect(cuerpoDe("src/lib/monedero-socio.ts"))
+      .toMatch(/relacion\?\.payment_mode === "prepaid" \? "prepaid" : "credit"/);
+  });
+
+  it("se comprueba ANTES de escribir y se descuenta DESPUÉS", () => {
+    /**
+     * Descontar antes y que la saga se compensara dejaría al socio pagando una
+     * reserva que no llegó a nacer. Y se descuenta con el TOTAL de verdad, no
+     * con la estimación que sirvió para comprobar: cobrar por la estimación
+     * dejaría el saldo distinto de lo que el socio ve en su factura.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    const iCheck = servicio.indexOf("await assertSaldo(");
+    const iOrden = servicio.indexOf("tenantCreate<Order>");
+    const iCobro = servicio.indexOf("await descontarVenta(");
+    expect(iCheck, "no se comprueba el saldo").toBeGreaterThan(-1);
+    expect(iCheck, "el saldo se comprueba después de escribir la orden").toBeLessThan(iOrden);
+    expect(iCobro, "no se descuenta la venta").toBeGreaterThan(iOrden);
+    expect(servicio.slice(iCobro, iCobro + 400), "se cobra la estimación, no el total")
+      .toMatch(/importe: totals\.total/);
+  });
+
+  it("la cancelación mira el LIBRO, no el contrato de hoy", () => {
+    /**
+     * Un socio que pasó de prepago a crédito entre la venta y la cancelación
+     * recibiría un abono por una venta que nunca le descontó — o, al revés, se
+     * quedaría sin su devolución. Lo que manda es lo que pasó.
+     */
+    const cancel = cuerpoDe("src/lib/booking-cancel-service.ts");
+    expect(cancel).toMatch(/movement_type: "consumption"[\s\S]{0,120}?_limit: 1/);
+    expect(cancel).toMatch(/if \(consumo\) \{/);
+    expect(cancel, "devuelve lo de ESTA reserva, no el total de la orden")
+      .toMatch(/importe: Number\(booking\.total_amount \?\? 0\)/);
+    expect(cancel, "no puede decidirlo por el modo de pago de hoy")
+      .not.toMatch(/esPrepago\(/);
+  });
+
+  it("la moneda del movimiento se compara con la del MONEDERO", () => {
+    /**
+     * Un monedero en dólares al que se le apunta una recarga en pesos suma
+     * 30.000 a un saldo de dólares. Comparar el movimiento consigo mismo es una
+     * comprobación que no puede fallar nunca — y era exactamente lo que hacía
+     * la primera versión de `apuntarMovimiento`.
+     */
+    const servicio = cuerpoDe("src/lib/monedero-service.ts");
+    expect(servicio).toMatch(/monedaDelMonedero: string/);
+    expect(servicio).toMatch(/movimientoInvalido\(\s*\{[^}]*\},\s*monedaDelMonedero\s*\)/);
+    // Y quien apunta a mano no elige la moneda: sale del contrato.
+    const ruta = cuerpoDe("src/app/api/partners/wallet/route.ts");
+    expect(ruta).toMatch(/const moneda = String\(partner\.currency/);
+    expect(ruta, "la moneda no puede venir del cuerpo").not.toMatch(/body\.currency/);
+  });
+
+  it("el saldo se suma sobre TODOS los movimientos, no sobre una página", () => {
+    // Un saldo por página crece solo cuando el socio pasa de quinientos
+    // movimientos, y crece hacia arriba —se pierden consumos viejos—, que es
+    // el lado caro del error.
+    const servicio = cuerpoDe("src/lib/monedero-service.ts");
+    const i = servicio.indexOf("export async function saldoDeSocio");
+    expect(servicio.slice(i, i + 400)).toMatch(/_limit: 100_000/);
+    expect(servicio.slice(i, i + 400), "el saldo no puede salir de movimientosDe")
+      .not.toMatch(/movimientosDe\(/);
+  });
+
+  it("«mi saldo» y «saldo de partners» tienen pantalla y menú", () => {
+    expect(existe("src/app/portal/monedero/page.tsx")).toBe(true);
+    expect(PORTAL_NAV.some((n) => n.href === "/portal/monedero")).toBe(true);
+    // Y la de la operadora, que es la única que puede recargar.
+    expect(existe("src/app/dashboard/partners/saldo/page.tsx")).toBe(true);
+    expect(read("src/lib/nav.ts")).toContain('href: "/dashboard/partners/saldo"');
   });
 });

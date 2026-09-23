@@ -109,6 +109,18 @@ export default function PartnersPage() {
           ] },
         { name: "default_commission_pct", label: "Comisión estándar", type: "number", suffix: "%" },
         { name: "currency", label: "Moneda", type: "select", options: CURRENCY_OPTIONS },
+        /**
+         * Cómo PAGA este socio, y va justo encima del límite de crédito por el
+         * mismo motivo que el modelo comercial va encima de la comisión: con
+         * «prepago» esas dos casillas dejan de aplicarse, y verlas juntas evita
+         * rellenar las dos creyendo que se suman.
+         */
+        { name: "payment_mode", label: "Forma de pago", type: "select", defaultValue: "credit",
+          help: "Con «prepago» cada venta descuenta de su saldo y no hay descubierto: sin saldo no vende.",
+          options: [
+            { value: "credit", label: "A crédito (vende ahora, paga después)" },
+            { value: "prepaid", label: "Prepago (ingresa y va gastando)" },
+          ] },
         { name: "credit_limit", label: "Límite de crédito", type: "number" },
         { name: "credit_days", label: "Días de crédito", type: "number" },
         { name: "contract_from", label: "Contrato desde", type: "date" },

@@ -17,6 +17,8 @@ import { notify } from "@/lib/notify-service";
 import { formatDate } from "@/lib/format";
 import { ensureSchedule, refreshAllocation } from "@/lib/schedule-service";
 import { creditCheck, holdUntil } from "@/lib/collections";
+import { esPrepago } from "@/lib/monedero-socio";
+import { assertSaldo, descontarVenta } from "@/lib/monedero-service";
 import { accrueBookingCosts, cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { reserveForSale, stockableOffers } from "@/lib/stock-commitment-service";
 import { assertAllotment, consumeAllotment } from "@/lib/allotment-service";
@@ -563,6 +565,13 @@ export async function createOrderWithBookings(
   // created so far (releasing their seats) and void the order — so a failure
   // can never leave a "phantom" order with live seats but zero total, or a B2B
   // sale with no receivable that nobody would ever collect.
+  /**
+   * Se recuerda para el final, cuando hay que descontar: volver a leer la
+   * relación allí abriría la puerta a que el modo hubiera cambiado entre la
+   * comprobación y el cobro, y entonces se cobraría sin haber comprobado.
+   */
+  let prepago = false;
+
   // ---- límite de crédito del socio (0039) --------------------------------
   // `credit_limit` llevaba desde la migración 0002 sin que nada lo mirara: se
   // podía vender a crédito a un tour center sin techo, y el descubierto solo
@@ -572,7 +581,28 @@ export async function createOrderWithBookings(
     const creditTerms = (await tenantQuery<Partner>(companyId, "partner", {
       _filter: { _id: input.partner_id }, _limit: 1,
     }))[0];
-    if (Number(creditTerms?.credit_limit ?? 0) > 0) {
+
+    /**
+     * ── EL SALDO PREPAGO (0080) ──────────────────────────────────────────
+     *
+     * El otro modo de pagar, y son EXCLUYENTES: o se vende a deber con un
+     * techo, o se vende contra un depósito ya ingresado. Comprobar los dos a
+     * la vez sería pedirle al socio prepago que además tenga crédito.
+     *
+     * Y lo desconocido es crédito, que es lo que hacen hoy todos los socios:
+     * entender el hueco como prepago les cortaría la venta a todos de golpe el
+     * día del despliegue, porque todos los monederos nacen a cero.
+     *
+     * Se comprueba ANTES de escribir nada, como el crédito, y con el mismo
+     * total estimado. El descuento se apunta al FINAL, cuando la venta ya
+     * existe: descontar antes y que la saga se compensara dejaría al socio
+     * pagando una reserva que no llegó a nacer.
+     */
+    prepago = esPrepago(creditTerms as { payment_mode?: string | null });
+    if (prepago) {
+      const estimate = await estimateOrderTotal(companyId, input, currency, exchangeRate, attributedSeller);
+      await assertSaldo(companyId, input.partner_id, estimate);
+    } else if (Number(creditTerms?.credit_limit ?? 0) > 0) {
       const open = await tenantQuery<{ balance?: number; amount?: number; paid_amount?: number }>(
         companyId, "receivable", {
           _filter: { partner: input.partner_id, status: { nin: ["paid", "written_off"] } },
@@ -1136,6 +1166,39 @@ export async function createOrderWithBookings(
   // venta que ya está hecha; la diferencia se ve en la matriz al día siguiente.
   for (const [, use] of allotmentUse) {
     await consumeAllotment(companyId, use.row, use.seats);
+  }
+
+  /**
+   * ---- descontar la venta del monedero prepago (0080) --------------------
+   *
+   * Aquí, con el TOTAL de verdad y no con la estimación que se usó para
+   * comprobar el saldo: la estimación existe para no armar la venta entera y
+   * descubrir al final que no cabía, pero cobrar por ella dejaría el saldo
+   * distinto de lo que el socio va a ver en su factura.
+   *
+   * Al final y fuera de la saga, por lo mismo que el cupo: en este punto el
+   * cliente ya tiene su reserva y su voucher, y revertir todo por no poder
+   * escribir una fila de saldo cambiaría un descuadre —visible en el listado al
+   * día siguiente— por una reserva perdida con el turista delante.
+   *
+   * Y una orden descuenta UNA vez: lo hace cumplir un índice único de 0080, no
+   * una comprobación de aquí, porque dos instancias a la vez le ganan siempre a
+   * una comprobación en la aplicación.
+   */
+  if (input.partner_id && prepago) {
+    await descontarVenta(
+      companyId,
+      {
+        partnerId: input.partner_id,
+        tipo: "consumption",
+        importe: totals.total,
+        moneda: currency,
+        orderId: order._id,
+        nota: `Venta ${order.order_number}`,
+        userId: ctx.userId,
+      },
+      currency
+    );
   }
 
   console.log(`[booking-service] orden ${order.order_number} creada · ${bookings.length} reservas · total ${totals.total} ${currency}`);

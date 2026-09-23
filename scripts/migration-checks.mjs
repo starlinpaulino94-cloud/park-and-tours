@@ -480,6 +480,26 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0080 — el saldo prepago del tour center",
+    // El crédito existía y el prepago no: al socio que ingresa por adelantado
+    // había que llevarle el saldo en una libreta y mirarla antes de cada venta.
+    // No hay columna de saldo a propósito — es la suma de este libro, y así no
+    // puede discrepar de sus propios movimientos.
+    tables: ["partner_wallet_movement"],
+    columns: [
+      ["partner_wallet_movement", ["partner_id", "movement_type", "amount", "currency"]],
+      ["organization_relationships", ["payment_mode"]],
+    ],
+  },
+  {
+    migration: "0079 — la bandeja del tour center",
+    // `notification.partner_id` está en la tabla desde 0009 y nadie la escribía
+    // ni la leía: al socio no se le contaba nada de sus propias ventas.
+    columns: [
+      ["notification", ["partner_id"]],
+    ],
+  },
+  {
     migration: "0078 — el modelo comercial del socio",
     // Sin esta columna, un tour center con tarifa NETA cobraba su margen dos
     // veces: una en el precio y otra en la liquidación. No se ve el día de la

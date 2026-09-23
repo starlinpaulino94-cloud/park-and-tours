@@ -87,6 +87,10 @@ export const COMPANY_EXPORT_AREAS: CompanyExportArea[] = [
       // El contrato de qué puede vender cada canal externo (0077). Va con los
       // partners y no con el catálogo: es de la RELACIÓN, no del producto.
       partner_product: "catalogo-autorizado",
+      // El libro del saldo prepago (0080). Va aquí y no con las finanzas de la
+      // operadora porque es dinero DEL SOCIO: es la prueba de lo que ingresó y
+      // de en qué se gastó, y es lo primero que pide cuando discute un corte.
+      partner_wallet_movement: "saldo-de-partner",
       seller: "vendedores",
       seller_type: "tipos-de-vendedor",
       seller_link: "enlaces-de-vendedor",

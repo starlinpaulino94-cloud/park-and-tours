@@ -45,6 +45,14 @@ export const PARTNER_RELATIONSHIP_COLUMNS: Record<string, string> = {
    * defecto en vez de admitir nulos.
    */
   pricing_model: "pricing_model",
+  /**
+   * Cómo paga este socio (0080): a crédito o prepago.
+   *
+   * Mismo sitio y mismo motivo que `pricing_model`: es del contrato, y la
+   * misma agencia puede trabajar a crédito con una operadora y prepago con
+   * otra. Lo declara la operadora al pactar.
+   */
+  payment_mode: "payment_mode",
 };
 
 /**

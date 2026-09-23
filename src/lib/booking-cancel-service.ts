@@ -4,6 +4,7 @@ import { recalculateDeparture } from "@/lib/availability";
 import { cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { settleBookingStock } from "@/lib/stock-commitment-service";
 import { releaseBookingAllotment } from "@/lib/allotment-service";
+import { devolverAlMonedero } from "@/lib/monedero-service";
 import { offerFreedSeats } from "@/lib/waitlist-service";
 import { reverseForOrder } from "@/lib/membego-redemption-service";
 import { syncOrderTotals } from "@/lib/booking-service";
@@ -383,6 +384,46 @@ export async function cancelBookingFully(
     ? await tenantQuery<{ partner?: unknown }>(ctx.companyId, "order", { _filter: { _id: orderId }, _limit: 1 })
     : [];
   const socioDeLaVenta = refId(ordenDeLaVenta?.partner as never);
+
+  /**
+   * ---- devolver al monedero prepago lo que esta reserva gastó (0080) -----
+   *
+   * Por el importe de ESTA reserva, no por el total de la orden: cancelar una
+   * de tres no devuelve las tres.
+   *
+   * Y solo si aquella venta llegó a descontar. Se mira el libro —¿hay un
+   * consumo de esta orden?— en vez de fiarse del modo de pago de HOY: un socio
+   * que pasó de prepago a crédito entre la venta y la cancelación recibiría un
+   * abono por una venta que nunca le descontó, o al revés, se quedaría sin su
+   * devolución. Lo que manda es lo que pasó, no lo que se pacta ahora.
+   */
+  if (socioDeLaVenta && orderId) {
+    const consumos = await tenantQuery<{ currency?: string | null }>(
+      ctx.companyId, "partner_wallet_movement",
+      { _filter: { order_id: orderId, movement_type: "consumption" }, _limit: 1 }
+    );
+    const consumo = consumos[0];
+    if (consumo) {
+      await devolverAlMonedero(
+        ctx.companyId,
+        {
+          partnerId: socioDeLaVenta,
+          tipo: "refund",
+          // Lo que esta reserva costó, no lo que se le reembolsa al cliente:
+          // la penalización de cancelación es cosa del cliente, y descontarla
+          // aquí le cobraría al socio una penalización dos veces.
+          importe: Number(booking.total_amount ?? 0),
+          moneda: consumo.currency || booking.currency || "usd",
+          orderId,
+          bookingId: id,
+          nota: `Cancelación de ${booking.booking_number}`,
+          userId: ctx.userId,
+        },
+        consumo.currency || booking.currency || "usd"
+      );
+    }
+  }
+
   if (socioDeLaVenta) {
     await notify({
       companyId: ctx.companyId,

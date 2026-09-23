@@ -1386,6 +1386,26 @@ export const RESOURCES: Record<string, ResourceDef> = {
     dates: ["last_sync_at"],
     writeRole: "admin",
   },
+  /**
+   * El libro del saldo prepago (0080).
+   *
+   * Nada es escribible por el CRUD genérico, y es deliberado: una recarga entra
+   * por `/api/partners/wallet`, que comprueba que quien la apunta NO es el
+   * socio —quien ve la transferencia en el banco es la operadora—, valida la
+   * moneda contra la del contrato y deja auditoría. Abrir estas columnas al
+   * CRUD sería dar exactamente ese rodeo.
+   *
+   * Y el consumo lo escribe la venta, bajo el índice único que impide
+   * descontar dos veces la misma orden.
+   */
+  partner_wallet_movement: {
+    table: "partner_wallet_movement",
+    search: ["reference"],
+    expand: { partner: true, order: true },
+    sort: { createdAt: "desc" },
+    writable: [],
+    writeRole: "owner",
+  },
   notification: {
     table: "notification",
     search: ["title"],

@@ -313,6 +313,19 @@ export const NOTIFY_EVENTS = {
     link: () => "/portal/liquidaciones",
   },
 
+  /**
+   * Una recarga apuntada. Es la mitad del prepago: un ingreso que el socio no
+   * ve reflejado es una llamada al día siguiente preguntando si llegó — y, si
+   * no llegó, una venta que le rebota por saldo sin que sepa por qué.
+   */
+  partner_wallet_topup: {
+    type: "payment",
+    audience: "partner",
+    title: () => "Recarga registrada",
+    message: (v) => `${money(v)}. Tu saldo disponible es ${money(v, "saldo")}.`,
+    link: () => "/portal/monedero",
+  },
+
   partner_settlement_paid: {
     type: "settlement",
     audience: "partner",

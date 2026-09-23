@@ -2517,3 +2517,72 @@ Y la tabla dice dos cosas más que no se preguntaban:
   añadir un quinto campo cambiaría la clave de todos los avisos ya escritos y el
   índice único dejaría pasar una copia de cada uno.
 - **Mutación: quince, las quince muertas.**
+
+### Fase 6.6 — el prepago no existía, y el crédito sí
+- **Lo primero fue mirar qué había.** El control de crédito funciona desde 0031:
+  `creditCheck` comprueba el techo con lo que el socio debe según sus documentos
+  abiertos, y la venta se para. Nada de eso hacía falta tocarlo.
+- **Lo que no había es lo contrario**: el socio que ingresa por adelantado y va
+  gastando, que es como trabaja media costa — transfieren el lunes y venden toda
+  la semana contra ese depósito. Sin esto había que llevarle el saldo en una
+  libreta y mirarla antes de cada venta. Como el cupo antes de 6.4 y el contrato
+  antes de 6.1: el acuerdo existía fuera del sistema.
+- **EL SALDO NO SE GUARDA: SE SUMA.** No hay columna `balance`. Una columna con
+  el saldo es un número que puede discrepar de sus propios movimientos, y cuando
+  discrepa nadie sabe cuál de los dos es el bueno. Un saldo derivado se
+  recalcula. (Había un `balance: 0` en el sembrador de demostración que no iba a
+  ninguna columna — ni en `PARTNER_RELATIONSHIP_COLUMNS` ni en
+  `PARTNER_ORG_COLUMNS`: era justo esa columna imaginaria.)
+- **EL IMPORTE SIEMPRE ES POSITIVO; el signo lo pone el TIPO.** Con importes con
+  signo, una recarga de −500 vacía el monedero sin que nada parezca raro: en el
+  listado se lee como una recarga. Lo hace cumplir un `check` en la base, porque
+  el día que alguien inserte por SQL la aplicación no está delante.
+- **Y el ajuste SIEMPRE resta.** Un ajuste que suma es una recarga y tiene que
+  entrar por la puerta de las recargas, donde queda el número de la
+  transferencia — si no, es la forma de regalarle saldo a un socio sin que se
+  vea de dónde salió.
+- **El socio no puede escribir en su propio monedero**, y por eso son DOS rutas
+  y no una con permisos. Quien apunta una recarga es quien VE la transferencia
+  en el banco, y eso es la operadora. Si el socio pudiera, el saldo dejaría de
+  significar «dinero ingresado» para significar «lo que el socio dice que
+  ingresó», y con eso vendería sin haber pagado. Ni siquiera puede LEER la ruta
+  interna: acepta el socio por parámetro, y el saldo de un socio dice cuánto
+  ingresa y cuánto vende.
+- **El consumo no se apunta a mano.** Lo escribe la venta, con su orden colgada,
+  y el CRUD genérico no tiene ni una columna escribible en esa tabla. Un consumo
+  sin venta detrás baja el saldo y no deja nada que enseñar cuando el socio
+  pregunte por qué.
+- **Una venta descuenta UNA vez, y lo hace cumplir un índice único** — no una
+  comprobación de la aplicación: dos instancias a la vez le ganan siempre. Sin
+  él, un reintento cobra dos veces la misma reserva.
+- **Se comprueba ANTES de escribir y se descuenta DESPUÉS**, igual que el cupo:
+  descontar antes y que la saga se compensara dejaría al socio pagando una
+  reserva que no llegó a nacer. Y se descuenta con el TOTAL de verdad, no con la
+  estimación que sirvió para comprobar — cobrar por la estimación dejaría el
+  saldo distinto de lo que el socio ve en su factura.
+- **La cancelación mira el LIBRO, no el contrato de hoy.** Un socio que pasó de
+  prepago a crédito entre la venta y la cancelación recibiría un abono por una
+  venta que nunca le descontó, o al revés se quedaría sin su devolución. Y
+  devuelve lo de ESA reserva, no el total de la orden.
+- **La moneda es lo que más calla.** Un monedero en dólares al que se le apunta
+  una recarga en pesos suma 30.000 a un saldo de dólares. Se rechaza y no se
+  convierte — convertir sería inventarse un tipo de cambio que nadie pactó y
+  enterrarlo en una fila. La moneda sale del contrato, no del cuerpo de la
+  petición: dejar que quien apunta la elija es exactamente cómo entra esa
+  recarga.
+- **Y la primera versión de esa comprobación no podía fallar nunca**: comparaba
+  el movimiento consigo mismo. La moneda del monedero entra ahora como parámetro
+  aparte, y hay una mutación que lo vigila.
+- **El saldo se suma sobre TODOS los movimientos, no sobre la página que se
+  devuelve.** Un saldo por página crece solo cuando el socio pasa de quinientos
+  movimientos, y crece hacia arriba —se pierden consumos viejos—, que es el lado
+  caro del error.
+- **Prepago y crédito son EXCLUYENTES**, declarados en la relación como el
+  modelo de precio de 6.2. Comprobar los dos sería pedirle al socio prepago que
+  además tenga crédito. Y **lo desconocido es crédito**: es lo que hacen hoy
+  todos los socios, y entender el hueco como prepago les cortaría la venta a
+  todos de golpe el día del despliegue, porque todos los monederos nacen a cero.
+- **Una recarga apuntada avisa al socio** (6.5). Un ingreso que él no ve
+  reflejado es una llamada al día siguiente preguntando si llegó — y, si no
+  llegó, una venta que le rebota por saldo sin que sepa por qué.
+- **Mutación: veinte, las veinte muertas.**
