@@ -2859,7 +2859,66 @@ describe("las notificaciones internas", () => {
     ["allotment_released", "src/app/api/cron/allotments/route.ts"],
     ["waitlist_offer", "src/lib/waitlist-service.ts"],
     ["survey_detractor", "src/lib/voice-service.ts"],
+    // Los cuatro del vendedor. Van a la PERSONA (`userId`) y no a la audiencia
+    // de rol: repartidos por rol, cada vendedor recibiría los avisos de las
+    // ventas de sus compañeros y, de paso, sabría cuánto cobran.
+    ["sale_attributed", "src/app/api/orders/route.ts"],
+    ["commission_approved", "src/app/api/commissions/bulk/route.ts"],
+    ["settlement_paid", "src/app/api/settlements/[id]/pay/route.ts"],
+    ["booking_cancelled_for_seller", "src/app/api/bookings/[id]/cancel/route.ts"],
   ];
+
+  it("las metas del vendedor IGNORAN el parámetro de la consulta", () => {
+    /**
+     * Es la diferencia entre «filtrar» y «acotar». Si la rama del vendedor
+     * aceptara `?seller=` y luego comprobara que coincide, bastaría un fallo de
+     * comparación —o un camino nuevo que se olvide de comprobar— para leer las
+     * metas y los bonos de un compañero. Ignorándolo, ese parámetro no existe
+     * para él: no hay comparación que pueda salir mal.
+     */
+    const src = read("src/app/api/seller-goals/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const rama = src.slice(src.indexOf('if (ctx.role === "seller")'), src.indexOf('requireAtLeast(ctx, "manager")'));
+    expect(rama, "la rama del vendedor no existe").toContain("goalsWithProgress");
+    expect(rama).toMatch(/sellerId: ctx\.sellerId \?\? NADIE/);
+    expect(rama, "la rama del vendedor lee la consulta").not.toMatch(/searchParams/);
+  });
+
+  it("los avisos del vendedor van con nombre y apellido, no por rol", () => {
+    /**
+     * Es la diferencia entre enterarse y no enterarse. «Te aprobaron la
+     * comisión» mandado a la audiencia `seller` se lo manda a TODOS los
+     * vendedores de la empresa: cada uno recibe lo de sus compañeros, ninguno
+     * encuentra lo suyo entre el ruido, y todos acaban sabiendo cuánto cobran
+     * los demás.
+     *
+     * `notify` pone `audience_role` en null cuando hay `userId`, así que lo que
+     * hay que fijar es que los cuatro se emitan SIEMPRE con usuario.
+     */
+    for (const [event, file] of [
+      ["sale_attributed", "src/app/api/orders/route.ts"],
+      ["commission_approved", "src/app/api/commissions/bulk/route.ts"],
+      ["settlement_paid", "src/app/api/settlements/[id]/pay/route.ts"],
+      ["booking_cancelled_for_seller", "src/app/api/bookings/[id]/cancel/route.ts"],
+    ] as const) {
+      const src = read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+      /**
+       * Se mira DENTRO de la llamada a `notify`, no en una ventana de
+       * caracteres alrededor: una ventana atrapa cualquier `userId,` que ande
+       * cerca por otro motivo, y entonces la guarda pasa aunque el aviso se
+       * emita sin usuario. (Pasó: esta comprobación no mordía.)
+       */
+      const donde = src.indexOf(`event: "${event}"`);
+      expect(donde, `${event} no se emite desde ${file}`).toBeGreaterThan(-1);
+      const inicio = src.lastIndexOf("notify({", donde);
+      expect(inicio, `${event} no se emite con notify({`).toBeGreaterThan(-1);
+      const llamada = src.slice(inicio, donde);
+      expect(llamada, `${event} se emite sin usuario`).toMatch(/\buserId,/);
+      // Y sin cuenta vinculada NO se avisa a nadie: un aviso personal sin
+      // persona no puede convertirse en un aviso para todo el mundo.
+      expect(src, `${event} no comprueba que haya cuenta`).toMatch(/usuarioDeVendedor\(/);
+      expect(src, `${event} avisa aunque no haya cuenta`).toMatch(/if \(!?userId/);
+    }
+  });
 
   it("cada evento del catálogo se dispara desde algún sitio", () => {
     // Un evento en el catálogo que nadie emite es una promesa que el sistema no
@@ -4595,6 +4654,7 @@ describe("cada pantalla dice cómo se crea lo que enseña", () => {
     "/dashboard/analitica/cohortes": "cohortes: se calculan",
     "/dashboard/rentabilidad": "márgenes: se calculan de ventas y costes",
     "/dashboard/mi-espacio": "el apartado del vendedor: es una FOTO de lo suyo —lo vendido, la comisión, la meta—; una venta se hace en el punto de venta, y la comisión y la meta las genera el sistema. Un botón de «nuevo» aquí dejaría al vendedor crearse su propia comisión",
+    "/dashboard/mi-espacio/comisiones": "sus comisiones: las genera el devengo al confirmarse la venta y las liquida gerencia. Un botón de «nueva» aquí sería dejar que el vendedor se escriba su propia comisión, que es exactamente lo que este apartado no puede permitir",
     "/dashboard/mi-espacio/ventas": "sus ventas ya hechas: se crean en el punto de venta, que es donde está el cliente; esta pantalla las mira, no las inventa",
     "/dashboard/distribucion/matriz": "vista cruzada de disponibilidad ya existente",
     "/dashboard/distribucion/canales": "un canal no se crea, se conecta: aparece cuando un revendedor reserva por OCTO; se habilita en Integraciones",

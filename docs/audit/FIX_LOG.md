@@ -1593,3 +1593,65 @@ daba error: los tres producían números equivocados en silencio.
   puede haberla registrado — y el arranque le habría reescrito la contraseña en
   cada ejecución de CI, en silencio. Es exactamente el fallo que ese fichero
   existe para no repetir. Ahora tiene su prueba.
+
+### Fase 2 — el bolsillo del vendedor
+- **La compuerta se evalúa ANTES que el ámbito**, y ese es el error conceptual
+  más caro de este dominio: daba igual que `seller-scope.ts` supiera acotar las
+  comisiones, `READ_ROLE` las reservaba a gerencia y devolvía 403 antes de que
+  el filtro llegara a aplicarse. Por eso el vendedor no veía ni su propia
+  comisión.
+- **Dos trampas al abrirla, y la segunda no estaba en el plan.** La primera sí:
+  eximir «las tablas que el ámbito ya acota» habría incluido `price_rule` y
+  `commission_rule`, o sea el tarifario y el esquema de comisiones de toda la
+  empresa. La segunda apareció al mirar el esquema: `commission`, `settlement`
+  y `payable` llevan `beneficiary_type`, así que **una fila sin `seller_id` no
+  es «de nadie», es de un socio o de un proveedor**. La regla «lo mío o lo de
+  nadie» —correcta para la venta, donde una orden sin vendedor es de la
+  empresa— les habría abierto de paso todas las comisiones de los tour centers
+  y todas las facturas de los proveedores. El ámbito tiene ahora dos modos.
+- **Y la compuerta pasa a vivir en una función** (`assertCanReadTable`). Estaba
+  copiada en el listado, el detalle y la exportación; desde que tiene ramas por
+  actor, tres copias divergen, y la que se queda atrás suele ser la exportación.
+- **CORRECCIÓN A MI PROPIO PLAN.** Escribí que cada tabla que se abriera
+  necesitaría su política de RLS «o la pantalla saldría vacía». Es falso para
+  las tablas existentes: la política que instala `enable_tenant_rls` es por
+  organización y **no mira el rol**. Abrir las comisiones no necesitó una sola
+  línea de SQL. El enunciado solo vale para tablas nuevas.
+- **0070 — la comisión sabe de qué día es.** El mercado liquida por fecha de
+  TOUR y no de venta; la fecha de salida vive dos tablas más allá y la capa de
+  consulta no filtra por columna de tabla unida. Se copia UNA vez al devengar y
+  no sigue a la reserva si se reprograma: mover esa fecha movería el período de
+  liquidación de un dinero ya devengado, que quizá ya se pagó.
+- **El estado de cuenta lo decide la FILA, no el rango.** Abierto a su
+  beneficiario, el rango deja de decidir y bastaría con cambiar el identificador
+  de la dirección para bajarse la liquidación de un proveedor. Y el documento
+  del proveedor **no es el del vendedor con otro nombre**: lleva el coste y las
+  retenciones dentro. `assertSettlementBeneficiary` comprueba el TIPO antes que
+  el identificador, porque los uuid son de tablas distintas y compararlos entre
+  clases es preguntar «¿este uuid aparece en algún sitio de la fila?».
+- **Los cuatro avisos van a la PERSONA.** «Te aprobaron la comisión» repartido
+  por audiencia de rol se lo manda a todos los vendedores: cada uno recibe lo de
+  sus compañeros, ninguno encuentra lo suyo, y todos acaban sabiendo cuánto
+  cobran los demás. Sin cuenta vinculada no se avisa a nadie —un aviso personal
+  sin persona no puede convertirse en un aviso para todo el mundo— y nunca se
+  avisa a quien acaba de hacer la acción.
+- **Las metas IGNORAN el parámetro de la consulta.** Es la diferencia entre
+  filtrar y acotar: aceptar `?seller=` y comprobar después deja un fallo de
+  comparación entre el vendedor y las metas de un compañero.
+
+- **Tres cosas que arreglé de mi propio método**, y las tres del mismo tipo —una
+  guarda que parece proteger y no protege—:
+  1. Un `Boolean(ctx.sellerId)` que ninguna mutación podía matar, porque
+     `beneficiaryOf` ya rechaza una fila sin identificador. Código que finge.
+  2. **El mutador daba «NO MUERDE» cuando la sustitución no encontraba su
+     texto**: acusaba a la guarda de un fallo inexistente y escondía que no se
+     había probado nada. Ahora falla ruidosamente si el fichero no cambia, y
+     detecta el resultado por código de salida y no buscando una palabra.
+  3. Una guarda que buscaba `userId,` en una VENTANA de caracteres alrededor de
+     la llamada: atrapaba cualquier `userId,` que anduviera cerca por otro
+     motivo. Ahora mira dentro de la llamada a `notify({`.
+- **Y una guarda mía que se disparó con un comentario** en vez de con el código:
+  el fichero del estado de cuenta del vendedor EXPLICA por qué no lee
+  `booking_cost`, y la comprobación leía el fichero entero.
+- **Mutación:** veintiuna a lo largo de la fase, las veintiuna muertas tras
+  reescribir cuatro guardas.

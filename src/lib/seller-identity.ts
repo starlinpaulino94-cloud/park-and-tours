@@ -81,3 +81,32 @@ export async function assertSellerUserLinkable(
     );
   }
 }
+
+/**
+ * LA CUENTA DETRÁS DE UNA FICHA DE VENDEDOR, PARA AVISARLE A ÉL.
+ *
+ * El catálogo de avisos reparte por AUDIENCIA: quien tenga ese rol lo ve. Para
+ * «te aprobaron la comisión» eso es lo contrario de lo que hace falta — mandado
+ * a la audiencia `seller` se lo manda a TODOS los vendedores de la empresa, así
+ * que cada uno recibe los avisos de las ventas de sus compañeros, ninguno
+ * encuentra los suyos entre el ruido, y de paso todos se enteran de cuánto
+ * cobran los demás.
+ *
+ * Devuelve `null` cuando la ficha no tiene cuenta vinculada, y entonces NO se
+ * avisa a nadie: un aviso personal sin persona no puede convertirse en un aviso
+ * para todo el mundo.
+ */
+export async function usuarioDeVendedor(
+  companyId: string,
+  sellerId: string | null | undefined
+): Promise<string | null> {
+  if (!sellerId) return null;
+  try {
+    const filas = await tenantQuery<{ user?: unknown }>(companyId, "seller", {
+      _filter: { _id: sellerId }, _limit: 1,
+    });
+    return refId(filas[0]?.user) ?? null;
+  } catch {
+    return null;
+  }
+}

@@ -2,6 +2,9 @@ import { NextRequest } from "next/server";
 import { requireTenant, requireTenantWrite, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { sellerFilterFor } from "@/lib/seller-scope";
+import { notify } from "@/lib/notify-service";
+import { usuarioDeVendedor } from "@/lib/seller-identity";
+import { refId } from "@/lib/types";
 import { assertWithinLimit } from "@/lib/plan-service";
 import { createOrderWithBookings, type CreateOrderInput } from "@/lib/booking-service";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -56,6 +59,36 @@ export async function POST(req: NextRequest) {
     await assertWithinLimit(ctx, "max_bookings_month", Math.max(1, (body.items || []).length));
 
     const result = await createOrderWithBookings(ctx, body);
+
+    /**
+     * «Esta venta es tuya», al vendedor al que se le atribuyó.
+     *
+     * Importa sobre todo cuando NO estuvo delante: la venta web que le atribuye
+     * su enlace, la que registra el mostrador a su nombre. Sin aviso, se entera
+     * al mirar la pantalla —si mira—, y una venta que el vendedor no sabe que
+     * tiene es una comisión que no va a reclamar.
+     *
+     * A la PERSONA, y nunca a quien acaba de venderla: ya lo sabe.
+     */
+    const suyo = refId((result.order as { seller?: unknown }).seller);
+    if (suyo) {
+      const userId = await usuarioDeVendedor(ctx.companyId, suyo);
+      if (userId && userId !== ctx.userId) {
+        await notify({
+          companyId: ctx.companyId,
+          userId,
+          event: "sale_attributed",
+          entityType: "order",
+          entityId: result.order._id,
+          vars: {
+            referencia: result.order.order_number ?? "",
+            monto: result.order.total ?? 0,
+            moneda: result.order.currency ?? "usd",
+          },
+        });
+      }
+    }
+
     // La venta ya está hecha. La confirmación y el voucher salen en cuanto esta
     // respuesta llegue al punto de venta, sin que el cajero espere a Resend con
     // el cliente delante.

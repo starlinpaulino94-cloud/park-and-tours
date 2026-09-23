@@ -1,6 +1,9 @@
 import { NextRequest } from "next/server";
 import { requireTenantWrite, requireAtLeast, tenantFindOne } from "@/lib/tenant";
 import { assertSellerOwnsRow } from "@/lib/seller-scope";
+import { notify } from "@/lib/notify-service";
+import { usuarioDeVendedor } from "@/lib/seller-identity";
+import { refId } from "@/lib/types";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { cancelBookingFully, TERMINAL_STATES } from "@/lib/booking-cancel-service";
 import { flushOutboxAfterResponse } from "@/lib/messaging/flush";
@@ -51,6 +54,36 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       reason: body.reason,
       refundOverride: body.refund_override,
     });
+
+    /**
+     * Y al vendedor, que acaba de perder la comisión de esa reserva.
+     *
+     * Sin este aviso se entera el día de la liquidación, cuando ya no es una
+     * información sino una discusión. Va a la PERSONA y no a la audiencia de
+     * rol —repartido por rol, cada vendedor recibiría las cancelaciones de sus
+     * compañeros—, y solo cuando la cancelación le tocó de verdad el bolsillo.
+     *
+     * No se avisa a quien cancela de su propia cancelación: ya lo sabe, acaba
+     * de hacerlo.
+     */
+    const vendedorDeLaReserva = refId(booking.seller as never);
+    if (vendedorDeLaReserva && (result.commissionsVoided > 0 || result.commissionsAdjusted > 0)) {
+      const userId = await usuarioDeVendedor(ctx.companyId, vendedorDeLaReserva);
+      if (userId && userId !== ctx.userId) {
+        await notify({
+          companyId: ctx.companyId,
+          userId,
+          event: "booking_cancelled_for_seller",
+          entityType: "booking",
+          entityId: booking._id,
+          vars: {
+            referencia: booking.booking_number ?? "",
+            monto: booking.total_amount ?? 0,
+            moneda: booking.currency ?? "usd",
+          },
+        });
+      }
+    }
 
     // El aviso al cliente sale ahora: tiene que saberlo antes de presentarse en
     // el lobby, y el barrido diario podría llegar después de la hora de recogida.
