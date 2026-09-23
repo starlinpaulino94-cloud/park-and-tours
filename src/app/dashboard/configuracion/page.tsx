@@ -336,6 +336,10 @@ function Team() {
       const res = await api.post("/api/team/invite", {
         name: form.name.trim(), email: form.email.trim(), role: form.role,
         branch: form.branch || null,
+        // El tour center también por aquí: invitar era el único camino que ni
+        // siquiera lo MANDABA, así que un socio no podía entrar ni poniéndose
+        // él su contraseña.
+        partner_id: form.partner_id || null,
       });
       setBusy(false);
       if (!res.ok) {

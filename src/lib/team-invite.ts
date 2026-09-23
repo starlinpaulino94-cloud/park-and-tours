@@ -28,12 +28,91 @@ import type { AppRole } from "@/lib/auth";
  *     persona?».
  */
 
+/**
+ * DÓNDE CUELGA LA MEMBRESÍA: DE LA OPERADORA, O DE UNO DE SUS SOCIOS.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * EL FALLO QUE ESTO ARREGLA
+ *
+ * El formulario de Configuración → Equipo pedía «Tour center» desde el
+ * principio y lo enviaba. La API no contenía la palabra `partner_id` en NINGUNA
+ * línea: lo descartaba y creaba la membresía sobre la operadora. Como el
+ * identificador de socio solo se emite cuando la organización de la membresía
+ * es de tipo socio (`auth-context.ts`), ese usuario llegaba al portal sin socio
+ * y recibía 403.
+ *
+ * Es decir: **ningún tour center podía entrar**, el administrador creía haberle
+ * dado acceso, y lo que había creado era un usuario más de su propia empresa.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * DOS COMPROBACIONES, Y LA SEGUNDA ES LA QUE IMPORTA
+ *
+ *  1. QUE SEA UN SOCIO. Colgar una membresía de una organización que no es de
+ *     tipo socio no emite identificador de socio: el usuario acabaría en el ERP
+ *     interno creyendo todos que está en el portal.
+ *  2. QUE SEA DE ESTA OPERADORA. Sin esto, un administrador engancha a alguien
+ *     a un socio de OTRA operadora —los identificadores son uuid, y el
+ *     formulario los manda tal cual— y ese usuario sale con la empresa
+ *     equivocada en el token. No es un error de escritura: es cruzar el
+ *     aislamiento entre inquilinos por el único sitio donde se puede.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * EL CERROJO
+ *
+ * Mientras el ámbito del socio siga decidiéndose por el NOMBRE del rol
+ * (`ctx.role === "partner"`, repetido en veintinueve sitios), un empleado de un
+ * tour center dado de alta como `seller` o `cashier` entraría al ERP interno de
+ * la operadora: tendría identificador de socio —que sí se emite— y un rol que
+ * ninguna de esas condiciones reconoce.
+ *
+ * Así que aquí el rol se FUERZA a socio cuando la membresía cuelga de un socio.
+ * Es una línea, y permite arreglar la puerta hoy sin esperar a la sustitución
+ * de las veintinueve. Cuando esa sustitución esté, este forzado deja de ser la
+ * barrera y pasa a ser lo que ya era: lo razonable.
+ */
+export interface DestinoMembresia {
+  organizationId: string;
+  role: AppRole;
+  esSocio: boolean;
+}
+
+export async function resolveMembershipOrg(
+  ctx: TenantContext & { companyId: string },
+  partnerId: string | null | undefined,
+  rolePedido: AppRole
+): Promise<DestinoMembresia> {
+  const id = (partnerId || "").trim();
+  if (!id) return { organizationId: ctx.companyId, role: rolePedido, esSocio: false };
+
+  const { data, error } = await supabaseService()
+    .from("organizations")
+    .select("id, kind, tenant_org_id, status")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+
+  if (!data || data.kind !== "partner") {
+    throw new TenantError("Ese tour center no existe o no es una empresa asociada", 400);
+  }
+  if (data.tenant_org_id !== ctx.companyId) {
+    throw new TenantError("Ese tour center no es de tu empresa", 403);
+  }
+  if (data.status && data.status !== "active") {
+    throw new TenantError("Ese tour center está inactivo: actívalo antes de darle acceso", 409);
+  }
+
+  // El cerrojo. Ver la cabecera de arriba.
+  return { organizationId: data.id as string, role: "partner", esSocio: true };
+}
+
 export interface InvitacionEquipo {
   ctx: TenantContext & { companyId: string };
   email?: string | null;
   name?: string | null;
   role?: string | null;
   branch?: string | null;
+  /** El tour center del que cuelga la membresía, si la persona es suya. */
+  partnerId?: string | null;
   /** A dónde vuelve la persona desde el correo. */
   redirectTo: string;
 }
@@ -58,6 +137,9 @@ export async function inviteTeamMember(input: InvitacionEquipo): Promise<EquipoI
 
   await assertWithinLimit(ctx, "max_users");
 
+  // De dónde cuelga la membresía, y el cerrojo si es de un socio.
+  const destino = await resolveMembershipOrg(ctx, input.partnerId, role);
+
   const sb = supabaseService();
   const { data: invited, error: inviteError } = await sb.auth.admin.inviteUserByEmail(email, {
     redirectTo: input.redirectTo,
@@ -78,8 +160,8 @@ export async function inviteTeamMember(input: InvitacionEquipo): Promise<EquipoI
 
   const { error: memberError } = await sb.from("organization_memberships").insert({
     user_id: userId,
-    organization_id: ctx.companyId,
-    role,
+    organization_id: destino.organizationId,
+    role: destino.role,
     status: "pending",
     is_primary: true,
     branch_id: (input.branch || "").trim() || null,
@@ -91,9 +173,10 @@ export async function inviteTeamMember(input: InvitacionEquipo): Promise<EquipoI
     action: "team_member_invited",
     entityType: "user", entityId: userId,
     severity: "warning",
-    description: `${ctx.email} invitó a ${email} con rol ${role}`,
-    metadata: { email, role },
+    description: `${ctx.email} invitó a ${email} con rol ${destino.role}` +
+      (destino.esSocio ? ` para el tour center ${destino.organizationId}` : ""),
+    metadata: { email, role: destino.role, partner: destino.esSocio ? destino.organizationId : null },
   });
 
-  return { userId, email, name, role };
+  return { userId, email, name, role: destino.role };
 }

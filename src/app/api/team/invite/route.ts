@@ -53,14 +53,20 @@ export async function POST(req: NextRequest) {
     // elige quien la pide, y eso es un emisor de correo en manos de un usuario.
     await assertRateLimit({ key: rateLimitKey(req, "team:invite", ctx.userId), limit: 10, windowMs: 60_000 });
 
-    const body = await readJson<{ email?: string; name?: string; role?: string; branch?: string | null }>(req);
+    const body = await readJson<{
+      email?: string; name?: string; role?: string; branch?: string | null; partner_id?: string | null;
+    }>(req);
 
     // Lo que hacen igual esta alta y la de vendedores vive en `team-invite.ts`:
     // copiado, la divergencia es cuestión de tiempo y se nota en lo peor —el
     // tope del plan comprobado en un camino y no en el otro—.
     const { userId, email, name, role } = await inviteTeamMember({
       ctx, email: body.email, name: body.name, role: body.role,
-      branch: body.branch, redirectTo: callbackUrl(req),
+      branch: body.branch,
+      // El tour center del que cuelga, si lo hay: `team-invite.ts` valida que
+      // sea un socio Y de esta operadora, y fuerza el rol.
+      partnerId: body.partner_id,
+      redirectTo: callbackUrl(req),
     });
 
     return ok({ _id: userId, email, name, role, status: "pending", state: "invited" });

@@ -2299,6 +2299,22 @@ describe("el alcance por sucursal", () => {
     const team = read("src/app/api/team/route.ts");
     expect(team).toMatch(/branch_id: branchId/);
     expect(team).toMatch(/patch\.branch_id/);
+
+    /**
+     * Y lo mismo con el TOUR CENTER, que era el mismo fallo y más grave.
+     *
+     * El formulario lo pedía y lo enviaba; la API no contenía la palabra
+     * `partner_id` en ninguna línea. Resultado: NINGÚN tour center podía
+     * entrar, el administrador creía haberle dado acceso, y lo que había creado
+     * era un usuario más de su propia empresa.
+     */
+    expect(team).toMatch(/resolveMembershipOrg\(ctx, body\.partner_id, rolePedido\)/);
+    expect(team, "la membresía sigue colgando siempre de la operadora")
+      .not.toMatch(/organization_id: ctx\.companyId,\s*\n\s*role,/);
+    // Invitar era el único camino que ni siquiera lo MANDABA.
+    expect(read("src/app/api/team/invite/route.ts")).toMatch(/partnerId: body\.partner_id/);
+    expect(read("src/app/dashboard/configuracion/page.tsx"))
+      .toMatch(/partner_id: form\.partner_id \|\| null,\n\s*\}\);/);
     expect(read("src/lib/team-invite.ts")).toMatch(/branch_id: \(input\.branch \|\| ""\)\.trim\(\) \|\| null/);
   });
 
@@ -2716,6 +2732,26 @@ describe("el alcance por sucursal", () => {
 
     // El del socio tampoco, que es de donde salió la regla.
     expect(sinComentariosDe("src/app/api/portal/catalog/route.ts")).not.toMatch(/base_cost/);
+  });
+
+  it("el alta de un socio valida el socio, y el cerrojo fuerza el rol", () => {
+    const servicio = sinComentariosDe("src/lib/team-invite.ts");
+    // Que sea un socio…
+    expect(servicio).toMatch(/data\.kind !== "partner"/);
+    // …y DE ESTA OPERADORA. Sin esto, un administrador engancha a alguien a un
+    // socio de otra y ese usuario sale con la empresa equivocada en el token:
+    // es cruzar el aislamiento entre inquilinos por el único sitio donde se
+    // puede.
+    expect(servicio).toMatch(/data\.tenant_org_id !== ctx\.companyId/);
+    // El cerrojo: mientras el ámbito se decida por el NOMBRE del rol, un
+    // empleado de un tour center con rol `seller` entraría al ERP interno.
+    expect(servicio).toMatch(/return \{ organizationId: data\.id as string, role: "partner", esSocio: true \};/);
+
+    // Y el equipo lista también a los suyos, o el alta funciona y la pantalla
+    // sigue sin enseñar a esa persona.
+    const team = sinComentariosDe("src/app/api/team/route.ts");
+    expect(team).toMatch(/\.eq\("tenant_org_id", ctx\.companyId\)/);
+    expect(team).toMatch(/\.in\("organization_id", orgIds\)/);
   });
 
   it("el recorte de columnas se aplica en los TRES sitios que sirven filas", () => {

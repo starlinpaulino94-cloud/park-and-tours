@@ -1757,3 +1757,39 @@ daba error: los tres producían números equivocados en silencio.
   «estimada» por eso. Se prefiere no enseñarla a enseñar un número que el
   vendedor va a tomar por un compromiso.
 - Mutación: tres, las tres muertas.
+
+### Fase 4.1 — ningún tour center podía entrar, y nadie lo sabía
+- **El fallo, en una línea:** `src/app/api/team/route.ts` **no contenía la
+  palabra `partner_id` en ninguna línea**. El formulario de Configuración →
+  Equipo pedía «Tour center» desde el principio y lo enviaba; la API lo
+  descartaba y creaba la membresía sobre la operadora. Como el identificador de
+  socio solo se emite cuando la organización de la membresía es de tipo socio,
+  ese usuario llegaba al portal sin socio y recibía 403.
+- Es decir: el administrador creía haberle dado acceso a su tour center, y lo
+  que había creado era **un usuario más de su propia empresa**, con el rol que
+  fuera. Mismo patrón que «el formulario pedía la sucursal y la API la tiraba»,
+  con más consecuencias.
+- **Y la invitación era peor todavía**: ni siquiera MANDABA el dato, así que un
+  socio no podía entrar ni por el camino en el que él mismo pone su contraseña.
+- **Dos comprobaciones, y la segunda es la que importa.** Que sea un socio
+  —colgarla de otra cosa no emite identificador de socio y esa persona acabaría
+  en el ERP interno creyendo todos que está en el portal— y **que sea de esta
+  operadora**: los identificadores son uuid y el formulario los manda tal cual,
+  así que sin comprobarlo un administrador engancha a alguien a un socio de OTRA
+  operadora. No es un error de escritura: es cruzar el aislamiento entre
+  inquilinos por el único sitio donde se puede.
+- **EL CERROJO.** El ámbito del socio se decide hoy por `ctx.role === "partner"`
+  mientras el identificador de socio se rellena para cualquier rol: un empleado
+  de un tour center dado de alta como `seller` o `cashier` entraría al **ERP
+  interno** de la operadora. Así que al colgar de un socio el rol se **fuerza**
+  a socio. Es una línea, y permite arreglar la puerta hoy sin esperar a
+  sustituir las condiciones repetidas.
+- **El inventario real de esas condiciones son 29 sitios, no «al menos ocho»
+  como decía el plan.** Queda corregido; la sustitución va en 4.2.
+- **Y el equipo lista también a los suyos.** La membresía de un usuario de
+  portal cuelga de la organización del SOCIO: listando solo por la operadora, el
+  alta funcionaría y la pantalla seguiría sin enseñar a esa persona — el
+  administrador volvería a darla de alta, se toparía con «ya pertenece a esta
+  empresa» y no tendría forma de entender por qué. Se acota por `tenant_org_id`
+  para que el aislamiento no dependa de esa consulta.
+- **Mutación:** seis, las seis muertas.
