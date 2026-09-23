@@ -2345,10 +2345,14 @@ describe("el alcance por sucursal", () => {
      */
     const shared = read("src/lib/erp-query.ts");
     expect(shared).toMatch(/_and: \[filter, \.\.\.scopes\]/);
-    expect(shared).toMatch(/\[branchFilter, sellerFilter\]\.filter\(Boolean\)/);
+    expect(shared).toMatch(/\[branchFilter, \.\.\.delActor\]\.filter\(Boolean\)/);
     // Y nadie los mete dentro del mismo objeto con `Object.assign`.
     expect(shared).not.toMatch(/Object\.assign\(filter, branchFilter\)/);
-    expect(shared).not.toMatch(/Object\.assign\(filter, sellerFilter\)/);
+    expect(shared).not.toMatch(/Object\.assign\(filter, delActor\)/);
+    // Ni el del socio, que antes se escribía directamente sobre el filtro base
+    // —`filter[scope.field] = …`— y así pisaba lo que el usuario hubiera pedido
+    // en vez de sumarse a ello.
+    expect(shared).not.toMatch(/filter\[scope\.field\]/);
   });
 
   it("el ámbito del vendedor se aplica donde se lee, no solo donde se lista", () => {
@@ -2367,16 +2371,18 @@ describe("el alcance por sucursal", () => {
      *  · `/api/orders` y `/api/quotes` — arman su propio filtro y no pasan por
      *    `buildListFilter`. Son, además, las que leen las pantallas.
      */
-    expect(read("src/lib/erp-query.ts")).toMatch(/sellerFilterFor\(def\.table, ctx\.role, ctx\.sellerId\)/);
+    // El ámbito por fila —socio y vendedor— entra por un solo punto desde 4.5.
+    expect(read("src/lib/erp-query.ts")).toMatch(/scopeFiltersFor\(def\.table, ctx\)/);
+    expect(read("src/lib/row-scope.ts")).toMatch(/sellerFilterFor\(table, ctx\.role, ctx\.sellerId\)/);
 
     const detalle = read("src/app/api/erp/[resource]/[id]/route.ts");
     // En la lectura…
-    expect(detalle).toMatch(/assertSellerCanRead\(def\.table, ctx\.role, ctx\.sellerId, record\)/);
+    expect(detalle).toMatch(/assertRowInScope\(def\.table, ctx, record\)/);
     // …y en la escritura, porque `order` se edita con rango de vendedor y
     // `seller` es uno de sus campos editables: sin esto, un vendedor podía
     // coger la venta de un compañero y reatribuírsela sin haberla podido ver.
     expect(detalle).toMatch(/isSellerScoped\(def\.table\) && ctx\.role === "seller"/);
-    expect(detalle).toMatch(/assertSellerCanRead\(def\.table, ctx\.role, ctx\.sellerId, actual\)/);
+    expect(detalle).toMatch(/assertRowInScope\(def\.table, ctx, actual\)/);
 
     for (const [file, tabla] of [
       ["src/app/api/orders/route.ts", "order"],
@@ -5456,8 +5462,8 @@ describe("el aislamiento del socio no depende del nombre del rol", () => {
     "src/app/dashboard/mi-espacio/layout.tsx",
     "src/app/page.tsx",
     "src/app/portal/layout.tsx",
-    "src/lib/erp-query.ts",
     "src/lib/resources.ts",
+    "src/lib/row-scope.ts",
     "src/lib/supabase/auth-context.ts",
   ];
 
@@ -5740,5 +5746,90 @@ describe("el socio gestiona a su propia gente, y solo a la suya", () => {
     const sql = read("supabase/migrations/0074_partner_self_service.sql");
     expect(sql, "el más antiguo de cada socio").toMatch(/distinct on \(m\.organization_id\)[\s\S]{0,200}order by m\.organization_id, m\.created_at asc/);
     expect(sql, "y el resto, agente").toMatch(/else 'agent' end/);
+  });
+});
+
+describe("un solo punto de entrada de ámbito por fila", () => {
+  it("nadie compone los dos ámbitos por su cuenta", () => {
+    /**
+     * `partnerScopeFor` y `sellerFilterFor` siguen siendo las reglas de cada
+     * actor; lo que no puede volver a haber es dos sitios que las combinen,
+     * porque es donde se cuela la diferencia. Las rutas que arman su propio
+     * filtro sobre UNA sola tabla (`/api/orders`, `/api/quotes`) siguen
+     * pidiendo la del vendedor directamente: no componen nada.
+     */
+    const componen: string[] = [];
+    for (const file of walk(path.join(ROOT, "src"))) {
+      const rel = path.relative(ROOT, file).replace(/\\/g, "/");
+      if (rel === "src/lib/row-scope.ts") continue;
+      const src = sinComentariosDe(rel);
+      if (/partnerScopeFor\s*\(/.test(src) && /sellerFilterFor\s*\(|sellerCanReadRow\s*\(/.test(src)) {
+        componen.push(rel);
+      }
+    }
+    expect(componen, "aquí se vuelven a combinar los dos ámbitos").toEqual([]);
+  });
+
+  it("y el detalle usa la misma composición que el listado", () => {
+    // Dos guardas gemelas en el detalle, una debajo de la otra, cada una
+    // diciendo en su comentario que era la pareja de la otra: ésa era la señal.
+    const detalle = sinComentariosDe("src/app/api/erp/[resource]/[id]/route.ts");
+    expect(detalle, "ya no tiene guardas propias").not.toMatch(/function assertPartnerCanRead/);
+    expect(detalle).not.toMatch(/function assertSellerCanRead/);
+    expect(detalle).toMatch(/assertRowInScope\(/);
+  });
+
+  it("el ámbito del socio entra por `_and`, no pisando el filtro del usuario", () => {
+    /**
+     * Antes se escribía `filter[scope.field] = scope.partnerId` sobre el filtro
+     * base, así que SUSTITUÍA lo que hubiera pedido quien consulta en vez de
+     * sumarse. Funcionaba porque sustituía por algo más restrictivo, pero es
+     * una propiedad que depende del orden de dos asignaciones; por `_and` se
+     * cumplen los dos filtros y ya no depende de nada.
+     */
+    expect(sinComentariosDe("src/lib/row-scope.ts"))
+      .toMatch(/filtros\.push\(\{ \[scope\.field\]: scope\.partnerId \}\)/);
+  });
+
+  it("el plan cuenta también a la gente de los tour centers", () => {
+    /**
+     * La membresía de un usuario de portal cuelga de la organización del SOCIO.
+     * Contando solo la raíz, ninguno figuraba: una operadora con cinco
+     * empleados y cuarenta personas en sus tour centers aparecía con cinco. Con
+     * el socio dándose de alta a sí mismo, eso deja de ser una imprecisión y
+     * pasa a ser un plan que no limita nada.
+     */
+    const plan = cuerpoDe("src/lib/plan-service.ts");
+    expect(plan, "el conjunto de organizaciones").toMatch(/async function orgsDeLaOperadora/);
+    expect(plan, "y el recuento lo usa").toMatch(/\.in\("organization_id", orgIds\)\.in\("status"/);
+    expect(plan, "ya no cuenta solo la raíz")
+      .not.toMatch(/organization_memberships"\)[\s\S]{0,120}\.eq\("organization_id", companyId\)/);
+  });
+
+  it("y ese conteo falla contando de MENOS, nunca de más", () => {
+    // Cobrar de más por una consulta que se cayó es peor que cobrar de menos.
+    const plan = cuerpoDe("src/lib/plan-service.ts");
+    const i = plan.indexOf("async function orgsDeLaOperadora");
+    const fn = plan.slice(i, plan.indexOf("export async function loadUsage"));
+    expect(fn, "el error de la consulta").toMatch(/if \(error\) return \[companyId\]/);
+    expect(fn, "la excepción").toMatch(/catch \{\s*return \[companyId\]/);
+  });
+
+  it("hay con qué medir antes de desplegarlo", () => {
+    /**
+     * El arreglo mueve operadoras de «dentro de su plan» a «por encima» sin que
+     * hayan hecho nada, y lo descubrirían al recibir un 402 al dar de alta a
+     * alguien. La consulta dice cuáles y por cuánto, para hablar con ellas
+     * antes; el plan del ecosistema lo pedía con esas palabras.
+     */
+    const sql = read("supabase/editor/medir_usuarios_antes_de_activar_el_conteo.sql");
+    // Sin sus comentarios: este fichero EXPLICA que la raíz se apunta a sí
+    // misma con un `update`, y la palabra en una explicación no es una
+    // escritura. La misma trampa que ya obligó a `sinComentariosDe`.
+    const soloSql = sql.replace(/^\s*--.*$/gm, "");
+    expect(soloSql, "no cambia nada").not.toMatch(/\b(update|insert|alter|delete|create)\b/i);
+    expect(sql, "compara el antes y el después")
+      .toMatch(/usuarios_contados_antes[\s\S]*usuarios_contados_ahora/);
+    expect(sql, "y señala a quién avisar").toMatch(/SE PASA AL DESPLEGAR/);
   });
 });

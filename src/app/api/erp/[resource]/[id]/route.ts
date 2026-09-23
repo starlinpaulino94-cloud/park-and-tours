@@ -1,18 +1,18 @@
 import { NextRequest } from "next/server";
 import { requireTenant, requireTenantWrite, tenantFindOne, tenantUpdate, tenantDelete, requireAtLeast, atLeast, TenantError, esDeSocio } from "@/lib/tenant";
 import {
-  getResource, sanitizePayload, partnerScopeFor, assertCanReadTable,
+  getResource, sanitizePayload, assertCanReadTable,
   ownershipFieldFor, OWNERSHIP_OVERRIDE_ROLE,
 } from "@/lib/resources";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { refId } from "@/lib/types";
-import type { AppRole } from "@/lib/auth";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { assertModule } from "@/lib/plan-service";
 import { assertPayloadAssignable } from "@/lib/hr-service";
-import { sellerCanReadRow, sellerFieldFor, isSellerScoped } from "@/lib/seller-scope";
+import { isSellerScoped } from "@/lib/seller-scope";
+import { assertRowInScope } from "@/lib/row-scope";
 import { protectedFieldChanges, protectedFieldMessage, hasProtectedFields } from "@/lib/field-write-role";
 import { assertSellerUserLinkable } from "@/lib/seller-identity";
 import { projectRow } from "@/lib/field-projection";
@@ -20,41 +20,13 @@ import { projectRow } from "@/lib/field-projection";
 type Params = { params: Promise<{ resource: string; id: string }> };
 
 /**
- * Enforces B2B partner isolation on a single record (AUD-003). `tenantFindOne`
- * only checks `company`, so without this a partner could read another partner's
- * order/commission/etc. by guessing its id.
- */
-function assertPartnerCanRead(table: string, partnerId: string | null, record: Record<string, unknown>) {
-  const scope = partnerScopeFor(table, partnerId);
-  if (scope.kind === "denied") throw new TenantError("No tienes acceso a este recurso", 403);
-  if (scope.kind === "own") {
-    const value = scope.field === "_id" ? (record._id as string) : refId(record[scope.field]);
-    if (value !== scope.partnerId) throw new TenantError("Registro fuera de tu ámbito", 403);
-  }
-}
-
-/**
- * El ámbito del vendedor sobre UNA fila (`seller-scope.ts`).
+ * El ámbito por fila —el del socio y el del vendedor— vive en `row-scope.ts`.
  *
- * El filtro del listado no protege el detalle: `tenantFindOne` solo comprueba
- * la empresa. Sin esto, acotar la lista habría sido cosmético —bastaba con
- * pedir `/api/erp/order/<id>` con el identificador de la venta de un compañero,
- * que aparece en cualquier informe o voucher, para abrirla entera.
- *
- * Es la pareja de `assertPartnerCanRead`, que hace lo mismo para el portal B2B.
+ * Aquí había dos guardas gemelas, una debajo de la otra, cada una con un
+ * comentario diciendo que era la pareja de la otra. Eso es la señal de que
+ * sobraba una de las dos: son la misma pregunta hecha sobre dos dimensiones, y
+ * la fase siguiente añade un actor que necesita las dos a la vez.
  */
-function assertSellerCanRead(
-  table: string,
-  role: AppRole,
-  sellerId: string | null | undefined,
-  record: Record<string, unknown>
-) {
-  const field = sellerFieldFor(table);
-  const rowSellerId = field ? refId(record[field]) : null;
-  if (!sellerCanReadRow(table, role, sellerId, rowSellerId)) {
-    throw new TenantError("Este registro es de otro vendedor", 403);
-  }
-}
 
 export async function GET(_req: NextRequest, { params }: Params) {
   try {
@@ -66,8 +38,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
     await assertRateLimit({ key: rateLimitKey(_req, `erp:read:${def.table}`, ctx.userId), limit: 240, windowMs: 60_000 });
     assertCanReadTable(ctx, def.table);
     const record = await tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id, def.expandOne || def.expand || {});
-    if (esDeSocio(ctx)) assertPartnerCanRead(def.table, ctx.partnerId, record);
-    assertSellerCanRead(def.table, ctx.role, ctx.sellerId, record);
+    assertRowInScope(def.table, ctx, record);
     // El mismo recorte que el listado y la exportación: abrir la ficha no puede
     // enseñar lo que la lista esconde.
     return ok(projectRow(def.table, ctx, record));
@@ -102,7 +73,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
      */
     if (isSellerScoped(def.table) && ctx.role === "seller") {
       const actual = await tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id);
-      assertSellerCanRead(def.table, ctx.role, ctx.sellerId, actual);
+      assertRowInScope(def.table, ctx, actual);
     }
 
     // Propiedad por fila: la RLS aísla por empresa, no por persona. Sin esto un

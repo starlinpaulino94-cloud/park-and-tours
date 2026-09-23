@@ -48,7 +48,10 @@ export async function loadPlan(planId: string | null | undefined): Promise<PlanS
 /**
  * El uso real de la empresa.
  *
- * · usuarios — membresías activas Y las invitaciones sin aceptar. La invitación
+ * · usuarios — membresías activas Y las invitaciones sin aceptar, de la
+ *   operadora Y DE SUS TOUR CENTERS: la membresía de un usuario de portal
+ *   cuelga de la organización del socio, así que contando solo la raíz no
+ *   figuraba ninguno. La invitación
  *   RESERVA la plaza: si no contara, un plan de cinco aceptaría veinte
  *   invitaciones y el tope saltaría al aceptar la sexta —delante de alguien que
  *   ya recibió el correo y no entiende por qué no puede entrar—. Una cuenta
@@ -61,11 +64,40 @@ export async function loadPlan(planId: string | null | undefined): Promise<PlanS
  *   vende libere sitio de verdad (es lo que el mensaje del límite promete).
  * · almacenamiento — el acumulado que lleva la organización.
  */
+/**
+ * TODAS LAS ORGANIZACIONES QUE CUELGAN DE ESTA OPERADORA.
+ *
+ * El recuento de usuarios miraba solo la organización raíz, y la membresía de
+ * un usuario de tour center cuelga de la organización del SOCIO. Resultado: los
+ * usuarios de portal no contaban para el plan — una operadora con cinco
+ * empleados y cuarenta personas repartidas en sus tour centers figuraba con
+ * cinco. El día que el socio empieza a darse de alta a sí mismo (0074), eso
+ * deja de ser una imprecisión y pasa a ser un plan que no limita nada.
+ *
+ * Un fallo aquí devuelve la raíz sola, que es el recuento de antes: se cuenta
+ * de menos, nunca de más. Es el lado correcto del error — cobrar de más por una
+ * consulta que se cayó sería mucho peor que cobrar de menos.
+ */
+async function orgsDeLaOperadora(companyId: string): Promise<string[]> {
+  try {
+    const { data, error } = await supabaseService()
+      .from("organizations")
+      .select("id")
+      .eq("tenant_org_id", companyId);
+    if (error) return [companyId];
+    const ids = (data ?? []).map((o) => o.id as string).filter((id) => id !== companyId);
+    return [companyId, ...ids];
+  } catch {
+    return [companyId];
+  }
+}
+
 export async function loadUsage(companyId: string): Promise<PlanUsage> {
   const sb = supabaseService();
+  const orgIds = await orgsDeLaOperadora(companyId);
   const [users, bookings, products, org] = await Promise.all([
     sb.from("organization_memberships").select("id", { count: "exact", head: true })
-      .eq("organization_id", companyId).in("status", ["active", "pending"]),
+      .in("organization_id", orgIds).in("status", ["active", "pending"]),
     sb.from("booking").select("id", { count: "exact", head: true })
       .eq("organization_id", companyId).gte("created_at", monthStart()),
     sb.from("product").select("id", { count: "exact", head: true })

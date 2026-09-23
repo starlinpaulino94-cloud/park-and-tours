@@ -1978,3 +1978,44 @@ daba error: los tres producían números equivocados en silencio.
 - **Mutación: catorce, las catorce muertas.** Una no mordía —volver el listado a
   la operadora— porque la guarda pedía que la expresión apareciera «alguna vez»
   y la edición la seguía aportando; se cuentan las dos.
+
+### Fase 4.5 — un punto de entrada por actor, y el plan cuenta a todo el mundo
+- **La señal de que sobraba un sitio:** en el detalle genérico había dos guardas
+  gemelas, una debajo de la otra, y **cada una decía en su comentario que era la
+  pareja de la otra**. Eran la misma pregunta hecha sobre dos dimensiones.
+- **Se unifica ahora y no después.** Funcionaba porque hoy los dos ámbitos son
+  disjuntos: el rol del socio no es `seller`, así que el del vendedor nunca se
+  le aplicaba. **Eso deja de ser cierto en la Fase 5**, donde el vendedor de un
+  tour center tiene que estar acotado por las dos cosas a la vez; y la Fase 8
+  añade el proveedor. Dos reglas sueltas más un tercer actor es el momento
+  exacto en que aparece un tercer módulo paralelo.
+- **Se ACUMULAN, no se eligen.** Un `if/else if` entre actores haría que a quien
+  sea las dos cosas se le aplique solo el primero — y en la pareja
+  socio/vendedor el primero es **el menos restrictivo**: ese vendedor vería las
+  ventas de todos sus compañeros del tour center. Hay una prueba con ese actor
+  exacto, que hoy no existe todavía.
+- **Y el ámbito del socio pasa a entrar por `_and`.** Antes se escribía
+  `filter[scope.field] = …` sobre el filtro base, o sea que **sustituía** lo que
+  hubiera pedido quien consulta en vez de sumarse. Funcionaba porque sustituía
+  por algo más restrictivo; es una propiedad que dependía del orden de dos
+  asignaciones y ahora no depende de nada.
+- **Una rama que ninguna mutación puede matar es una rama que no hace nada.** El
+  detalle traía un ternario para distinguir el campo `_id` de una referencia; no
+  distinguía nada, porque `refId` de una cadena es la cadena. Se quitó en vez de
+  inventarle una guarda.
+- **El plan contaba solo la organización raíz**, y la membresía de un usuario de
+  tour center cuelga de la del SOCIO: una operadora con cinco empleados y
+  cuarenta personas repartidas en sus tour centers figuraba con cinco. Con el
+  socio dándose de alta a sí mismo (4.4), eso deja de ser una imprecisión y pasa
+  a ser **un plan que no limita nada**.
+- **El conteo falla contando de MENOS.** Un fallo leyendo las organizaciones
+  devuelve la raíz sola, que es el recuento de antes: cobrar de más por una
+  consulta que se cayó sería mucho peor que cobrar de menos.
+- **Y hay con qué medir ANTES de desplegarlo**
+  (`supabase/editor/medir_usuarios_antes_de_activar_el_conteo.sql`, sin número
+  porque no acompaña a ninguna migración). El arreglo mueve operadoras de
+  «dentro de su plan» a «por encima» sin que hayan hecho nada, y lo
+  descubrirían al recibir un 402 al dar de alta a alguien. La consulta dice
+  cuáles y por cuánto. **No es opcional**: es la diferencia entre avisar y que a
+  alguien le deje de funcionar el sistema un martes.
+- **Mutación: diez, las diez muertas.**

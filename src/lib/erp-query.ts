@@ -1,11 +1,11 @@
 import "server-only";
 import type { ResourceDef } from "@/lib/resources";
-import { allowedFilterFields, partnerScopeFor } from "@/lib/resources";
+import { allowedFilterFields } from "@/lib/resources";
 import { decidableFilter } from "@/lib/approvals";
 import { branchFilterFor } from "@/lib/branch-scope";
-import { sellerFilterFor } from "@/lib/seller-scope";
+import { scopeFiltersFor } from "@/lib/row-scope";
 import { searchFilterFor } from "@/lib/search";
-import { TenantError, type TenantContext, esDeSocio } from "@/lib/tenant";
+import { type TenantContext } from "@/lib/tenant";
 import { limitesConsulta, normalizarPeriodo } from "@/lib/report";
 import { companyTimeZone } from "@/lib/time";
 
@@ -96,19 +96,7 @@ export function buildListFilter(
   const searchFilter = searchFilterFor(def.table, def.search, sp.get("q"));
   if (searchFilter) Object.assign(filter, searchFilter);
 
-  // Un usuario del portal B2B solo ve lo de su partner. Denegar por defecto:
-  // una tabla que no sea suya ni compartida es 403.
-  if (esDeSocio(ctx)) {
-    const scope = partnerScopeFor(def.table, ctx.partnerId);
-    if (scope.kind === "denied") {
-      throw new TenantError("No tienes acceso a este recurso", 403);
-    }
-    if (scope.kind === "own") {
-      filter[scope.field] = scope.partnerId;
-    }
-  }
-
-  // Y la sucursal, cuando la persona tiene una. Va aquí —en el armador que
+  // La sucursal, cuando la persona tiene una. Va aquí —en el armador que
   // comparten el listado y su exportación— para que no puedan discrepar: un
   // archivo que se lleva las reservas de las tres sucursales mientras la
   // pantalla enseña una es exactamente el fallo que nadie revisa, porque «lo
@@ -120,23 +108,21 @@ export function buildListFilter(
   const branchFilter = branchFilterFor(def.table, ctx.branchId);
 
   /**
-   * Y el vendedor, cuando quien llama es uno.
+   * Y QUIEN CONSULTA: el socio, el vendedor, o —desde la fase siguiente— los
+   * dos a la vez.
    *
-   * El rol `seller` es el rango más bajo del ERP y hasta aquí veía las ventas
-   * de toda la empresa: ni la RLS (que aísla empresas) ni el ámbito del socio
-   * ni el de la sucursal miran quién vendió. Un vendedor podía pedir
-   * `/api/erp/order` —o exportarlo— y llevarse la cartera de sus compañeros.
-   *
-   * La regla, sus excepciones y por qué las filas sin vendedor siguen visibles
-   * están en `seller-scope.ts`.
+   * Una sola llamada. Antes eran dos, pedidas por separado aquí y otras dos
+   * guardas gemelas en el detalle; funcionaba porque hoy son disjuntos, y deja
+   * de serlo en cuanto un tour center tenga vendedores propios. El porqué está
+   * entero en `row-scope.ts`.
    */
-  const sellerFilter = sellerFilterFor(def.table, ctx.role, ctx.sellerId);
+  const delActor = scopeFiltersFor(def.table, ctx);
 
   // Cada ámbito entra como un elemento de `_and` en vez de fusionarse: dos
   // `_or` en el mismo objeto se pisan —solo sobreviviría uno, y decidiría él
   // solo—, y el traductor aplica los `_and` uno tras otro, que es justo lo que
   // hace falta para que se acumulen.
-  const scopes = [branchFilter, sellerFilter].filter(Boolean) as Record<string, unknown>[];
+  const scopes = [branchFilter, ...delActor].filter(Boolean) as Record<string, unknown>[];
   return scopes.length > 0 ? { _and: [filter, ...scopes] } : filter;
 }
 
