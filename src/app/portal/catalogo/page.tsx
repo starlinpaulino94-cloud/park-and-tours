@@ -89,6 +89,19 @@ export default function PortalCatalogPage() {
                 <Icon name="X" className="size-4" /> Próximos 30 días
               </Button>
             )}
+            {/*
+              * El tarifario del día que se esté mirando, no «el tarifario».
+              *
+              * Las reglas tienen temporada, así que un archivo sin fecha dentro
+              * es el que alguien reenvía en noviembre con los precios de agosto
+              * y discute con él en la mano. La fecha va en el nombre y en una
+              * columna.
+              */}
+            <Button variant="outline" asChild className="gap-1.5">
+              <a href={`/api/portal/tarifario${query({ date: date || undefined })}`} download>
+                <Icon name="Download" className="size-4" /> Tarifario
+              </a>
+            </Button>
             <Button variant="outline" size="icon" onClick={load} aria-label="Actualizar">
               <Icon name="RefreshCw" className="size-4" />
             </Button>

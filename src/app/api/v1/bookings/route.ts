@@ -97,7 +97,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const result = await createPublicBooking(page, parsed.request, caller.company);
+    /**
+     * La reserva es DEL SOCIO de la llave.
+     *
+     * Sin este argumento nacía sin socio, y con ella se caían cinco cosas a la
+     * vez: su comisión, su límite de crédito, su cupo, su contrato de productos
+     * y su propia pantalla de reservas. `caller.partnerId` llevaba ahí desde
+     * que existe la tabla de llaves, y solo se usaba para la bitácora.
+     */
+    const result = await createPublicBooking(
+      page, parsed.request, caller.company, {}, caller.partnerId
+    );
 
     // La clave queda pegada a la venta: es lo que hace que el reintento
     // devuelva esto mismo en vez de crear otra.

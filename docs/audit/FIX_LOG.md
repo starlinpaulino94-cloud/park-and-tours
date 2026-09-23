@@ -2365,3 +2365,49 @@ Y la tabla dice dos cosas más que no se preguntaban:
   comisión), y allí tendrán quién los lea. Declarar hoy una columna que nadie
   lee es repetir exactamente el fallo que 6.1 acaba de arreglar.
 - **Mutación: siete, las siete muertas.**
+
+### Fase 6.3 — la reserva por API nacía sin socio, y el tarifario no existía
+- **El hallazgo grande no era el tarifario: era la llave de API.** `api_key`
+  tiene `partner_id` desde que existe, y ese dato llegaba **solo al registro de
+  auditoría**. La reserva se creaba sin socio. Todo lo que cuelga del socio se
+  perdía en silencio, de una vez: su comisión, su comprobación de crédito, su
+  cupo contratado, su contrato por producto (el de 6.1) y la visibilidad de esa
+  reserva en su propio portal. El socio integrado por API era, para el sistema,
+  un cliente anónimo que casualmente traía una llave.
+- **Y se pierde callando**, que es lo que lo hace caro: la reserva se crea, el
+  tourista viaja, nadie ve un error. Sale a la luz a fin de mes, cuando el socio
+  reclama una liquidación que no cuadra con lo que vendió.
+- `createPublicBooking` recibe ahora el socio y sella con él `partner_id` y el
+  canal: `b2b_portal` cuando lo hay, `web` cuando no.
+- **El canal es `b2b_portal` también por API, y a propósito.** `b2b_api` ni
+  existe en el enum `sales_channel` —el insert habría fallado, y TypeScript no
+  lo ve porque el canal viaja como cadena—, pero además las reglas de precio se
+  indexan por canal: con dos canales distintos, el mismo socio pagaría un precio
+  por el portal y otro por la API, por el mismo producto y el mismo día.
+- **El tarifario y la API salen de la MISMA función**, `tarifarioDeSocio`. El
+  criterio del plan —«el archivo descargado coincide con lo que la API
+  devuelve»— no se consigue revisándolo: se consigue teniendo una sola fuente.
+  Dos implementaciones del mismo precio no divergen el día uno; divergen el día
+  que alguien añade una regla de temporada a una de las dos, y la divergencia
+  aparece facturando.
+- **Los precios los da el motor, no una fórmula.** Reconstruir aquí «precio base
+  menos comisión» habría dado un número parecido casi siempre, que es la peor
+  clase de número: el que nadie revisa hasta que no cuadra.
+- **La fecha es obligatoria y va dentro del archivo y en su nombre.** Las reglas
+  tienen temporada, así que «el tarifario» sin día no existe; un archivo sin
+  fecha dentro es el que alguien reenvía en noviembre con los precios de agosto.
+- **Un producto sin tarifa no tumba el archivo entero**: se queda fuera y los
+  demás salen. Lo contrario le quita al socio los cuarenta precios que sí tiene
+  por culpa del que falta, y el arreglo está del lado de la operadora.
+- **Una guarda de texto no mordía y se tiró.** Comprobaba que hubiera un `catch`
+  cerca del `resolvePrice`; un `catch` que vuelva a lanzar el error la cumple al
+  pie de la letra y rompe el archivo igual. Esa propiedad es de lo que SALE, no
+  del texto: vive ahora en `src/lib/tarifario.test.ts`, ejecutando la función
+  con un producto cuyo precio revienta y comprobando que los otros dos siguen
+  saliendo. **Es la segunda vez en esta fase que una «mutación que no muerde»
+  resulta ser una guarda escrita contra el texto en vez de contra el efecto.**
+- **`/api/v1/products` aplica el contrato por producto**, que se había quedado
+  fuera en 6.1: era justo la ruta por la que mira un socio que integra antes de
+  reservar, así que le enseñaba productos que su propia reserva iba a rechazar.
+  Y añade `net_price`/`net_currency` con la misma función del tarifario.
+- **Mutación: nueve, las nueve muertas.**

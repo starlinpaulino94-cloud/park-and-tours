@@ -258,7 +258,23 @@ export async function createPublicBooking(
   page: PublicPage,
   request: PublicRequest,
   company: Company | null,
-  trace: VisitorTrace = {}
+  trace: VisitorTrace = {},
+  /**
+   * EL SOCIO DE LA LLAVE DE API, CUANDO LA RESERVA ENTRA POR AHÍ.
+   *
+   * `api_key` guarda `partner_id` desde que existe la tabla, `requireApiKey` lo
+   * devuelve en `caller.partnerId`, y hasta esta entrega NADIE lo usaba salvo
+   * para escribirlo en la bitácora. O sea: una reserva hecha con la llave de un
+   * tour center nacía SIN socio, y con ella se caían cinco cosas a la vez —su
+   * comisión, su límite de crédito, su cupo, su contrato de productos y su
+   * propia pantalla de reservas, que filtra por socio—.
+   *
+   * El síntoma que se reporta es el inofensivo: «reservo por API y no me sale
+   * en el portal». El que cuesta dinero es el primero.
+   *
+   * `null` para la web pública, que es lo que era antes y sigue siendo.
+   */
+  partnerId: string | null = null
 ): Promise<PublicBookingResult> {
   if (!page.org) throw Object.assign(new Error("La página no está disponible"), { status: 404 });
   const orgId = page.org.id;
@@ -315,7 +331,20 @@ export async function createPublicBooking(
 
   const result = await createOrderWithBookings(ctx, {
     customer_id: customerId,
-    channel: "web",
+    /**
+     * El canal del socio es el MISMO que el de su portal, y a propósito.
+     *
+     * Primero porque `b2b_api` no existe: `sales_channel` es un enum cerrado y
+     * escribirlo habría reventado el insert —el tipo de TypeScript no lo dice,
+     * porque el canal viaja como cadena—.
+     *
+     * Y sobre todo porque las reglas de precio se acotan por canal. Con un
+     * canal propio para la API, el mismo tour center recibiría un precio por el
+     * portal y otro por la integración, y descubriría la diferencia al
+     * facturar. Un canal, un precio, venga por donde venga.
+     */
+    channel: partnerId ? "b2b_portal" : "web",
+    partner_id: partnerId,
     // La cookie del visitante viaja hasta el motor de ventas: es lo único que
     // encuentra al conserje que trajo a alguien que todavía no tenía ficha.
     visitor_id: trace.visitorId || null,

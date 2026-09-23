@@ -6482,3 +6482,76 @@ describe("el modelo comercial del socio", () => {
     expect(i).toBeLessThan(pantalla.indexOf('name: "default_commission_pct"'));
   });
 });
+
+describe("el socio que integra por API", () => {
+  it("su reserva es SUYA: la llave lleva el socio y ahora se usa", () => {
+    /**
+     * `api_key.partner_id` existe desde que existe la tabla, `requireApiKey` lo
+     * devuelve, y hasta esta entrega solo se escribía en la bitácora. Una
+     * reserva hecha con la llave de un tour center nacía SIN socio, y con ella
+     * se caían cinco cosas a la vez: su comisión, su límite de crédito, su
+     * cupo, su contrato de productos y su propia pantalla de reservas, que
+     * filtra por socio.
+     *
+     * El síntoma que se reporta es el inofensivo —«reservo por API y no me sale
+     * en el portal»—. El que cuesta dinero es el primero.
+     */
+    const ruta = cuerpoDe("src/app/api/v1/bookings/route.ts");
+    expect(ruta).toMatch(/createPublicBooking\(\s*page, parsed\.request, caller\.company, \{\}, caller\.partnerId\s*\)/);
+    const motor = cuerpoDe("src/lib/public-booking-service.ts");
+    expect(motor, "y el motor lo pone en la orden").toMatch(/partner_id: partnerId/);
+  });
+
+  it("y entra por el MISMO canal que su portal", () => {
+    /**
+     * Dos motivos. `b2b_api` no existe —`sales_channel` es un enum cerrado y el
+     * tipo de TypeScript no lo dice, porque el canal viaja como cadena—, y
+     * sobre todo: las reglas de precio se acotan por canal. Con un canal propio
+     * para la API, el mismo tour center recibiría un precio por el portal y
+     * otro por la integración, y descubriría la diferencia al facturar.
+     */
+    expect(cuerpoDe("src/lib/public-booking-service.ts"))
+      .toMatch(/channel: partnerId \? "b2b_portal" : "web"/);
+    // Y el canal existe en el enum de verdad.
+    expect(read("supabase/migrations/0003_enums.sql")).toMatch(/'b2b_portal'/);
+  });
+
+  it("la API le enseña SU catálogo, no el catálogo", () => {
+    // El contrato por producto se aplicaba en el portal y al vender, y esta
+    // ruta —por donde mira un socio que integra antes de reservar— se había
+    // quedado fuera: le enseñaba productos que su reserva iba a rechazar.
+    const ruta = cuerpoDe("src/app/api/v1/products/route.ts");
+    expect(ruta).toMatch(/caller\.partnerId[\s\S]{0,200}"partner_product"/);
+    expect(ruta, "y el filtro se aplica").toMatch(/\.\.\.\(autorizados \? \{ _id: \{ in: autorizados \} \} : \{\}\)/);
+    expect(ruta, "sin nada autorizado, nada").toMatch(/autorizados !== null && autorizados\.length === 0/);
+  });
+
+  it("el tarifario y la API salen de la MISMA función", () => {
+    /**
+     * El criterio del plan es que «el tarifario descargado coincide con lo que
+     * la API devuelve». Eso no se consigue revisándolo: se consigue teniendo
+     * una sola función que los produzca. Dos implementaciones del mismo precio
+     * divergen el día que alguien añade una regla de temporada a una de las
+     * dos, y la divergencia sale a la luz facturando.
+     */
+    expect(cuerpoDe("src/app/api/portal/tarifario/route.ts")).toMatch(/tarifarioDeSocio\(/);
+    expect(cuerpoDe("src/app/api/v1/products/route.ts")).toMatch(/tarifarioDeSocio\(/);
+    // Y esa función no calcula precios: se los pide al motor.
+    const tarifario = cuerpoDe("src/lib/tarifario.ts");
+    expect(tarifario).toMatch(/await resolvePrice\(/);
+    expect(tarifario, "nada de fórmulas a mano").not.toMatch(/base_price|default_commission_pct/);
+    // Con el mismo canal con el que reserva: con otro, el tarifario diría un
+    // precio y la reserva cobraría otro.
+    expect(tarifario).toMatch(/channel: "b2b_portal"/);
+  });
+
+  /**
+   * «Un producto sin tarifa no tumba el tarifario entero» NO se guarda aquí.
+   *
+   * Aquí había un guardia que buscaba un `catch (err)` cerca del
+   * `resolvePrice`. No mordía: un `catch` que vuelva a lanzar el error lo
+   * cumple al pie de la letra y rompe el archivo igual. Esa propiedad es de lo
+   * que SALE, no del texto, y vive probada en `src/lib/tarifario.test.ts`
+   * ejecutando la función con un producto cuyo precio revienta.
+   */
+});
