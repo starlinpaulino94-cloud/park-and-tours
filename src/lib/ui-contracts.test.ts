@@ -256,26 +256,63 @@ describe("Panel ejecutivo", () => {
   });
 
   it("Notificaciones — buzón personal con marcar leídas y alcance por usuario", () => {
-    const page = read("src/app/dashboard/inicio/notificaciones/page.tsx");
-    expect(page).not.toContain("SimpleResource");
-    expect(page).toContain('title="Notificaciones"');
-    expect(page).toContain("Marcar todas como leídas");
-    expect(page).toContain("/api/notifications");
+    /**
+     * UNA SOLA BANDEJA PARA LOS DOS BUZONES.
+     *
+     * Quien decide qué hay dentro es el servidor —`inboxFilter` mira al actor—,
+     * así que la pantalla es la misma. Dos copias se habrían separado el día
+     * que alguien arreglara el contador en una: nadie revisa dos veces la misma
+     * pantalla.
+     */
+    const bandeja = read("src/components/tf/bandeja-avisos.tsx");
+    expect(bandeja).not.toContain("SimpleResource");
+    expect(bandeja).toContain('title="Notificaciones"');
+    expect(bandeja).toContain("Marcar todas como leídas");
+    expect(bandeja).toContain("/api/notifications");
+    for (const page of [
+      "src/app/dashboard/inicio/notificaciones/page.tsx",
+      "src/app/portal/avisos/page.tsx",
+    ]) {
+      expect(read(page), `${page} debería usar la bandeja compartida`).toContain("<BandejaDeAvisos");
+      // Y no rearmar la suya: una segunda lista es una segunda forma de
+      // quedarse sin el arreglo de la primera.
+      expect(read(page), `${page} rearma la bandeja`).not.toContain("/api/notifications");
+    }
     // La API acota a las notificaciones propias más los avisos de empresa que
     // le tocan por rol, con la MISMA función que el contador de la campana.
+    //
+    // Y el filtro lo decide el ACTOR, no el rango: quien es de un tour center
+    // recibe otro buzón entero, y eso se lo pregunta a `esDeSocio(ctx)` —el
+    // único sitio autorizado a mirar el nombre del rol— en vez de comparar
+    // aquí.
     const route = read("src/app/api/notifications/route.ts");
-    expect(route).toMatch(/inboxFilter\(ctx\.userId, ctx\.role\)/);
+    expect(route).toMatch(/inboxFilter\(\{/);
+    expect(route).toMatch(/esDeSocio: esDeSocio\(ctx\)/);
     expect(route).toContain("mark_all_read");
     // Y no rearma el alcance por su cuenta: dos definiciones del buzón acaban
     // en un contador que promete avisos que la bandeja no enseña.
     expect(route).not.toMatch(/_or: \[\{ user_id/);
-    // La ruta de marcado verifica pertenencia antes de escribir.
+    /**
+     * La ruta de marcado verifica pertenencia antes de escribir, y CON LA MISMA
+     * función que arma la bandeja.
+     *
+     * Aquí la regla era «`user_id` nulo ⇒ es de empresa ⇒ vale». Los avisos de
+     * un tour center también tienen `user_id` nulo, así que eso dejaba que un
+     * interno —y, peor, otro tour center— se los marcara como leídos y se los
+     * borrara de la campana antes de que él los viera.
+     */
     const readRoute = read("src/app/api/notifications/[id]/read/route.ts");
     expect(readRoute).toContain("Esta notificación no es tuya");
+    expect(readRoute, "la pertenencia se decide con puedeMarcar").toMatch(/puedeMarcar\(notification, actor\)/);
+    expect(readRoute, "y no con la regla vieja del user_id nulo")
+      .not.toMatch(/notification\.user_id && notification\.user_id !== ctx\.userId/);
     // El sidebar cuenta las no leídas con ese mismo alcance.
     expect(read("src/lib/nav.ts")).toContain('badgeKey: "notifications"');
     const layout = read("src/app/dashboard/layout.tsx");
-    expect(layout).toMatch(/inboxFilter\(userId, ctx\.role\)/);
+    // Y con el MISMO actor que la ruta: un contador que cuenta el buzón de la
+    // operadora para quien ve el del socio manda a una pantalla donde no hay
+    // nada, y a la tercera vez deja de hacerle caso a la campana.
+    expect(layout).toMatch(/inboxFilter\(\{ userId, role: ctx\.role, esDeSocio: esDeSocio\(ctx\)/);
     expect(layout).not.toMatch(/_or: \[\{ user_id/);
   });
 
@@ -3045,6 +3082,17 @@ describe("las notificaciones internas", () => {
    * Estas guardas atan cada evento del catálogo al sitio donde ocurre el hecho.
    */
   const HOOKS: [string, string][] = [
+    /**
+     * Los cinco del tour center. `notification.partner_id` está en la tabla
+     * desde 0009 y nadie la escribía: al socio no se le contaba NADA de sus
+     * propias ventas — ni la confirmación, ni el cambio de fecha, ni la
+     * cancelación, ni la liquidación emitida, ni el pago.
+     */
+    ["partner_booking_confirmed", "src/lib/booking-service.ts"],
+    ["partner_booking_cancelled", "src/lib/booking-cancel-service.ts"],
+    ["partner_booking_rescheduled", "src/app/api/bookings/[id]/reschedule/route.ts"],
+    ["partner_settlement_issued", "src/app/api/settlements/generate/route.ts"],
+    ["partner_settlement_paid", "src/app/api/settlements/[id]/pay/route.ts"],
     ["booking_created", "src/lib/booking-service.ts"],
     ["booking_cancelled", "src/lib/booking-cancel-service.ts"],
     ["booking_rescheduled", "src/app/api/bookings/[id]/reschedule/route.ts"],
@@ -6658,5 +6706,104 @@ describe("el socio que integra por API", () => {
     // encuentra nadie.
     expect(existe("src/app/portal/cupos/page.tsx")).toBe(true);
     expect(PORTAL_NAV.some((n) => n.href === "/portal/cupos")).toBe(true);
+  });
+
+  /* ═══════════════════════════════ Fase 6.5 · la bandeja del tour center */
+
+  it("un aviso de socio se escribe con partner_id y SIN rol", () => {
+    /**
+     * Las dos mitades del mismo hecho. Sin `partner_id` el aviso no llega a
+     * ninguna bandeja —el buzón del socio busca por ahí y solo por ahí—; y con
+     * `audience_role` puesto, el `check` de 0044 —que solo admite los seis
+     * roles internos— haría fallar el insert entero y el aviso se perdería en
+     * silencio, porque `notify` se traga sus propios errores a propósito.
+     */
+    const service = cuerpoDe("src/lib/notify-service.ts");
+    expect(service).toMatch(/partner_id: input\.partnerId \?\? null/);
+    expect(service, "un aviso de socio no puede llevar rol")
+      .toMatch(/audience_role: input\.userId \|\| input\.partnerId \? null : built\.audience_role/);
+  });
+
+  it("el buzón del socio no toca el cajón sin rol", () => {
+    /**
+     * `{ user_id: null, audience_role: null }` es el cajón de los avisos
+     * anteriores a 0044, y lo alcanza cualquiera. Para un miembro de un tour
+     * center eso es la bandeja interna de la operadora — el descuadre de caja
+     * de anoche incluido.
+     */
+    const notify = cuerpoDe("src/lib/notify.ts");
+    const i = notify.indexOf("export function inboxFilter");
+    const rama = notify.slice(i, notify.indexOf("return {", notify.indexOf("esDeSocio", i)));
+    expect(rama).toMatch(/if \(actor\.esDeSocio\)/);
+    expect(rama, "la rama del socio no puede mirar el rol").not.toMatch(/audience_role/);
+    // Y por identificador: sin ficha, ningún aviso de socio.
+    expect(rama).toMatch(/if \(actor\.partnerId\) suyos\.push/);
+  });
+
+  it("la operadora no ve las copias del socio", () => {
+    // Cada hecho que importa a los dos escribe DOS avisos, así que dejarlas
+    // pasar duplicaría la campana y el contador. Y «te pagamos la liquidación»
+    // no se lee bien desde el lado que paga.
+    const notify = cuerpoDe("src/lib/notify.ts");
+    const i = notify.indexOf("export function inboxFilter");
+    expect(notify.slice(i, i + 1200)).toMatch(/partner_id: null,/);
+  });
+
+  it("inboxFilter NO decide por su cuenta si quien pregunta es de un socio", () => {
+    /**
+     * Reimplementar `role === "partner"` aquí reabriría la puerta trasera que
+     * cerró 4.2: un empleado de un tour center con otro rol pasaría de largo y
+     * recibiría la bandeja interna. Este módulo es puro y no puede importar
+     * `tenant.ts`, que es `server-only`, así que la decisión entra como dato —
+     * y la calcula `esDeSocio(ctx)`, el único sitio autorizado a mirar el
+     * nombre del rol.
+     */
+    expect(cuerpoDe("src/lib/notify.ts")).not.toMatch(/role\s*===\s*"partner"/);
+    for (const ruta of [
+      "src/app/api/notifications/route.ts",
+      "src/app/api/notifications/[id]/read/route.ts",
+      "src/app/dashboard/layout.tsx",
+      "src/app/portal/layout.tsx",
+    ]) {
+      expect(cuerpoDe(ruta), `${ruta} arma el actor sin esDeSocio`).toMatch(/esDeSocio: esDeSocio\(ctx\)/);
+    }
+  });
+
+  it("el contador del portal cuenta EL MISMO buzón que la bandeja", () => {
+    // Un contador que promete avisos que la pantalla no enseña manda al socio a
+    // una lista vacía, y a la tercera vez deja de mirar el número.
+    const layout = cuerpoDe("src/app/portal/layout.tsx");
+    expect(layout).toMatch(/inboxFilter\(\{/);
+    expect(layout).toMatch(/read_status: false/);
+    expect(layout).toMatch(/badges=\{\{ notifications: sinLeer \}\}/);
+    // Y el atajo del portal sabe pintar el número: sin esto, el `badgeKey` de
+    // la navegación era una promesa muerta.
+    expect(cuerpoDe("src/components/tf/side-shell.tsx")).toMatch(/badges\?\.\[item\.badgeKey\]/);
+  });
+
+  it("la política de notification da las TRES ramas, no can_read_partner", () => {
+    /**
+     * `app.can_read_partner(partner_id)` exige que la fila lleve el socio de
+     * quien consulta, y los avisos PERSONALES de un miembro del tour center no
+     * llevan ninguno: con ella, el socio dejaría de ver los suyos propios.
+     */
+    // Sin sus comentarios: este fichero EXPLICA por qué no usa
+    // `can_read_partner`, y una guarda que se conforme con ver el nombre
+    // escrito en una explicación no comprueba nada.
+    const sql = read("supabase/migrations/0079_partner_notifications.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/create policy tenant_select on public\.notification/);
+    expect(sql).toMatch(/app\.current_partner_id\(\) is null/);
+    expect(sql).toMatch(/or partner_id = app\.current_partner_id\(\)/);
+    expect(sql, "sin esta rama el socio pierde sus avisos personales")
+      .toMatch(/or user_id = auth\.uid\(\)/);
+    expect(sql, "can_read_partner escondería los avisos personales del socio")
+      .not.toMatch(/can_read_partner/);
+  });
+
+  it("«avisos» tiene pantalla y entrada de menú con contador", () => {
+    expect(existe("src/app/portal/avisos/page.tsx")).toBe(true);
+    const entrada = PORTAL_NAV.find((n) => n.href === "/portal/avisos");
+    expect(entrada, "el socio no encuentra su bandeja").toBeTruthy();
+    expect(entrada?.badgeKey).toBe("notifications");
   });
 });

@@ -147,6 +147,34 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
      * no puede convertirse en un aviso para todo el mundo—, y nunca bloquea:
      * el dinero ya se movió y ya está en la contabilidad.
      */
+    /**
+     * Y al tour center, cuando el beneficiario es él.
+     *
+     * Este bloque solo miraba `beneficiary_type === "seller"`: a un socio
+     * liquidado no se le decía nunca que le habían pagado. Va a su empresa —no
+     * hace falta buscar qué persona— porque el dinero es de la empresa.
+     */
+    if (settlement.beneficiary_type === "partner") {
+      const socio = refId(settlement.partner as never);
+      if (socio) {
+        await notify({
+          companyId: ctx.companyId,
+          partnerId: socio,
+          event: "partner_settlement_paid",
+          entityType: "settlement",
+          entityId: id,
+          // El pago puede ser parcial y llegar en varios abonos: cada uno es un
+          // hecho distinto y merece su aviso.
+          dedupeSeed: `${socio}:${payment}:${new Date().toISOString().slice(0, 10)}`,
+          vars: {
+            referencia: settlement.code ?? "",
+            monto: payment,
+            moneda: settlement.currency ?? "usd",
+          },
+        });
+      }
+    }
+
     if (settlement.beneficiary_type === "seller") {
       const userId = await usuarioDeVendedor(ctx.companyId, refId(settlement.seller as never));
       if (userId) {

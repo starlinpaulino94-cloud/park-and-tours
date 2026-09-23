@@ -1097,6 +1097,33 @@ export async function createOrderWithBookings(
         pax: booking.pax_total,
       },
     });
+
+    /**
+     * Y AL TOUR CENTER, que es quien hizo la venta.
+     *
+     * `notification.partner_id` está en la tabla desde 0009 y nadie la
+     * escribía: al socio no se le contaba nada de sus propias reservas. Se
+     * enteraba entrando a mirar o llamando, que es lo que el portal vino a
+     * sustituir.
+     *
+     * Va a la EMPRESA y no a quien la tecleó: dentro de un tour center todos
+     * los accesos son iguales por construcción (0073), y el que atiende al
+     * turista mañana no es el que vendió hoy.
+     */
+    if (input.partner_id) {
+      await notify({
+        companyId,
+        partnerId: input.partner_id,
+        event: "partner_booking_confirmed",
+        entityType: "booking",
+        entityId: booking._id,
+        vars: {
+          referencia: booking.booking_number,
+          fecha: booking.travel_date ? formatDate(booking.travel_date) : null,
+          pax: booking.pax_total,
+        },
+      });
+    }
   }
 
   // ---- apuntar el consumo en el cupo del socio (0054) --------------------

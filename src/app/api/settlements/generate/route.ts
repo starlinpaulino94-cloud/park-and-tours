@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { assertModule } from "@/lib/plan-service";
 import { newSettlementCode, newDocumentNumber } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
+import { notify } from "@/lib/notify-service";
 import type { BeneficiaryType, Commission, Currency, Settlement } from "@/lib/types";
 import { refId, isTerminalBookingStatus } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -188,6 +189,35 @@ export async function POST(req: NextRequest) {
         from: from.toISOString(), to: to.toISOString(),
       },
     });
+
+    /**
+     * EMITIR UNA LIQUIDACIÓN NO AVISABA A NADIE.
+     *
+     * Ni al socio ni dentro de la operadora: se creaba el documento y ahí se
+     * quedaba, esperando a que alguien entrara a mirar. Para el tour center es
+     * el aviso que ABRE el plazo de revisión — sin él descubre el corte cuando
+     * le llega el pago, y discutirlo entonces es discutir sobre dinero que ya
+     * se movió. La disputa de 5.4 existe para usarse ANTES de eso.
+     *
+     * Se avisa al final, con el documento ya escrito y su cuenta por pagar
+     * creada: un aviso de algo que todavía puede fallar manda al socio a una
+     * pantalla vacía.
+     */
+    if (body.partner_id) {
+      await notify({
+        companyId: ctx.companyId,
+        partnerId: body.partner_id,
+        event: "partner_settlement_issued",
+        entityType: "settlement",
+        entityId: settlement._id,
+        vars: {
+          referencia: settlement.code ?? "",
+          monto: round2(commissionTotal + bonusTotals.cash),
+          moneda: currency,
+          periodo: `${from.toISOString().slice(0, 10)} a ${to.toISOString().slice(0, 10)}`,
+        },
+      });
+    }
 
     console.log(`[settlements] ${settlement.code}: ${claimed} comisiones · ${commissionTotal} ${currency}`);
     return ok({

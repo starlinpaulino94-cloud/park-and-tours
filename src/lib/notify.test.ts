@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import {
   NOTIFY_EVENTS, buildNotification, dedupeKeyFor, audienceRolesFor, inboxFilter,
-  notificationForCreate, type NotifyEventKey,
+  notificationForCreate, puedeMarcar, type NotifyEventKey,
 } from "@/lib/notify";
 
 const ROOT = path.resolve(__dirname, "../..");
@@ -50,10 +50,44 @@ describe("el catálogo", () => {
     }
   });
 
-  it("el destinatario es un rol real del sistema", () => {
+  it("el destinatario es un rol real del sistema, o el tour center", () => {
+    /**
+     * DOS DESTINOS, Y SE ESCRIBEN EN COLUMNAS DISTINTAS.
+     *
+     * Los seis roles van a `audience_role`, que tiene un CHECK desde 0044: un
+     * valor nuevo aquí sin migración no escribe nada y el aviso se pierde en
+     * silencio.
+     *
+     * `partner` NO es uno de ellos y por eso NO puede acabar en esa columna:
+     * va por identificador, en `notification.partner_id`. Dentro de un tour
+     * center todos los accesos son iguales por construcción (0073), así que
+     * repartir por rango allí no significaría nada.
+     */
     const roles = ["owner", "admin", "manager", "operations", "cashier", "seller"];
     for (const key of keys) {
-      expect(roles, key).toContain(buildNotification(key, {}).audience_role);
+      expect([...roles, "partner"], key).toContain(buildNotification(key, {}).audience_role);
+    }
+  });
+
+  it("un aviso de socio NO alcanza a nadie por rango", () => {
+    /**
+     * La red de seguridad del punto anterior: aunque «partner» se colara en la
+     * columna de rol, ningún rol interno lo alcanza — ni el dueño. Un aviso que
+     * empieza por «te pagamos la liquidación» no se lee desde el lado que paga.
+     */
+    for (const role of ["owner", "admin", "manager", "operations", "cashier", "seller", "superadmin"]) {
+      expect(audienceRolesFor(role), role).not.toContain("partner");
+    }
+  });
+
+  it("los avisos del socio apuntan al PORTAL, no al panel", () => {
+    // Un enlace a `/dashboard/...` desde la bandeja del socio es un enlace a
+    // una pantalla a la que el portal le cierra la puerta: `esDeSocio` lo
+    // devuelve a `/portal` y el aviso se queda sin sitio donde llevarlo.
+    const deSocio = keys.filter((k) => buildNotification(k, {}).audience_role === "partner");
+    expect(deSocio.length, "no hay eventos de socio en el catálogo").toBeGreaterThan(0);
+    for (const key of deSocio) {
+      expect(buildNotification(key, {}).link, key).toMatch(/^\/portal\//);
     }
   });
 
@@ -125,12 +159,99 @@ describe("a quién le llega", () => {
   });
 
   it("el buzón trae lo propio, lo sin rol y lo de su alcance", () => {
-    const filtro = inboxFilter("u1", "manager") as { _or: Record<string, unknown>[] };
+    const filtro = inboxFilter({ userId: "u1", role: "manager", esDeSocio: false }) as
+      { _or: Record<string, unknown>[]; partner_id: unknown };
     expect(filtro._or[0]).toEqual({ user_id: "u1" });
     // Los avisos escritos antes de 0044 no tienen rol: siguen viéndose, porque
     // perderlos sería perder correo por cambiar de buzón.
     expect(filtro._or[1]).toEqual({ user_id: null, audience_role: null });
     expect(filtro._or[2]).toEqual({ user_id: null, audience_role: { in: ["manager", "operations", "cashier", "seller"] } });
+    // Y no las copias del socio: cada hecho que importa a los dos escribe dos
+    // avisos, así que dejarlas pasar duplicaría la campana.
+    expect(filtro.partner_id).toBeNull();
+  });
+});
+
+describe("marcar un aviso como leído", () => {
+  const interno = { userId: "u1", role: "manager", esDeSocio: false };
+  const socio = { userId: "u9", role: "seller", esDeSocio: true, partnerId: "s-1" };
+  const otroSocio = { userId: "u8", role: "seller", esDeSocio: true, partnerId: "s-2" };
+
+  it("el personal solo marca el suyo", () => {
+    expect(puedeMarcar({ user_id: "u1" }, interno)).toBe(true);
+    expect(puedeMarcar({ user_id: "u2" }, interno)).toBe(false);
+  });
+
+  it("UN AVISO DE SOCIO NO LO MARCA CUALQUIERA", () => {
+    /**
+     * EL AGUJERO QUE ESTO CIERRA.
+     *
+     * La ruta comprobaba «`user_id` nulo ⇒ es de empresa ⇒ vale». Los avisos de
+     * un tour center también tienen `user_id` nulo, así que esa regla dejaba
+     * que un interno —y, peor, OTRO tour center— se los marcara como leídos y
+     * se los borrara de la campana antes de que él los viera.
+     */
+    expect(puedeMarcar({ partner_id: "s-1" }, socio)).toBe(true);
+    expect(puedeMarcar({ partner_id: "s-1" }, otroSocio)).toBe(false);
+    expect(puedeMarcar({ partner_id: "s-1" }, interno)).toBe(false);
+  });
+
+  it("sin ficha de socio no se marca ningún aviso de socio", () => {
+    // Fallar hacia el silencio, igual que en la bandeja.
+    expect(puedeMarcar({ partner_id: "s-1" }, { userId: "u7", role: "partner", esDeSocio: true })).toBe(false);
+  });
+
+  it("el aviso de empresa es del personal, no del socio", () => {
+    // Quien es de un tour center ya no lo ve en su bandeja; marcarlo sería
+    // poder tocar lo que no se puede leer.
+    expect(puedeMarcar({ user_id: null, partner_id: null }, interno)).toBe(true);
+    expect(puedeMarcar({ user_id: null, partner_id: null }, socio)).toBe(false);
+  });
+
+  it("lo personal gana: un aviso con dueño es de su dueño y de nadie más", () => {
+    expect(puedeMarcar({ user_id: "u9", partner_id: "s-2" }, socio)).toBe(true);
+    expect(puedeMarcar({ user_id: "u1", partner_id: "s-1" }, socio)).toBe(false);
+  });
+});
+
+describe("el buzón del tour center", () => {
+  it("LO SUYO Y LO DE SU EMPRESA, y nada de la operadora", () => {
+    /**
+     * EL FALLO QUE ESTO CIERRA, POR LOS DOS LADOS.
+     *
+     * Hacia dentro: el cajón de `audience_role is null` —los avisos anteriores
+     * a 0044— lo alcanzaba cualquiera, y para un miembro de un tour center eso
+     * es la bandeja interna de la operadora.
+     *
+     * Hacia fuera: los avisos dirigidos a un socio llevan `partner_id` y no
+     * llevan rol, así que por rango no los habría alcanzado nunca — ni con el
+     * rango más alto.
+     */
+    const filtro = inboxFilter({ userId: "u9", role: "seller", esDeSocio: true, partnerId: "s-1" }) as
+      { _or: Record<string, unknown>[]; partner_id?: unknown };
+    expect(filtro._or).toEqual([{ user_id: "u9" }, { partner_id: "s-1" }]);
+    // Ni el cajón sin rol ni el de rango aparecen por ninguna parte.
+    expect(JSON.stringify(filtro)).not.toContain("audience_role");
+  });
+
+  it("se reconoce por la ficha, no por el nombre del rol", () => {
+    // Es el mismo criterio que `esDeSocio`: un empleado de un tour center con
+    // otro rol pasaba de largo cuando el aislamiento miraba el nombre.
+    const porFicha = inboxFilter({ userId: "u1", role: "seller", esDeSocio: true, partnerId: "s-1" }) as
+      { _or: Record<string, unknown>[] };
+    expect(porFicha._or).toEqual([{ user_id: "u1" }, { partner_id: "s-1" }]);
+  });
+
+  it("sin identificador de socio NO le toca ningún aviso de socio", () => {
+    /**
+     * Fallar hacia el silencio. Lo contrario —caer en el buzón interno— le
+     * daría a un usuario marcado como de socio, pero sin ficha, la bandeja de
+     * la operadora entera.
+     */
+    const filtro = inboxFilter({ userId: "u1", role: "partner", esDeSocio: true }) as
+      { _or: Record<string, unknown>[] };
+    expect(filtro._or).toEqual([{ user_id: "u1" }]);
+    expect(JSON.stringify(filtro)).not.toContain("audience_role");
   });
 });
 

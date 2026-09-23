@@ -371,6 +371,32 @@ export async function cancelBookingFully(
     },
   });
 
+  /**
+   * Y al tour center, si la venta era suya.
+   *
+   * Es el aviso que más le cuesta no tener: la reserva desaparece de su portal
+   * y él no sabe por qué, mientras el turista sí que se ha enterado —al cliente
+   * se le avisa desde siempre—. El socio quedaba como el último en saberlo de
+   * una venta que hizo él.
+   */
+  const [ordenDeLaVenta] = orderId
+    ? await tenantQuery<{ partner?: unknown }>(ctx.companyId, "order", { _filter: { _id: orderId }, _limit: 1 })
+    : [];
+  const socioDeLaVenta = refId(ordenDeLaVenta?.partner as never);
+  if (socioDeLaVenta) {
+    await notify({
+      companyId: ctx.companyId,
+      partnerId: socioDeLaVenta,
+      event: "partner_booking_cancelled",
+      entityType: "booking",
+      entityId: booking._id,
+      vars: {
+        referencia: booking.booking_number,
+        motivo: options.reason || null,
+      },
+    });
+  }
+
   console.log(`[cancel] reserva ${booking.booking_number} cancelada · reembolso ${refund}`);
   // La cancelación ya está registrada y la plaza liberada. El aviso al cliente
   // sale ahora: tiene que saberlo antes de presentarse en el lobby, y el

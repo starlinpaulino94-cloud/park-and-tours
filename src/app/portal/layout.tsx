@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
-import { getTenantContext, tenantQuery, esDeSocio } from "@/lib/tenant";
+import { getTenantContext, tenantQuery, tenantCount, esDeSocio } from "@/lib/tenant";
+import { inboxFilter } from "@/lib/notify";
 import { SideShell } from "@/components/tf/side-shell";
 import { PORTAL_NAV } from "@/lib/nav";
 import { PortalProvider } from "./portal-context";
@@ -44,6 +45,24 @@ export default async function PortalLayout({ children }: { children: React.React
 
   const isStaff = !esDeSocio(ctx);
 
+  /**
+   * Las no leídas de su buzón, con la MISMA función que la bandeja.
+   *
+   * Un contador que cuenta más de lo que la pantalla enseña manda al socio a
+   * una lista vacía, y a la tercera vez deja de mirar el número — que es la
+   * forma de tener una bandeja que no sirve para nada. Y nunca tumba el portal:
+   * si la cuenta falla, el menú sale sin número.
+   */
+  let sinLeer = 0;
+  try {
+    sinLeer = await tenantCount(ctx.companyId, "notification", {
+      ...inboxFilter({ userId: ctx.userId, role: ctx.role, esDeSocio: esDeSocio(ctx), partnerId: ctx.partnerId }),
+      read_status: false,
+    });
+  } catch (err) {
+    console.error("[portal] no se pudieron contar los avisos sin leer:", err);
+  }
+
   return (
     <SideShell
       nav={PORTAL_NAV}
@@ -52,6 +71,7 @@ export default async function PortalLayout({ children }: { children: React.React
       subtitle={partnerName}
       user={{ name: ctx.name, role: ctx.role, companyName: partnerName }}
       extraLinks={isStaff ? [{ href: "/dashboard", label: "Volver al panel interno", icon: "ArrowLeft" }] : []}
+      badges={{ notifications: sinLeer }}
     >
       <PortalProvider role={ctx.role} partnerId={ctx.partnerId}>
         {condicionesPendientes > 0 && <CondicionesPendientes version={condicionesPendientes} />}

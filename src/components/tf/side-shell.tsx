@@ -21,7 +21,7 @@ import { toast } from "sonner";
  * single-level navigations, so they do not need the grouped ERP sidebar.
  */
 export function SideShell({
-  nav, brand, subtitle, badge, accent = "primary", user, extraLinks, children,
+  nav, brand, subtitle, badge, accent = "primary", user, extraLinks, badges, children,
 }: {
   nav: NavItem[];
   brand: string;
@@ -31,6 +31,15 @@ export function SideShell({
   /** Identidad visible del usuario. Sin correo: solo `/dashboard/perfil` lo muestra. */
   user: { name: string; role: string; companyName?: string };
   extraLinks?: { href: string; label: string; icon: string }[];
+  /**
+   * Contadores por `badgeKey`, como en el panel interno.
+   *
+   * Sin esto, un `badgeKey` en la navegación del portal era una promesa muerta:
+   * el dato existía en `nav.ts`, `app-shell` lo pintaba y este atajo lo tiraba
+   * al suelo — así que la bandeja del socio no tendría número de no leídos y
+   * habría que entrar a mirar, que es de lo que venimos.
+   */
+  badges?: Record<string, number>;
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
@@ -56,6 +65,7 @@ export function SideShell({
     <nav className="flex-1 space-y-0.5 overflow-y-auto tf-scroll px-3 pb-6">
       {nav.map((item) => {
         const active = pathname === item.href || (item.href !== nav[0].href && pathname.startsWith(item.href));
+        const count = item.badgeKey ? badges?.[item.badgeKey] || 0 : 0;
         return (
           <Link
             key={item.href}
@@ -70,7 +80,12 @@ export function SideShell({
           >
             <Icon name={item.icon} className={cn("size-4 shrink-0", active && "text-sidebar-primary")} />
             <span className="truncate">{item.label}</span>
-            {active && <span className="ml-auto size-1.5 rounded-full bg-sidebar-primary" />}
+            {count > 0 && (
+              <span className="tf-num ml-auto rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground">
+                {count > 99 ? "99+" : count}
+              </span>
+            )}
+            {active && count === 0 && <span className="ml-auto size-1.5 rounded-full bg-sidebar-primary" />}
           </Link>
         );
       })}

@@ -2459,3 +2459,61 @@ Y la tabla dice dos cosas más que no se preguntaban:
   iguales). Una lista escrita a mano acumula esto en silencio; la guarda que lo
   caza son tres líneas y vale para todas las futuras.
 - **Mutación: quince, las quince muertas.**
+
+### Fase 6.5 — al tour center no se le contaba nada
+- **`notification.partner_id` está en la tabla desde 0009 y NADIE la escribía ni
+  la leía.** Es la tercera columna de esta fase que promete un vínculo con el
+  socio y no lo cumple, después de `authorized_products` (6.1) y de
+  `api_key.partner_id` (6.3). La consecuencia era literal: al tour center no se
+  le contaba **nada** de sus propias ventas — ni que la reserva quedó
+  confirmada, ni que le movieron la fecha y la recogida, ni que se la
+  cancelaron, ni que le emitieron la liquidación, ni que se la pagaron.
+- **Y el turista SÍ recibía sus avisos.** Al cliente se le escribe desde que
+  existen la reserva, la reprogramación y la cancelación. El socio —que es quien
+  tiene el teléfono del turista en la mano y quien lo va a buscar al hotel—
+  quedaba como el último en enterarse de una venta que hizo él.
+- **Emitir una liquidación no avisaba a nadie**, ni al socio ni dentro de la
+  operadora: se creaba el documento y ahí se quedaba. Para el socio es el aviso
+  que ABRE el plazo de revisión; sin él descubre el corte cuando le llega el
+  pago, y discutirlo entonces es discutir sobre dinero que ya se movió — la
+  disputa de 5.4 existe para usarse antes de eso.
+- **`settlement_paid` solo miraba `beneficiary_type === "seller"`**: a un socio
+  liquidado no se le decía nunca que le habían pagado.
+- **Dos buzones, no uno con permisos.** `inboxFilter` compartía la bandeja por
+  rango, y eso fallaba por los dos lados a la vez: **hacia dentro**, el cajón de
+  `audience_role is null` —los avisos anteriores a 0044— lo alcanza cualquiera,
+  y para un miembro de un tour center eso es la bandeja interna de la operadora;
+  **hacia fuera**, los avisos de socio llevan `partner_id` y no llevan rol, así
+  que por rango no los habría alcanzado nunca, ni con el rango más alto.
+- **Y la decisión no se reimplementa: entra como dato.** `notify.ts` es puro y
+  no puede importar `tenant.ts`, que es `server-only`. Escribir aquí
+  `role === "partner"` habría reabierto la puerta trasera de 4.2 — lo cazó esa
+  misma guarda en la primera ejecución. El actor trae `esDeSocio(ctx)` ya
+  resuelto por el único sitio autorizado a mirar el nombre del rol.
+- **El agujero que se abre al crear un actor nuevo, y que cierra en la misma
+  entrega.** La ruta de marcar como leído decía «`user_id` nulo ⇒ es de empresa
+  ⇒ vale». Los avisos de un tour center también tienen `user_id` nulo: esa regla
+  dejaba que un interno —y, peor, **otro tour center**— se los marcara como
+  leídos y se los borrara de la campana antes de que él los viera. Ahora lo
+  decide `puedeMarcar`, que vive al lado de `inboxFilter` porque leer una
+  bandeja y marcar lo que hay en ella son la misma regla escrita dos veces si se
+  separan.
+- **Una sola pantalla para los dos buzones.** Quien decide qué hay dentro es el
+  servidor, así que la bandeja es el mismo componente en el panel y en el
+  portal. Dos copias se habrían separado el día que alguien arreglara el
+  contador en una sola.
+- **Un `badgeKey` en el menú del portal era una promesa muerta**: el dato estaba
+  en `nav.ts`, `app-shell` lo pintaba, y `side-shell` —el atajo que usa el
+  portal— lo tiraba al suelo. Una bandeja sin número de no leídos obliga a
+  entrar a mirar, que es de lo que venimos.
+- **Migración 0079: un índice y una política.** Hasta ahora `notification` tenía
+  solo el aislamiento por empresa, así que la BASE le dejaba a un miembro de un
+  tour center leer la bandeja interna entera de la operadora y solo el filtro de
+  la aplicación lo impedía. **No se usa `can_read_partner`**, y esa es la
+  diferencia que importa: esa función exige que la fila lleve el socio de quien
+  consulta, y los avisos PERSONALES de un miembro del tour center no llevan
+  ninguno — con ella, el socio dejaría de ver los suyos propios.
+- **El socio entra en la clave de dedupe por la SEMILLA**, no por un trozo nuevo:
+  añadir un quinto campo cambiaría la clave de todos los avisos ya escritos y el
+  índice único dejaría pasar una copia de cada uno.
+- **Mutación: quince, las quince muertas.**
