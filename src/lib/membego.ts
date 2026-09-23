@@ -241,6 +241,96 @@ export function membresiaFromPayload(payload: Record<string, unknown>): MembegoM
   };
 }
 
+/* ------------------------------------------ qué eventos atiende el satélite */
+
+/**
+ * Los tipos de evento que este satélite ATIENDE.
+ *
+ * MembeGo reenvía ONCE (`EVENTOS_REENVIADOS`, en su `nucleo.ts`). Aquí estaban
+ * los siete que existían cuando nació la integración; los cuatro que faltaban
+ * son justo los que CIERRAN un ciclo, y su ausencia no se notaba porque el
+ * webhook respondía 200 y los archivaba como `ignored`:
+ *
+ *   · `cliente.actualizado` — el espejo se quedaba con el correo y el teléfono
+ *     viejos tras cada edición, que es exactamente lo que ese evento vino a
+ *     evitar en MembeGo.
+ *   · `cliente.eliminado`   — la copia sobrevivía al borrado. Un fantasma que
+ *     seguía apareciendo en el mostrador con beneficios que preguntar.
+ *   · `membresia.cancelada` — el espejo seguía diciendo «Plan Oro» de una
+ *   · `membresia.vencida`     membresía dada de baja semanas atrás.
+ *
+ * Los cuatro son el mismo fallo: una proyección que recibe el alta y no la baja
+ * no está «casi al día», está MAL — y con la seguridad de un dato que alguien
+ * escribió a propósito.
+ *
+ * Un tipo que NO esté en esta lista sigue respondiendo 200 y archivándose como
+ * `ignored`: MembeGo añadirá eventos, y un satélite que devuelva error por uno
+ * que no conoce acaba en su DEAD_LETTER por hacer lo correcto.
+ */
+export const EVENTOS_ATENDIDOS = [
+  "cliente.registrado",
+  "cliente.actualizado",
+  "cliente.eliminado",
+  "cliente.primera_visita",
+  "cliente.visita",
+  "cliente.compro_servicio",
+  "cliente.primera_compra",
+  "membresia.activada",
+  "membresia.cancelada",
+  "membresia.vencida",
+  "referido.convirtio",
+] as const;
+
+/** ¿Este satélite hace algo con este evento, o solo lo archiva? */
+export function atiendeEvento(tipo: string): boolean {
+  return (EVENTOS_ATENDIDOS as readonly string[]).includes(tipo);
+}
+
+export type EstadoMembresia = "active" | "cancelled" | "expired";
+
+/**
+ * Evento de membresía → estado en el espejo.
+ *
+ * El mapa está COMPLETO a propósito —los tres que MembeGo reenvía— para que
+ * añadir uno nuevo allá obligue a decidir aquí qué significa, en vez de caer en
+ * silencio a «ningún estado» y dejar la copia como estaba.
+ */
+export function estadoDeMembresia(tipo: string): EstadoMembresia | null {
+  switch (tipo) {
+    case "membresia.activada": return "active";
+    case "membresia.cancelada": return "cancelled";
+    case "membresia.vencida": return "expired";
+    default: return null;
+  }
+}
+
+/**
+ * Los campos de la membresía QUE VIENEN EN EL EVENTO, y solo esos, con el
+ * nombre de columna del espejo.
+ *
+ * En un upsert, una clave ausente conserva su valor y una clave en null lo
+ * pisa. La diferencia daba igual mientras el único evento de membresía era el
+ * alta, que llega con la ficha completa. Deja de dar igual con la baja y el
+ * vencimiento: su payload trae el id y el plan, pero no el nombre ni la
+ * vigencia, y copiarlos a null dejaría el espejo diciendo «membresía
+ * cancelada» sin poder decir CUÁL — que es peor que no decir nada, porque
+ * parece un dato y es un hueco.
+ */
+export function camposDeMembresia(
+  membresia: MembegoMembresiaPayload | null
+): Record<string, unknown> {
+  if (!membresia) return {};
+  return {
+    ...(membresia.id !== null ? { membership_id: membresia.id } : {}),
+    ...(membresia.planId !== null ? { plan_id: membresia.planId } : {}),
+    ...(membresia.plan !== null ? { plan_name: membresia.plan } : {}),
+    ...(membresia.esDePago !== null ? { membership_paid: membresia.esDePago } : {}),
+    ...(membresia.vigenteHasta !== null
+      ? { membership_valid_until: membresia.vigenteHasta }
+      : {}),
+  };
+}
+
 /**
  * Divide «Juan Pérez» en nombre y apellido para la ficha local.
  *

@@ -4,7 +4,8 @@ import { supabaseService } from "@/lib/supabase/service";
 import { tryWrite } from "@/lib/supabase/io";
 import {
   mapMembegoRole, canLinkCompanies, clienteFromPayload, membresiaFromPayload, splitNombre,
-  type MembegoSsoPayload, type MembegoEvent,
+  atiendeEvento, estadoDeMembresia, camposDeMembresia,
+  type MembegoSsoPayload, type MembegoEvent, type MembegoClientePayload,
 } from "@/lib/membego";
 
 /**
@@ -307,13 +308,6 @@ export interface EventOutcome {
   detail?: string;
 }
 
-/** Tipos que producen un efecto local. El resto se registra y se ignora. */
-const KNOWN_EVENTS = new Set([
-  "cliente.registrado", "cliente.primera_visita", "cliente.visita",
-  "cliente.compro_servicio", "cliente.primera_compra",
-  "membresia.activada", "referido.convirtio",
-]);
-
 /**
  * Aplica un evento del webhook. Idempotente por diseño: la fila de
  * `membego_event` (clave primaria = id del sobre) se inserta ANTES de tocar
@@ -321,7 +315,7 @@ const KNOWN_EVENTS = new Set([
  */
 export async function applyMembegoEvent(link: MembegoLink, event: MembegoEvent): Promise<EventOutcome> {
   const sb = supabaseService();
-  const known = KNOWN_EVENTS.has(event.tipo);
+  const known = atiendeEvento(event.tipo);
 
   const { error: insertError } = await sb.from("membego_event").insert({
     event_id: event.id,
@@ -365,6 +359,15 @@ async function applyEffects(link: MembegoLink, event: MembegoEvent): Promise<voi
   const cliente = clienteFromPayload(event.payload);
   if (!cliente.clienteId) return;
 
+  // 0) EL BORRADO SUELTA LA COPIA Y SALE, y tiene que ir ANTES del upsert de
+  // abajo: pasar por él resucitaría la fila en el mismo evento que manda
+  // borrarla —y encima con los datos del propio evento, así que el fantasma
+  // parecería recién sincronizado.
+  if (event.tipo === "cliente.eliminado") {
+    await forgetCustomer(link, cliente.clienteId);
+    return;
+  }
+
   // 1) El espejo del cliente.
   const { data: mirror, error: mirrorError } = await sb
     .from("membego_customer")
@@ -377,12 +380,29 @@ async function applyEffects(link: MembegoLink, event: MembegoEvent): Promise<voi
   // 2) La ficha local: se busca por correo y después por teléfono, y solo se
   // crea si no existe. La fuente del dato es MembeGo, pero la ficha es de la
   // organización — un cliente que ya compraba aquí no se duplica.
+  //
+  // SIN IDENTIDAD NO SE CREA NADA. La baja y el vencimiento de una membresía
+  // viajan con el id del cliente y nada más —su payload es la membresía, no la
+  // ficha—, y crear con eso daría un cliente sin nombre, sin correo y sin
+  // teléfono: una fila que no se puede cruzar con nadie, que el mostrador no
+  // puede usar y que se quedaría enganchada al espejo para siempre. Cuando
+  // llegue un evento que sí traiga la ficha, este mismo camino la crea y la
+  // enlaza, porque `customer_id` sigue en null hasta entonces.
   let customerId = mirror?.customer_id as string | null | undefined;
-  if (!customerId) {
+  if (!customerId && (cliente.nombre || cliente.email || cliente.telefono)) {
     customerId = await matchOrCreateCustomer(link.organization_id, cliente);
   }
 
+  // 3) Una EDICIÓN en MembeGo se propaga a la ficha local. Solo lo dice este
+  // evento: los demás traen la ficha para identificar al cliente, no para
+  // corregirla, y aprovecharlos convertiría cualquier visita en una
+  // sobrescritura silenciosa.
+  if (event.tipo === "cliente.actualizado" && customerId) {
+    await refreshLocalCustomer(link.organization_id, customerId, cliente);
+  }
+
   const membresia = membresiaFromPayload(event.payload);
+  const estadoMembresia = estadoDeMembresia(event.tipo);
   const bump = (field: "visits" | "purchases") =>
     (mirror?.[field] ?? 0) + 1;
 
@@ -390,13 +410,8 @@ async function applyEffects(link: MembegoLink, event: MembegoEvent): Promise<voi
     organization_id: link.organization_id,
     membego_cliente_id: cliente.clienteId,
     customer_id: customerId ?? null,
-    ...(membresia ? {
-      membership_id: membresia.id,
-      plan_id: membresia.planId,
-      plan_name: membresia.plan,
-      membership_paid: membresia.esDePago,
-      membership_valid_until: membresia.vigenteHasta,
-    } : {}),
+    ...camposDeMembresia(membresia),
+    ...(estadoMembresia ? { membership_status: estadoMembresia } : {}),
     ...(event.tipo === "cliente.visita" || event.tipo === "cliente.primera_visita"
       ? { visits: bump("visits") } : {}),
     ...(event.tipo === "cliente.compro_servicio" || event.tipo === "cliente.primera_compra"
@@ -407,6 +422,94 @@ async function applyEffects(link: MembegoLink, event: MembegoEvent): Promise<voi
     .from("membego_customer")
     .upsert(patch, { onConflict: "organization_id,membego_cliente_id" });
   if (upsertError) throw new Error(upsertError.message);
+}
+
+/**
+ * SUELTA LA COPIA de un cliente borrado en MembeGo.
+ *
+ * Se borra el ESPEJO, NO la ficha de la organización. Park & Tours puede tener
+ * reservas, facturas y pagos colgando de esa ficha: que MembeGo borre su
+ * cliente no le da autoridad sobre la historia comercial de aquí, y un borrado
+ * en cascada disparado desde otra plataforma es la clase de fallo que nadie ve
+ * venir hasta que falta media contabilidad.
+ *
+ * Lo que sí se corta es el VÍNCULO. Sin fila de espejo, `membegoClienteIdOf`
+ * devuelve null y el mostrador deja de ofrecer beneficios de alguien que allá
+ * ya no existe — que es el efecto que el evento viene a pedir.
+ *
+ * Queda en la bitácora porque es una pérdida de información pedida desde
+ * fuera: si mañana alguien pregunta por qué ese cliente dejó de tener
+ * beneficios, la respuesta tiene que estar escrita.
+ */
+async function forgetCustomer(link: MembegoLink, membegoClienteId: string): Promise<void> {
+  const { data, error } = await supabaseService()
+    .from("membego_customer")
+    .delete()
+    .eq("organization_id", link.organization_id)
+    .eq("membego_cliente_id", membegoClienteId)
+    .select("customer_id");
+  if (error) throw new Error(error.message);
+
+  const borradas = (data ?? []) as { customer_id: string | null }[];
+  if (borradas.length === 0) return; // nunca tuvimos su copia: nada que soltar
+
+  await auditMembego(
+    link.organization_id,
+    "membego_customer_forgotten",
+    `Cliente ${membegoClienteId} borrado en MembeGo: se soltó su copia. La ficha local y su historial se conservan.`,
+    {
+      severity: "warning",
+      metadata: {
+        membego_cliente_id: membegoClienteId,
+        customer_id: borradas[0]?.customer_id ?? null,
+      },
+    }
+  );
+}
+
+/**
+ * Propaga una edición de MembeGo a la ficha local — SOLO si la creamos
+ * nosotros (`source = 'membego'`).
+ *
+ * Es la misma regla que gobierna el rol en `provisionSsoUser`, y por el mismo
+ * motivo: lo que una persona de aquí escribió a mano no lo pisa una plataforma
+ * de fuera. Un cliente que ya compraba en Park & Tours antes de existir en
+ * MembeGo tiene su ficha, su teléfono corregido en el mostrador y su
+ * histórico; sobrescribirlo con el dato de allá sería perder trabajo real a
+ * cambio de una consistencia aparente.
+ *
+ * Un campo vacío en el evento tampoco borra el de aquí: MembeGo manda la ficha
+ * entera, así que un null significa «no lo tengo», no «bórralo».
+ */
+async function refreshLocalCustomer(
+  organizationId: string,
+  customerId: string,
+  cliente: MembegoClientePayload
+): Promise<void> {
+  const sb = supabaseService();
+  const { data, error } = await sb
+    .from("customer")
+    .select("id, source")
+    .eq("organization_id", organizationId)
+    .eq("id", customerId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data || data.source !== "membego") return;
+
+  const { first, last } = splitNombre(cliente.nombre);
+  const patch: Record<string, unknown> = {
+    ...(cliente.nombre ? { first_name: first, last_name: last } : {}),
+    ...(cliente.email ? { email: cliente.email } : {}),
+    ...(cliente.telefono ? { phone: cliente.telefono } : {}),
+  };
+  if (Object.keys(patch).length === 0) return;
+
+  const { error: updateError } = await sb
+    .from("customer")
+    .update(patch)
+    .eq("id", customerId)
+    .eq("organization_id", organizationId);
+  if (updateError) throw new Error(updateError.message);
 }
 
 /**
