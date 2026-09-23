@@ -1,8 +1,8 @@
 import "server-only";
 import type { AppRole } from "@/lib/auth";
-import { partnerScopeFor } from "@/lib/resources";
+import { partnerScopeFor, supplierScopeFor } from "@/lib/resources";
 import { sellerFilterFor, sellerFieldFor, sellerCanReadRow } from "@/lib/seller-scope";
-import { esDeSocio, TenantError } from "@/lib/tenant";
+import { esDeSocio, esDeProveedor, TenantError } from "@/lib/tenant";
 import { refId } from "@/lib/types";
 
 /**
@@ -51,6 +51,11 @@ export interface ActorDeFila {
    * la exención sin que nada se quejara.
    */
   partnerRole?: string | null;
+  /**
+   * Su ficha de proveedor (0084). Tercer actor, y entra por la misma puerta:
+   * un ámbito más que se ACUMULA, no uno que se elige.
+   */
+  supplierId?: string | null;
 }
 
 /**
@@ -66,6 +71,12 @@ export function scopeFiltersFor(table: string, ctx: ActorDeFila): Record<string,
     const scope = partnerScopeFor(table, ctx.partnerId ?? null);
     if (scope.kind === "denied") throw new TenantError("No tienes acceso a este recurso", 403);
     if (scope.kind === "own") filtros.push({ [scope.field]: scope.partnerId });
+  }
+
+  if (esDeProveedor(ctx)) {
+    const scope = supplierScopeFor(table, ctx.supplierId ?? null);
+    if (scope.kind === "denied") throw new TenantError("No tienes acceso a este recurso", 403);
+    if (scope.kind === "own") filtros.push({ [scope.field]: scope.supplierId });
   }
 
   const delVendedor = sellerFilterFor(table, ctx);
@@ -107,6 +118,15 @@ export function assertRowInScope(
        */
       const valor = refId(record[scope.field] as string | { _id?: string } | null | undefined);
       if (valor !== scope.partnerId) throw new TenantError("Registro fuera de tu ámbito", 403);
+    }
+  }
+
+  if (esDeProveedor(ctx)) {
+    const scope = supplierScopeFor(table, ctx.supplierId ?? null);
+    if (scope.kind === "denied") throw new TenantError("No tienes acceso a este recurso", 403);
+    if (scope.kind === "own") {
+      const valor = refId(record[scope.field] as string | { _id?: string } | null | undefined);
+      if (valor !== scope.supplierId) throw new TenantError("Registro fuera de tu ámbito", 403);
     }
   }
 

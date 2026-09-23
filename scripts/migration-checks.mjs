@@ -480,6 +480,18 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0085 — el proveedor solo ve lo suyo",
+    // El vínculo existía de lado —el recurso apunta al vehículo o a la persona,
+    // y son ELLOS los que cuelgan del proveedor—, y la capa de consulta no sabe
+    // filtrar por columna de una tabla unida. Sin esta columna, el filtro no se
+    // aplica y devuelve la empresa entera: los clientes de otro proveedor con
+    // su hotel, su habitación y su teléfono.
+    columns: [
+      ["departure_resource", ["supplier_id"]],
+      ["pickup_route", ["supplier_id"]],
+    ],
+  },
+  {
     migration: "0084 — el proveedor entra al sistema",
     // Tercer actor externo, mismo patrón: un identificador en su ficha, en el
     // token para que la RLS acote, y su estado comprobado en cada petición.

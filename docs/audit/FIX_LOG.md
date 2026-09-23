@@ -2833,3 +2833,56 @@ Y la tabla dice dos cosas más que no se preguntaban:
   servicios llegan en la entrega siguiente, y un menú lleno de enlaces a
   pantallas que no existen es peor que uno corto.
 - **Mutación: dieciocho, las dieciocho muertas.**
+
+### Fase 8.2 — el proveedor solo ve lo suyo, y se filtra por columna
+- **El vínculo existía, pero de LADO.** Un recurso de salida apunta a un
+  vehículo o a una persona, y son ELLOS los que cuelgan del proveedor. Para
+  acotar habría que filtrar por una columna de una tabla unida, y la capa de
+  consulta de esta aplicación no sabe hacerlo — la misma razón por la que la
+  fecha de servicio tuvo que copiarse a `commission` en 0070.
+- **Y el riesgo de no desnormalizar es peor que la incomodidad**: un filtro
+  sobre una columna que no existe **no da error, devuelve la empresa entera**.
+  Es el «fallo silencioso» que el plan marca como riesgo transversal, y aquí lo
+  que se devolvería son los clientes de otro proveedor con su hotel, su
+  habitación y su teléfono.
+- **Lo rellena un disparador, no quien escribe.** Un dato desnormalizado que se
+  copia a mano se queda viejo el día que alguien cambie el vehículo desde otra
+  pantalla, y en esta tabla «ver» significa leer datos personales de terceros.
+- **Manda el vehículo; sin vehículo, la persona.** Con un autobús de A y un
+  chofer de B, la ruta queda de A y el chofer de B no la ve. Es deliberado:
+  enseñar de menos en una pantalla llena de datos de clientes se arregla con una
+  llamada; enseñar de más, no.
+- **La compuerta se evalúa ANTES del ámbito**, que es el primer riesgo
+  transversal del plan: meter una tabla en el ámbito de un actor no la abre,
+  porque `READ_ROLE` rechaza por rango antes de que el filtro por fila llegue a
+  aplicarse — y el proveedor tiene el rango más bajo que hay, así que le pasaría
+  con todas. La exención no sube el rango: salta la compuerta y deja decidir a
+  `supplierScopeFor`, que **deniega por defecto**.
+- **El ámbito se ACUMULA, no se elige.** Tercer actor en `row-scope`, misma
+  regla: un `if/else if` aplicaría solo el primero el día que alguien sea las
+  dos cosas. Y en las dos funciones, porque el filtro del listado no protege el
+  detalle.
+- **LISTA BLANCA de campos, al revés que con el socio.** Al socio se le esconden
+  campos concretos, que es razonable para dos notas internas. Aquí no: las
+  tablas que el proveedor ve crecen con cada entrega, y con lista negra **cada
+  columna nueva sale por omisión** — una columna nueva en una ruta de recogida
+  es un teléfono de cliente en la pantalla de un transportista. Una tabla sin
+  lista declarada devuelve filas **vacías**: el proveedor se queja, que es mejor
+  que recibirlas enteras y que no se entere nadie.
+- **No entra el coste de su línea** ni su moneda: lo que la operadora le paga se
+  ve en su estado de cuenta, con su detalle y su forma de discutirlo, no
+  colgando de cada fila. Ni el saldo en su ficha, ni las notas internas — que es
+  donde alguien escribe «este chofer llegó tarde dos veces».
+- **`hasHiddenFields` no tenía ningún llamante**, y la tentación evidente
+  —`if (!hasHiddenFields(t)) devolver tal cual`— sería un agujero con el eje de
+  lista blanca: una tabla sin nada declarado es justo la que MÁS hay que
+  recortar. Queda escrito en la propia función.
+- **Y lo que ya existía se rellena**, copiando lo que el vínculo de lado ya dice
+  hoy. Sin eso, el primer proveedor que entre ve su portal vacío aunque lleve
+  seis meses conduciendo.
+- **Dos guardas no mordían**: una comprobaba que el disparador existiera y que
+  sus dos ramas estuvieran, pero no que ASIGNARA —el disparador seguiría
+  creándose, correría en cada escritura y no haría nada—; la otra buscaba la
+  condición del relleno con `toMatch` y le bastaba con que una de las cuatro
+  pasadas la conservara.
+- **Mutación: quince, las quince muertas.**

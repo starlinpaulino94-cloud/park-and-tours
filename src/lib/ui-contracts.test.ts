@@ -7614,4 +7614,130 @@ describe("el socio que integra por API", () => {
     // una ficha de otra operadora con el mismo usuario entraría en el token.
     expect(sql).toMatch(/s\.organization_id = coalesce\(m\.tenant_org_id, m\.org_id\)/);
   });
+
+  /* ════════════ Fase 8.2 · el proveedor solo ve lo suyo, por columna */
+
+  it("LA COMPUERTA SE EVALÚA ANTES DEL ÁMBITO, y por eso hay exención", () => {
+    /**
+     * Es el primer riesgo transversal del plan: meter una tabla en el ámbito de
+     * un actor NO la abre — `READ_ROLE` rechaza por rango antes de que el
+     * filtro por fila llegue a aplicarse. Y el proveedor tiene el rango más
+     * bajo que hay, así que le pasaría con TODAS.
+     *
+     * La exención no abre el rango: salta la compuerta y deja decidir a
+     * `supplierScopeFor`, que DENIEGA POR DEFECTO. Lo que se abre es esa lista
+     * corta.
+     */
+    const recursos = cuerpoDe("src/lib/resources.ts");
+    const i = recursos.indexOf("export function assertCanReadTable");
+    const cuerpo = recursos.slice(i, recursos.indexOf("\n}", i));
+    expect(cuerpo).toMatch(/if \(esDeProveedor\(ctx\)\) return;/);
+    // Y la que decide deniega por defecto.
+    const j = recursos.indexOf("export function supplierScopeFor");
+    expect(recursos.slice(j, recursos.indexOf("\n}", j)))
+      .toMatch(/return \{ kind: "denied" \};\s*$/m);
+  });
+
+  it("el ámbito del proveedor se ACUMULA, no se elige", () => {
+    /**
+     * Un `if/else if` entre actores aplicaría solo el primero el día que
+     * alguien sea las dos cosas — y el primero es el menos restrictivo en el
+     * caso que importa. Es la lección de 4.5 y vale igual para el tercero.
+     */
+    const scope = cuerpoDe("src/lib/row-scope.ts");
+    expect(scope).toMatch(/if \(esDeSocio\(ctx\)\) \{/);
+    expect(scope).toMatch(/if \(esDeProveedor\(ctx\)\) \{/);
+    expect(scope, "nunca un else entre actores").not.toMatch(/\} else if \(esDeProveedor/);
+    // Y en las DOS funciones: el filtro del listado no protege el detalle.
+    const iLista = scope.indexOf("export function scopeFiltersFor");
+    const iFila = scope.indexOf("export function assertRowInScope");
+    expect(scope.slice(iLista, iFila)).toMatch(/supplierScopeFor\(table, ctx\.supplierId/);
+    expect(scope.slice(iFila)).toMatch(/supplierScopeFor\(table, ctx\.supplierId/);
+  });
+
+  it("el proveedor se filtra por COLUMNA, no por unión", () => {
+    /**
+     * El vínculo existía de lado y la capa de consulta no sabe filtrar por
+     * columna de una tabla unida. Un filtro sobre una columna que no existe NO
+     * da error: devuelve la empresa entera — el «fallo silencioso» del plan, y
+     * aquí lo que devolvería son los clientes de otro con su hotel, su
+     * habitación y su teléfono.
+     */
+    const sql = read("supabase/migrations/0085_supplier_row_scope.sql").replace(/^\s*--.*$/gm, "");
+    for (const tabla of ["departure_resource", "pickup_route"]) {
+      expect(sql, `${tabla} sin columna de proveedor`)
+        .toMatch(new RegExp(`alter table ${tabla}\\s*\\n\\s*add column if not exists supplier_id`));
+    }
+    // Y lo rellena un disparador, no quien escribe: copiado a mano se queda
+    // viejo el día que alguien cambie el vehículo desde otra pantalla.
+    expect(sql).toMatch(/create trigger departure_resource_supplier\b(?!_)/);
+    expect(sql).toMatch(/create trigger pickup_route_supplier\b(?!_)/);
+    // Manda el vehículo; sin vehículo, la persona.
+    const iFn = sql.indexOf("create or replace function app.fill_supplier_from_resource");
+    const fn = sql.slice(iFn, sql.indexOf("$fn$;", iFn));
+    expect(fn).toMatch(/if v_vehicle is not null then[\s\S]{0,160}?from vehicle/);
+    expect(fn).toMatch(/if v_supplier is null and v_staff is not null then/);
+    /**
+     * Y ASIGNA. Comprobar que el disparador existe y que sus dos ramas están
+     * ahí deja pasar la mutación que importa: borrar la línea que escribe la
+     * columna. El disparador seguiría creándose, correría en cada escritura y
+     * no haría nada — y la columna se quedaría en nulo, que significa «de la
+     * operadora».
+     */
+    expect(fn, "el disparador calcula el proveedor y no lo escribe")
+      .toMatch(/new\.supplier_id := v_supplier;/);
+  });
+
+  it("y lo que ya existía se rellena", () => {
+    // Sin el relleno, el primer proveedor que entre ve su portal vacío aunque
+    // lleve seis meses conduciendo. No inventa nada: copia lo que el vínculo de
+    // lado ya dice hoy.
+    const sql = read("supabase/migrations/0085_supplier_row_scope.sql").replace(/^\s*--.*$/gm, "");
+    expect((sql.match(/^update (departure_resource|pickup_route)/gm) || []).length,
+      "cuatro pasadas: vehículo y persona, por tabla").toBe(4);
+    /**
+     * Y las CUATRO respetan lo ya decidido, contadas. Con `toMatch` bastaba con
+     * que una de las cuatro conservara la condición: el mutador borró la de la
+     * primera pasada y la guarda encontró la de la segunda.
+     */
+    expect(
+      (sql.match(/and (dr|pr)\.supplier_id is null;/g) || []).length,
+      "alguna pasada pisa lo que el vehículo ya decidió"
+    ).toBe(4);
+  });
+
+  it("LISTA BLANCA de campos, y falla por omisión", () => {
+    /**
+     * Al revés que con el socio, al que se le esconden campos concretos. Con
+     * lista negra, cada columna nueva sale por omisión — y una columna nueva en
+     * una ruta de recogida es un teléfono de cliente en la pantalla de un
+     * transportista.
+     */
+    const proy = cuerpoDe("src/lib/field-projection.ts");
+    expect(proy).toMatch(/export const VISIBLE_AL_PROVEEDOR: Record<string, string\[\]>/);
+    // Sin lista declarada se quita TODO, que es lo que hace que falle por
+    // omisión: filas vacías y una queja, en vez de filas enteras y silencio.
+    expect(proy).toMatch(/if \(!permitidos\) return todas;/);
+    // Y se aplica de verdad, sobre las claves de la fila.
+    expect(proy).toMatch(/\.\.\.\(esDeProveedor\(ctx\) \? camposFueraDeLaListaBlanca\(table, row\) : \[\]\)/);
+  });
+
+  it("y nadie se salta el recorte con «esta tabla no recorta nada»", () => {
+    /**
+     * La tentación evidente es `if (!hasHiddenFields(t)) devolver tal cual`, y
+     * con el eje de lista blanca eso sería un agujero: una tabla sin nada
+     * declarado es justo la que MÁS hay que recortar.
+     */
+    const proy = cuerpoDe("src/lib/field-projection.ts");
+    const i = proy.indexOf("export function hasHiddenFields");
+    expect(proy.slice(i, proy.indexOf("\n}", i))).toMatch(/if \(paraProveedor\) return true;/);
+  });
+
+  it("la política del proveedor entra en la misma entrega", () => {
+    // El riesgo transversal del plan, y aquí con más motivo que en ninguna
+    // otra tabla.
+    const sql = read("supabase/migrations/0085_supplier_row_scope.sql").replace(/^\s*--.*$/gm, "");
+    expect(sql).toMatch(/app\.can_read_supplier\(supplier_id\)/);
+    expect(sql).toMatch(/array\['departure_resource', 'pickup_route'\]/);
+  });
 });
