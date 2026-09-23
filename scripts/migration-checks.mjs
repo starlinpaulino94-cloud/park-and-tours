@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0021-0073 tienen que haber creado.
+ * El inventario de lo que las migraciones 0021-0074 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -478,6 +478,18 @@ export const MIGRATION_CHECKS = [
     // `supabase/editor/0069_parte_2_indice.sql`, que sí consulta `pg_indexes`
     // y devuelve una fila legible. Declararlo aquí sin comprobarlo habría
     // parecido una garantía sin serlo.
+  },
+  {
+    migration: "0074 — el socio gestiona a su propia gente",
+    // Desde 0073 todas las personas de un socio tienen el mismo `role` por
+    // definición, así que no había dónde escribir «ésta puede dar de alta a las
+    // demás». Va en columna propia y no relajando aquella equivalencia, que es
+    // lo que reabriría la puerta: cada rol nuevo admitido sobre una
+    // organización de socio es un rol que el aislamiento tendría que volver a
+    // reconocer uno a uno.
+    columns: [
+      ["organization_memberships", ["partner_role"]],
+    ],
   },
   {
     migration: "0073 — el ciclo de vida del socio",

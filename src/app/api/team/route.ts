@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, requireTenantWrite, requireAtLeast, TenantError } from "@/lib/tenant";
+import { requireTenant, requireTenantWrite, TenantError } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { assertWithinLimit } from "@/lib/plan-service";
 import { supabaseService } from "@/lib/supabase/service";
@@ -9,6 +9,9 @@ import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { roleDecision, memberState } from "@/lib/team";
 import { resolveMembershipOrg } from "@/lib/team-invite";
+import {
+  ambitoDeLectura, ambitoDeEscritura, partnerRolePedido, assertNoSeQuedaSinAdmin,
+} from "@/lib/team-scope";
 
 /**
  * El rol que se va a otorgar, comprobado contra el de QUIEN lo otorga.
@@ -57,6 +60,18 @@ function mapUser(user: any, membership: any) {
     // necesita para poder decirlo, y `mapUser` es el único sitio que sabe de
     // dónde cuelga cada membresía.
     partner_org_id: membership.organization_id,
+    /**
+     * La jerarquía DENTRO del tour center, y el segundo factor y el último
+     * acceso de cada quien.
+     *
+     * Los tres son para la misma pantalla y responden a la misma pregunta: a
+     * quién de los míos le queda la cuenta abierta sin usarla, y quién la tiene
+     * sin proteger. Sin `last_sign_in_at` esa pregunta no se puede contestar
+     * más que preguntando a la gente.
+     */
+    partner_role: membership.partner_role || null,
+    mfa_enabled: Boolean(user.app_metadata?.mfa_enabled) || (user.factors || []).some((f: any) => f.status === "verified"),
+    last_sign_in_at: user.last_sign_in_at || null,
     createdAt: user.created_at,
     updatedAt: user.updated_at,
   };
@@ -65,7 +80,9 @@ function mapUser(user: any, membership: any) {
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
-    requireAtLeast(ctx, "manager");
+    // El ámbito y el permiso salen juntos: quien llama lo usa como FILTRO, no
+    // como comprobación previa, para que no se pueda olvidar de aplicarlo.
+    const ambito = ambitoDeLectura(ctx);
     await assertRateLimit({ key: rateLimitKey(req, "team:list", ctx.userId), limit: 60, windowMs: 60_000 });
 
     const sb = supabaseService();
@@ -83,12 +100,19 @@ export async function GET(req: NextRequest) {
      * por `tenant_org_id`— para que el aislamiento entre inquilinos no dependa
      * de esta consulta.
      */
-    const { data: socios } = await sb
-      .from("organizations")
-      .select("id")
-      .eq("tenant_org_id", ctx.companyId)
-      .eq("kind", "partner");
-    const orgIds = [ctx.companyId, ...((socios ?? []).map((o) => o.id as string))];
+    let orgIds: string[];
+    if (ambito.organizationId) {
+      // El socio ve a los suyos y solo a los suyos: ni la operadora ni los
+      // demás tour centers de la misma red, que son su competencia directa.
+      orgIds = [ambito.organizationId];
+    } else {
+      const { data: socios } = await sb
+        .from("organizations")
+        .select("id")
+        .eq("tenant_org_id", ctx.companyId)
+        .eq("kind", "partner");
+      orgIds = [ctx.companyId, ...((socios ?? []).map((o) => o.id as string))];
+    }
 
     const { data: memberships, error } = await sb
       .from("organization_memberships")
@@ -113,7 +137,7 @@ export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
-    requireAtLeast(ctx, "admin");
+    const ambito = ambitoDeEscritura(ctx);
     // Crear cuentas es exactamente lo que no puede ir sin freno: cada intento
     // toca Supabase Auth y, sin tope, un bucle llena el equipo de una empresa.
     await assertRateLimit({ key: rateLimitKey(req, "team:create", ctx.userId), limit: 20, windowMs: 60_000 });
@@ -125,6 +149,7 @@ export async function POST(req: NextRequest) {
     const body = await readJson<{
       email?: string; name?: string; password?: string; role?: string;
       phone?: string | null; branch?: string | null; partner_id?: string | null;
+      partner_role?: string | null;
     }>(req);
     // La sucursal la pedía el formulario desde el principio y la API la tiraba:
     // el administrador la elegía, no pasaba nada, y creía que ya había separado
@@ -134,7 +159,16 @@ export async function POST(req: NextRequest) {
     const name = (body.name || "").trim();
     const password = body.password || "";
     if (!email || !name) throw new TenantError("El nombre y el email son obligatorios", 400);
-    const rolePedido = assertRole(ctx, body.role || "seller");
+    /**
+     * El socio no elige rol: lo tiene.
+     *
+     * `assertRole` compara el rol pedido con el de quien lo otorga, y para el
+     * socio esa comparación no significa nada —su rol es el único que puede
+     * haber sobre su organización, desde 0073—. Lo que sí elige es la jerarquía
+     * DENTRO de su empresa, que es otra columna y no toca el aislamiento.
+     */
+    const rolePedido = ambito.esSocio ? ("partner" as AppRole) : assertRole(ctx, body.role || "seller");
+    const partnerRole = partnerRolePedido(body.partner_role);
 
     /**
      * De dónde cuelga la membresía.
@@ -151,8 +185,19 @@ export async function POST(req: NextRequest) {
      * fuerza el rol a socio mientras el aislamiento siga decidiéndose por el
      * nombre del rol.
      */
-    const destino = await resolveMembershipOrg(ctx, body.partner_id, rolePedido);
+    /**
+     * El socio no puede elegir a QUÉ organización cuelga la membresía: es la
+     * suya. Pasarle `body.partner_id` a `resolveMembershipOrg` dejaría que un
+     * administrador de un tour center diera de alta gente en otro de la misma
+     * red con solo cambiar un identificador en la petición.
+     */
+    const destino = ambito.esSocio
+      ? { organizationId: ambito.organizationId!, role: rolePedido, esSocio: true }
+      : await resolveMembershipOrg(ctx, body.partner_id, rolePedido);
     const role = destino.role;
+    // La jerarquía solo existe dentro de un socio; fuera, la columna se queda
+    // vacía —y el disparador de 0074 la vacía igualmente si alguien insiste—.
+    const partnerRoleFinal = destino.esSocio ? partnerRole : null;
 
     const sb = supabaseService();
     const existing = await findAuthUserByEmail(sb, email);
@@ -176,7 +221,7 @@ export async function POST(req: NextRequest) {
         // Membresía inactiva previa → reactivar con el rol elegido.
         const { error: upErr } = await sb
           .from("organization_memberships")
-          .update({ role, status: "active", branch_id: branchId })
+          .update({ role, status: "active", branch_id: branchId, partner_role: partnerRoleFinal })
           .eq("id", membership.id);
         if (upErr) throw upErr;
       } else {
@@ -195,6 +240,7 @@ export async function POST(req: NextRequest) {
           status: "active",
           is_primary: (count ?? 0) === 0,
           branch_id: branchId,
+          partner_role: partnerRoleFinal,
         });
         if (memberError) throw memberError;
       }
@@ -227,6 +273,7 @@ export async function POST(req: NextRequest) {
       status: "active",
       is_primary: true,
       branch_id: branchId,
+      partner_role: partnerRoleFinal,
     });
     if (memberError) throw memberError;
 
@@ -246,39 +293,86 @@ export async function PUT(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
-    requireAtLeast(ctx, "admin");
+    const ambito = ambitoDeEscritura(ctx);
     await assertRateLimit({ key: rateLimitKey(req, "team:update", ctx.userId), limit: 60, windowMs: 60_000 });
 
     const body = await readJson<{
       user_id?: string; role?: string; status?: string; phone?: string | null;
-      name?: string; branch?: string | null;
+      name?: string; branch?: string | null; partner_role?: string | null;
     }>(req);
     if (!body.user_id) throw new TenantError("Falta el identificador del usuario", 400);
-    if (body.user_id === ctx.userId && body.role && body.role !== ctx.role) throw new TenantError("No puedes cambiar tu propio rol", 400);
-    if (body.user_id === ctx.userId && body.status && body.status !== "active") throw new TenantError("No puedes desactivar tu propia cuenta", 400);
+    const esUnoMismo = body.user_id === ctx.userId;
+    if (esUnoMismo && body.role && body.role !== ctx.role) throw new TenantError("No puedes cambiar tu propio rol", 400);
+    if (esUnoMismo && body.status && body.status !== "active") throw new TenantError("No puedes desactivar tu propia cuenta", 400);
 
     const sb = supabaseService();
+
+    /**
+     * DE QUÉ ORGANIZACIONES PUEDE SER ESTA PERSONA.
+     *
+     * Antes se buscaba solo en `ctx.companyId`, y eso dejaba a los usuarios de
+     * tour center FUERA de toda edición: su membresía cuelga de la organización
+     * del socio, así que la consulta no los encontraba y la respuesta era
+     * «Usuario no encontrado en esta empresa» —con la persona delante, en la
+     * lista, porque el listado sí los trae desde la entrega anterior—.
+     *
+     * Ahora el conjunto de organizaciones es el del ámbito, que para el socio
+     * es una sola: la suya.
+     */
+    let orgIds: string[];
+    if (ambito.organizationId) {
+      orgIds = [ambito.organizationId];
+    } else {
+      const { data: socios } = await sb
+        .from("organizations")
+        .select("id")
+        .eq("tenant_org_id", ctx.companyId)
+        .eq("kind", "partner");
+      orgIds = [ctx.companyId, ...((socios ?? []).map((o) => o.id as string))];
+    }
+
     const { data: membership, error: loadError } = await sb
       .from("organization_memberships")
       .select("*")
       .eq("user_id", body.user_id)
-      .eq("organization_id", ctx.companyId)
+      .in("organization_id", orgIds)
       .maybeSingle();
     if (loadError) throw loadError;
     if (!membership) throw new TenantError("Usuario no encontrado en esta empresa", 404);
 
     const patch: Record<string, unknown> = {};
-    if (body.role) patch.role = assertRole(ctx, body.role);
+    if (body.role && !ambito.esSocio) patch.role = assertRole(ctx, body.role);
     if (body.status) patch.status = body.status;
+    if (body.partner_role !== undefined && membership.partner_role !== null) {
+      patch.partner_role = partnerRolePedido(body.partner_role);
+    }
     // `undefined` no toca la sucursal; `null` o cadena vacía la quitan, que es
     // cómo se devuelve a alguien al alcance de toda la empresa.
     if (body.branch !== undefined) patch.branch_id = (body.branch || "").trim() || null;
+
+    // Que no se quede el tour center encerrado fuera de su propia gestión. Se
+    // cuenta ANTES de escribir, y solo cuando hace falta contar.
+    if (ambito.esSocio && esUnoMismo) {
+      const { count } = await sb
+        .from("organization_memberships")
+        .select("id", { count: "exact", head: true })
+        .eq("organization_id", ambito.organizationId!)
+        .eq("partner_role", "admin")
+        .eq("status", "active");
+      assertNoSeQuedaSinAdmin({
+        esSocio: true, esUnoMismo: true,
+        administradoresActivos: count ?? 0,
+        nuevoPartnerRole: patch.partner_role as string | undefined,
+        nuevoStatus: patch.status as string | undefined,
+      });
+    }
+
     if (Object.keys(patch).length > 0) {
       const { error } = await sb
         .from("organization_memberships")
         .update(patch)
         .eq("user_id", body.user_id)
-        .eq("organization_id", ctx.companyId);
+        .eq("organization_id", membership.organization_id);
       if (error) throw error;
     }
 

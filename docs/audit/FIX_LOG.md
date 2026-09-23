@@ -1928,3 +1928,94 @@ daba error: los tres producían números equivocados en silencio.
   para la fila propia— es un no-op mientras `ES_PROPIA` no tenga entrada para
   `partner`; la regresión real es añadirla, y ésa sí muere. Se deja dicho en vez
   de contarla como muerta.
+
+### Fase 4.4b — el tour center da de alta a los suyos
+- **Lo que había:** contratar a un vendedor un martes significaba llamar a la
+  operadora para que le abriera una cuenta. Con dos operadoras, dos llamadas — y
+  mientras tanto esa persona trabaja con la cuenta de otra, que es exactamente
+  como se acaba sin saber quién vendió qué.
+- **Y algo peor, que nadie había visto:** `PUT /api/team` buscaba la membresía
+  con `.eq("organization_id", ctx.companyId)`. La de un usuario de tour center
+  cuelga de la organización del SOCIO, así que **ningún usuario de socio se
+  podía editar desde ningún sitio**: ni desactivar, ni cambiar de rol. Con la
+  persona delante en la lista —el listado sí los trae desde 4.1— y la respuesta
+  «Usuario no encontrado en esta empresa». Misma familia que el fallo de 4.1,
+  una ruta más allá.
+- **Migración 0074 — `partner_role`, y por qué una columna nueva.** Desde 0073
+  todas las personas de un socio tienen el mismo `role` por definición, así que
+  no había dónde escribir «ésta puede dar de alta a las demás». Relajar aquella
+  equivalencia para meter ahí la jerarquía sería reabrir la puerta que cierra:
+  cada rol nuevo admitido sobre una organización de socio es un rol que el
+  aislamiento tendría que volver a reconocer uno a uno. El aislamiento sigue
+  leyendo `role`, que no se mueve.
+- **El relleno deja UN administrador por socio: el más antiguo.** Sin relleno la
+  función nace apagada para todos los tour centers que ya existen; poniendo a
+  todos, un becario da de alta a quien quiera el primer día, y eso no se
+  deshace.
+- **El permiso devuelve un ÁMBITO, no un sí/no.** `ambitoDeLectura` /
+  `ambitoDeEscritura` contestan «sí, y sobre ESTA organización», y la ruta lo
+  usa como filtro de la consulta. Es la propiedad que hace que no se pueda
+  olvidar: un booleano se comprueba arriba y la consulta va sin acotar.
+- **Leer no exige administrar.** Saber quién de tu propia empresa tiene acceso
+  no es una facultad de gestión; ocultárselo solo conseguiría que las cuentas de
+  quien se fue sigan abiertas porque nadie las ve.
+- **El socio no elige ni el rol ni la organización de destino.** El rol es el
+  único que puede haber sobre su organización; la organización es la suya.
+  Pasarle `body.partner_id` dejaría que el administrador de un tour center diera
+  de alta gente en otro de la misma red cambiando un identificador.
+- **Y no puede dejar su empresa sin nadie que la administre.** Bajarse a agente
+  y desactivarse son el mismo agujero por dos caminos, y el segundo es el que se
+  olvida. La operadora podría rescatarlos, pero ése es justo el trámite que esta
+  entrega quita.
+- **Las dos columnas que parecen accesorias no lo son:** último acceso y segundo
+  factor contestan la pregunta que nadie se hace a tiempo —a quién le queda la
+  cuenta abierta sin usarla, y quién la tiene sin proteger—. Sin ellas hay que ir
+  preguntando a la gente.
+- **Y el estado del socio se consulta ahora desde la MEMBRESÍA**, no desde la
+  organización: una consulta igual que antes, y de paso más estricta, porque la
+  respuesta deja de existir cuando la membresía deja de existir. `claims.status`
+  viene del token y una membresía borrada seguía pasando hasta la renovación.
+- **Mutación: catorce, las catorce muertas.** Una no mordía —volver el listado a
+  la operadora— porque la guarda pedía que la expresión apareciera «alguna vez»
+  y la edición la seguía aportando; se cuentan las dos.
+
+### Fase 4.5 — un punto de entrada por actor, y el plan cuenta a todo el mundo
+- **La señal de que sobraba un sitio:** en el detalle genérico había dos guardas
+  gemelas, una debajo de la otra, y **cada una decía en su comentario que era la
+  pareja de la otra**. Eran la misma pregunta hecha sobre dos dimensiones.
+- **Se unifica ahora y no después.** Funcionaba porque hoy los dos ámbitos son
+  disjuntos: el rol del socio no es `seller`, así que el del vendedor nunca se
+  le aplicaba. **Eso deja de ser cierto en la Fase 5**, donde el vendedor de un
+  tour center tiene que estar acotado por las dos cosas a la vez; y la Fase 8
+  añade el proveedor. Dos reglas sueltas más un tercer actor es el momento
+  exacto en que aparece un tercer módulo paralelo.
+- **Se ACUMULAN, no se eligen.** Un `if/else if` entre actores haría que a quien
+  sea las dos cosas se le aplique solo el primero — y en la pareja
+  socio/vendedor el primero es **el menos restrictivo**: ese vendedor vería las
+  ventas de todos sus compañeros del tour center. Hay una prueba con ese actor
+  exacto, que hoy no existe todavía.
+- **Y el ámbito del socio pasa a entrar por `_and`.** Antes se escribía
+  `filter[scope.field] = …` sobre el filtro base, o sea que **sustituía** lo que
+  hubiera pedido quien consulta en vez de sumarse. Funcionaba porque sustituía
+  por algo más restrictivo; es una propiedad que dependía del orden de dos
+  asignaciones y ahora no depende de nada.
+- **Una rama que ninguna mutación puede matar es una rama que no hace nada.** El
+  detalle traía un ternario para distinguir el campo `_id` de una referencia; no
+  distinguía nada, porque `refId` de una cadena es la cadena. Se quitó en vez de
+  inventarle una guarda.
+- **El plan contaba solo la organización raíz**, y la membresía de un usuario de
+  tour center cuelga de la del SOCIO: una operadora con cinco empleados y
+  cuarenta personas repartidas en sus tour centers figuraba con cinco. Con el
+  socio dándose de alta a sí mismo (4.4), eso deja de ser una imprecisión y pasa
+  a ser **un plan que no limita nada**.
+- **El conteo falla contando de MENOS.** Un fallo leyendo las organizaciones
+  devuelve la raíz sola, que es el recuento de antes: cobrar de más por una
+  consulta que se cayó sería mucho peor que cobrar de menos.
+- **Y hay con qué medir ANTES de desplegarlo**
+  (`supabase/editor/medir_usuarios_antes_de_activar_el_conteo.sql`, sin número
+  porque no acompaña a ninguna migración). El arreglo mueve operadoras de
+  «dentro de su plan» a «por encima» sin que hayan hecho nada, y lo
+  descubrirían al recibir un 402 al dar de alta a alguien. La consulta dice
+  cuáles y por cuánto. **No es opcional**: es la diferencia entre avisar y que a
+  alguien le deje de funcionar el sistema un martes.
+- **Mutación: diez, las diez muertas.**

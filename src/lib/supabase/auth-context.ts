@@ -246,18 +246,37 @@ async function loadSellerId(orgId: string, userId: string): Promise<string | nul
  * simple expediente de que la consulta se cayera. Devuelve la cadena vacía,
  * que no es `active` y por tanto veta.
  */
-async function loadPartnerStatus(partnerId: string): Promise<string> {
+async function loadPartnerMembership(
+  partnerId: string,
+  userId: string
+): Promise<{ status: string; partnerRole: string | null }> {
+  const CERRADO = { status: "", partnerRole: null };
   try {
     const sb = supabaseService();
+    /**
+     * Las dos cosas en UNA consulta: si esa empresa puede operar, y qué manda
+     * esta persona dentro de ella. Se parte de la MEMBRESÍA y no de la
+     * organización porque así la respuesta también deja de existir cuando la
+     * membresía deja de existir — y eso es más estricto que antes a propósito:
+     * `claims.status` viene del token y una membresía borrada seguiría pasando
+     * hasta la siguiente renovación.
+     */
     const { data, error } = await sb
-      .from("organizations")
-      .select("status")
-      .eq("id", partnerId)
+      .from("organization_memberships")
+      .select("partner_role, status, organizations!inner(status)")
+      .eq("user_id", userId)
+      .eq("organization_id", partnerId)
+      .eq("status", "active")
       .maybeSingle();
-    if (error) return "";
-    return (data?.status as string) ?? "";
+    if (error || !data) return CERRADO;
+
+    const org = Array.isArray(data.organizations) ? data.organizations[0] : data.organizations;
+    return {
+      status: ((org as { status?: string } | null)?.status as string) ?? "",
+      partnerRole: (data.partner_role as string) ?? null,
+    };
   } catch {
-    return "";
+    return CERRADO;
   }
 }
 
@@ -368,7 +387,9 @@ export async function getSupabaseTenantContext(): Promise<TenantContext | null> 
   // es el estado de UNA organización concreta, y sin identificador no hay
   // ninguna a la que preguntar.
   if (ctx.partnerId) {
-    ctx.partnerStatus = await loadPartnerStatus(ctx.partnerId);
+    const membresia = await loadPartnerMembership(ctx.partnerId, user.id);
+    ctx.partnerStatus = membresia.status;
+    ctx.partnerRole = membresia.partnerRole;
   }
 
   if (ctx.role === "superadmin") {
