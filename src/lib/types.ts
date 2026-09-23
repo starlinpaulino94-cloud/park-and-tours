@@ -484,13 +484,20 @@ export interface Settlement extends BaseRecord {
   status?: "pending" | "approved" | "partially_paid" | "paid" | "held" | "disputed" | "void";
   paid_at?: string;
   issued_at?: string; pdf_file?: StoredFile; notes?: string;
+  /**
+   * 0076 — la disputa. El estado `disputed` existía desde 0006 y no había forma
+   * de alcanzarlo; estos cuatro campos son lo que convierte una queja por
+   * teléfono en un trámite con fecha, motivo, firma y destinatario.
+   */
+  dispute_reason?: string | null; disputed_at?: string | null;
+  disputed_by?: Ref<AppUser> | null; dispute_assignee?: Ref<AppUser> | null;
   /** 0040 — la liquidación de un proveedor operativo. */
   supplier?: Ref<Supplier>;
   services_total?: number; confirmed_total?: number; adjustments_total?: number;
   retention_isr?: number; retention_itbis?: number; retention_total?: number;
   net_total?: number;
   supplier_invoice_number?: string; supplier_invoice_ncf?: string; supplier_invoice_date?: string;
-  confirmed_at?: string; confirmed_by?: Ref<AppUser>; dispute_reason?: string;
+  confirmed_at?: string; confirmed_by?: Ref<AppUser>;
   beneficiary_name?: string;
   last_payment_at?: string;
   booking_cost?: BookingCost[];

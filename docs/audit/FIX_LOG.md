@@ -2178,3 +2178,47 @@ daba error: los tres producían números equivocados en silencio.
   en vez de un cero rojo que le diría al tour center que no puede vender una
   salida vacía.
 - **Mutación: seis, las seis muertas.**
+
+### Fase 5.4 — el voucher del tour center, y la disputa que no existía
+- **El neto iba impreso en el papel que el socio le da al turista.**
+  `booking.total_amount` de una venta B2B es lo que el tour center le paga a la
+  operadora, no lo que el cliente pagó en el mostrador. El voucher lo imprimía:
+  **el margen de quien se lo acaba de vender, en el documento que ese mismo
+  vendedor le está poniendo en la mano.**
+- **La condición es de la RESERVA, no de quién la descarga.** El mismo PDF lo
+  puede bajar la operadora y reenviárselo, o salir por el correo automático;
+  acabe como acabe, termina en la mano del turista. Con `esDeSocio(ctx)` el neto
+  se habría escapado por los otros dos caminos sin que nadie lo notara.
+- **Y no se pone a cero: el bloque entero desaparece.** Un total en cero dice
+  «esto no costó nada», que es otra afirmación falsa. En su lugar va la línea
+  que remite a quien cobró.
+- **La marca es del socio; las condiciones y el pie, de la operadora.** El
+  turista compró en el mostrador del tour center y no sabe que detrás hay otra
+  empresa — un logo ajeno le hace dudar de lo que acaba de pagar, o le enseña a
+  quién llamar la próxima vez sin pasar por quien se lo vendió. Al revés sería
+  peor: un documento que promete en nombre de quien no puede cumplir. **El color
+  de marca no se hereda**, porque la ficha del socio no tiene dónde guardarlo y
+  arrastrar el de la operadora pintaría el papel del tour center con los colores
+  de quien no lo firma.
+- **La disputa: el estado existía y no se podía alcanzar.** `settlement.status`
+  admite `disputed` desde 0006, la interfaz lo sabe traducir, y
+  **`dispute_reason` lleva ahí sin que nadie la escriba desde 0040**. La
+  pantalla del portal decía literalmente «contacta con tu gestor»: de esa
+  llamada no quedaba nada — ni el motivo, ni la fecha, ni quién se comprometió a
+  mirarlo.
+- **Migración 0076** añade lo que faltaba: cuándo, quién del tour center, y **a
+  quién le toca resolverla**. Ese último es el que el plan pedía con esas
+  palabras y el que evita el final habitual: un aviso a «los administradores»
+  que todos ven y ninguno coge.
+- **El destinatario se guarda, no solo se avisa.** Un aviso enviado y no
+  registrado deja la disputa sin dueño en cuanto alguien lo marca como leído. Y
+  cuando no hay nadie asignado **se dice**: dejar al tour center creyendo que
+  alguien la está mirando es peor que decirle que insista.
+- **Una liquidación PAGADA se puede disputar**, y es el caso que más importa:
+  «me pagaste menos de lo acordado» solo se descubre cobrando. Cerrarlo al pagar
+  convertiría el pago en un finiquito unilateral.
+- **Quién puede: la comprobación que ya existía.** `assertSettlementBeneficiary`
+  es la misma que abre el estado de cuenta y el PDF — su propio comentario ya
+  anticipaba esta ruta. Una cuarta copia de la misma pregunta es la que un día
+  dice algo distinto.
+- **Mutación: catorce, las catorce muertas.**

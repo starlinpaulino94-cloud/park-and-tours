@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   normalizeColor, brandColor, toRgb, luminance, contrastRatio, readableOn,
   hasReadableContrast, logoProblem, LOGO_PROBLEM_MESSAGE, embeddableLogo,
-  imageKindOf, documentBrand, brandingGaps,
+  imageKindOf, documentBrand, brandingGaps, brandingDeSocio,
   DEFAULT_BRAND_COLOR, MIN_CONTRAST,
 } from "@/lib/branding";
 
@@ -232,5 +232,60 @@ describe("lo que falta por configurar", () => {
     });
     expect(gaps).toHaveLength(1);
     expect(gaps[0]).toMatch(/poco legible/);
+  });
+});
+
+describe("la marca del tour center en el documento que entrega él", () => {
+  const operadora = {
+    name: "Caribe Tours", legal_name: "Caribe Tours SRL", logo_url: "https://x/op.png",
+    document_footer: "RM 12345", voucher_terms: "No reembolsable con 24 h.",
+    brand_color: "#123456", phone: "809-000", tax_id: "130000001",
+  };
+  const socio = {
+    commercial_name: "Macao Beach Tours", name: "Macao SRL",
+    logo_url: "https://x/socio.png", phone: "809-111", email: "hola@macao.test",
+  };
+
+  it("la identidad es del socio", () => {
+    /**
+     * El turista compró en el mostrador del tour center: no sabe que detrás hay
+     * una operadora, y no tiene por qué. Un voucher con el logo de otra empresa
+     * le hace dudar de lo que acaba de pagar —o le enseña a quién llamar la
+     * próxima vez sin pasar por quien se lo vendió—.
+     */
+    const marca = brandingDeSocio(socio, operadora)!;
+    expect(marca.name).toBe("Macao Beach Tours");
+    expect(marca.logo_url).toBe("https://x/socio.png");
+    expect(marca.phone).toBe("809-111");
+  });
+
+  it("y las condiciones y el pie son de la operadora", () => {
+    // Al revés produciría un documento que promete en nombre de quien no puede
+    // cumplir: el servicio lo presta ella y la letra pequeña la firma ella.
+    const marca = brandingDeSocio(socio, operadora)!;
+    expect(marca.voucher_terms).toBe("No reembolsable con 24 h.");
+    expect(marca.document_footer).toBe("RM 12345");
+  });
+
+  it("el color de marca NO se hereda", () => {
+    /**
+     * No hay dónde guardarlo en la ficha del socio, y arrastrar el de la
+     * operadora pintaría el documento del tour center con los colores de quien
+     * no lo firma — que es justo la confusión que esto viene a quitar.
+     */
+    expect(brandingDeSocio(socio, operadora)!.brand_color).toBeNull();
+  });
+
+  it("sin nombre no se sustituye nada", () => {
+    // Mejor el documento con la marca de la operadora que sin ninguna.
+    expect(brandingDeSocio({ logo_url: "https://x/s.png" }, operadora)).toBeNull();
+    expect(brandingDeSocio(null, operadora)).toBeNull();
+    expect(brandingDeSocio({ commercial_name: "   " }, operadora)).toBeNull();
+  });
+
+  it("el nombre comercial manda sobre el legal", () => {
+    // Es el que el turista vio en la puerta del local.
+    expect(brandingDeSocio({ name: "Macao SRL", commercial_name: "Macao Beach" }, operadora)!.name)
+      .toBe("Macao Beach");
   });
 });

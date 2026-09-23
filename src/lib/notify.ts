@@ -171,6 +171,23 @@ export const NOTIFY_EVENTS = {
     link: () => "/dashboard/mi-espacio/ventas",
   },
 
+  /**
+   * LA DISPUTA LLEGA A UNA PERSONA, NO A UN ROL.
+   *
+   * Es el mismo razonamiento de los avisos de venta, y aquí pesa más: un aviso
+   * a «los administradores» que todos ven y ninguno coge es exactamente el
+   * final que tiene hoy una llamada de un tour center quejándose de su corte
+   * del mes. La audiencia declarada es la red de seguridad para cuando la
+   * liquidación no tiene a nadie asignado.
+   */
+  settlement_disputed: {
+    type: "settlement",
+    audience: "manager",
+    title: (v) => `Disputa de liquidación ${v.referencia ?? ""}`.trim(),
+    message: (v) => `${v.socio ?? "Un tour center"} no está de acuerdo con ${money(v)}: ${v.motivo ?? "sin motivo"}`,
+    link: () => "/dashboard/liquidaciones",
+  },
+
   commission_approved: {
     type: "settlement",
     audience: "manager",

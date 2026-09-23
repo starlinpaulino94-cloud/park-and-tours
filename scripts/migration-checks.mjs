@@ -1,5 +1,5 @@
 /**
- * El inventario de lo que las migraciones 0021-0075 tienen que haber creado.
+ * El inventario de lo que las migraciones 0021-0076 tienen que haber creado.
  *
  * Vive aparte porque lo leen DOS cosas: `verify-migrations.mjs`, que se lo
  * pregunta a la base real, y una prueba que comprueba que cada línea de esta
@@ -478,6 +478,16 @@ export const MIGRATION_CHECKS = [
     // `supabase/editor/0069_parte_2_indice.sql`, que sí consulta `pg_indexes`
     // y devuelve una fila legible. Declararlo aquí sin comprobarlo habría
     // parecido una garantía sin serlo.
+  },
+  {
+    migration: "0076 — la disputa de una liquidación",
+    // El estado `disputed` existía desde 0006 y `dispute_reason` desde 0040:
+    // nadie podía alcanzarlos porque no había ruta que los escribiera. Estas
+    // tres son lo que faltaba para que una queja por teléfono se convierta en
+    // un trámite con fecha, firma y destinatario.
+    columns: [
+      ["settlement", ["disputed_at", "disputed_by", "dispute_assignee"]],
+    ],
   },
   {
     migration: "0075 — la cartera propia del tour center",

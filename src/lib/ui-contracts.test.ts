@@ -3046,6 +3046,7 @@ describe("las notificaciones internas", () => {
     ["payment_refunded", "src/app/api/payments/route.ts"],
     ["cash_close_mismatch", "src/app/api/cash/sessions/[id]/close/route.ts"],
     ["settlement_confirmed", "src/app/api/settlements/[id]/confirm/route.ts"],
+    ["settlement_disputed", "src/app/api/settlements/[id]/dispute/route.ts"],
     ["invoice_voided", "src/lib/invoice-service.ts"],
     ["receivable_overdue", "src/app/api/cron/collections/route.ts"],
     ["quote_accepted", "src/app/api/quotes/[id]/decide/route.ts"],
@@ -3834,13 +3835,24 @@ describe("la marca: que los documentos sean de la empresa, no nuestros", () => {
   });
 
   it("los seis documentos llevan la marca, no solo algunos", () => {
-    // Seis builders y seis llamantes: bastaba con que uno se olvidara para que
-    // ESE documento saliera del color de casa sin que nadie supiera por qué.
+    /**
+     * Seis builders y seis llamantes: bastaba con que uno se olvidara para que
+     * ESE documento saliera del color de casa sin que nadie supiera por qué.
+     *
+     * El voucher pasa una marca distinta desde la Fase 5 —la del tour center
+     * que vendió—, así que se cuenta `brandFor(` y no `brandFor(company,`. Lo
+     * que la regla persigue es que ninguno se quede SIN marca, y eso se sigue
+     * midiendo igual; la de abajo comprueba que ese caso es el del socio y no
+     * una marca cualquiera.
+     */
     const src = read("src/lib/pdf/documents.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
     const creates = src.match(/await PdfBuilder\.create\(\{/g) ?? [];
-    const brands = src.match(/await brandFor\(company, "/g) ?? [];
+    const brands = src.match(/await brandFor\(/g) ?? [];
     expect(creates.length).toBeGreaterThanOrEqual(6);
     expect(brands.length).toBe(creates.length);
+    // Y solo uno puede apartarse de la marca de la empresa.
+    expect((src.match(/await brandFor\(company, "/g) ?? []).length).toBe(creates.length - 1);
+    expect(src).toMatch(/await brandFor\(data\.brand_override \?\? company, "voucher"\)/);
   });
 
   it("bajar el logo nunca puede dejar sin documento", () => {
@@ -6161,5 +6173,111 @@ describe("el portal deja de ser solo lectura", () => {
       .toMatch(/if \(esDeSocio\(ctx\)\) delete body\.allow_over_credit/);
     expect(cuerpoDe("src/app/api/orders/route.ts"))
       .toMatch(/if \(esDeSocio\(ctx\) && ctx\.partnerId\) body\.partner_id = ctx\.partnerId/);
+  });
+});
+
+describe("el voucher que entrega el tour center", () => {
+  it("sale con la marca del socio y SIN el neto", () => {
+    /**
+     * `booking.total_amount` de una venta B2B es lo que el tour center le paga
+     * a la operadora, no lo que el turista pagó en el mostrador. Imprimirlo le
+     * enseña al cliente el margen de quien se lo acaba de vender, en el papel
+     * que ese mismo vendedor le está poniendo en la mano.
+     */
+    const ruta = cuerpoDe("src/app/api/bookings/[id]/voucher/route.ts");
+    expect(ruta, "la marca").toMatch(/brand_override: brandingDeSocio\(socio, ctx\.company\)/);
+    expect(ruta, "y el neto fuera").toMatch(/hide_amounts: Boolean\(socio\)/);
+  });
+
+  it("y la condición es de la RESERVA, no de quién la descarga", () => {
+    /**
+     * El mismo PDF lo puede bajar la operadora y reenviárselo, o salir por el
+     * correo automático. Acabe como acabe, el papel termina en la mano del
+     * turista. Con `esDeSocio(ctx)` el neto se escaparía por los otros dos
+     * caminos sin que nadie lo notara.
+     */
+    const ruta = cuerpoDe("src/app/api/bookings/[id]/voucher/route.ts");
+    const i = ruta.indexOf("hide_amounts:");
+    expect(ruta.slice(i, i + 60)).not.toMatch(/esDeSocio/);
+    expect(ruta).toMatch(/const socio = expanded\(booking\.partner\)/);
+  });
+
+  it("el importe no se pone a cero: el bloque entero desaparece", () => {
+    // Un total en cero dice «esto no costó nada», que es otra afirmación falsa.
+    const doc = cuerpoDe("src/lib/pdf/documents.ts");
+    const i = doc.indexOf("if (data.hide_amounts) {");
+    expect(i, "no está la rama").toBeGreaterThan(-1);
+    const rama = doc.slice(i, doc.indexOf("} else {", i));
+    expect(rama, "no imprime importes").not.toMatch(/formatMoney/);
+    expect(rama, "pero sí dice algo").toMatch(/pdf\.notice/);
+  });
+
+  it("la identidad es del socio y las condiciones de la operadora", () => {
+    /**
+     * Al revés produciría un documento que promete en nombre de quien no puede
+     * cumplir. Y la ficha del socio no tiene condiciones, así que sin esto el
+     * voucher del tour center saldría sin letra pequeña justo en el caso en que
+     * más falta hace.
+     */
+    const doc = cuerpoDe("src/lib/pdf/documents.ts");
+    expect(doc).toMatch(/terms: documentBrand\(company, "voucher"\)\.terms/);
+    const marca = cuerpoDe("src/lib/branding.ts");
+    const i = marca.indexOf("export function brandingDeSocio");
+    const fn = marca.slice(i, marca.indexOf("export function brandingGaps"));
+    expect(fn, "el pie es de la operadora").toMatch(/document_footer: operadora\?\.document_footer/);
+    expect(fn, "y sin nombre no se sustituye nada").toMatch(/if \(!nombre\) return null/);
+  });
+});
+
+describe("la disputa de una liquidación", () => {
+  it("la abre el beneficiario, con la comprobación que ya existía", () => {
+    /**
+     * Su propio comentario anticipaba esta ruta: «lo hacen tres caminos —la
+     * pantalla, el PDF y, más adelante, la disputa—». Una cuarta copia de la
+     * misma pregunta es la que un día dice algo distinto.
+     */
+    const ruta = cuerpoDe("src/app/api/settlements/[id]/dispute/route.ts");
+    expect(ruta).toMatch(/assertSettlementBeneficiary\(ctx, settlement\)/);
+    expect(ruta, "no se reescribe el ámbito").not.toMatch(/beneficiary_type|ctx\.partnerId ===/);
+  });
+
+  it("el destinatario se GUARDA, no solo se avisa", () => {
+    /**
+     * Guardarlo es lo que permite que la pantalla diga quién la está mirando y
+     * que la operadora la reasigne. Un aviso enviado y no registrado deja la
+     * disputa sin dueño en cuanto alguien lo marca como leído.
+     */
+    const ruta = cuerpoDe("src/app/api/settlements/[id]/dispute/route.ts");
+    expect(ruta).toMatch(/dispute_assignee: destinatario/);
+    expect(ruta, "y el aviso va a esa persona").toMatch(/userId: destinatario \?\? undefined/);
+    // Y la respuesta dice si hay alguien: el caso sin destinatario hay que
+    // evitarlo, no disimularlo.
+    expect(ruta).toMatch(/dispute_assigned: Boolean\(destinatario\)/);
+  });
+
+  it("y la pantalla lo dice cuando no hay nadie asignado", () => {
+    // Dejar al tour center creyendo que alguien la está mirando es peor que
+    // decirle que insista.
+    expect(sinComentariosDe("src/app/portal/liquidaciones/page.tsx"))
+      .toMatch(/dispute_assigned[\s\S]{0,200}insiste/);
+  });
+
+  it("una liquidación PAGADA se puede disputar", () => {
+    // «Me pagaste menos de lo acordado» solo se descubre cobrando: cerrarlo al
+    // pagar convertiría el pago en un finiquito unilateral.
+    const regla = sinComentariosDe("src/lib/disputa.ts");
+    const cerrados = regla.slice(regla.indexOf("const CERRADOS"), regla.indexOf("export interface VetoDisputa"));
+    expect(cerrados).not.toMatch(/paid/);
+    expect(cerrados, "anulada y ya disputada, no").toMatch(/void:[\s\S]*disputed:/);
+  });
+
+  it("y la CRUD genérica sigue sin poder tocar el estado", () => {
+    // La disputa cambia `status`, y ése no está en la lista blanca de nadie:
+    // pagar y disputar pasan por sus rutas, que hacen lo demás.
+    const recursos = sinComentariosDe("src/lib/resources.ts");
+    const bloque = recursos.slice(
+      recursos.indexOf('settlement: {\n    table: "settlement"'),
+      recursos.indexOf('payable: {\n    table: "payable"'));
+    expect(bloque).toMatch(/writable: \["notes"\]/);
   });
 });

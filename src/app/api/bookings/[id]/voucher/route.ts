@@ -6,6 +6,7 @@ import { buildVoucherPdf } from "@/lib/pdf/documents";
 import { pdfResponse } from "@/lib/pdf/doc";
 import { personName } from "@/lib/manifest";
 import { refId } from "@/lib/types";
+import { brandingDeSocio } from "@/lib/branding";
 import type { Booking } from "@/lib/types";
 
 /**
@@ -56,6 +57,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
     const expanded = (value: unknown): Record<string, unknown> | null =>
       value && typeof value === "object" ? (value as unknown as Record<string, unknown>) : null;
+    const socio = expanded(booking.partner) as Parameters<typeof brandingDeSocio>[0];
     const product = expanded(booking.product);
     const hotel = expanded(booking.pickup_hotel);
     const modality = expanded(booking.modality);
@@ -106,6 +108,19 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         description: e.name || "Extra", quantity: Number(e.quantity) || 0, amount: Number(e.total_amount) || 0,
       })),
       sold_by: personName(booking.partner) || personName(booking.seller) || null,
+      /**
+       * LA RESERVA DEL SOCIO SALE CON SU MARCA Y SIN EL NETO. SIEMPRE.
+       *
+       * No «cuando la descarga el socio»: el mismo PDF lo puede descargar la
+       * operadora y reenviárselo, o salir por el correo automático. Acabe como
+       * acabe, el papel termina en la mano del turista, y ahí `total_amount` es
+       * lo que el tour center le paga a la operadora —el margen de quien se lo
+       * acaba de vender, impreso—.
+       *
+       * Así que la condición es de la RESERVA, no de quien pulsa.
+       */
+      brand_override: brandingDeSocio(socio, ctx.company),
+      hide_amounts: Boolean(socio),
     });
 
     return pdfResponse(bytes, `voucher-${booking.booking_number || id}.pdf`);

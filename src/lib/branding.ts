@@ -241,6 +241,63 @@ export function documentBrand(company: CompanyBranding | null, kind: DocumentKin
 }
 
 /**
+ * LA MARCA DEL TOUR CENTER, PARA EL DOCUMENTO QUE ENTREGA ÉL.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * DE QUIÉN ES EL VOUCHER
+ *
+ * El turista compró en el mostrador del tour center: no sabe que detrás hay una
+ * operadora, y no tiene por qué. Un voucher con el logo de otra empresa le hace
+ * dudar de lo que acaba de pagar —o le enseña a quién llamar la próxima vez sin
+ * pasar por quien se lo vendió—.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LA IDENTIDAD ES DEL SOCIO; LAS CONDICIONES, DE LA OPERADORA
+ *
+ * El nombre, el logo y el contacto son del tour center: es a quien hay que
+ * llamar si el autobús no llega. Las condiciones y el pie legal se quedan de la
+ * operadora, porque el servicio lo presta ella y la letra pequeña la firma
+ * ella. Mezclarlo al revés produciría un documento que promete en nombre de
+ * quien no puede cumplir.
+ *
+ * Devuelve `null` cuando el socio no tiene ni nombre: entonces el documento
+ * sale como siempre, con la marca de la operadora, que es mejor que salir sin
+ * ninguna.
+ */
+export function brandingDeSocio(
+  socio: {
+    name?: string | null; commercial_name?: string | null; legal_name?: string | null;
+    tax_id?: string | null; email?: string | null; phone?: string | null; whatsapp?: string | null;
+    address?: string | null; city?: string | null; country?: string | null; logo_url?: string | null;
+  } | null | undefined,
+  operadora: CompanyBranding | null
+): CompanyBranding | null {
+  const nombre = (socio?.commercial_name || socio?.name || "").trim();
+  if (!nombre) return null;
+
+  return {
+    name: nombre,
+    legal_name: socio?.legal_name ?? null,
+    tax_id: socio?.tax_id ?? null,
+    email: socio?.email ?? null,
+    phone: socio?.phone ?? null,
+    whatsapp: socio?.whatsapp ?? null,
+    address: socio?.address ?? null,
+    city: socio?.city ?? null,
+    country: socio?.country ?? null,
+    logo_url: socio?.logo_url ?? null,
+    // El color de marca NO se hereda del socio: no hay dónde guardarlo en su
+    // ficha, y arrastrar el de la operadora pintaría el documento del tour
+    // center con los colores de quien no lo firma. Sin color, el documento usa
+    // su neutro, que es lo que hacía antes de que existiera el color de marca.
+    brand_color: null,
+    document_footer: operadora?.document_footer ?? null,
+    voucher_terms: operadora?.voucher_terms ?? null,
+    invoice_terms: operadora?.invoice_terms ?? null,
+  };
+}
+
+/**
  * Lo que falta para que los documentos salgan completos.
  *
  * Es una lista de avisos, no de errores: una empresa puede emitir vouchers sin

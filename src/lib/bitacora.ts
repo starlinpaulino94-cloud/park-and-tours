@@ -127,6 +127,7 @@ export const ACCION: Record<string, string> = {
   quote_option_selected: "Opción de cotización elegida",
   quote_revised: "Cotización revisada",
   seller_bonus_awarded: "Bono otorgado",
+  settlement_disputed: "Liquidación disputada por su beneficiario",
   settlement_paid: "Liquidación pagada",
   shifts_published: "Turnos publicados",
   statements_exported: "Estados de cuenta exportados",
