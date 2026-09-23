@@ -144,15 +144,67 @@ describe("la cuenta del E2E", () => {
     expect(membresias().find((m) => m.organization_id === E2E_ORG)!.is_primary).toBe(true);
   });
 
-  it("y si no existe, la crea", async () => {
+  it("y si no existen, crea LAS DOS: la de propietario y la de vendedor", async () => {
+    /**
+     * Son dos porque el aislamiento no se puede probar con la de propietario:
+     * ve todo por definición. Hace falta una cuenta de rango bajo con su ficha
+     * vinculada.
+     *
+     * La del vendedor se DERIVA de la otra (`algo@x` → `algo+vendedor@x`) para
+     * que herede la misma garantía: si `E2E_EMAIL` es una dirección dedicada,
+     * esta también lo es, y la comprobación de «esta cuenta no es de nadie»
+     * corre sobre las dos.
+     */
     db.seed("auth_users", []);
     process.env.E2E_EMAIL = "e2e@e2e.invalid";
 
     await globalSetup();
 
-    expect(creados.map((c) => c.email)).toEqual(["e2e@e2e.invalid"]);
-    expect(membresias()).toHaveLength(1);
-    expect(membresias()[0].is_primary).toBe(true);
+    expect(creados.map((c) => c.email)).toEqual([
+      "e2e@e2e.invalid",
+      "e2e+vendedor@e2e.invalid",
+    ]);
+
+    const roles = membresias().map((m) => m.role).sort();
+    expect(roles).toEqual(["owner", "seller"]);
+    expect(membresias().every((m) => m.is_primary)).toBe(true);
+  });
+
+  it("la cuenta DERIVADA del vendedor pasa por la misma comprobación", async () => {
+    /**
+     * La cuenta de vendedor nace de la de pruebas (`algo@x` →
+     * `algo+vendedor@x`). Con el alias `+`, cualquiera puede haber registrado
+     * esa dirección antes: es una dirección real que llega al mismo buzón.
+     *
+     * Sin esta comprobación, el arranque le reescribiría la contraseña y le
+     * movería la empresa de aterrizaje en cada ejecución de CI, en silencio,
+     * que es exactamente el fallo que este fichero existe para no repetir —y
+     * que la primera vez costó que alguien no pudiera trabajar sin entender
+     * por qué—.
+     */
+    const VENDEDOR = "user-vendedor";
+    db.seed("auth_users", [
+      { _id: USUARIO, email: "demopresentaciones@havelgo.com" },
+      { _id: VENDEDOR, email: "demopresentaciones+vendedor@havelgo.com" },
+    ]);
+    db.seed("organizations", [
+      { _id: E2E_ORG, name: "E2E Tenant", slug: "e2e-tenant", kind: "tenant", status: "active", tenant_org_id: E2E_ORG },
+      { _id: REAL, name: "Havelgo Demo Tours", slug: "havelgo-demo", kind: "tenant", status: "active", tenant_org_id: REAL },
+    ]);
+    db.seed("organization_memberships", [
+      // La de propietario sí es exclusiva del E2E: el arranque pasa de largo…
+      { _id: "mem-e2e", user_id: USUARIO, organization_id: E2E_ORG, role: "owner", status: "active", is_primary: true },
+      // …y se topa con que la DERIVADA pertenece a una empresa de verdad.
+      { _id: "mem-real", user_id: VENDEDOR, organization_id: REAL, role: "owner", status: "active", is_primary: true },
+    ]);
+
+    const error = await globalSetup().catch((e: Error) => e);
+    expect(error, "el arranque tiene que negarse").toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("demopresentaciones+vendedor@havelgo.com");
+    expect((error as Error).message).toContain("Havelgo Demo Tours");
+
+    // Y no le ha tocado la contraseña a esa cuenta.
+    expect(claves.some((c) => c.id === VENDEDOR)).toBe(false);
   });
 
   it("sin credenciales no escribe nada", async () => {

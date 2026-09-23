@@ -1558,3 +1558,38 @@ daba error: los tres producían números equivocados en silencio.
   motivo: una venta se hace en el punto de venta, y un botón de «nuevo» en el
   apartado del vendedor le dejaría **crearse su propia comisión**.
 - **Mutación:** siete, las siete muertas.
+
+### Fase 1.6 — probar la RUTA y la SESIÓN, no solo la regla
+- **Lo que faltaba, dicho con precisión.** Las 31 pruebas de `seller-scope.ts`
+  comprueban que la REGLA es correcta. Ninguna comprobaba que la ruta la LLAME
+  —que es otra cosa, y ya falló una vez: `/api/orders` arma su propio filtro y
+  se quedó fuera del armador compartido—. Y **un filtro que falta no da error:
+  devuelve la empresa entera.**
+- **13 pruebas contra la RUTA** (`erp-ambito-vendedor.test.ts`). Se falsea solo
+  el suelo —`tenantQuery`, `tenantCount`, `tenantFindOne`— y corre de verdad
+  todo lo de arriba: la autorización por rango, el armador del filtro, el
+  ámbito y el recorte de columnas. Lo que se comprueba es lo único que importa:
+  **qué filtro llega a la base y qué sale por la respuesta**. Incluye la
+  exportación, donde se verifica que el CSV de un vendedor no trae el coste y
+  el de un gerente sí.
+- **3 pruebas con un navegador y una sesión REAL**
+  (`vendedor-aislamiento.spec.ts`). Es la única de toda la cadena que ejerce el
+  vínculo cuenta↔ficha: entra una persona con su contraseña, el enganche de la
+  base le mete el rol en el token y `auth-context` resuelve su ficha
+  consultando `seller.user_id`. Fallaría si el enganche dejara de inyectar el
+  rol o si ese vínculo dejara de consultarse, que es justo lo que ninguna
+  prueba con `mock` puede ver. Las tres afirmaciones son «no»: no aterriza en
+  el panel de la empresa, no ve la venta de su compañero —ni en pantalla ni
+  pidiéndosela a la API—, y no entra a comisiones tecleando la URL.
+- **El E2E siembra ahora DOS cuentas.** El aislamiento no se puede probar con
+  la de propietario: ve todo por definición. La del vendedor se **deriva** de la
+  otra (`algo@x` → `algo+vendedor@x`) para que herede la garantía de ser una
+  dirección dedicada.
+- **Mutación:** siete contra las pruebas de ruta —las siete muertas, y estas no
+  leen código fuente: ejercitan los manejadores— y tres contra el sembrador. La
+  que no mordió: quitar la comprobación de «esta cuenta no es de nadie» a la
+  cuenta derivada. **Era un agujero real, no un hueco de cobertura**: con el
+  alias `+`, esa dirección es real y llega al mismo buzón, así que cualquiera
+  puede haberla registrado — y el arranque le habría reescrito la contraseña en
+  cada ejecución de CI, en silencio. Es exactamente el fallo que ese fichero
+  existe para no repetir. Ahora tiene su prueba.

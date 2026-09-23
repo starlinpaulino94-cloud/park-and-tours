@@ -110,6 +110,17 @@ export function mensajeDestinoProhibido(url: string | undefined, destino: Destin
   );
 }
 
+/**
+ * Los números de venta que el spec busca en pantalla.
+ *
+ * Viven aquí y se exportan para que la prueba no pueda buscar una cadena
+ * distinta de la que se sembró: dos literales iguales en dos ficheros acaban
+ * divergiendo, y una prueba que busca algo que no existe pasa siempre.
+ */
+export const ORDEN_PROPIA = "E2E-MIA-001";
+export const ORDEN_AJENA = "E2E-AJENA-002";
+export const E2E_SELLER_SUFFIX = "vendedor";
+
 const E2E_ORG_SLUG = "e2e-tenant";
 
 // El tipo del Admin API de Supabase resuelve `data.users` de forma inestable
@@ -200,7 +211,12 @@ async function assertExclusivoDelE2E(sb: SupabaseClient, userId: string, orgId: 
   );
 }
 
-async function ensureMembership(sb: SupabaseClient, userId: string, orgId: string): Promise<void> {
+async function ensureMembership(
+  sb: SupabaseClient,
+  userId: string,
+  orgId: string,
+  role: "owner" | "seller" = "owner"
+): Promise<void> {
   // El hook elige la membresía primaria. Tras la comprobación de arriba, la
   // cuenta no tiene otras empresas, así que esto ya no le quita la marca a
   // nadie: queda por si una ejecución anterior dejó algo a medias.
@@ -219,15 +235,70 @@ async function ensureMembership(sb: SupabaseClient, userId: string, orgId: strin
   if (existing?.id) {
     const { error: upErr } = await sb
       .from("organization_memberships")
-      .update({ role: "owner", status: "active", is_primary: true })
+      .update({ role, status: "active", is_primary: true })
       .eq("id", existing.id);
     if (upErr) throw new Error(`update membership: ${upErr.message}`);
   } else {
     const { error: insErr } = await sb
       .from("organization_memberships")
-      .insert({ user_id: userId, organization_id: orgId, role: "owner", status: "active", is_primary: true });
+      .insert({ user_id: userId, organization_id: orgId, role, status: "active", is_primary: true });
     if (insErr) throw new Error(`insert membership: ${insErr.message}`);
   }
+}
+
+/**
+ * LAS PIEZAS QUE NECESITA LA PRUEBA DE AISLAMIENTO DEL VENDEDOR.
+ *
+ * Dos fichas de vendedor y una venta de cada una. Con una sola no se prueba
+ * nada: el aislamiento consiste en NO ver lo del otro, y para eso tiene que
+ * existir un otro. La venta ajena lleva un número reconocible para que el spec
+ * pueda afirmar que no aparece por ninguna parte de la pantalla.
+ *
+ * Es idempotente: busca antes de insertar, porque el CI corre esto en cada
+ * ejecución sobre la misma base local.
+ */
+async function ensureSellerFixtures(
+  sb: SupabaseClient,
+  orgId: string,
+  sellerUserId: string
+): Promise<void> {
+  async function ficha(code: string, firstName: string, userId: string | null): Promise<string> {
+    const { data: existente } = await sb
+      .from("seller").select("id").eq("organization_id", orgId).eq("code", code).maybeSingle();
+    if (existente?.id) {
+      // El vínculo puede haberse perdido si se re-corrieron las migraciones.
+      await sb.from("seller").update({ user_id: userId }).eq("id", existente.id);
+      return existente.id as string;
+    }
+    const { data, error } = await sb
+      .from("seller")
+      .insert({
+        organization_id: orgId, code, first_name: firstName, last_name: "E2E",
+        user_id: userId, status: "active", commission_pct: 5, monthly_goal: 1000, currency: "usd",
+      })
+      .select("id").single();
+    if (error || !data) throw new Error(`seed seller ${code}: ${error?.message ?? "sin ficha"}`);
+    return data.id as string;
+  }
+
+  async function venta(numero: string, sellerId: string): Promise<void> {
+    const { data: existente } = await sb
+      .from("sales_order").select("id").eq("organization_id", orgId).eq("order_number", numero).maybeSingle();
+    if (existente?.id) {
+      await sb.from("sales_order").update({ seller_id: sellerId }).eq("id", existente.id);
+      return;
+    }
+    const { error } = await sb.from("sales_order").insert({
+      organization_id: orgId, order_number: numero, seller_id: sellerId,
+      status: "confirmed", currency: "usd", subtotal: 100, total: 100, balance: 100,
+    });
+    if (error) throw new Error(`seed order ${numero}: ${error.message}`);
+  }
+
+  const mia = await ficha("E2E-V1", "Vendedor", sellerUserId);
+  const ajena = await ficha("E2E-V2", "Companero", null);
+  await venta(ORDEN_PROPIA, mia);
+  await venta(ORDEN_AJENA, ajena);
 }
 
 async function globalSetup(): Promise<void> {
@@ -271,6 +342,40 @@ async function globalSetup(): Promise<void> {
 
   await ensureMembership(sb, userId, orgId);
   console.log(`[e2e setup] Cuenta de prueba lista con membresía owner activa (org '${E2E_ORG_SLUG}').`);
+
+  /**
+   * Y la segunda cuenta: la del VENDEDOR.
+   *
+   * El aislamiento no se puede probar con la cuenta de propietario —ve todo por
+   * definición—, así que hace falta una cuenta de rango bajo, con su ficha
+   * vinculada, y una venta de un compañero que no debe llegar a verse.
+   *
+   * Su correo se deriva del de la cuenta de pruebas (`algo@dominio` →
+   * `algo+vendedor@dominio`) para que herede la misma garantía: si `E2E_EMAIL`
+   * es una dirección dedicada, esta también lo es. Comparte contraseña porque
+   * las dos son de la misma base desechable.
+   */
+  const sellerEmail = emailDerivado(email, E2E_SELLER_SUFFIX);
+  const sellerExistente = await findUser(sb, sellerEmail);
+  let sellerUserId: string;
+  if (sellerExistente) {
+    await assertExclusivoDelE2E(sb, sellerExistente, orgId, sellerEmail);
+    const { error } = await sb.auth.admin.updateUserById(sellerExistente, { password, email_confirm: true });
+    if (error) throw new Error(`updateUser vendedor: ${error.message}`);
+    sellerUserId = sellerExistente;
+  } else {
+    sellerUserId = await createUser(sb, sellerEmail, password);
+  }
+  await ensureMembership(sb, sellerUserId, orgId, "seller");
+  await ensureSellerFixtures(sb, orgId, sellerUserId);
+  console.log(`[e2e setup] Cuenta de vendedor lista (${sellerEmail}) con ficha vinculada y una venta ajena sembrada.`);
+}
+
+/** `algo@dominio` → `algo+sufijo@dominio`, que Supabase trata como otra cuenta. */
+export function emailDerivado(email: string, sufijo: string): string {
+  const [local, dominio] = email.split("@");
+  if (!dominio) return `${email}.${sufijo}`;
+  return `${local}+${sufijo}@${dominio}`;
 }
 
 export default globalSetup;
