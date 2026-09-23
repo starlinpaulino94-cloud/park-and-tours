@@ -2222,3 +2222,34 @@ daba error: los tres producían números equivocados en silencio.
   anticipaba esta ruta. Una cuarta copia de la misma pregunta es la que un día
   dice algo distinto.
 - **Mutación: catorce, las catorce muertas.**
+
+### Fase 5.5 — la exportación del socio, por lista blanca que falla por omisión
+- **El exportador no sabe recortar columnas, y el recorte por campos tampoco
+  alcanza.** `exportColumns` arma las cabeceras con **las claves que traigan las
+  filas**: es lo correcto para el ERP interno —quien exporta quiere todo lo que
+  tiene— y exactamente lo contrario de lo que hace falta para un actor externo.
+  `field-projection` quita lo que se declaró sensible; aquí el problema era lo
+  que **no se declaró nada**, o sea cada columna que se añada a cualquier tabla
+  a partir de mañana.
+- **Falla por omisión, y ésa es toda la gracia.** Un recurso sin lista devuelve
+  un 403 que se entiende. La alternativa —exportar todo mientras nadie declare
+  nada— convierte cada tabla nueva en una fuga silenciosa que se descubre cuando
+  ya está en el Excel de alguien.
+- **`null` no es «ninguna columna»: es «esto no se ha decidido».** Una lista
+  vacía habría producido un archivo con cabeceras y sin datos, que parece un
+  error del sistema en vez de una decisión.
+- **Y el orden es el declarado**, resuelto antes de recorrer las filas. Con el
+  orden de las claves, las columnas cambian entre dos exportaciones del mismo
+  listado según qué fila venga primero con qué campos rellenos — y un archivo
+  cuyas columnas bailan no se puede comparar con el del mes pasado.
+- **La lista se valida contra el ESQUEMA, no contra `resources.ts`.** Los
+  recursos declaran lo que se escribe, y `booking` escribe seis campos de los
+  treinta que se leen. La guarda nueva se apoya en el esquema que
+  `schema-contract.test.ts` ya reconstruye leyendo las migraciones.
+- **Y cazó cuatro campos míos mal escritos en la primera ejecución**: las
+  columnas de la orden no se llaman como las de la reserva (`total`,
+  `paid_total`, `balance`, no `*_amount`) y la de la comisión es `percentage`,
+  no `rate`. Escritas de oído, esas cuatro columnas simplemente no habrían
+  salido en el archivo — y nadie lo habría notado, porque el socio no sabe qué
+  columnas debería tener y quien las declaró no vuelve a mirar.
+- **Mutación: ocho, las ocho muertas.**

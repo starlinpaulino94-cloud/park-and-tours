@@ -1081,3 +1081,46 @@ describe("los reportes del registro piden columnas que existen", () => {
     expect(sinExpandir, "relaciones que el recurso no expande (saldría el id)").toEqual([]);
   });
 });
+
+describe("la lista blanca de la exportación del socio", () => {
+  /**
+   * TODO CAMPO DECLARADO EXISTE EN LA TABLA.
+   *
+   * Es la lección de `product_modality.base_cost`, con el signo cambiado. Allí
+   * un campo mal escrito dejaba de RECORTAR y el coste viajaba; aquí deja de
+   * EXPORTARSE y el archivo del socio llega incompleto, sin que nadie lo note
+   * —el socio no sabe qué columnas debería tener, y quien las declaró no vuelve
+   * a mirar—.
+   *
+   * Se valida contra el esquema reconstruido de las migraciones y no contra
+   * `resources.ts`: los recursos declaran lo que se ESCRIBE, y `booking`
+   * escribe seis campos de los treinta que se leen. Comparar con esa lista
+   * daría falsos positivos en todo lo que importa.
+   */
+  /** La tabla real del recurso: `order` vive en `sales_order`. */
+  const tablaDe = (recurso: string) => {
+    const declarada = RESOURCES[recurso]?.table;
+    return TABLE_MAP[declarada ?? recurso] ?? declarada ?? recurso;
+  };
+
+  it("cada campo de EXPORT_SOCIO existe en su tabla", async () => {
+    const { EXPORT_SOCIO } = await import("@/lib/export-socio");
+    const faltan: string[] = [];
+
+    for (const [recurso, campos] of Object.entries(EXPORT_SOCIO)) {
+      const tabla = tablaDe(recurso);
+      const columnas = SCHEMA.get(tabla);
+      expect(columnas, `${recurso}: tabla ${tabla} desconocida`).toBeTruthy();
+      for (const campo of campos) {
+        // Las relaciones viajan con el nombre corto y la columna es la clave
+        // ajena, con los mismos alias que usa el traductor de consultas.
+        const real = TABLE_FIELD_ALIASES[tabla]?.[campo] ?? DEFAULT_FIELD_ALIASES[campo] ?? campo;
+        if (columnas!.has(real) || columnas!.has(`${campo}_id`)) continue;
+        // `createdAt` y compañía las descarta el traductor: son de toda fila.
+        if (DROPPED.has(campo)) continue;
+        faltan.push(`${recurso}.${campo} (buscada como ${tabla}.${real})`);
+      }
+    }
+    expect(faltan, "campos declarados que no existen en la tabla").toEqual([]);
+  });
+});

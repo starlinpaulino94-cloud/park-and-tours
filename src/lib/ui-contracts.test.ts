@@ -2783,7 +2783,10 @@ describe("el alcance por sucursal", () => {
       .toMatch(/return ok\(projectRow\(def\.table, ctx, record\)\);/);
 
     expect(sinComentariosDe("src/app/api/export/[resource]/route.ts"))
-      .toMatch(/buildExport\(resource, projectRows\(def\.table, ctx, rows\)\)/);
+      // Con la lista blanca del socio detrás desde 5.5: lo que la regla sujeta
+      // es que el recorte por campos siga envolviendo a las filas, no la forma
+      // exacta de la llamada.
+      .toMatch(/buildExport\(resource, projectRows\(def\.table, ctx, rows\), \{/);
   });
 
   it("las pantallas distinguen «no puedo verlo» de «vale cero»", () => {
@@ -6279,5 +6282,48 @@ describe("la disputa de una liquidación", () => {
       recursos.indexOf('settlement: {\n    table: "settlement"'),
       recursos.indexOf('payable: {\n    table: "payable"'));
     expect(bloque).toMatch(/writable: \["notes"\]/);
+  });
+});
+
+describe("la exportación del socio", () => {
+  it("falla por OMISIÓN: sin lista declarada, no exporta", () => {
+    /**
+     * Es toda la gracia de la regla. `exportColumns` arma las cabeceras con las
+     * claves que TRAEN las filas —lo correcto para el ERP interno, donde quien
+     * exporta quiere todo lo suyo— y eso convierte cada columna nueva de cada
+     * tabla en una fuga silenciosa hacia el archivo de un actor externo.
+     *
+     * Comprobado sobre el `throw` y no sobre la llamada, que ya ha mordido
+     * varias veces en esta rama.
+     */
+    const ruta = cuerpoDe("src/app/api/export/[resource]/route.ts");
+    expect(ruta).toMatch(/const columnasDelSocio = esDeSocio\(ctx\) \? columnasParaSocio\(resource\) : null/);
+    expect(ruta).toMatch(/if \(esDeSocio\(ctx\) && !columnasDelSocio\) \{[\s\S]{0,260}throw new TenantError/);
+    // Y la lista llega al exportador: comprobar que se calcula y no usarla
+    // sería la forma más silenciosa de que esto no hiciera nada.
+    expect(ruta).toMatch(/fields: columnasDelSocio \?\? undefined/);
+  });
+
+  it("y el ERP interno sigue exportando todo lo suyo", () => {
+    // La regla es para el actor externo. Aplicarla dentro rompería la promesa
+    // de «llévate tus datos», que es de lo que trata esa pantalla.
+    const ruta = cuerpoDe("src/app/api/export/[resource]/route.ts");
+    expect(ruta).toMatch(/esDeSocio\(ctx\) \? columnasParaSocio/);
+  });
+
+  it("la lista blanca manda sobre las claves de los datos", () => {
+    /**
+     * Y ANTES de recorrer las filas, no filtrando el resultado: así el orden es
+     * el declarado y no el que traigan los datos, que cambia entre dos
+     * exportaciones del mismo listado según qué fila venga primero con qué
+     * campos rellenos. Un archivo cuyas columnas bailan no se compara con el
+     * del mes pasado.
+     */
+    const exportador = cuerpoDe("src/lib/export.ts");
+    const i = exportador.indexOf("if (options.fields) {");
+    expect(i, "no está la rama de lista blanca").toBeGreaterThan(-1);
+    expect(i, "va antes de deducir columnas de las filas")
+      .toBeLessThan(exportador.indexOf("const seen: string[] = []"));
+    expect(exportador.slice(i, i + 420)).toMatch(/options\.fields\s*\n?\s*\.filter/);
   });
 });
