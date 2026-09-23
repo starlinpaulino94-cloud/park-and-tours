@@ -45,6 +45,7 @@ export const ACCION: Record<string, string> = {
   cash_movement_registered: "Movimiento de caja",
   settlement_generated: "Liquidación generada",
   invoice_issued: "Factura emitida",
+  invoice_issue_failed: "Cobro sin factura (falló la emisión)",
   invoice_voided: "Factura anulada",
   ledger_entry_posted: "Asiento contable",
   ledger_entry_reversed: "Asiento revertido",

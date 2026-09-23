@@ -21,6 +21,18 @@ export interface FieldDef {
   options?: { value: string; label: string }[];
   /** For `reference`: the /api/erp resource to load options from. */
   resource?: string;
+  /**
+   * De dónde salen las opciones cuando NO son un recurso del ERP.
+   *
+   * Vincular una ficha a una cuenta de acceso necesita listar las personas del
+   * equipo, y el equipo no es una tabla del inquilino: vive en Supabase Auth y
+   * en las membresías, detrás de `/api/team`. Sin esto, el único selector
+   * posible era uno de un recurso que no existe.
+   *
+   * La respuesta tiene que traer `_id` y algo que sirva de etiqueta, igual que
+   * un recurso del ERP.
+   */
+  optionsPath?: string;
   optionLabel?: (row: any) => string;
   placeholder?: string;
   required?: boolean;
@@ -31,33 +43,42 @@ export interface FieldDef {
 }
 
 /** Loads reference options once per resource and caches them in state. */
+function optionsPathFor(f: FieldDef): string | null {
+  if (f.type !== "reference") return null;
+  if (f.optionsPath) return f.optionsPath;
+  return f.resource ? `/api/erp/${f.resource}?limit=300` : null;
+}
+
 function useReferenceOptions(fields: FieldDef[], open: boolean) {
   const [options, setOptions] = useState<Record<string, { value: string; label: string }[]>>({});
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    const resources = [...new Set(fields.filter((f) => f.type === "reference" && f.resource).map((f) => f.resource!))];
-    if (resources.length === 0) return;
+    // Se agrupa por RUTA y no por recurso: dos campos que leen de la misma
+    // dirección comparten una sola llamada, vengan del ERP o de otra ruta.
+    const paths = [...new Set(fields.map(optionsPathFor).filter(Boolean) as string[])];
+    if (paths.length === 0) return;
     let cancelled = false;
     setLoading(true);
     Promise.all(
-      resources.map(async (resource) => {
-        const res = await api.get<any[]>(`/api/erp/${resource}?limit=300`);
+      paths.map(async (path) => {
+        const res = await api.get<any[]>(path);
         if (!res.ok) {
-          console.error(`[form] no se pudieron cargar las opciones de ${resource}:`, res.error);
-          return [resource, [] as any[]] as const;
+          console.error(`[form] no se pudieron cargar las opciones de ${path}:`, res.error);
+          return [path, [] as any[]] as const;
         }
-        return [resource, res.data || []] as const;
+        return [path, res.data || []] as const;
       })
     ).then((entries) => {
       if (cancelled) return;
       const map: Record<string, any[]> = {};
-      for (const [resource, rows] of entries) map[resource] = rows;
+      for (const [path, rows] of entries) map[path] = rows;
       const built: Record<string, { value: string; label: string }[]> = {};
       for (const f of fields) {
-        if (f.type !== "reference" || !f.resource) continue;
-        built[f.name] = (map[f.resource] || []).map((row: any) => ({
+        const path = optionsPathFor(f);
+        if (!path) continue;
+        built[f.name] = (map[path] || []).map((row: any) => ({
           value: row._id,
           label: f.optionLabel
             ? f.optionLabel(row)
@@ -105,7 +126,18 @@ export function ResourceForm({
     if (!open) return;
     const initial: Record<string, any> = {};
     for (const f of fields) {
-      const raw = record?.[f.name];
+      /**
+       * La referencia cruda, cuando el listado no la trajo expandida.
+       *
+       * La fila que abre este formulario es la del LISTADO, y un listado solo
+       * expande las relaciones que su recurso declara. Las demás vienen como
+       * `<campo>_id` —el nombre de la columna, que en este esquema es siempre
+       * ese—. Sin esta reserva, el campo salía vacío aunque el registro
+       * estuviera relacionado y, al guardar, el formulario mandaba `null` y
+       * BORRABA el vínculo que nadie había tocado. Con la cuenta de acceso de
+       * un vendedor eso significaba desvincularlo por editarle el teléfono.
+       */
+      const raw = record?.[f.name] ?? (f.type === "reference" ? record?.[`${f.name}_id`] : undefined);
       if (raw === undefined || raw === null) {
         initial[f.name] = f.defaultValue !== undefined && !record ? String(f.defaultValue) : "";
       } else if (typeof raw === "object" && raw._id) {
@@ -139,7 +171,15 @@ export function ResourceForm({
     for (const f of fields) {
       const raw = values[f.name];
       if (raw === "" || raw === undefined) {
-        if (record) payload[f.name] = null;
+        // Vaciar un campo sí manda `null` —así se quita una referencia—, pero
+        // solo si el registro TRAÍA ese campo. Un campo que la fila nunca tuvo
+        // no se puede haber vaciado: mandarlo en null sería escribir a ciegas
+        // sobre algo que quien edita no llegó a ver.
+        const known = record
+          ? Object.prototype.hasOwnProperty.call(record, f.name)
+            || Object.prototype.hasOwnProperty.call(record, `${f.name}_id`)
+          : false;
+        if (record && known) payload[f.name] = null;
         continue;
       }
       payload[f.name] = f.type === "multiselect" ? String(raw).split(",").map((s) => s.trim()).filter(Boolean) : raw;

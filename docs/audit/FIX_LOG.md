@@ -1181,3 +1181,172 @@ daba error: los tres producían números equivocados en silencio.
   quitarle las cifras tabulares a `.tf-num`, volver a importar una familia
   decorativa, que OCTO vuelva a decir agotado, y que un hueco vuelva a contar
   como cero.
+
+### AUD-M30 — La facturación estaba montada entera y sin enchufar
+- **Qué pasaba:** «el sistema no da facturas». Y era literal: `invoice-service.ts`
+  sabía emitir con su NCF, su ITBIS y su secuencia; `/api/invoices/:id/pdf`
+  sacaba el comprobante; `ncfTypeFor` ya elegía B01 con RNC y B02 sin él. Pero
+  **nadie llamaba a nada de eso**: se cobraba y no salía factura. La máquina
+  fiscal completa, sin un solo cable conectado.
+- **Lo que se añade:** la emisión automática al quedar SALDADA la venta, con el
+  tipo de NCF decidido por el cliente y no por el cajero.
+
+- **POR QUÉ AL SALDARSE Y NO AL PRIMER ABONO.** Un NCF consume secuencia, se
+  declara en el 607, y deshacerlo exige una nota de crédito que consume OTRO.
+  Facturar en el primer abono de una venta que luego se cancela deja dos
+  comprobantes quemados y un 607 que hay que explicar. Esperar a que quede
+  saldada no pierde ninguna factura —quien paga completo la recibe en el acto—
+  y evita el desperdicio. La regla vive en un módulo puro y probado, no dentro
+  de la ruta: el día que el negocio decida otra cosa, se cambia en un sitio con
+  pruebas que dicen qué se está cambiando.
+
+- **Y NUNCA TUMBA UN COBRO.** Si la secuencia está agotada o falta el perfil
+  fiscal, el dinero ENTRÓ igual: tumbar el cobro por no poder emitir el
+  comprobante convierte un problema administrativo en un **descuadre de caja**
+  —el cliente pagó, el cajero tiene el efectivo y el sistema dice que no pasó
+  nada—. Va en mejor esfuerzo, como la contabilidad de esa misma ruta, y el
+  fallo se registra (`invoice_issue_failed`) y se devuelve en la respuesta.
+  Hay una guarda que lee la ruta y comprueba que el `catch` no relanza.
+
+- **El NCF se enseña en el acto**, con el botón de imprimir en el mismo aviso.
+  Es el momento en que el cliente está delante; obligar al cajero a buscar la
+  factura en otra pantalla significa, en la práctica, que no se entrega.
+
+- **El importe en letras** (`monto-en-letras.ts`). Una cifra en números se
+  altera cambiando un dígito; en letras hay que reescribir la línea entera —por
+  eso lo llevan los cheques y por eso se espera en una factura dominicana—.
+  Escrito con sus trampas probadas: «dieciséis» y no «diez y seis», «cien» pero
+  «ciento uno», «quinientos/setecientos/novecientos», «mil» y nunca «un mil»
+  pero sí «veintiún mil», «un millón» en singular. **La prueba cazó un fallo mío
+  real**: el reemplazo de la apócope corría en el orden equivocado y dejaba
+  «VEINTIUN» sin tilde.
+
+- **Dos guardas ajenas saltaron y las dos tenían razón:** la bitácora exigía
+  traducir la acción nueva (`invoice_issue_failed` habría salido en el papel con
+  su nombre técnico), y la del camino del dinero preguntaba si mi lista de
+  estados era de ORDEN o de RESERVA. Lo segundo destapó que esa guarda
+  comprobaba el IDIOMA del identificador (`/order/i`) en vez de lo que dice
+  comprobar; ahora acepta los dos, y el módulo dice explícitamente sobre qué
+  entidad decide.
+- **Mutación:** cinco, las cinco muertas — que el `catch` relance, facturar en
+  el primer abono, facturar una devolución, truncar los centavos por separado
+  («CERO CON 100/100»), y devolver el fallo de la apócope.
+
+### AUD-M31 — Los paquetes se podían crear pero no vender (y se ofrecían igual)
+- **La revisión:** el modelo de paquetes es correcto y está bien pensado. Una
+  venta de combo son N+1 reservas: una CABECERA con el precio pactado y sin
+  salida —el paquete no sale ningún día, salen sus actividades— y N COMPONENTES
+  a importe cero, cada uno con **su salida real, su hora, su cupo y su
+  check-in**. `createOrderWithBookings` ya sabía expandirlo entero.
+- **EL FALLO: se ofrecía algo que no se podía cobrar.** Ni el catálogo del
+  punto de venta ni el del portal filtraban por `is_bundle`, así que un paquete
+  salía como una tarjeta normal. El cajero lo añadía y el fallo aparecía al
+  CONFIRMAR —«Falta el día en que empieza el paquete»—, con el cliente delante.
+  Ofrecer algo que no se puede cobrar es peor que no ofrecerlo: lo segundo se
+  descubre al configurar, lo primero en el mostrador.
+
+- **Ahora se venden de verdad, por su propio camino.** Los paquetes viajan en
+  una lista aparte del catálogo, porque no se venden igual: una tarjeta que
+  enseña «próxima salida» y «plazas» no dice nada útil de algo que no tiene
+  salida propia. Al abrirlo se pide el día de inicio, el servidor arma el
+  itinerario con salidas REALES y se enseña actividad por actividad —día, hora
+  y plazas— antes de comprometer al cliente.
+- **Y no deja añadir un paquete bloqueado.** Si una actividad no tiene salida
+  servible, el botón queda desactivado y se dice qué falta y por qué. Un
+  paquete a medias no es «dos de tres»: es un precio cerrado por algo que no se
+  va a entregar entero.
+- **En el carrito no se enseñan desplegables de salida ni modalidad**: un
+  paquete no los elige, los eligen sus actividades. Se enseña el itinerario,
+  que es lo que el cajero repasa con el cliente.
+
+- **CORRECCIÓN A LA REVISIÓN INICIAL.** Dije que «lo que decide qué salidas
+  encajan no tiene red». Falso: el dominio puro (`bundles.ts` — solapes,
+  itinerario, auto-resolución) tiene 33 pruebas. Lo que no tenía ninguna era
+  `bundle-service.ts`, la capa que lee la base. Ahora tiene 15, y cubren lo que
+  no se ve leyendo: que un producto normal no pueda tratarse como paquete (si
+  no, se cobraría una cabecera con CERO componentes: una venta que no reserva
+  ninguna plaza ni aparece en ningún manifiesto), que una salida cancelada o
+  cerrada no se cuele en un itinerario, y que un aforo cero se lea como «sin
+  declarar» y no como «agotado» —el mismo error que costó el «0 plazas»—.
+- **Mutación:** cinco, las cinco muertas — devolver el paquete al catálogo del
+  POS, dejar de mandar el día de inicio, permitir añadir un itinerario
+  bloqueado, tratar un producto normal como paquete, y que el aforo cero
+  cuente como agotado.
+
+### AUD-M32 — El vendedor veía las ventas de TODOS
+- **Lo que se reportó, literal:** «el vendedor ve las ventas de todos».
+- **Era cierto, y por cuatro puertas distintas.** El rol `seller` es el rango
+  más bajo del ERP interno y aun así leía la empresa entera. La RLS aísla por
+  `organization_id` —empresas, no personas—, el ámbito del socio B2B solo mira
+  al rol `partner` y el de sucursal solo mira la sucursal. Ninguno preguntaba
+  quién vendió. Las cuatro puertas:
+  1. `/api/erp/order|quote|lead|…` — el listado genérico.
+  2. `/api/export/:recurso` — el MISMO filtro, así que exportaba lo mismo a
+     Excel. Una cartera completa en un archivo.
+  3. `/api/erp/:recurso/:id` — el detalle no pasa por el filtro del listado:
+     `tenantFindOne` solo comprueba la empresa. Bastaba el identificador de la
+     venta de un compañero, que sale impreso en cualquier voucher.
+  4. `/api/orders` y `/api/quotes` — arman su propio filtro y no comparten
+     `buildListFilter`. Son, además, las que leen las pantallas de verdad.
+  No hacía falta tocar la interfaz para verlo: bastaba con la dirección. El
+  menú nunca ha sido la barrera.
+- **Y además se podía ESCRIBIR sobre lo ajeno.** `order` se edita con rango de
+  vendedor y `seller` es uno de sus campos editables: un vendedor podía coger
+  la venta de un compañero y ponerse a sí mismo —reatribuyéndose la comisión—
+  sin haberla podido ni ver.
+- **Fallaba también al revés, y eso explica el panel vacío.** `/api/dashboard`
+  ya acotaba por vendedor buscando `seller.user = <usuario>`… pero NADA en el
+  sistema escribía ese vínculo: el campo existía en la base desde 0005 y no
+  había pantalla que lo pusiera. Así que el panel de todo vendedor consultaba
+  con un identificador nulo y salía vacío, mientras el listado de al lado le
+  enseñaba las ventas de la empresa entera.
+
+- **La regla: «lo mío, o lo de nadie»** (`src/lib/seller-scope.ts`). Un vendedor
+  ve lo suyo y lo que no está atribuido a ningún vendedor; nunca lo de otro. Las
+  filas sin vendedor siguen visibles a propósito: el punto de venta NO sella al
+  vendedor —sale del desplegable, que es opcional—, así que esconderlas le
+  negaría al vendedor su propia venta un segundo después de hacerla, y borraría
+  del mapa el histórico, el portal público y lo que carga un administrador.
+- **Sin ficha vinculada NO se abre el ámbito.** No saber quién es el vendedor
+  acota a «lo de nadie», nunca a «todo»: si abriera, bastaría con no vincular la
+  ficha para conservar el agujero. Misma postura que ya tenía el panel, que con
+  vendedor desconocido consulta con un identificador nulo.
+- **Y se puede vincular la cuenta.** La ficha del vendedor gana «Cuenta de
+  acceso» (selector sobre `/api/team`) y el listado enseña «Sin vincular» en
+  ámbar, porque es lo primero que hay que arreglar de una ficha. El vínculo se
+  resuelve desde la base en CADA petición y no en el token: desvincular o
+  desactivar una ficha tiene efecto en la siguiente petición, no cuando la
+  sesión se renueve. `0069` lo hace único por empresa — con dos fichas
+  apuntando a la misma cuenta, qué ventas vería esa persona dependería de cuál
+  devolviera la base primero, y un ámbito que cambia según el orden de las filas
+  no es un ámbito.
+- **Se arregló de paso un borrado silencioso del formulario genérico.** El
+  formulario abre con la fila del LISTADO, que solo expande las relaciones que
+  su recurso declara; las demás llegan como `<campo>_id`. El campo salía vacío
+  y al guardar viajaba `null`: editarle el teléfono a un vendedor le habría
+  desvinculado la cuenta sin decir nada. Ahora lee también la referencia cruda
+  y nunca manda `null` por un campo que la fila no traía.
+
+- **Lo que NO se acota, y por qué.** `customer` (el libro de clientes es
+  operativo: acotarlo haría que el vendedor B no encontrara al cliente de A y
+  lo diera de alta otra vez — un directorio duplicado es peor que la exposición
+  que evitaría), `waitlist_entry` (quien atiende cuando se libera una plaza
+  tiene que poder llamar al siguiente aunque lo apuntara quien hoy libra), el
+  directorio de vendedores (lo sensible ahí no son las filas sino dos columnas
+  —`commission_pct` y `monthly_goal`—, y eso se arregla recortando campos, no
+  filas: **queda pendiente**) y `payment_schedule` (no tiene columna de
+  vendedor; el informe de cobros sí se acota, sobre la orden ya expandida).
+- **Residuo consciente:** una venta que nadie atribuyó la siguen viendo todos
+  los vendedores. Es dato de la empresa, no de un compañero. Cerrarlo de verdad
+  exige sellar al vendedor al vender, y eso cambia a quién se le paga la
+  comisión: es una decisión de negocio, no de este arreglo.
+- **Pruebas:** 21 nuevas en `seller-scope.test.ts` (qué se acota y qué no, a
+  quién, el filtro, la fila concreta, y que los ámbitos de sucursal y vendedor
+  se acumulen sin pisarse) + 4 contratos que leen las rutas.
+- **Mutación:** catorce, las catorce muertas — entre ellas abrir el ámbito
+  cuando no hay ficha, quitar la guarda del detalle en lectura y en escritura,
+  fusionar los dos ámbitos en un objeto (donde el segundo `_or` pisa al
+  primero) y —la que primero NO mordió— calcular el ámbito en `/api/orders` y
+  tirarlo a la basura una línea después, con el nombre de la función a la vista
+  de quien revisa. Esa guarda se reescribió para exigir que el resultado se
+  APLIQUE, no solo que la función se llame.

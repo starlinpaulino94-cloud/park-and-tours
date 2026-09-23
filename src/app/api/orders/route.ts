@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { requireTenant, requireTenantWrite, requireAtLeast, tenantQuery, tenantCount } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { sellerFilterFor } from "@/lib/seller-scope";
 import { assertWithinLimit } from "@/lib/plan-service";
 import { createOrderWithBookings, type CreateOrderInput } from "@/lib/booking-service";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -74,6 +75,12 @@ export async function GET(req: NextRequest) {
     const filter: Record<string, unknown> = {};
     if (sp.get("status")) filter.status = sp.get("status");
     if (ctx.role === "partner" && ctx.partnerId) filter.partner = ctx.partnerId;
+    // Esta ruta arma su propio filtro y NO pasa por `buildListFilter`, así que
+    // el ámbito del vendedor hay que aplicarlo aquí a mano. Sin esto, acotar
+    // `/api/erp/order` no habría servido de nada: la pantalla de ventas lee por
+    // aquí, y por aquí se veían las de toda la empresa.
+    const sellerScope = sellerFilterFor("order", ctx.role, ctx.sellerId);
+    if (sellerScope) Object.assign(filter, sellerScope);
 
     const [rows, total] = await Promise.all([
       tenantQuery(ctx.companyId, "order", {

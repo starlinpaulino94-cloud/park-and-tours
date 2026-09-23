@@ -19,11 +19,6 @@ async function validateIdFilter(companyId: string, table: string, id: string, la
   if (found.length === 0) throw new TenantError(`${label} no pertenece a esta empresa`, 403);
 }
 
-async function currentSellerId(companyId: string, userId: string): Promise<string | null> {
-  const rows = await tenantQuery<{ _id?: string }>(companyId, "seller", { _filter: { user: userId, status: "active" }, _limit: 1 });
-  return rows[0]?._id || null;
-}
-
 async function buildScope(req: NextRequest, companyId: string, forcedSellerId?: string, forcedPartnerId?: string) {
   const sp = req.nextUrl.searchParams;
   const scope: { product?: string; branch?: string; seller?: string; partner?: string; channel?: string } = {};
@@ -55,7 +50,11 @@ export async function GET(req: NextRequest) {
     const ctx = await requireTenant();
     await assertRateLimit({ key: rateLimitKey(req, "dashboard", ctx.userId), limit: 90, windowMs: 60_000 });
 
-    const sellerId = ctx.role === "seller" ? await currentSellerId(ctx.companyId, ctx.userId) : null;
+    // La ficha del vendedor ya viene resuelta en el contexto (`auth-context.ts`),
+    // que es el mismo dato con el que el resto del sistema acota lo que ve
+    // (`seller-scope.ts`). Antes se volvía a consultar aquí: dos consultas y,
+    // peor, dos sitios donde equivocarse sobre quién es el vendedor.
+    const sellerId = ctx.role === "seller" ? ctx.sellerId ?? null : null;
     const permissions = resolveDashboardPermissions(ctx.role, { userId: ctx.userId, sellerId, partnerId: ctx.partnerId });
     const sp = req.nextUrl.searchParams;
     const period = resolveDashboardPeriod(sp.get("period"), sp.get("from"), sp.get("to"), ctx.company);

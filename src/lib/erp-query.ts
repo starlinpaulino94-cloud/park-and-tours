@@ -3,6 +3,7 @@ import type { ResourceDef } from "@/lib/resources";
 import { allowedFilterFields, partnerScopeFor } from "@/lib/resources";
 import { decidableFilter } from "@/lib/approvals";
 import { branchFilterFor } from "@/lib/branch-scope";
+import { sellerFilterFor } from "@/lib/seller-scope";
 import { searchFilterFor } from "@/lib/search";
 import { TenantError, type TenantContext } from "@/lib/tenant";
 import { limitesConsulta, normalizarPeriodo } from "@/lib/report";
@@ -117,7 +118,26 @@ export function buildListFilter(
   // se pisan —solo sobreviviría uno, y decidiría él solo—, y el traductor
   // aplica los `_and` uno tras otro, que es justo lo que hace falta.
   const branchFilter = branchFilterFor(def.table, ctx.branchId);
-  return branchFilter ? { _and: [filter, branchFilter] } : filter;
+
+  /**
+   * Y el vendedor, cuando quien llama es uno.
+   *
+   * El rol `seller` es el rango más bajo del ERP y hasta aquí veía las ventas
+   * de toda la empresa: ni la RLS (que aísla empresas) ni el ámbito del socio
+   * ni el de la sucursal miran quién vendió. Un vendedor podía pedir
+   * `/api/erp/order` —o exportarlo— y llevarse la cartera de sus compañeros.
+   *
+   * La regla, sus excepciones y por qué las filas sin vendedor siguen visibles
+   * están en `seller-scope.ts`.
+   */
+  const sellerFilter = sellerFilterFor(def.table, ctx.role, ctx.sellerId);
+
+  // Cada ámbito entra como un elemento de `_and` en vez de fusionarse: dos
+  // `_or` en el mismo objeto se pisan —solo sobreviviría uno, y decidiría él
+  // solo—, y el traductor aplica los `_and` uno tras otro, que es justo lo que
+  // hace falta para que se acumulen.
+  const scopes = [branchFilter, sellerFilter].filter(Boolean) as Record<string, unknown>[];
+  return scopes.length > 0 ? { _and: [filter, ...scopes] } : filter;
 }
 
 /** El orden del listado: el pedido, o el que declara el recurso. */
