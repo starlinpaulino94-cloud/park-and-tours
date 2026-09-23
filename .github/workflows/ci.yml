@@ -55,10 +55,32 @@ jobs:
       # TAMBIÉN que las migraciones levantan un sistema utilizable desde cero,
       # que antes no lo comprobaba nadie.
       # ══════════════════════════════════════════════════════════════════════
+      # LA VERSIÓN VA PINCHADA, Y NO ES PEDANTERÍA (CI-003)
+      #
+      # Con `version: latest`, la acción pregunta a la API de GitHub cuál es la
+      # última release. Esa llamada va SIN autenticar, y el límite anónimo se
+      # cuenta por IP de runner —compartida—, así que en una tarde con varias
+      # corridas se agota y el CI muere antes de empezar:
+      #
+      #   Failed to resolve latest Supabase CLI release: rate limit exceeded
+      #
+      # Con una versión explícita, la acción NO llama a la API: construye la URL
+      # de descarga directamente. El fallo deja de ser improbable y pasa a ser
+      # imposible, sin meter ningún token en el flujo.
+      #
+      # Y de regalo, lo que de verdad importa aquí: este job existe para
+      # comprobar que las migraciones levantan un sistema desde cero. Con
+      # `latest`, la herramienta que lo comprueba cambiaba sola entre una
+      # corrida y la siguiente —y con ella las imágenes de Postgres, GoTrue y
+      # Edge Runtime que baja—. Un verde de ayer dejaba de decir nada sobre hoy.
+      #
+      # EL COSTE, dicho claro: esto ya no se actualiza solo. Subir el número es
+      # un cambio a mano, y toca hacerlo a propósito —que es justamente lo que
+      # se quiere de la herramienta que valida el esquema.
       - name: Supabase CLI
         uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 2.117.0
 
       # ══════════════════════════════════════════════════════════════════════
       # POR QUÉ `supabase start` NO LEVANTABA (CI-002)
