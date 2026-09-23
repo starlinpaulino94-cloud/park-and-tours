@@ -170,7 +170,20 @@ export async function GET(req: NextRequest) {
        * De `cashier` hacia arriba se sigue devolviendo el equipo entero:
        * registrar la venta de otro es trabajo normal en el mostrador.
        */
-      sellers: visibleSellers.map((s) => ({ _id: s._id, name: [s.first_name, s.last_name].filter(Boolean).join(" ") || s.code || "Vendedor" })),
+      sellers: visibleSellers.map((s) => ({
+        _id: s._id,
+        name: [s.first_name, s.last_name].filter(Boolean).join(" ") || s.code || "Vendedor",
+        /**
+         * De qué tour center es cada quien, o `null` si es de la casa.
+         *
+         * Los dos desplegables —«Vendedor» y «Partner»— eran independientes y
+         * se mandaban tal cual, así que se podía registrar la venta del tour
+         * center A atribuida a un vendedor del B. Detrás del vendedor va la
+         * comisión. El servidor lo rechaza desde esta entrega; este campo es
+         * para que la pantalla no llegue a ofrecerlo.
+         */
+        partner: refId(s.partner) ?? null,
+      })),
       /** La ficha de quien vende, para que la pantalla la deje fija y marcada. */
       own_seller_id: ventaSelladaPorVendedor(ctx) ? ctx.sellerId ?? null : null,
       seller_locked: ventaSelladaPorVendedor(ctx),

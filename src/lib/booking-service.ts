@@ -2,6 +2,7 @@ import "server-only";
 import { tenantCreate, tenantQuery, tenantUpdate, type TenantContext } from "@/lib/tenant";
 import { ventaSelladaPorVendedor } from "@/lib/seller-scope";
 import { excesoDeDescuento, mensajeExceso } from "@/lib/techo-descuento";
+import { desajusteDeAtribucion } from "@/lib/atribucion-coherente";
 import { resolvePrice, resolveCost, billablePax } from "@/lib/pricing";
 import { assertCapacity, recalculateDeparture, OversellError } from "@/lib/availability";
 import { resolveExchangeRate } from "@/lib/currency";
@@ -420,6 +421,23 @@ export async function createOrderWithBookings(
     }
   }
 
+
+  /**
+   * Y el vendedor tiene que ser de quien vende.
+   *
+   * Va aquí —resuelto ya quién es, y antes de tocar cupos, crédito o plazas—
+   * porque rechazar tarde obliga a compensar escrituras que no había que haber
+   * hecho. La comprobación cuesta una consulta por clave primaria, y solo
+   * cuando hay vendedor: la venta directa, que es la mitad de las que se
+   * registran, no paga nada.
+   */
+  if (attributedSeller) {
+    const [fichaDelVendedor] = await tenantQuery<Record<string, unknown>>(companyId, "seller", {
+      _filter: { _id: attributedSeller }, _limit: 1,
+    });
+    const desajuste = desajusteDeAtribucion(fichaDelVendedor ?? null, input.partner_id ?? null);
+    if (desajuste) throw Object.assign(new Error(desajuste), { status: 400 });
+  }
 
   // ---- validate capacity before writing anything --------------------------
   // AUD-B01: aggregate requested pax PER DEPARTURE across all items. Previously

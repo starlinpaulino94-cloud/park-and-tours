@@ -5920,3 +5920,94 @@ describe("el vendedor del tour center", () => {
     expect(fn).toMatch(/return actor\.role === "seller"/);
   });
 });
+
+describe("el vendedor de una venta es de quien la vende", () => {
+  it("la venta comprueba la coherencia ANTES de escribir nada", () => {
+    /**
+     * Rechazar tarde obliga a compensar escrituras que no había que haber
+     * hecho: plazas tomadas, cupo consumido, crédito apuntado. Por eso va con
+     * el vendedor ya resuelto y antes del primer bloque que reserva algo.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    const i = servicio.indexOf("desajusteDeAtribucion(");
+    expect(i, "la comprobación no está").toBeGreaterThan(-1);
+    // Sobre el `throw`, no sobre la llamada: afirmar que la función aparece
+    // deja borrar el lanzamiento y conservar la llamada muerta.
+    expect(servicio.slice(i, i + 220)).toMatch(/if \(desajuste\) throw[\s\S]{0,80}status: 400/);
+    // Anclado en CÓDIGO y no en el texto de un comentario: `cuerpoDe` los
+    // quita, y una guarda de orden que se apoya en un comentario mide el orden
+    // de dos cosas que no existen.
+    expect(i, "antes de tomar plazas").toBeLessThan(servicio.indexOf("assertCapacity("));
+    expect(i, "antes de consumir cupo").toBeLessThan(servicio.indexOf("assertAllotment("));
+    expect(i, "y antes del límite de crédito").toBeLessThan(servicio.indexOf("creditCheck("));
+  });
+
+  it("y solo cuesta una consulta cuando hay vendedor", () => {
+    /**
+     * La venta directa es la mitad de las que se registran: no puede pagar una
+     * consulta por una comprobación que no le aplica.
+     *
+     * Se mira el trozo QUE PRECEDE a la comprobación y no el fichero entero:
+     * `if (attributedSeller)` aparece dos veces —la otra apunta el embudo de
+     * atribución al final—, así que buscarlo suelto lo daba por bueno aunque
+     * se hubiera borrado el de aquí. No mordía; ahora sí.
+     */
+    const servicio = cuerpoDe("src/lib/booking-service.ts");
+    const i = servicio.indexOf("desajusteDeAtribucion(");
+    expect(servicio.slice(Math.max(0, i - 400), i)).toMatch(/if \(attributedSeller\) \{/);
+  });
+
+  it("el punto de venta no ofrece lo que la API va a rechazar", () => {
+    /**
+     * Los dos desplegables eran independientes y se mandaban tal cual. Estrechar
+     * la pantalla no cierra nada por sí solo —los identificadores viajan en el
+     * cuerpo—, pero ofrecer una opción que el servidor rechaza es peor que no
+     * ofrecerla: el error aparece al final, con el carrito lleno.
+     */
+    const contexto = sinComentariosDe("src/app/api/pos/context/route.ts");
+    expect(contexto, "de qué socio es cada ficha").toMatch(/partner: refId\(s\.partner\) \?\? null/);
+
+    const pos = sinComentariosDe("src/app/dashboard/pos/page.tsx");
+    expect(pos, "la lista se acota").toMatch(/todos\.filter\(\(s\) => !s\.partner \|\| s\.partner === partnerId\)/);
+    // Y el desplegable usa la lista acotada, no la cruda: sin esto el filtro
+    // existiría y no lo miraría nadie.
+    expect(pos, "y el desplegable la usa").toMatch(/\{vendedoresDisponibles\.map\(/);
+    // Al cambiar de socio, el vendedor que deja de encajar se suelta. Sin esto
+    // queda un identificador seleccionado que el desplegable ya no enseña.
+    expect(pos, "y se suelta al cambiar de socio")
+      .toMatch(/if \(!vendedoresDisponibles\.some\(\(s\) => s\._id === sellerId\)\) setSellerId\(""\)/);
+  });
+});
+
+describe("/portal/vendedores", () => {
+  it("es de quien dirige, no de quien vende", () => {
+    /**
+     * Enseña lo que vendió cada compañero: justo lo que el ámbito del vendedor
+     * existe para que un agente no vea. Y aquí ese ámbito no se aplica solo,
+     * porque la consulta pide las órdenes de una LISTA de vendedores y no pasa
+     * por el armador de filtros. La puerta se cierra a la entrada.
+     */
+    const ruta = cuerpoDe("src/app/api/portal/sellers/route.ts");
+    expect(ruta).toMatch(/if \(!esAdminDeSocio\(ctx\)\) \{[\s\S]{0,260}throw new TenantError/);
+    expect(ruta, "y desde la operadora, gerencia").toMatch(/requireAtLeast\(ctx, "manager"\)/);
+  });
+
+  it("sin equipo no consulta nada, en vez de preguntar por una lista vacía", () => {
+    /**
+     * `in: []` no significa «ninguno» en todos los traductores de consulta: en
+     * algunos es una condición que no se aplica, y entonces esta pantalla
+     * enseñaría las ventas de la operadora entera. No se le da la ocasión.
+     */
+    expect(cuerpoDe("src/app/api/portal/sellers/route.ts"))
+      .toMatch(/ids\.length\s*\?[\s\S]{0,900}:\s*\[\[\], \[\]\]/);
+  });
+
+  it("y no rehace el aislamiento por su cuenta", () => {
+    // El ámbito del socio ya acota `seller` —es tabla propia desde 5.1— y el
+    // recorte de columnas es el mismo módulo que usa el listado genérico. Una
+    // ruta a medida que rehace el aislamiento es una que un día lo hará mal.
+    const ruta = cuerpoDe("src/app/api/portal/sellers/route.ts");
+    expect(ruta).toMatch(/projectRows\("seller", ctx,/);
+    expect(ruta, "no arma su propio ámbito de socio").not.toMatch(/partnerScopeFor|PARTNER_OWNED/);
+  });
+});

@@ -2069,3 +2069,47 @@ daba error: los tres producían números equivocados en silencio.
   el contexto real lo trae. Un llamante que construyera el tipo estricto la
   habría perdido sin que nada se quejara.
 - **Mutación: doce, las doce muertas.**
+
+### Fase 5.2 — el equipo de ventas del tour center, y el POS que no los confunde
+- **El fallo que apareció al mirar el POS:** los desplegables «Vendedor» y
+  «Partner» eran independientes y se mandaban tal cual. Nada comprobaba que
+  encajaran, así que se podía registrar la venta del tour center A atribuida a
+  un vendedor del tour center B. No es un error de etiqueta: **detrás del
+  vendedor va la comisión**, y el motor la calcula sobre `seller_id` sin volver
+  a mirar de quién es la venta. Se le paga a quien no vendió, y quien vendió lo
+  reclama —con razón— en la liquidación del mes siguiente.
+- **La regla NO es simétrica, y mi primera versión lo fue.** Exigir que los dos
+  coincidieran siempre parecía lo obvio; **lo cazó una prueba de comisiones que
+  ya existía**: el vendedor de la casa SÍ puede cerrar la venta de un tour
+  center —el conserje trae al cliente, el mostrador remata— y el motor genera
+  dos comisiones a propósito, una para cada uno. Prohibirlo habría roto una
+  forma de vender que ya estaba en producción. Lo que no puede pasar es que una
+  ficha **que pertenece a un tour center** figure en la venta de otro, o en una
+  venta propia.
+- **Se comprueba antes de escribir nada** —plazas, cupo, crédito—, porque
+  rechazar tarde obliga a compensar escrituras que no había que haber hecho. Y
+  solo cuesta una consulta cuando hay vendedor: la venta directa, que es la
+  mitad de las que se registran, no paga nada.
+- **La pantalla se acota también**, y es otra cosa que cerrarla: estrechar el
+  desplegable no impide nada —los identificadores viajan en el cuerpo— pero
+  ofrecer una opción que el servidor va a rechazar es peor que no ofrecerla,
+  porque el error aparece al final, con el carrito lleno. Y el vendedor que deja
+  de encajar al cambiar de socio **se suelta**: si no, queda seleccionado un
+  identificador que el desplegable ya no enseña.
+- **`/portal/vendedores`**: cuánto vendió cada uno de los suyos y cuánto lleva
+  generado. Es de quien DIRIGE, no de quien vende: enseña justo lo que el ámbito
+  del vendedor existe para que un agente no vea, y aquí ese ámbito no se aplica
+  solo —la consulta pide las órdenes de una lista de vendedores y no pasa por el
+  armador de filtros—, así que la puerta se cierra a la entrada.
+- **Sin equipo no se consulta nada.** `in: []` no significa «ninguno» en todos
+  los traductores de consulta: en alguno es una condición que no se aplica, y
+  entonces esa pantalla enseñaría las ventas de la operadora entera.
+- Y la ruta **no rehace el aislamiento**: `seller` ya viene acotado por el
+  ámbito —es tabla propia del socio desde 5.1— y el recorte de columnas es el
+  mismo módulo que usa el listado genérico.
+- **Mutación: doce, las doce muertas.** Dos no mordían al principio: una guarda
+  buscaba `if (attributedSeller)` suelto y lo encontraba en OTRO sitio del mismo
+  fichero —ahora mira el trozo que precede a la comprobación—, y a la regla le
+  faltaba el caso del socio en blanco, que da un mensaje distinto («es de otro
+  tour center» cuando no eligió ninguno) y manda a quien vende a buscar cuál es
+  el otro.
