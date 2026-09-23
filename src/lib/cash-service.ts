@@ -54,7 +54,10 @@ export async function loadCashClose(companyId: string, sessionId: string): Promi
 
   const primary = String(session.currency || "usd").toLowerCase();
   const summaries = summarizeCash(
-    movements as { movement_type?: string; amount?: number; currency?: string }[],
+    // `commission_id` incluido: sin él, la comisión que el vendedor se quedó
+    // se cuenta como un retiro cualquiera y su arqueo le pide un dinero que ya
+    // se llevó (0083).
+    movements as { movement_type?: string; amount?: number; currency?: string; commission_id?: string }[],
     payments,
     [primary]
   );

@@ -2745,3 +2745,39 @@ Y la tabla dice dos cosas más que no se preguntaban:
   llegara a su `returning`; la otra daba por bueno un turno inventado porque
   `... || "cs-inventada"` es un prefijo válido de lo que buscaba.
 - **Mutación: dieciocho, las dieciocho muertas.**
+
+### Fase 7.5 — el turno del vendedor, que no podía existir
+- **Las rutas de caja pedían rango `cashier`, y un `seller` está por debajo.**
+  Así que el promotor de playa —la persona entera para la que existe el modo
+  «retiene su comisión»— no podía abrir un turno; y sin turno no hay dónde
+  apuntar lo que se queda ni con qué cuadrar al final del día. Se llevaba en una
+  libreta, como el cupo antes de 6.4 y el saldo antes de 6.6.
+- **La exención es la mínima**: un vendedor opera la caja cuyo `seller_id` es el
+  suyo, y ninguna otra. No es un rango nuevo ni una excepción por rol — es la
+  misma regla de propiedad que ya decide todo lo demás en ese módulo, y por eso
+  vive en él y no repartida por las rutas.
+- **Y está escrita en el sentido que perdona el olvido.** `exigeRangoDeCaja`
+  devuelve `true` cuando hace falta el rango, así que quien llama escribe
+  `if (exige…) requireAtLeast(…)`: olvidarse deja la ruta **cerrada**. Con el
+  sentido contrario, olvidarse la dejaría abierta de par en par.
+- **Un retiro con comisión no es un retiro a secas.** Los dos sacan dinero del
+  cajón, pero el primero es lo que el vendedor se quedó y no tiene que entregar.
+  Mezclarlos le dice que entregue de más y, al cuadrar, le apunta el descuadre a
+  él. Ahora tiene su propia línea — y sigue restando del esperado, porque lo que
+  cambia es qué se le enseña, no cuánto hay en la caja.
+- **`/dashboard/mi-espacio/turno` cuadra por medio de pago**, que es el criterio
+  del plan: lo cobrado en efectivo, lo que entró por tarjeta y transferencia
+  —que no está en su bolsillo y por eso se dice—, lo que se quedó de comisión y
+  lo que le toca entregar.
+- **Y no recalcula la resta.** Lo que entrega es el ESPERADO del arqueo, que ya
+  lleva restada su comisión: rehacer la cuenta en la pantalla serían dos cuentas
+  del mismo dinero, y la que se equivoque decide lo que el vendedor pone sobre
+  la mesa. Tampoco vuelve a filtrar por vendedor en el navegador — un segundo
+  filtro en el cliente es una segunda definición de «lo mío», y además es la que
+  cualquiera puede quitar desde la consola.
+- **Una guarda existente lo paró**: una pantalla que enseña registros sin decir
+  cómo se crean. Y tiene razón — el vendedor no abre su propio turno, se lo abre
+  quien le entrega el fondo. Queda apuntado con ese motivo, porque un botón de
+  «abrir turno» aquí le dejaría declararse el fondo de apertura contra el que
+  luego se le cuadra.
+- **Mutación: catorce, las catorce muertas.**

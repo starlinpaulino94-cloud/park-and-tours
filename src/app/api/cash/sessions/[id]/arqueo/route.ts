@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireTenant, requireAtLeast, TenantError, esDeSocio, esAdminDeSocio } from "@/lib/tenant";
-import { noPuedeAbrirLaCaja } from "@/lib/caja-identidad";
+import { exigeRangoDeCaja, noPuedeAbrirLaCaja } from "@/lib/caja-identidad";
 import { ok, fail } from "@/lib/api-response";
 import { loadCashClose } from "@/lib/cash-service";
 import { recalcCashSession } from "@/lib/cash";
@@ -17,7 +17,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const { id } = await params;
     const ctx = await requireTenant();
     await assertRateLimit({ key: rateLimitKey(req, "cash:arqueo", ctx.userId), limit: 120, windowMs: 60_000 });
-    requireAtLeast(ctx, "cashier");
 
     const payload = await loadCashClose(ctx.companyId, id);
 
@@ -29,13 +28,22 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
      * eso sería enseñarle a la operadora cuánto efectivo movió un tour center
      * en su mostrador, y al tour center el de la casa.
      */
-    const impedimento = noPuedeAbrirLaCaja(
-      { ...(payload.session as Record<string, unknown>), status: "active" },
-      {
-        esDeSocio: esDeSocio(ctx), partnerId: ctx.partnerId,
-        sellerId: ctx.sellerId, esAdminDeSocio: esAdminDeSocio(ctx),
-      }
-    );
+    const sesion = payload.session as Record<string, unknown>;
+    const actorDeCaja = {
+      esDeSocio: esDeSocio(ctx), partnerId: ctx.partnerId,
+      sellerId: ctx.sellerId, esAdminDeSocio: esAdminDeSocio(ctx),
+    };
+    /**
+     * El rango de siempre, SALVO que la caja sea suya (0083).
+     *
+     * Las rutas de caja pedían `cashier` y un `seller` está por debajo: el
+     * promotor de playa —la persona entera para la que existe el modo «retiene
+     * su comisión»— no podía abrir un turno, y sin turno no hay dónde apuntar
+     * lo que se queda ni con qué cuadrar al final del día.
+     */
+    if (exigeRangoDeCaja(sesion, actorDeCaja)) requireAtLeast(ctx, "cashier");
+
+    const impedimento = noPuedeAbrirLaCaja({ ...sesion, status: "active" }, actorDeCaja);
     if (impedimento) throw new TenantError(impedimento, 403);
 
     // Una sesión abierta se recalcula al abrir el arqueo: el cajero cuenta

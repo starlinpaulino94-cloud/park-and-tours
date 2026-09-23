@@ -141,3 +141,38 @@ export function filtroDeArqueo(actor: ActorDeCaja): Record<string, unknown> {
   }
   return { partner: null };
 }
+
+/**
+ * ¿Le basta el rango para tocar la caja, o tiene que ser la SUYA?
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ SE ABRE, Y HASTA DÓNDE
+ *
+ * Las rutas de caja pedían `cashier`, y un `seller` está por debajo. Así que el
+ * promotor de playa —la persona entera para la que existe el modo «retiene su
+ * comisión»— no podía abrir un turno, y sin turno no hay dónde apuntar lo que
+ * se queda ni con qué cuadrar al final del día.
+ *
+ * Se abre lo MÍNIMO: un vendedor puede operar la caja cuyo `seller_id` es el
+ * suyo, y ninguna otra. No es un rango nuevo ni una excepción por rol — es la
+ * misma regla de propiedad que ya decide todo lo demás en este módulo, y por
+ * eso vive aquí y no en cada ruta.
+ *
+ * Devuelve `true` cuando hace falta el rango de siempre, es decir, cuando la
+ * caja NO es suya. Se escribe en ese sentido a propósito: quien llama hace
+ * `if (exigeRango(...)) requireAtLeast(ctx, "cashier")`, y olvidarse de la
+ * comprobación deja la ruta abierta de par en par — con el sentido contrario,
+ * olvidarse la deja cerrada, que es un fallo que se ve el primer día.
+ */
+export function exigeRangoDeCaja(
+  caja: CajaConDueno | null | undefined,
+  actor: ActorDeCaja
+): boolean {
+  const dueno = duenoDeLaCaja(caja);
+  // Sin dueño declarado, es la caja del mostrador: el rango de siempre.
+  if (!dueno.sellerId) return true;
+  // Y sin ficha de vendedor tampoco se libra nadie del rango: un actor sin
+  // identificador no puede ser el dueño de nada.
+  if (!actor.sellerId) return true;
+  return dueno.sellerId !== actor.sellerId;
+}

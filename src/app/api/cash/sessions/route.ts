@@ -3,7 +3,7 @@ import {
   requireTenant, requireTenantWrite, requireAtLeast, tenantQuery, tenantCreate,
   TenantError, esDeSocio, esAdminDeSocio,
 } from "@/lib/tenant";
-import { noPuedeAbrirLaCaja, duenoDeLaCaja, filtroDeArqueo } from "@/lib/caja-identidad";
+import { exigeRangoDeCaja, noPuedeAbrirLaCaja, duenoDeLaCaja, filtroDeArqueo } from "@/lib/caja-identidad";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { newCashSessionCode } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
@@ -58,7 +58,6 @@ export async function POST(req: NextRequest) {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
     await assertRateLimit({ key: rateLimitKey(req, "cash:sessions:create", ctx.userId), limit: 20, windowMs: 60_000 });
-    requireAtLeast(ctx, "cashier");
 
     const body = await readJson<{ cash_register_id?: string; opening_amount?: number; currency?: Currency; notes?: string }>(req);
     if (!body.cash_register_id) throw Object.assign(new Error("Selecciona la caja a abrir"), { status: 400 });
@@ -87,12 +86,23 @@ export async function POST(req: NextRequest) {
      * contaría como propio— y que la operadora abra un turno en el mostrador de
      * un socio, que es un arqueo que nadie puede firmar.
      */
-    const impedimento = noPuedeAbrirLaCaja(register, {
+    const actorDeCaja = {
       esDeSocio: esDeSocio(ctx),
       partnerId: ctx.partnerId,
       sellerId: ctx.sellerId,
       esAdminDeSocio: esAdminDeSocio(ctx),
-    });
+    };
+    /**
+     * El rango de siempre, SALVO que la caja sea suya (0083).
+     *
+     * Las rutas de caja pedían `cashier` y un `seller` está por debajo: el
+     * promotor de playa —la persona entera para la que existe el modo «retiene
+     * su comisión»— no podía abrir un turno, y sin turno no hay dónde apuntar
+     * lo que se queda ni con qué cuadrar al final del día.
+     */
+    if (exigeRangoDeCaja(register, actorDeCaja)) requireAtLeast(ctx, "cashier");
+
+    const impedimento = noPuedeAbrirLaCaja(register, actorDeCaja);
     if (impedimento) throw new TenantError(impedimento, 403);
 
     // El turno hereda el dueño de la CAJA, no lo trae el cuerpo de la petición:

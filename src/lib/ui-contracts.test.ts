@@ -4920,6 +4920,7 @@ describe("cada pantalla dice cómo se crea lo que enseña", () => {
     "/dashboard/mi-espacio/enlace": "su enlace y su QR: el enlace SÍ se crea aquí, pero con un botón propio y sin formulario de recurso —el slug no se elige, lo genera el servidor—, así que el detector de «cómo se crea esto» no lo reconoce",
     "/dashboard/mi-espacio/comisiones": "sus comisiones: las genera el devengo al confirmarse la venta y las liquida gerencia. Un botón de «nueva» aquí sería dejar que el vendedor se escriba su propia comisión, que es exactamente lo que este apartado no puede permitir",
     "/dashboard/mi-espacio/ventas": "sus ventas ya hechas: se crean en el punto de venta, que es donde está el cliente; esta pantalla las mira, no las inventa",
+    "/dashboard/mi-espacio/turno": "su turno de caja: lo abre quien le entrega el fondo, en «Caja y turnos», y lo cierra quien recibe el dinero. Un botón de «abrir turno» aquí dejaría al vendedor declararse su propio fondo de apertura, que es el número contra el que luego se le cuadra",
     "/dashboard/distribucion/matriz": "vista cruzada de disponibilidad ya existente",
     "/dashboard/distribucion/canales": "un canal no se crea, se conecta: aparece cuando un revendedor reserva por OCTO; se habilita en Integraciones",
     "/dashboard/inicio/notificaciones": "avisos: los emite el sistema",
@@ -7349,5 +7350,95 @@ describe("el socio que integra por API", () => {
     // movido bajo un modo y la comisión calculada con otro.
     expect(cuerpoDe("src/lib/booking-service.ts"))
       .toMatch(/orden\?\.collection_mode === "seller_retains"/);
+  });
+
+  /* ═══════════ Fase 7.5 · el turno del vendedor, por medio de pago */
+
+  it("LA COMISIÓN RETENIDA NO ES UN RETIRO MÁS", () => {
+    /**
+     * Los dos sacan dinero del cajón, pero el primero es lo que el vendedor se
+     * quedó y no tiene que entregar, y el segundo es dinero que salió a otro
+     * sitio. Mezclarlos le dice que entregue de más y, al cuadrar, le apunta el
+     * descuadre a él.
+     */
+    const dominio = cuerpoDe("src/lib/cash-close.ts");
+    expect(dominio).toMatch(/if \(movement\.commission_id\) r\.retained \+= Math\.abs\(raw\);/);
+    expect(dominio).toMatch(/else r\.withdrawals \+= Math\.abs\(raw\);/);
+    // Pero SALE del cajón igual: lo que cambia es qué se enseña, no cuánto hay.
+    // Si dejara de restar, el arqueo le pediría el dinero que ya se llevó.
+    expect(dominio, "el retiro con comisión tiene que seguir restando")
+      .toMatch(/case "expense":\s*case "withdrawal":\s*return -Math\.abs\(raw\);/);
+    // Y el dato llega: sin `commission_id` en la consulta, la línea sale
+    // siempre en cero y la separación no separa nada.
+    expect(cuerpoDe("src/lib/cash-service.ts")).toMatch(/commission_id\?: string/);
+  });
+
+  it("el vendedor puede operar SU caja, y solo la suya", () => {
+    /**
+     * Las rutas pedían rango `cashier` y un `seller` está por debajo: el
+     * promotor de playa —la persona entera para la que existe el modo «retiene
+     * su comisión»— no podía abrir un turno, y sin turno no hay dónde apuntar
+     * lo que se queda.
+     *
+     * La exención es la mínima: la caja cuyo `seller_id` es el suyo. No es un
+     * rango nuevo ni una excepción por rol.
+     */
+    const dominio = cuerpoDe("src/lib/caja-identidad.ts");
+    const i = dominio.indexOf("export function exigeRangoDeCaja");
+    const cuerpo = dominio.slice(i, i + 600);
+    expect(cuerpo, "sin dueño, el rango de siempre").toMatch(/if \(!dueno\.sellerId\) return true;/);
+    expect(cuerpo, "sin ficha, tampoco se libra nadie").toMatch(/if \(!actor\.sellerId\) return true;/);
+    expect(cuerpo).toMatch(/return dueno\.sellerId !== actor\.sellerId;/);
+  });
+
+  it("y las cuatro rutas siguen exigiendo el rango cuando la caja NO es suya", () => {
+    /**
+     * `exigeRangoDeCaja` devuelve `true` cuando hace falta el rango, no al
+     * revés, y eso es deliberado: quien llama escribe
+     * `if (exige…) requireAtLeast(…)`, así que olvidarse deja la ruta CERRADA.
+     * Con el sentido contrario, olvidarse la dejaría abierta de par en par.
+     */
+    for (const ruta of [
+      "src/app/api/cash/sessions/route.ts",
+      "src/app/api/cash/movements/route.ts",
+      "src/app/api/cash/sessions/[id]/close/route.ts",
+      "src/app/api/cash/sessions/[id]/arqueo/route.ts",
+    ]) {
+      expect(cuerpoDe(ruta), `${ruta} dejó de pedir el rango`)
+        .toMatch(/if \(exigeRangoDeCaja\([^)]*\)\) requireAtLeast\(ctx, "cashier"\);/);
+      // Y el rango NO se pide antes de saber de quién es la caja: pedirlo
+      // arriba deja fuera al vendedor de su propio turno, que es de lo que
+      // venimos.
+      expect(cuerpoDe(ruta), `${ruta} pide el rango antes de mirar la caja`)
+        .not.toMatch(/^\s*requireAtLeast\(ctx, "cashier"\);$/m);
+    }
+  });
+
+  it("«mi turno» dice lo que entrega, y no lo recalcula", () => {
+    /**
+     * Lo que entrega es lo ESPERADO, que ya lleva restada su comisión.
+     * Recalcularlo en la pantalla sería una segunda cuenta del mismo dinero, y
+     * la que se equivoque decide lo que el vendedor pone sobre la mesa.
+     */
+    expect(existe("src/app/dashboard/mi-espacio/turno/page.tsx")).toBe(true);
+    const pantalla = cuerpoDe("src/app/dashboard/mi-espacio/turno/page.tsx");
+    expect(pantalla).toMatch(/const entregar = m\.expected;/);
+    expect(pantalla, "la pantalla no puede rehacer la resta")
+      .not.toMatch(/m\.cash_sales\s*-\s*m\.retained/);
+    // Y desglosa por medio de pago, que es el criterio del plan.
+    expect(pantalla).toMatch(/Por medio de pago/);
+    expect(pantalla).toMatch(/m\.card/);
+    expect(pantalla).toMatch(/m\.transfer/);
+    // Está en el menú: una pantalla sin menú es un módulo muerto.
+    expect(read("src/lib/nav.ts")).toContain('href: "/dashboard/mi-espacio/turno"');
+  });
+
+  it("y no vuelve a filtrar por vendedor en el navegador", () => {
+    // La ruta ya devuelve solo lo que este usuario puede ver. Un segundo filtro
+    // en el cliente es una segunda definición de «lo mío», y la que se quede
+    // corta decide — además de ser la que alguien puede quitar desde la
+    // consola del navegador.
+    const pantalla = cuerpoDe("src/app/dashboard/mi-espacio/turno/page.tsx");
+    expect(pantalla).not.toMatch(/\.filter\([^)]*seller/);
   });
 });

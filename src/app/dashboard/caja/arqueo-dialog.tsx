@@ -39,6 +39,8 @@ export interface ArqueoCurrency {
   sales: number;
   refunds: number;
   cash_sales: number;
+  /** Lo que el vendedor se quedó de comisión en este turno (0083). */
+  retained: number;
   cash_refunds: number;
   expenses: number;
   withdrawals: number;
@@ -220,6 +222,22 @@ export function ArqueoDialog({
                     <p className="text-xs text-muted-foreground">
                       Fondo {formatMoney(row.opening, row.currency)}
                       {" · "}Cobros en efectivo {formatMoney(row.cash_sales, row.currency)}
+                      {/**
+                        * Lo retenido, DELANTE y con su nombre.
+                        *
+                        * Sale del cajón igual que un retiro, pero no es un
+                        * retiro: es lo que el vendedor se quedó y no tiene que
+                        * entregar. Sin esta línea, el arqueo le dice que
+                        * entregue de más y el descuadre acaba a su nombre.
+                        */}
+                      {row.retained ? (
+                        <>
+                          {" · "}
+                          <span className="text-amber-600 dark:text-amber-400">
+                            Comisión retenida {formatMoney(row.retained, row.currency)}
+                          </span>
+                        </>
+                      ) : null}
                       {row.expenses ? ` · Gastos ${formatMoney(row.expenses, row.currency)}` : ""}
                       {row.withdrawals ? ` · Retiros ${formatMoney(row.withdrawals, row.currency)}` : ""}
                     </p>
