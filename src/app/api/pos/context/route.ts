@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireTenant, tenantQuery } from "@/lib/tenant";
+import { ventaSelladaPorVendedor } from "@/lib/seller-scope";
 import { ok, fail } from "@/lib/api-response";
 import type { Branch, CashSession, Departure, Hotel, Partner, Product, Seller } from "@/lib/types";
 import { refId } from "@/lib/types";
@@ -146,13 +147,33 @@ export async function GET(req: NextRequest) {
       })),
     }));
 
+    const visibleSellers = ventaSelladaPorVendedor(ctx)
+      ? sellers.filter((s) => s._id === ctx.sellerId)
+      : sellers;
+
     return ok({
       currency: ctx.company?.base_currency || "usd",
       role: ctx.role,
       catalog,
       bundles: bundleCatalog,
       hotels: hotels.map((h) => ({ _id: h._id, name: h.name, zone: typeof h.zone === "object" ? h.zone?.name : undefined })),
-      sellers: sellers.map((s) => ({ _id: s._id, name: [s.first_name, s.last_name].filter(Boolean).join(" ") || s.code || "Vendedor" })),
+      /**
+       * El vendedor ya no elige de quién es su venta.
+       *
+       * Este desplegable listaba a TODO el equipo, así que quien vendía podía
+       * regalarle la venta a un compañero o quedarse la de otro —y detrás va la
+       * comisión—. Ahora, cuando quien está en el punto de venta es un
+       * vendedor, solo se devuelve su propia ficha; el servidor sella la venta
+       * igual aunque llegue otra cosa (`booking-service.ts`), y esto es para
+       * que la pantalla no ofrezca algo que la API va a ignorar.
+       *
+       * De `cashier` hacia arriba se sigue devolviendo el equipo entero:
+       * registrar la venta de otro es trabajo normal en el mostrador.
+       */
+      sellers: visibleSellers.map((s) => ({ _id: s._id, name: [s.first_name, s.last_name].filter(Boolean).join(" ") || s.code || "Vendedor" })),
+      /** La ficha de quien vende, para que la pantalla la deje fija y marcada. */
+      own_seller_id: ventaSelladaPorVendedor(ctx) ? ctx.sellerId ?? null : null,
+      seller_locked: ventaSelladaPorVendedor(ctx),
       partners: partners.map((p) => ({ _id: p._id, name: p.commercial_name || p.name || "Partner" })),
       branches: branches.map((b) => ({ _id: b._id, name: b.name })),
       cash_session: openCash[0]

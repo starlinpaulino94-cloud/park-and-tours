@@ -31,7 +31,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<{ follow_up_at?: string; notes?: string }>(req);
-    const { quote, lines } = await loadQuoteBundle(ctx.companyId, id);
+    const { quote, lines } = await loadQuoteBundle(ctx.companyId, id, ctx);
 
     const blocker = sendBlocker(quote, lines);
     if (blocker) throw Object.assign(new Error(BLOCK_MESSAGE[blocker]), { status: 409 });
@@ -85,7 +85,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const { id } = await params;
     const ctx = await requireTenant();
     await assertRateLimit({ key: rateLimitKey(req, "quotes:send:check", ctx.userId), limit: 240, windowMs: 60_000 });
-    const { quote, lines } = await loadQuoteBundle(ctx.companyId, id);
+    const { quote, lines } = await loadQuoteBundle(ctx.companyId, id, ctx);
     const blocker = sendBlocker(quote, lines);
     return ok({ blocker, message: blocker ? BLOCK_MESSAGE[blocker] : null });
   } catch (err) {

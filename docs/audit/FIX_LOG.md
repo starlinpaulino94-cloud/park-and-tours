@@ -1350,3 +1350,68 @@ daba error: los tres producían números equivocados en silencio.
   tirarlo a la basura una línea después, con el nombre de la función a la vista
   de quien revisa. Esa guarda se reescribió para exigir que el resultado se
   APLIQUE, no solo que la función se llame.
+
+### Fase 1.1 del plan del ecosistema — la venta es de quien la hace
+- **Lo que faltaba.** El ámbito del vendedor (AUD-M32) nació de LECTURA. Con eso
+  quedaba cerrada la mitad: el desplegable «Vendedor» del punto de venta
+  listaba al equipo entero y quien vendía podía **elegir a cualquiera**. Podía
+  regalarle su venta a un compañero o quedarse la de otro, y detrás va la
+  comisión. Acotar lo que se LEE mientras la atribución se elige a mano no
+  acota nada.
+- **Y tres puertas de escritura más.** `/api/bookings/:id/cancel` y
+  `/reschedule` pedían rango de vendedor y **no miraban de quién era la
+  reserva** —cancelar anula la comisión de quien vendió, así que un vendedor le
+  borraba el mes a un compañero con una llamada—. Y todas las rutas de
+  `/api/quotes/:id/*` (enviar, revisar, decidir, convertir, editar líneas y
+  alternativas) compartían un cargador que tampoco lo miraba.
+
+- **El sello vive en el servicio, no en la ruta.** `createOrderWithBookings` es
+  el único camino que crea reservas —lo usan el punto de venta, la conversión
+  de cotización, la web, el revendedor, la lista de espera y la demo—. Puesto
+  en la ruta, la siguiente que creara órdenes habría nacido sin sellar.
+- **EL ERROR QUE CASI COMETO, Y QUE VALE POR TODO LO DEMÁS.** Sellar por
+  `ctx.role === "seller"` habría sido correcto en apariencia y catastrófico en
+  la práctica: `public-booking-service.ts` y `octo-service.ts` **fabrican un
+  contexto con rol `seller` y sin usuario**, a propósito y documentado en su
+  propio código. El sello por rol habría puesto `seller_id` en `null` en TODA
+  venta web y apagado el motor de atribución entero —la cookie del visitante es
+  lo único que encuentra al conserje que compartió el enlace— sin un solo error
+  que lo delatara. La pregunta la responde `ventaSelladaPorVendedor`, que exige
+  persona (usuario), y hay una prueba que fija los dos motores sin sesión.
+- **El sello PISA lo que venga en el cuerpo**, al revés que el de sucursal. Un
+  gerente creando algo para otra sucursal está en su derecho; un vendedor
+  eligiendo a otro vendedor no es una decisión legítima. Y con la ficha sin
+  vincular sella a nadie sin dejar pasar el valor del cuerpo: si lo dejara
+  pasar, bastaría con no vincular la ficha para atribuirse lo que sea.
+- **`field-write-role.ts`: permiso por CAMPO.** `writeRole` es del recurso
+  entero, y `order` lo tiene en `seller` —tiene que tenerlo— con `seller` y
+  `partner` entre sus campos editables: el mismo rango que permite anotar una
+  nota permitía cambiar a quién se le paga. `seller.user` sube a `admin`: es la
+  única columna que traslada ventas, comisiones y liquidación de una persona a
+  otra con un cambio. Subir el recurso entero habría roto el alta de vendedores
+  por gerencia.
+- **Se prohíbe CAMBIAR, no enviar.** El formulario genérico manda todos sus
+  campos en cada guardado, también los que nadie tocó: rechazar por «viene el
+  campo» habría convertido editarle una nota a una venta en un 403
+  incomprensible. Se compara contra la fila actual y por `refId`, porque una
+  referencia viaja unas veces como uuid y otras como objeto expandido.
+- **`seller-identity.ts`**: la cuenta que se vincula tiene que ser de esta
+  empresa y no estar ya en otra ficha. El índice único de 0069 ya lo impide en
+  la base, pero ahí el fallo sale como una restricción que nadie entiende; aquí
+  sale diciendo con qué ficha choca. Un fallo de lectura NO se convierte en
+  permiso: al revés, un corte de red serviría para colar una llave.
+- **El cargador de cotizaciones pide el contexto OBLIGATORIO.** Opcional, la
+  siguiente ruta se olvidaría de pasarlo y no lo notaría nadie; obligatorio, el
+  compilador obliga a decidir. `null` significa «uso interno, sin persona
+  detrás» y solo lo usa el recálculo, que corre después de una escritura ya
+  autorizada.
+- **Pruebas:** 10 nuevas en `seller-scope.test.ts` (sello, quién lo activa, fila
+  ajena con referencia expandida), 11 en `field-write-role.test.ts` y 3
+  contratos que leen las rutas. Tres guardas ajenas saltaron por el camino y se
+  reescribieron para enunciar la regla nueva en vez de la línea vieja.
+- **Mutación:** dieciséis, quince muertas a la primera. La que no mordió fue,
+  otra vez, **la misma familia**: quitar el `throw` dejando la llamada a
+  `protectedFieldChanges` en pie —el veredicto calculado y tirado a la basura
+  una línea después, con el nombre de la función a la vista de quien revisa—.
+  Es el segundo caso idéntico en dos olas; la guarda ahora exige que el
+  resultado se ACTÚE, no solo que la función se llame.

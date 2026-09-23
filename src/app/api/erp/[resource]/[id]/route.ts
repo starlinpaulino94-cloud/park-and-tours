@@ -13,6 +13,8 @@ import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { assertModule } from "@/lib/plan-service";
 import { assertPayloadAssignable } from "@/lib/hr-service";
 import { sellerCanReadRow, sellerFieldFor, isSellerScoped } from "@/lib/seller-scope";
+import { protectedFieldChanges, protectedFieldMessage, hasProtectedFields } from "@/lib/field-write-role";
+import { assertSellerUserLinkable } from "@/lib/seller-identity";
 
 type Params = { params: Promise<{ resource: string; id: string }> };
 
@@ -122,6 +124,27 @@ export async function PUT(req: NextRequest, { params }: Params) {
     const body = await readJson(req);
     const payload = sanitizePayload(def, body);
     if (Object.keys(payload).length === 0) throw new TenantError("No se enviaron datos válidos", 400);
+
+    /**
+     * Los campos que mueven dinero de una persona a otra.
+     *
+     * `order` se edita con rango de vendedor y entre sus campos editables está
+     * `seller`; `seller.user` es la llave que decide de quién son las ventas y
+     * hoy la escribía cualquier gerente. El rango por RECURSO no distingue
+     * entre anotar una nota y cambiar a quién se le paga: eso lo hace
+     * `field-write-role.ts`.
+     *
+     * Se compara contra la fila actual y no contra la presencia del campo: el
+     * formulario genérico manda todos sus campos en cada guardado, también los
+     * que nadie tocó, así que rechazar por «viene el campo» convertiría
+     * cualquier edición en un 403 incomprensible.
+     */
+    if (hasProtectedFields(def.table)) {
+      const actual = await tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id);
+      const bloqueados = protectedFieldChanges(def.table, ctx.role, payload, actual);
+      if (bloqueados.length > 0) throw new TenantError(protectedFieldMessage(bloqueados), 403);
+      await assertSellerUserLinkable(ctx.companyId, payload, id);
+    }
 
     // 0051 — la misma guarda que al crear. Sin ella, bastaba con crear el turno
     // vacío y asignarle después la persona para saltarse el bloqueo entero.

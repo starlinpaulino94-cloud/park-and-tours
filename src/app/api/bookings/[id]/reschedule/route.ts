@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireTenantWrite, requireAtLeast, tenantFindOne, tenantQuery, tenantUpdate, TenantError } from "@/lib/tenant";
+import { assertSellerOwnsRow } from "@/lib/seller-scope";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -66,6 +67,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const booking = await tenantFindOne<Booking>(ctx.companyId, "booking", id, { product: true, departure: true });
     if (!booking) throw new TenantError("La reserva no existe", 404);
+    // La misma guarda que en cancelar: mover la salida de la reserva de un
+    // compañero le cambia el manifiesto, la recogida y el voucher que su
+    // cliente tiene en la mano.
+    assertSellerOwnsRow("booking", ctx, booking as unknown as Record<string, unknown>, "Esta reserva");
 
     const target = await tenantFindOne<Departure>(ctx.companyId, "departure", targetId);
     if (!target) throw new TenantError("La salida elegida no existe", 404);

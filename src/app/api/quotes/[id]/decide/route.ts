@@ -41,7 +41,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       throw Object.assign(new Error("La respuesta solo puede ser aceptada, rechazada o en negociación"), { status: 400 });
     }
 
-    const { quote, options } = await loadQuoteBundle(ctx.companyId, id);
+    const { quote, options } = await loadQuoteBundle(ctx.companyId, id, ctx);
     const blocker = decideBlocker(quote);
     if (blocker) {
       if (!body.force || !FORCEABLE_DECIDE_BLOCKS.has(blocker)) {

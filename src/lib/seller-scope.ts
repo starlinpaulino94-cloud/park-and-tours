@@ -160,6 +160,89 @@ export function sellerCanReadRow(
   return Boolean(sellerId) && rowSellerId === sellerId;
 }
 
+/**
+ * ¿HAY UNA PERSONA CON RANGO DE VENDEDOR DETRÁS DE ESTA VENTA?
+ *
+ * De esta pregunta depende quién cobra la comisión, así que merece ser una
+ * función con nombre y no una condición suelta.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ NO BASTA CON MIRAR EL ROL
+ *
+ * Dos motores del sistema fabrican un contexto con rol `seller` y SIN usuario,
+ * a propósito y documentado en su propio código: el motor de la web pública
+ * (`public-booking-service.ts`) y el de las reservas de revendedor
+ * (`octo-service.ts`). El rol ahí es «el rango mínimo que permite vender», no
+ * una persona.
+ *
+ * Sellar por el rol a secas rompería justo lo que más importa: en la venta web
+ * la atribución la resuelve la COOKIE del visitante —es lo único que encuentra
+ * al conserje que compartió el enlace—, y sellarla al vendedor del contexto
+ * (que no existe) la habría puesto en `null` y apagado el motor de atribución
+ * entero, sin ningún error que lo delatara. El identificador de usuario vacío
+ * es la marca que esos dos motores ya usan para decir «aquí no hay nadie».
+ */
+export function ventaSelladaPorVendedor(
+  ctx: { role: AppRole; userId?: string | null }
+): boolean {
+  return sellerScopeApplies(ctx.role) && Boolean(ctx.userId);
+}
+
+/**
+ * El vendedor que se le pone a lo que esta persona crea.
+ *
+ * Hermano de `branchStampFor`, y por el mismo motivo: lo que registra un
+ * vendedor nace a su nombre. La diferencia está en que aquí el sello PISA lo
+ * que venga en el payload en vez de respetarlo —un gerente creando algo para
+ * otro vendedor está en su derecho y no se sella, pero un vendedor eligiendo a
+ * otro vendedor no es una decisión legítima: es regalar o quedarse una
+ * comisión—.
+ *
+ * Con la ficha sin vincular el sello es `null`, que es la verdad: el sistema no
+ * sabe quién es. No se deja pasar el valor del cuerpo, porque entonces bastaría
+ * con no vincular la ficha para poder atribuirse lo que sea.
+ */
+export function sellerStampFor(
+  table: string,
+  ctx: { role: AppRole; userId?: string | null; sellerId?: string | null },
+  payload: Record<string, unknown>
+): Record<string, unknown> {
+  const field = SELLER_SCOPED[table];
+  if (!field || field === "_id") return payload;
+  if (!ventaSelladaPorVendedor(ctx)) return payload;
+  return { ...payload, [field]: ctx.sellerId ?? null };
+}
+
+/**
+ * LA MISMA REGLA, PERO PARA ACTUAR SOBRE UNA FILA.
+ *
+ * El ámbito nació de lectura, y con eso solo quedaba cerrada la mitad: las
+ * acciones con impacto económico sobre una reserva o una cotización ajena
+ * viven en rutas propias que nunca pasan por el CRUD genérico y solo miraban
+ * el RANGO. `/api/bookings/:id/cancel` pedía rango de vendedor y no miraba de
+ * quién era la reserva —y cancelar anula la comisión de quien vendió—.
+ *
+ * Lanza un error con `status` en vez de importar `TenantError`, para que este
+ * módulo siga siendo puro y comprobable sin servidor. Es el mismo patrón que ya
+ * usan las rutas de venta.
+ */
+export function assertSellerOwnsRow(
+  table: string,
+  ctx: { role: AppRole; userId?: string | null; sellerId?: string | null },
+  record: Record<string, unknown> | null | undefined,
+  etiqueta = "Este registro"
+): void {
+  if (!sellerScopeApplies(ctx.role)) return;
+  const field = SELLER_SCOPED[table];
+  if (!field || !record) return;
+  const valor = record[field];
+  const rowSellerId = valor && typeof valor === "object"
+    ? ((valor as { _id?: string })._id ?? null)
+    : ((valor as string | null | undefined) ?? null);
+  if (sellerCanReadRow(table, ctx.role, ctx.sellerId, rowSellerId)) return;
+  throw Object.assign(new Error(`${etiqueta} es de otro vendedor`), { status: 403 });
+}
+
 /** El campo que identifica al vendedor de la fila, o null si la tabla no lo tiene. */
 export function sellerFieldFor(table: string): string | null {
   return SELLER_SCOPED[table] ?? null;

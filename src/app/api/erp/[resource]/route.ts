@@ -10,6 +10,9 @@ import { notificationForCreate } from "@/lib/notify";
 import { notify } from "@/lib/notify-service";
 import { buildListFilter, buildListSort } from "@/lib/erp-query";
 import { branchStampFor } from "@/lib/branch-scope";
+import { sellerStampFor } from "@/lib/seller-scope";
+import { protectedFieldChanges, protectedFieldMessage } from "@/lib/field-write-role";
+import { assertSellerUserLinkable } from "@/lib/seller-identity";
 import { assertPayloadAssignable } from "@/lib/hr-service";
 
 /** Generic tenant-scoped list endpoint: GET /api/erp/:resource */
@@ -115,13 +118,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ res
     const payload = sanitizePayload(def, branchStampFor(def.table, ctx.branchId, body as Record<string, unknown>));
     if (Object.keys(payload).length === 0) throw new TenantError("No se enviaron datos válidos", 400);
 
+    /**
+     * Campos que cambian a quién se le paga: se comprueban ANTES de sellar.
+     *
+     * Al crear no hay valor anterior con el que comparar, así que cualquier
+     * valor no vacío cuenta como cambio: nacer con el vendedor de otro es lo
+     * mismo que reasignárselo un segundo después.
+     */
+    const bloqueados = protectedFieldChanges(def.table, ctx.role, payload, null);
+    if (bloqueados.length > 0) throw new TenantError(protectedFieldMessage(bloqueados), 403);
+
+    // Y lo que registra un vendedor nace a su nombre, igual que nace en su
+    // sucursal. Va DESPUÉS de la comprobación para que el sello propio no se
+    // lea como un intento de cambiar el campo.
+    const sellado = sellerStampFor(def.table, ctx, payload);
+
+    // La llave de identidad, validada contra la base: que la cuenta sea de esta
+    // empresa y que no esté ya en otra ficha.
+    await assertSellerUserLinkable(ctx.companyId, sellado);
+
     // 0051 — asignar trabajo a quien tiene una certificación obligatoria
     // vencida se para AQUÍ. La pantalla puede pintarlo en rojo; lo que impide
     // que el guía suba al bote es esta línea, porque por aquí pasan el turno,
     // el recurso de la salida y la ruta de recogida.
-    await assertPayloadAssignable(ctx.companyId, def.table, payload);
+    await assertPayloadAssignable(ctx.companyId, def.table, sellado);
 
-    const created = await tenantCreate(ctx.companyId, def.table, payload);
+    const created = await tenantCreate(ctx.companyId, def.table, sellado);
 
     // Lo que se registra por una pantalla genérica también puede merecer un
     // aviso: un incidente del parque no tiene ruta propia donde colgarlo. Qué
@@ -154,7 +176,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ res
       entityType: def.table,
       entityId: (created as Record<string, unknown>)?._id as string | undefined,
       description: `${ctx.email} creó un registro en ${def.table}`,
-      metadata: { campos: Object.keys(payload) },
+      metadata: { campos: Object.keys(sellado) },
     });
 
     console.log(`[api] ${ctx.email} creó ${def.table}`);

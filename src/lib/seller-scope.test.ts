@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   sellerFilterFor, sellerCanReadRow, isSellerScoped, sellerFieldFor,
   sellerScopeApplies, SELLER_SCOPED,
+  ventaSelladaPorVendedor, sellerStampFor, assertSellerOwnsRow,
 } from "@/lib/seller-scope";
 import { buildListFilter } from "@/lib/erp-query";
 import { RESOURCES } from "@/lib/resources";
@@ -178,5 +179,92 @@ describe("el listado y su exportación comparten el corte", () => {
   it("el catálogo sigue entero para el vendedor", () => {
     const filter = buildListFilter(RESOURCES.product, ctx(), new URLSearchParams()) as Record<string, unknown>;
     expect(filter._and).toBeUndefined();
+  });
+});
+
+describe("quién sella la venta", () => {
+  const persona = { role: "seller" as const, userId: "u1", sellerId: "v1" };
+  const web = { role: "seller" as const, userId: "", sellerId: null };
+
+  it("una persona con rango de vendedor, sí", () => {
+    expect(ventaSelladaPorVendedor(persona)).toBe(true);
+  });
+
+  it("los motores sin sesión, NO", () => {
+    /**
+     * El motor de la web pública y el de reservas de revendedor fabrican un
+     * contexto con rol `seller` y sin usuario, a propósito. Sellar por el rol a
+     * secas habría puesto `seller_id` en null en toda venta web y apagado el
+     * motor de atribución entero —la cookie del visitante es lo único que
+     * encuentra al conserje que compartió el enlace— sin ningún error que lo
+     * delatara.
+     */
+    expect(ventaSelladaPorVendedor(web)).toBe(false);
+  });
+
+  it("de cajero hacia arriba, NO", () => {
+    // Registrar la venta de otro es trabajo normal en el mostrador.
+    for (const role of ["cashier", "manager", "admin", "owner"] as const) {
+      expect(ventaSelladaPorVendedor({ role, userId: "u1" }), role).toBe(false);
+    }
+  });
+});
+
+describe("el sello al crear", () => {
+  const persona = { role: "seller" as const, userId: "u1", sellerId: "v1" };
+
+  it("pone al vendedor de quien crea", () => {
+    expect(sellerStampFor("lead", persona, { name: "Ana" })).toEqual({ name: "Ana", seller: "v1" });
+  });
+
+  it("PISA el que venía en el cuerpo", () => {
+    /**
+     * Aquí está la diferencia con el sello de sucursal, que respeta lo elegido:
+     * un gerente creando algo para otra sucursal está en su derecho, pero un
+     * vendedor eligiendo a otro vendedor no es una decisión legítima — es
+     * regalar o quedarse una comisión.
+     */
+    expect(sellerStampFor("lead", persona, { seller: "v2" })).toEqual({ seller: "v1" });
+  });
+
+  it("sin ficha vinculada sella a nadie, y tampoco deja pasar lo del cuerpo", () => {
+    // Si dejara pasar el valor del cuerpo, bastaría con no vincular la ficha
+    // para poder atribuirse lo que sea.
+    const sinFicha = { role: "seller" as const, userId: "u1", sellerId: null };
+    expect(sellerStampFor("lead", sinFicha, { seller: "v2" })).toEqual({ seller: null });
+  });
+
+  it("no sella lo que no tiene dimensión de vendedor, ni a quien manda", () => {
+    expect(sellerStampFor("product", persona, { name: "Saona" })).toEqual({ name: "Saona" });
+    expect(sellerStampFor("lead", { role: "manager", userId: "u1" }, { seller: "v2" })).toEqual({ seller: "v2" });
+  });
+});
+
+describe("actuar sobre una fila ajena", () => {
+  const persona = { role: "seller" as const, userId: "u1", sellerId: "v1" };
+
+  it("la reserva de otro se rechaza con 403", () => {
+    // Cancelar anula la comisión de quien vendió: sin esto, un vendedor le
+    // borraba el mes a un compañero con una llamada.
+    try {
+      assertSellerOwnsRow("booking", persona, { seller: "v2" }, "Esta reserva");
+      throw new Error("no lanzó");
+    } catch (err) {
+      expect((err as Error).message).toBe("Esta reserva es de otro vendedor");
+      expect((err as { status?: number }).status).toBe(403);
+    }
+  });
+
+  it("la suya y la de nadie pasan, y la referencia expandida también", () => {
+    expect(() => assertSellerOwnsRow("booking", persona, { seller: "v1" })).not.toThrow();
+    expect(() => assertSellerOwnsRow("booking", persona, { seller: null })).not.toThrow();
+    // La fila puede traer la relación expandida como objeto: comparar en crudo
+    // habría dejado pasar la de otro.
+    expect(() => assertSellerOwnsRow("booking", persona, { seller: { _id: "v2" } })).toThrow();
+    expect(() => assertSellerOwnsRow("booking", persona, { seller: { _id: "v1" } })).not.toThrow();
+  });
+
+  it("un gerente actúa sobre cualquiera", () => {
+    expect(() => assertSellerOwnsRow("booking", { role: "manager", userId: "u1" }, { seller: "v2" })).not.toThrow();
   });
 });

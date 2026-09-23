@@ -49,6 +49,9 @@ interface PosContext {
   bundles: CatalogBundle[];
   hotels: { _id: string; name?: string; zone?: string }[];
   sellers: { _id: string; name: string }[];
+  /** La ficha de quien vende, cuando el servidor va a sellar la venta a su nombre. */
+  own_seller_id?: string | null;
+  seller_locked?: boolean;
   partners: { _id: string; name: string }[];
   branches: { _id: string; name?: string }[];
   cash_session: { _id: string; code?: string; register?: string } | null;
@@ -725,13 +728,25 @@ export default function PosPage() {
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs">Vendedor</Label>
-              <Select value={sellerId || "__none"} onValueChange={(v) => setSellerId(v === "__none" ? "" : v)}>
-                <SelectTrigger><SelectValue placeholder="Venta directa" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none">Venta directa</SelectItem>
-                  {(ctx?.sellers || []).map((s) => <SelectItem key={s._id} value={s._id}>{s.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              {/*
+                * Quien vende no elige de quién es su venta: el servidor la
+                * sella a su nombre. El desplegable se queda fijo para que la
+                * pantalla no ofrezca algo que la API va a ignorar —ofrecer una
+                * opción que no se cumple es peor que no ofrecerla—.
+                */}
+              {ctx?.seller_locked ? (
+                <div className="flex h-9 items-center rounded-md border border-input bg-muted/50 px-3 text-sm">
+                  {ctx.sellers?.[0]?.name || "Sin ficha vinculada"}
+                </div>
+              ) : (
+                <Select value={sellerId || "__none"} onValueChange={(v) => setSellerId(v === "__none" ? "" : v)}>
+                  <SelectTrigger><SelectValue placeholder="Venta directa" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">Venta directa</SelectItem>
+                    {(ctx?.sellers || []).map((s) => <SelectItem key={s._id} value={s._id}>{s.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs">Partner</Label>

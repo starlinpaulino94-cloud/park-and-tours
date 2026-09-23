@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireTenantWrite, requireAtLeast, tenantFindOne } from "@/lib/tenant";
+import { assertSellerOwnsRow } from "@/lib/seller-scope";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { cancelBookingFully, TERMINAL_STATES } from "@/lib/booking-cancel-service";
 import { flushOutboxAfterResponse } from "@/lib/messaging/flush";
@@ -30,6 +31,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const body = await readJson<{ reason?: string; refund_override?: number }>(req);
     const booking = await tenantFindOne<Booking>(ctx.companyId, "booking", id, { product: true, departure: true });
+    // Cancelar ANULA la comisión de quien vendió: sin esta guarda, un vendedor
+    // podía borrarle el mes a un compañero con una sola llamada, y el rango
+    // por sí solo no lo impide porque cancelar es trabajo de vendedor.
+    assertSellerOwnsRow("booking", ctx, booking as unknown as Record<string, unknown>, "Esta reserva");
 
     // AUD-B03: se bloquean TODOS los estados terminales, no solo "cancelled".
     // Un primer reembolso deja la reserva en "refunded"/"partially_refunded",

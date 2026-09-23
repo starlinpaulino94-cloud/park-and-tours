@@ -27,7 +27,7 @@ export async function PUT(
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<Record<string, unknown>>(req);
-    const { quote, options } = await loadQuoteBundle(ctx.companyId, id);
+    const { quote, options } = await loadQuoteBundle(ctx.companyId, id, ctx);
     const option = options.find((o) => o._id === optionId);
     if (!option) throw Object.assign(new Error("Esa alternativa no pertenece a esta cotización"), { status: 404 });
 
@@ -95,7 +95,7 @@ export async function DELETE(
     await assertRateLimit({ key: rateLimitKey(req, "quotes:option:delete", ctx.userId), limit: 120, windowMs: 60_000 });
     requireAtLeast(ctx, "seller");
 
-    const { quote, options } = await loadQuoteBundle(ctx.companyId, id);
+    const { quote, options } = await loadQuoteBundle(ctx.companyId, id, ctx);
     const option = options.find((o) => o._id === optionId);
     if (!option) throw Object.assign(new Error("Esa alternativa no pertenece a esta cotización"), { status: 404 });
     if (DECIDED_STATUSES.has(quote.status || "") || quote.status === "superseded") {

@@ -28,7 +28,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     requireAtLeast(ctx, "seller");
 
     const body = await readJson<Record<string, unknown>>(req);
-    const { quote, lines } = await loadQuoteBundle(ctx.companyId, id);
+    const { quote, lines } = await loadQuoteBundle(ctx.companyId, id, ctx);
 
     // Una propuesta ya decidida es un documento cerrado: si hay que cambiarla,
     // se abre una revisión, que es lo que el cliente vuelve a recibir.

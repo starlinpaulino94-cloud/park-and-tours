@@ -14,6 +14,11 @@ import path from "node:path";
 
 const ROOT = path.resolve(__dirname, "../..");
 const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
+/** El fichero sin comentarios: una guarda no puede darse por cumplida por lo
+ *  que un comentario MENCIONA, solo por lo que el código HACE. Varios bloques
+ *  declaran el suyo; este es el de los que no. */
+const sinComentariosDe = (rel: string) =>
+  read(rel).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -2331,6 +2336,94 @@ describe("el alcance por sucursal", () => {
     }
   });
 
+  it("la venta se sella a quien vende, en el servicio y no en cada ruta", () => {
+    /**
+     * El desplegable «Vendedor» del punto de venta listaba al equipo entero y
+     * quien vendía podía elegir a cualquiera: regalar su venta o quedarse la de
+     * otro. Detrás va la comisión.
+     *
+     * El sello vive en `createOrderWithBookings`, que es el ÚNICO camino que
+     * crea reservas —lo usan el punto de venta, la conversión de cotización, la
+     * web, el revendedor, la lista de espera y la demo—. Puesto en la ruta, la
+     * siguiente que creara órdenes nacería sin sellar.
+     */
+    const servicio = sinComentariosDe("src/lib/booking-service.ts");
+    expect(servicio).toMatch(/ventaSelladaPorVendedor\(ctx\)/);
+    expect(servicio).toMatch(/selladaPorPersona \? ctx\.sellerId/);
+
+    // Y la pantalla no ofrece lo que la API va a ignorar: ofrecer una opción
+    // que no se cumple es peor que no ofrecerla.
+    const contexto = read("src/app/api/pos/context/route.ts");
+    expect(contexto).toMatch(/visibleSellers = ventaSelladaPorVendedor\(ctx\)/);
+    expect(contexto).toMatch(/seller_locked: ventaSelladaPorVendedor\(ctx\)/);
+    expect(read("src/app/dashboard/pos/page.tsx")).toMatch(/ctx\?\.seller_locked \?/);
+  });
+
+  it("el CRUD genérico sella al crear y protege los campos que mueven dinero", () => {
+    const crear = sinComentariosDe("src/app/api/erp/[resource]/route.ts");
+    // La comprobación va ANTES del sello, para que el sello propio no se lea
+    // como un intento de cambiar el campo…
+    // Se comparan las LLAMADAS y no la primera aparición: los `import` del
+    // principio del fichero harían pasar esta guarda dijera lo que dijera el
+    // cuerpo de la función.
+    expect(
+      crear.indexOf("protectedFieldChanges(def.table")
+    ).toBeLessThan(crear.indexOf("sellerStampFor(def.table"));
+    // …y lo que se escribe es lo sellado, no el payload de antes.
+    expect(crear).toMatch(/tenantCreate\(ctx\.companyId, def\.table, sellado\)/);
+    expect(crear).toMatch(/assertSellerUserLinkable\(ctx\.companyId, sellado\)/);
+
+    const editar = sinComentariosDe("src/app/api/erp/[resource]/[id]/route.ts");
+    expect(editar).toMatch(/protectedFieldChanges\(def\.table, ctx\.role, payload, actual\)/);
+    // Y el resultado se ACTÚA. Comprobar solo la llamada deja pasar la peor
+    // versión del fallo —el veredicto calculado y tirado a la basura una línea
+    // después, con el nombre de la función a la vista de quien revisa—, que es
+    // exactamente cómo se coló una vez en `/api/orders`.
+    for (const fuente of [crear, editar]) {
+      expect(fuente).toMatch(
+        /if \(bloqueados\.length > 0\) throw new TenantError\(protectedFieldMessage\(bloqueados\), 403\);/
+      );
+    }
+    expect(editar).toMatch(/assertSellerUserLinkable\(ctx\.companyId, payload, id\)/);
+    // Se compara contra la fila ACTUAL y no contra la presencia del campo.
+    expect(editar).toMatch(/hasProtectedFields\(def\.table\)/);
+  });
+
+  it("las acciones con impacto económico sobre una fila ajena se cierran", () => {
+    /**
+     * El ámbito nació de lectura, y con eso quedaba cerrada la mitad: cancelar,
+     * reprogramar y todo lo que se hace sobre una cotización viven en rutas
+     * propias que nunca pasan por el CRUD genérico y solo miraban el RANGO.
+     * Cancelar anula la comisión de quien vendió.
+     */
+    for (const file of [
+      "src/app/api/bookings/[id]/cancel/route.ts",
+      "src/app/api/bookings/[id]/reschedule/route.ts",
+    ]) {
+      expect(read(file), file).toMatch(/assertSellerOwnsRow\("booking", ctx,/);
+    }
+
+    /**
+     * Y en las cotizaciones la guarda va en el cargador que TODAS comparten,
+     * con el contexto como parámetro OBLIGATORIO: opcional, la siguiente ruta
+     * se olvidaría de pasarlo y no lo notaría nadie.
+     */
+    const servicio = sinComentariosDe("src/lib/quote-service.ts");
+    expect(servicio).toMatch(/assertSellerOwnsRow\("quote", ctx,/);
+    expect(servicio).not.toMatch(/ctx\?:/);
+    const rutas = walk(path.join(ROOT, "src/app/api/quotes/[id]"))
+      .filter((f) => f.endsWith("route.ts"));
+    expect(rutas.length, "no se encontraron rutas de cotización").toBeGreaterThan(5);
+    let conCargador = 0;
+    for (const file of rutas) {
+      const src = readFileSync(file, "utf8");
+      if (!src.includes("loadQuoteBundle")) continue;
+      conCargador += 1;
+      expect(src, file).toMatch(/loadQuoteBundle\([^)]*ctx\)/);
+    }
+    expect(conCargador, "ninguna ruta usa el cargador").toBeGreaterThan(5);
+  });
+
   it("saber QUÉ vendedor es quien llama sale de la base en cada petición", () => {
     /**
      * El vínculo vive en `seller.user_id`. Va por consulta y no en el token a
@@ -2840,13 +2933,16 @@ describe("RR. HH.: que lo que se teclea sirva para algo", () => {
       "src/app/api/erp/[resource]/[id]/route.ts",
     ]) {
       const src = read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
-      expect(src, file).toMatch(/await assertPayloadAssignable\(ctx\.companyId, def\.table, payload\)/);
+      // `sellado` en la creación: es el mismo payload con el vendedor de quien
+      // crea ya puesto (`sellerStampFor`). Lo que importa es que se compruebe
+      // LO QUE SE VA A ESCRIBIR, no una copia anterior.
+      expect(src, file).toMatch(/await assertPayloadAssignable\(ctx\.companyId, def\.table, (payload|sellado)\)/);
     }
   });
 
   it("la comprobación va ANTES de escribir, no después", () => {
     for (const [file, escritura] of [
-      ["src/app/api/erp/[resource]/route.ts", "await tenantCreate(ctx.companyId, def.table, payload)"],
+      ["src/app/api/erp/[resource]/route.ts", "await tenantCreate(ctx.companyId, def.table, sellado)"],
       ["src/app/api/erp/[resource]/[id]/route.ts", "await tenantUpdate(ctx.companyId, def.table, id, payload)"],
     ] as const) {
       const src = read(file).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
@@ -3924,12 +4020,34 @@ describe("Quién trajo al cliente (0058)", () => {
     expect(bloque).toMatch(/writable:\s*\[\s*\]/);
   });
 
-  it("un vendedor escogido a mano no lo pisa el histórico", () => {
-    // Pisar la elección de quien está delante del cliente sería discutirle a
-    // quien vendió quién vendió.
+  it("un vendedor escogido a mano no lo pisa el histórico, y a quien vende no lo pisa nadie", () => {
+    /**
+     * Dos reglas que conviven, y la segunda llegó después.
+     *
+     *  1. Quien está delante del cliente decide: pisar su elección con el
+     *     histórico sería discutirle a quien vendió quién vendió.
+     *  2. Pero si quien vende ES un vendedor, no elige: la venta se sella a su
+     *     nombre. Elegir a otro era regalar —o quedarse— una comisión.
+     *
+     * Y el sello NO puede apagar el motor de atribución de la web: ahí no hay
+     * persona, la cookie del visitante es lo único que encuentra al conserje
+     * que compartió el enlace, y por eso la pregunta la responde
+     * `ventaSelladaPorVendedor` (que exige usuario) y no el rol a secas.
+     */
     const src = sinComentarios("src/lib/booking-service.ts");
-    expect(src).toMatch(/let attributedSeller = input\.seller_id \|\| null;/);
-    expect(src).toMatch(/if \(!attributedSeller\) \{\s*const attribution = await resolveOrderAttribution/);
+    expect(src).toMatch(/const selladaPorPersona = ventaSelladaPorVendedor\(ctx\);/);
+    expect(src).toMatch(
+      /let attributedSeller = selladaPorPersona \? ctx\.sellerId \?\? null : input\.seller_id \|\| null;/
+    );
+    // El histórico sigue corriendo cuando no hay nadie delante…
+    expect(src).toMatch(
+      /if \(!attributedSeller && !selladaPorPersona\) \{\s*const attribution = await resolveOrderAttribution/
+    );
+    // …y los dos motores sin sesión siguen sin usuario, que es la marca de la
+    // que depende todo lo anterior.
+    for (const file of ["src/lib/public-booking-service.ts", "src/lib/octo-service.ts"]) {
+      expect(sinComentarios(file), file).toMatch(/userId: ""/);
+    }
   });
 
   it("la compra se anota una sola vez aunque se cobre a plazos", () => {
