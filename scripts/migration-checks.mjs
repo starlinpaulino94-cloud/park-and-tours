@@ -587,7 +587,7 @@ export const MIGRATION_CHECKS = [
     // Igual que arriba: el índice lo verifica `0070_parte_2_verificacion.sql`.
   },
   {
-    migration: "0077 — el estado de la membresía en el espejo de MembeGo",
+    migration: "0079 — el estado de la membresía en el espejo de MembeGo",
     columns: [
       // Sin esta columna, cancelar o vencer una membresía en MembeGo no tenía
       // dónde escribirse: el espejo seguía diciendo «Plan Oro» de una baja de
