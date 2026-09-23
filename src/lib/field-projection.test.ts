@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   projectRow, projectRows, hiddenFieldsFor, hasHiddenFields, HIDDEN_BELOW,
+  OCULTO_AL_SOCIO, camposRecortadosPara, ES_PROPIA, type ProjectionCtx,
 } from "@/lib/field-projection";
 import { RESOURCES } from "@/lib/resources";
 
@@ -42,17 +43,45 @@ describe("qué se recorta", () => {
   });
 
   it("todo campo recortado existe en su recurso", () => {
-    // Un campo mal escrito aquí no rompe nada: simplemente no se recorta, y la
-    // promesa de que el coste no viaja sería mentira.
-    for (const [table, campos] of Object.entries(HIDDEN_BELOW)) {
+    /**
+     * Un campo mal escrito aquí no rompe nada: simplemente no se recorta, y la
+     * promesa de que el coste no viaja sería mentira. Ya cazó una vez a
+     * `product_modality.base_cost`, que en realidad se llama `cost`.
+     *
+     * Los recursos declaran los campos que se ESCRIBEN. Un par de columnas que
+     * hay que recortar no se escriben nunca —llegan a la respuesta porque la
+     * fila cruda las arrastra—, y van en la lista de abajo con su motivo en vez
+     * de ensanchar la regla hasta que no compruebe nada.
+     */
+    const NO_DECLARADOS: Record<string, string> = {
+      "partner.metadata":
+        "columna cruda de organizations que la ficha arrastra al reconstruirse; es donde vive `notes`",
+    };
+    const declarados = (table: string, campos: string[]) => {
       const resource = Object.values(RESOURCES).find((r) => r.table === table);
       expect(resource, `${table} no existe en RESOURCES`).toBeTruthy();
-      for (const campo of Object.keys(campos)) {
+      for (const campo of campos) {
+        if (NO_DECLARADOS[`${table}.${campo}`]) continue;
         const declarado =
           resource!.writable.includes(campo) || (resource!.numeric || []).includes(campo);
         expect(declarado, `${table}.${campo} no existe en el recurso`).toBe(true);
       }
-    }
+    };
+    for (const [table, campos] of Object.entries(HIDDEN_BELOW)) declarados(table, Object.keys(campos));
+    for (const [table, campos] of Object.entries(OCULTO_AL_SOCIO)) declarados(table, campos);
+  });
+
+  it("y los dos ejes se suman: el socio pierde lo suyo Y lo de su rango", () => {
+    /**
+     * `camposRecortadosPara` es el único sitio donde se juntan. Si devolviera
+     * solo uno de los dos, la guarda de más arriba —que mira cada lista por
+     * separado— seguiría pasando y el recorte real sería la mitad.
+     */
+    const socio = { role: "partner" as const, partnerId: "soc-1", isPartnerMember: true };
+    expect(camposRecortadosPara("partner", socio).sort()).toEqual(["metadata", "notes"]);
+    expect(camposRecortadosPara("product", socio)).toContain("base_cost");
+    // Y al personal interno no le quita lo del socio.
+    expect(camposRecortadosPara("partner", { role: "operations" as const })).toEqual([]);
   });
 });
 
@@ -118,5 +147,89 @@ describe("el recorte", () => {
       { _id: "p1", base_cost: 10 }, { _id: "p2", base_cost: 20 },
     ]);
     expect(filas.every((f) => !("base_cost" in f))).toBe(true);
+  });
+});
+
+describe("la ficha del socio no viaja entera a la empresa asociada", () => {
+  const socio: ProjectionCtx = { role: "partner", partnerId: "soc-1", isPartnerMember: true };
+  const interno: ProjectionCtx = { role: "operations" };
+
+  it("el socio no ve las notas que la operadora escribió sobre él", () => {
+    const ficha = projectRow("partner", socio, {
+      _id: "soc-1", name: "Caribe Tour Center",
+      notes: "Paga tarde. Revisar crédito antes de ampliar.",
+      credit_limit: 5000, commercial_terms: "20% sobre neto",
+    });
+    expect(ficha.notes).toBeUndefined();
+    // Y sigue viendo lo suyo: el crédito y las condiciones que ha firmado son
+    // la relación, no una nota sobre él.
+    expect(ficha.credit_limit).toBe(5000);
+    expect(ficha.commercial_terms).toBe("20% sobre neto");
+  });
+
+  it("y tampoco a través de metadata, que es donde vive el texto", () => {
+    /**
+     * LA MITAD QUE CONVIERTE EL RECORTE EN TEATRO SI SE OLVIDA.
+     *
+     * La ficha se reconstruye desde `organizations`, y esa fila arrastra su
+     * `metadata` entera. Borrar `notes` de arriba dejando el saco debajo deja
+     * el mismo texto en la respuesta, una clave más adentro.
+     */
+    const ficha = projectRow("partner", socio, {
+      _id: "soc-1", notes: "Paga tarde",
+      metadata: { notes: "Paga tarde", commercial_name: "Caribe" },
+    });
+    expect(ficha.metadata).toBeUndefined();
+    expect(JSON.stringify(ficha)).not.toMatch(/Paga tarde/);
+  });
+
+  it("el recorte NO se exime por ser su propia fila", () => {
+    /**
+     * El vendedor sí se exime de `HIDDEN_BELOW` en su ficha —su comisión es
+     * suya—, y por analogía sería fácil eximir aquí. Sería exactamente al
+     * revés: la ficha propia del socio es donde están las notas ajenas.
+     *
+     * La exención vive en `ES_PROPIA`, así que la regresión concreta es añadir
+     * ahí una entrada para `partner`. Se afirma sobre eso y no solo sobre el
+     * resultado: hoy el recorte sale bien PORQUE esa entrada no existe, y una
+     * comprobación que solo mire la salida pasaría el día que se añada.
+     */
+    expect(projectRow("partner", socio, { _id: "soc-1", notes: "x" }).notes).toBeUndefined();
+    expect(
+      Object.keys(ES_PROPIA),
+      "el socio no puede eximirse de su propio recorte"
+    ).not.toContain("partner");
+  });
+
+  it("el personal interno de menos rango que un gerente SÍ las ve", () => {
+    /**
+     * Por eso es un eje aparte y no un umbral más alto: con `HIDDEN_BELOW` la
+     * única forma de esconderlas al socio —rango 10— sería pedir un rango que
+     * también dejaría fuera a operaciones y a caja, que son quienes trabajan
+     * con esas notas todos los días.
+     */
+    const ficha = projectRow("partner", interno, { _id: "soc-1", notes: "Paga tarde" });
+    expect(ficha.notes).toBe("Paga tarde");
+  });
+
+  it("y el recorte baja a la ficha expandida dentro de una reserva", () => {
+    // Es el camino por el que el socio recibe la ficha en la práctica: su
+    // pantalla de reservas expande el socio de cada una.
+    const reserva = projectRow("booking", socio, {
+      _id: "b1",
+      partner: { _id: "soc-1", name: "Caribe", notes: "Paga tarde", metadata: { notes: "Paga tarde" } },
+    });
+    const dentro = reserva.partner as Record<string, unknown>;
+    expect(dentro.notes).toBeUndefined();
+    expect(dentro.metadata).toBeUndefined();
+    expect(dentro.name).toBe("Caribe");
+  });
+
+  it("y a la que viene dentro de una orden", () => {
+    const orden = projectRow("order", socio, {
+      _id: "o1",
+      partner: { _id: "soc-1", notes: "Paga tarde" },
+    });
+    expect((orden.partner as Record<string, unknown>).notes).toBeUndefined();
   });
 });

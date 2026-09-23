@@ -1,6 +1,6 @@
 import "server-only";
 import type { AppRole } from "@/lib/auth";
-import { atLeast } from "@/lib/tenant";
+import { atLeast, esDeSocio } from "@/lib/tenant";
 import { relationResource } from "@/lib/supabase/expand";
 
 /**
@@ -49,22 +49,58 @@ export const HIDDEN_BELOW: Record<string, Record<string, AppRole>> = {
 };
 
 /**
+ * LO QUE NUNCA VIAJA A LA EMPRESA ASOCIADA. EL OTRO EJE.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ NO VALE `HIDDEN_BELOW`
+ *
+ * Aquél recorta por RANGO: bastaría con pedir `manager` para que el socio
+ * —rango 10— no viera el campo. Y no es eso lo que hay que decir. Las notas
+ * que la operadora escribe sobre un tour center son suyas: no las ve ese tour
+ * center, y sí las ve un `operations` de la operadora que tiene menos rango que
+ * un gerente. Es un eje distinto, no un umbral más alto.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * Y `metadata` VA EN LA LISTA
+ *
+ * Porque `notes` vive dentro. La ficha del socio se reconstruye desde
+ * `organizations`, y esa fila arrastra su `metadata` entera: borrar `notes` de
+ * arriba y dejar el saco debajo es teatro — el mismo texto sigue ahí, una
+ * clave más adentro, para quien mire el JSON de la respuesta.
+ *
+ * El socio SÍ ve sus condiciones comerciales y su comisión: son la relación
+ * que ha firmado, no una nota sobre él.
+ */
+export const OCULTO_AL_SOCIO: Record<string, string[]> = {
+  partner: ["notes", "metadata"],
+};
+
+/**
  * Cuándo una fila es «la de quien consulta» y se libra del recorte.
  *
  * Sin esto, el vendedor no vería su PROPIA comisión ni su propia meta, que es
  * justo lo que su apartado existe para enseñarle.
+ *
+ * OJO: no exime del recorte al socio. La ficha del socio ES su fila propia, y
+ * es precisamente ahí donde están las notas que no puede leer.
  */
-const ES_PROPIA: Record<string, (row: Record<string, unknown>, ctx: ProjectionCtx) => boolean> = {
+export const ES_PROPIA: Record<string, (row: Record<string, unknown>, ctx: ProjectionCtx) => boolean> = {
   seller: (row, ctx) => Boolean(ctx.sellerId) && row._id === ctx.sellerId,
 };
 
 export interface ProjectionCtx {
   role: AppRole;
   sellerId?: string | null;
+  /** Los dos que decide `esDeSocio`; el contexto del inquilino ya los trae. */
+  partnerId?: string | null;
+  isPartnerMember?: boolean;
 }
 
 export function hasHiddenFields(table: string): boolean {
-  return Object.prototype.hasOwnProperty.call(HIDDEN_BELOW, table);
+  return (
+    Object.prototype.hasOwnProperty.call(HIDDEN_BELOW, table) ||
+    Object.prototype.hasOwnProperty.call(OCULTO_AL_SOCIO, table)
+  );
 }
 
 /** Los campos que este rango NO puede ver en esta tabla. */
@@ -74,6 +110,17 @@ export function hiddenFieldsFor(table: string, role: AppRole): string[] {
   return Object.entries(reglas)
     .filter(([, minimo]) => !atLeast(role, minimo))
     .map(([campo]) => campo);
+}
+
+function propiaDe(table: string, ctx: ProjectionCtx, row: Record<string, unknown>): boolean {
+  return ES_PROPIA[table]?.(row, ctx) ?? false;
+}
+
+/** Todo lo que hay que quitarle a QUIEN consulta, por los dos ejes. */
+export function camposRecortadosPara(table: string, ctx: ProjectionCtx): string[] {
+  const porRango = hiddenFieldsFor(table, ctx.role);
+  if (!esDeSocio(ctx)) return porRango;
+  return [...new Set([...porRango, ...(OCULTO_AL_SOCIO[table] ?? [])])];
 }
 
 const PROFUNDIDAD_MAXIMA = 4;
@@ -87,9 +134,20 @@ function proyectarFila(
   if (depth > PROFUNDIDAD_MAXIMA) return row;
 
   let salida = row;
-  const ocultos = hiddenFieldsFor(table, ctx.role);
-  const propia = ES_PROPIA[table]?.(row, ctx) ?? false;
-  if (ocultos.length > 0 && !propia) {
+  /**
+   * La fila propia exime del eje del RANGO y solo de ése.
+   *
+   * Escrito así —los dos ejes por separado, y `propia` tocando uno— y no como
+   * un `if` alrededor de los dos, porque la exención por fila propia es
+   * exactamente el razonamiento por analogía que abriría el otro: la ficha
+   * propia del socio ES su fila, y es justo donde están las notas que la
+   * operadora escribió sobre él.
+   */
+  const ocultos = [
+    ...(propiaDe(table, ctx, row) ? [] : hiddenFieldsFor(table, ctx.role)),
+    ...(esDeSocio(ctx) ? OCULTO_AL_SOCIO[table] ?? [] : []),
+  ];
+  if (ocultos.length > 0) {
     salida = { ...row };
     for (const campo of ocultos) delete salida[campo];
   }

@@ -1897,3 +1897,34 @@ daba error: los tres producían números equivocados en silencio.
   columnas del descarte las desviaba a `metadata` sin que ninguna guarda se
   quejara— y se arregló con una prueba de conducta sobre el reparto, no
   relajando nada.
+
+### Fase 4.4a — la ficha del socio deja de llevar dentro lo que la operadora piensa de él
+- **El eje nuevo.** `HIDDEN_BELOW` recorta por RANGO, y eso no sirve aquí: para
+  esconderle al socio —rango 10— las notas que la operadora escribe sobre él
+  habría que pedir `manager`, y entonces tampoco las vería operaciones ni caja,
+  que son quienes trabajan con ellas a diario. `OCULTO_AL_SOCIO` es un eje
+  distinto, no un umbral más alto.
+- **`metadata` va en la lista, y es la mitad que convierte el recorte en teatro
+  si se olvida.** La ficha del socio se reconstruye desde `organizations`, y esa
+  fila arrastra su `metadata` entera — que es donde vive `notes`. Borrar `notes`
+  de arriba y dejar el saco debajo deja el mismo texto en la respuesta, una
+  clave más adentro.
+- **Baja por las expansiones**, que es como el socio recibe su ficha en la
+  práctica: su pantalla de reservas expande el socio de cada una. La recursión
+  ya existía del recorte por rango, así que sale gratis y una expansión nueva la
+  hereda.
+- **No se exime por ser su propia fila.** El vendedor sí se exime en su ficha
+  —su comisión es suya— y por analogía sería fácil hacer lo mismo aquí; sería
+  exactamente al revés. Los dos ejes se escriben por separado y `propia` toca
+  uno solo, para que la analogía no tenga dónde agarrarse. Y hay una guarda
+  sobre `ES_PROPIA` en vez de solo sobre la salida: hoy el recorte sale bien
+  PORQUE esa entrada no existe, y mirar solo el resultado pasaría el día que
+  alguien la añada.
+- **Lo que el socio SÍ sigue viendo**: su comisión, su crédito y sus condiciones
+  comerciales. Son la relación que ha firmado, no una nota sobre él. Y
+  `/api/portal/summary` ya devolvía una lista blanca explícita de campos, así
+  que por ahí no había fuga.
+- **Mutación: ocho, siete muertas.** La octava —eximir también el eje del socio
+  para la fila propia— es un no-op mientras `ES_PROPIA` no tenga entrada para
+  `partner`; la regresión real es añadirla, y ésa sí muere. Se deja dicho en vez
+  de contarla como muerta.
