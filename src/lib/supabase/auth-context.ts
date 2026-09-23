@@ -5,7 +5,7 @@ import { supabaseService } from "@/lib/supabase/service";
 import type { AppRole } from "@/lib/auth";
 import { mfaGate, hasVerifiedFactor } from "@/lib/mfa";
 import type { Company } from "@/lib/types";
-import { esDeSocio, type TenantContext } from "@/lib/tenant";
+import { esAdminDeSocio, type TenantContext } from "@/lib/tenant";
 
 /**
  * Supabase Auth → TenantContext (M3).
@@ -214,17 +214,34 @@ async function loadMembershipClaims(userId: string, orgId: string): Promise<AppC
  * Un fallo aquí devuelve null, y null NO abre nada: el ámbito acota entonces a
  * las filas sin vendedor. Falla cerrado.
  */
-async function loadSellerId(orgId: string, userId: string): Promise<string | null> {
+async function loadSellerId(
+  orgId: string,
+  userId: string,
+  /**
+   * El tour center del que tiene que colgar la ficha, o `null` para el
+   * personal interno.
+   *
+   * SIN ESTE FILTRO la consulta es una fuga de aislamiento, no una comodidad:
+   * un usuario de tour center cuyo correo coincidiera con el de una ficha
+   * INTERNA de la operadora quedaría acotado a esa ficha —y entonces vería las
+   * ventas de un vendedor de la operadora desde el portal—. La ficha de un
+   * vendedor de socio tiene que colgar de SU socio; ninguna otra sirve.
+   */
+  partnerId: string | null
+): Promise<string | null> {
   try {
     const sb = supabaseService();
-    const { data } = await sb
+    let q = sb
       .from("seller")
       .select("id")
       .eq("organization_id", orgId)
       .eq("user_id", userId)
-      .eq("status", "active")
-      .limit(1)
-      .maybeSingle();
+      .eq("status", "active");
+    // `is null` y no «sin condición»: una ficha con socio NO es del personal
+    // interno, y dejarla pasar acotaría a un empleado de la operadora al
+    // ámbito de un vendedor de tour center.
+    q = partnerId ? q.eq("partner_id", partnerId) : q.is("partner_id", null);
+    const { data } = await q.limit(1).maybeSingle();
     return data?.id ?? null;
   } catch {
     return null;
@@ -379,17 +396,31 @@ export async function getSupabaseTenantContext(): Promise<TenantContext | null> 
   // Del socio, tenga el rol que tenga: un empleado de un tour center dado de
   // alta como `seller` no es vendedor de la operadora y buscarle ficha sería
   // una consulta por petición para no encontrar nunca nada.
-  if (!esDeSocio(ctx) && ctx.role !== "superadmin") {
-    ctx.sellerId = await loadSellerId(ctx.companyId!, user.id);
-  }
-
   // Se resuelve por `partnerId` y no por `esDeSocio`: lo que hay que consultar
   // es el estado de UNA organización concreta, y sin identificador no hay
-  // ninguna a la que preguntar.
+  // ninguna a la que preguntar. Va ANTES de la ficha porque la ficha del
+  // vendedor de un tour center se busca acotada a ese tour center.
   if (ctx.partnerId) {
     const membresia = await loadPartnerMembership(ctx.partnerId, user.id);
     ctx.partnerStatus = membresia.status;
     ctx.partnerRole = membresia.partnerRole;
+  }
+
+  /**
+   * Y la ficha de vendedor, que desde la Fase 5 también tiene el tour center.
+   *
+   * El sub-login del vendedor de un socio es esto: una persona del portal que
+   * ADEMÁS tiene ficha, colgando de su propio tour center. Con ella, el ámbito
+   * combinado —lo de su socio, y dentro de eso lo suyo— sale solo, porque los
+   * dos filtros se acumulan (`row-scope.ts`).
+   *
+   * Quien administra la cuenta del tour center no la necesita: no se acota.
+   * Preguntar igualmente costaría una consulta por petición para un dato que
+   * nadie va a mirar.
+   */
+  const esAdminDelSocio = esAdminDeSocio(ctx);
+  if (ctx.role !== "superadmin" && !esAdminDelSocio) {
+    ctx.sellerId = await loadSellerId(ctx.companyId!, user.id, ctx.partnerId ?? null);
   }
 
   if (ctx.role === "superadmin") {

@@ -1381,6 +1381,22 @@ export function getResource(name: string): ResourceDef | null {
 // customer), never by listing the whole customer table.
 const PARTNER_OWNED_TABLES = new Set([
   "order", "booking", "commission", "settlement", "receivable", "lead",
+  /**
+   * `seller` ENTRA COMO PROPIA, NUNCA COMO COMPARTIDA.
+   *
+   * El tour center necesita ver a su equipo de ventas —es lo que
+   * `/portal/vendedores` enseña—, y la tentación es meterlo en la lista de
+   * catálogo compartido, que es donde está el resto de lo que el socio
+   * consulta sin ser suyo. Sería un error grave: la tabla trae las condiciones
+   * de los vendedores INTERNOS de la operadora —su comisión, su meta, su techo
+   * de descuento— y «compartida» significa sin filtro de socio.
+   *
+   * Como propia, el filtro es `partner = <su socio>` y las fichas internas
+   * —que tienen ese campo nulo— no salen. El plan del ecosistema lo marcaba
+   * como cuidado específico de esta fase; queda escrito aquí porque es donde
+   * alguien lo cambiaría.
+   */
+  "seller",
 ]);
 // Read-only shared catalog a partner may browse (no partner dimension).
 // NOTE: `product` is intentionally NOT here — the product table carries
@@ -1398,6 +1414,30 @@ export type PartnerScope =
   | { kind: "own"; field: string; partnerId: string };
 
 /** Decides how a partner-role user may access a given table. */
+/**
+ * LO QUE SE LE DENIEGA AL SOCIO A PROPÓSITO, Y POR QUÉ.
+ *
+ * `partnerScopeFor` deniega por defecto, así que esta lista no CAMBIA nada:
+ * existe para que la decisión esté escrita y para que una prueba la sujete. El
+ * plan del ecosistema pedía decidirlo «de antemano» justamente porque son las
+ * tablas donde la respuesta fácil —añadirlas cuando alguien las pida— es la
+ * equivocada.
+ *
+ * Las cuatro cuelgan de un vendedor y **no tienen columna de socio**. Acotarlas
+ * exigiría una subconsulta («los vendedores de mi socio»), que el armador de
+ * filtros no sabe expresar; con un filtro por vendedor a secas, el agente de un
+ * tour center vería las metas y los bonos de los vendedores INTERNOS de la
+ * operadora en cuanto su ficha quedara sin vincular.
+ *
+ * Se deniegan hasta que haya una razón de negocio y una forma de acotarlas.
+ */
+export const PARTNER_DENEGADAS_A_PROPOSITO: Record<string, string> = {
+  seller_goal: "cuelga del vendedor y no tiene columna de socio: las metas son de la operadora",
+  seller_bonus: "igual que las metas, y además es dinero de la operadora a su gente",
+  seller_link: "el enlace de atribución es de la red de ventas interna; el socio no atribuye por QR todavía",
+  seller_attribution: "el embudo del enlace, por lo mismo",
+};
+
 export function partnerScopeFor(table: string, partnerId: string | null): PartnerScope {
   if (!partnerId) return { kind: "denied" };
   if (table === "partner") return { kind: "own", field: "_id", partnerId };

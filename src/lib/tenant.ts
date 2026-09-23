@@ -258,6 +258,24 @@ export function esDeSocio(
   return Boolean(ctx.isPartnerMember) || Boolean(ctx.partnerId) || ctx.role === "partner";
 }
 
+/**
+ * QUIEN ADMINISTRA LA CUENTA DE SU TOUR CENTER.
+ *
+ * Vive aquí, junto a `esDeSocio`, y no en el módulo del equipo, porque desde
+ * la Fase 5 lo pregunta también el recorte de columnas: el administrador de un
+ * tour center tiene que ver la comisión de SU gente —es lo que su pantalla de
+ * equipo existe para enseñarle— y el recorte por rango se la esconde, porque
+ * su rango es el más bajo que hay.
+ *
+ * No es el rol de la aplicación: `admin` de la operadora NO administra ningún
+ * tour center. Son dos jerarquías distintas que se llaman igual.
+ */
+export function esAdminDeSocio(
+  ctx: { role: AppRole; partnerId?: string | null; isPartnerMember?: boolean; partnerRole?: string | null }
+): boolean {
+  return esDeSocio(ctx) && ctx.partnerRole === "admin";
+}
+
 export function hasRole(role: AppRole, ...allowed: AppRole[]): boolean {
   return allowed.includes(role);
 }

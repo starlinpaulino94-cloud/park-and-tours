@@ -2019,3 +2019,53 @@ daba error: los tres producían números equivocados en silencio.
   cuáles y por cuánto. **No es opcional**: es la diferencia entre avisar y que a
   alguien le deje de funcionar el sistema un martes.
 - **Mutación: diez, las diez muertas.**
+
+## Fase 5 — El tour center opera
+
+### Fase 5.1 — el sub-login del vendedor del tour center
+- **Qué es:** una persona del portal que ADEMÁS tiene ficha de vendedor
+  colgando de su propio tour center. Con eso, el ámbito combinado —lo de su
+  socio, y dentro de eso lo suyo— sale solo, porque los dos filtros se acumulan
+  desde 4.5. La prueba que allí usaba un actor que no existía ahora describe uno
+  real.
+- **La ficha se busca ACOTADA A SU SOCIO, y esto no es una comodidad.** Sin el
+  filtro, un usuario de tour center cuyo correo coincidiera con el de una ficha
+  interna quedaría acotado a esa ficha — y vería las ventas de un vendedor de la
+  operadora desde el portal. Va con `is null` para el personal interno por lo
+  simétrico: una ficha con socio no es de la operadora.
+- **La asimetría, escrita para que no parezca un descuido.** Dentro de la
+  operadora **lo dice el rol**: `seller` declara por sí solo que esa persona
+  está acotada, así que sin ficha se acota a «lo de nadie» —falla cerrado—.
+  Dentro de un tour center el rol no puede decir nada, porque desde 0073 todas
+  sus personas tienen el mismo; la señal es **la ficha**. Y por eso aquí sin
+  ficha NO se acota: un tour center que no usa vendedores —la mayoría, al
+  principio— se habría encontrado el portal vacío el día del despliegue.
+- Quien administra la cuenta del tour center no se acota nunca, tenga ficha o
+  no: es el equivalente del gerente que además vende.
+- **El cuidado específico del plan: `seller` entra como PROPIA, nunca como
+  compartida.** «Compartida» significa literalmente sin filtro de socio, y esa
+  tabla trae las condiciones de los vendedores INTERNOS —comisión, meta, techo
+  de descuento—. Queda una guarda que lo comprueba en las dos listas, porque la
+  de catálogo compartido es donde se añade por costumbre lo que el socio «solo
+  consulta».
+- **Y las cuatro tablas sin columna de socio quedan denegadas POR ESCRITO**
+  (`seller_goal`, `seller_bonus`, `seller_link`, `seller_attribution`). Ya lo
+  estaban —se deniega por defecto—: lo que faltaba era la decisión tomada de
+  antemano, que es lo que el plan pedía. Acotarlas exigiría una subconsulta que
+  el armador de filtros no expresa, y con un filtro por vendedor a secas el
+  agente de un tour center vería las metas de la red interna.
+- **El recorte de columnas gana una exención**: quien administra un tour center
+  ve la comisión y la meta de SU gente. El recorte por rango se las escondía
+  —su rango es el más bajo que hay— y `/portal/vendedores` existe justamente
+  para enseñárselas. Al agente no: sus compañeros son sus compañeros. Y la
+  exención comprueba el socio de la fila en vez de apoyarse en que el ámbito ya
+  la haya filtrado: son dos capas, y la segunda tiene que sostenerse sola.
+- **El ámbito del vendedor pasa a recibir al actor entero.** Eran cuatro
+  argumentos del mismo tipo en fila —el sitio donde se cuela un intercambio de
+  dos que compila—, y harían falta dos más. El compilador hizo de inventario:
+  nombró los siete puntos de llamada uno a uno.
+- **Y el compilador cazó un tipo que mentía**: `ActorDeFila` no declaraba
+  `partnerRole`, así que la exención de quien administra funcionaba solo porque
+  el contexto real lo trae. Un llamante que construyera el tipo estricto la
+  habría perdido sin que nada se quejara.
+- **Mutación: doce, las doce muertas.**

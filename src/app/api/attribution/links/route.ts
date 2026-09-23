@@ -58,7 +58,7 @@ export async function GET(req: NextRequest) {
 
     // El mismo ámbito que el resto: lo suyo, y estricto —un enlace sin vendedor
     // no existe, así que aquí «de nadie» no es una categoría.
-    const filter = sellerFilterFor("seller_link", ctx.role, ctx.sellerId) ?? {};
+    const filter = sellerFilterFor("seller_link", ctx) ?? {};
     const rows = await tenantQuery(ctx.companyId, "seller_link", {
       _filter: filter, _limit: 100, _sort: { created_at: "desc" },
       seller: true, product: true,

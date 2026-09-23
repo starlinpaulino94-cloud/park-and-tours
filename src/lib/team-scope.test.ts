@@ -1,8 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
-  ambitoDeLectura, ambitoDeEscritura, esAdminDeSocio,
+  ambitoDeLectura, ambitoDeEscritura,
   partnerRolePedido, assertNoSeQuedaSinAdmin, type Actor,
 } from "@/lib/team-scope";
+// Vive en `tenant.ts` desde la Fase 5: lo pregunta también el recorte de
+// columnas, y ése no puede depender del módulo del equipo.
+import { esAdminDeSocio } from "@/lib/tenant";
 
 const socio = (partnerRole: string | null): Actor => ({
   role: "partner", companyId: "op-1", partnerId: "soc-1",
@@ -53,7 +56,7 @@ describe("el ámbito del equipo no es un sí/no, es un «sobre esto»", () => {
 
   it("esAdminDeSocio no confunde el rol de la aplicación con la jerarquía interna", () => {
     // `admin` de la operadora NO es administrador de ningún socio.
-    expect(esAdminDeSocio({ role: "admin", companyId: "op-1", partnerRole: "admin" })).toBe(false);
+    expect(esAdminDeSocio({ role: "admin", partnerRole: "admin" })).toBe(false);
     expect(esAdminDeSocio(socio("admin"))).toBe(true);
   });
 });

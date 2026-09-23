@@ -1,6 +1,7 @@
 import "server-only";
 import type { AppRole } from "@/lib/auth";
-import { atLeast, esDeSocio } from "@/lib/tenant";
+import { atLeast, esDeSocio, esAdminDeSocio } from "@/lib/tenant";
+import { refId } from "@/lib/types";
 import { relationResource } from "@/lib/supabase/expand";
 
 /**
@@ -85,15 +86,29 @@ export const OCULTO_AL_SOCIO: Record<string, string[]> = {
  * es precisamente ahí donde están las notas que no puede leer.
  */
 export const ES_PROPIA: Record<string, (row: Record<string, unknown>, ctx: ProjectionCtx) => boolean> = {
-  seller: (row, ctx) => Boolean(ctx.sellerId) && row._id === ctx.sellerId,
+  /**
+   * La ficha propia, y —desde la Fase 5— la de los MÍOS cuando quien mira
+   * administra un tour center.
+   *
+   * La segunda mitad no ensancha nada: al socio solo le llegan fichas de su
+   * propio tour center, porque `seller` está en su ámbito como PROPIA por
+   * socio. Lo que arregla es que el recorte por rango le escondía la comisión
+   * de su propia gente —su rango es el más bajo que hay—, y esa pantalla
+   * existe precisamente para enseñársela. Al agente no: sus compañeros son sus
+   * compañeros.
+   */
+  seller: (row, ctx) =>
+    (Boolean(ctx.sellerId) && row._id === ctx.sellerId) ||
+    (esAdminDeSocio(ctx) && Boolean(ctx.partnerId) && refId(row.partner as never) === ctx.partnerId),
 };
 
 export interface ProjectionCtx {
   role: AppRole;
   sellerId?: string | null;
-  /** Los dos que decide `esDeSocio`; el contexto del inquilino ya los trae. */
+  /** Los que deciden `esDeSocio` y `esAdminDeSocio`; el contexto ya los trae. */
   partnerId?: string | null;
   isPartnerMember?: boolean;
+  partnerRole?: string | null;
 }
 
 export function hasHiddenFields(table: string): boolean {

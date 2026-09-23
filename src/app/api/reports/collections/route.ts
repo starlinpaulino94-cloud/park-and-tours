@@ -63,7 +63,7 @@ export async function GET(req: NextRequest) {
      * menos de las suyas de las que hay cuando la empresa supera las 500
      * pendientes. Se prefiere enseñar de menos a enseñar la cartera ajena.
      */
-    const sellerScoped = sellerScopeApplies(ctx.role);
+    const sellerScoped = sellerScopeApplies(ctx);
 
     const installments = rows
       .filter((row) => {
@@ -71,7 +71,7 @@ export async function GET(req: NextRequest) {
         if (status && DEAD_ORDER.has(status)) return false;
         if (sellerScoped) {
           const owner = typeof row.order === "object" ? refId(row.order?.seller) : null;
-          if (!sellerCanReadRow("order", ctx.role, ctx.sellerId, owner)) return false;
+          if (!sellerCanReadRow("order", ctx, owner)) return false;
         }
         const balance = row.balance ?? Math.max((row.amount ?? 0) - (row.paid_amount ?? 0), 0);
         return balance > 0.009;
