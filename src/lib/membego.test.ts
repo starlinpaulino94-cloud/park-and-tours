@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import {
   verifyMembegoToken, membegoSignature, verifyMembegoWebhook, mapMembegoRole,
   canLinkCompanies, parseMembegoEvent, clienteFromPayload, membresiaFromPayload, splitNombre,
+  EVENTOS_ATENDIDOS, atiendeEvento, estadoDeMembresia, camposDeMembresia,
 } from "@/lib/membego";
 
 /**
@@ -175,5 +176,99 @@ describe("el corte del nombre", () => {
     expect(splitNombre("Ana María de la Cruz")).toEqual({ first: "Ana", last: "María de la Cruz" });
     expect(splitNombre("Cher")).toEqual({ first: "Cher", last: null });
     expect(splitNombre("  ")).toEqual({ first: null, last: null });
+  });
+});
+
+/**
+ * LOS EVENTOS QUE CIERRAN UN CICLO.
+ *
+ * MembeGo reenvía once tipos; este satélite atendía siete. Los cuatro que
+ * faltaban no rompían nada —llegaban, respondían 200 y se archivaban como
+ * `ignored`—, y por eso el fallo era invisible: el espejo decía «Plan Oro» de
+ * una membresía cancelada y «Juan, 809-555-0100» de alguien que cambió de
+ * número hace un mes, con toda la seguridad de un dato escrito a propósito.
+ *
+ * Estas pruebas vigilan la CAUSA, no el síntoma: que la lista siga completa y
+ * que la baja no borre lo que no viene en su payload.
+ */
+describe("los once eventos que MembeGo reenvía", () => {
+  /**
+   * La lista de `EVENTOS_REENVIADOS` del `nucleo.ts` de MembeGo, copiada aquí
+   * porque vive en otro repositorio. Si allá añaden uno, esta prueba no puede
+   * enterarse sola — pero sí impide que alguien recorte los que ya se atienden,
+   * que es como se perdieron los cuatro la primera vez.
+   */
+  const REENVIADOS = [
+    "cliente.registrado", "cliente.actualizado", "cliente.eliminado",
+    "cliente.primera_visita", "cliente.visita",
+    "cliente.compro_servicio", "cliente.primera_compra",
+    "membresia.activada", "membresia.cancelada", "membresia.vencida",
+    "referido.convirtio",
+  ];
+
+  it("se atienden TODOS, no solo los del alta", () => {
+    for (const tipo of REENVIADOS) {
+      expect(atiendeEvento(tipo), `${tipo} llegaría y no haría nada`).toBe(true);
+    }
+    expect([...EVENTOS_ATENDIDOS].sort()).toEqual([...REENVIADOS].sort());
+  });
+
+  it("un tipo desconocido no se atiende, pero tampoco es un error", () => {
+    // El webhook responde 200 y lo archiva: devolver error por un evento nuevo
+    // mandaría a la DEAD_LETTER de MembeGo a quien hace lo correcto.
+    expect(atiendeEvento("promocion.creada")).toBe(false);
+    expect(atiendeEvento("")).toBe(false);
+  });
+});
+
+describe("el estado de la membresía en el espejo", () => {
+  it("los tres eventos de membresía dicen un estado distinto", () => {
+    expect(estadoDeMembresia("membresia.activada")).toBe("active");
+    expect(estadoDeMembresia("membresia.cancelada")).toBe("cancelled");
+    expect(estadoDeMembresia("membresia.vencida")).toBe("expired");
+  });
+
+  it("un evento que no es de membresía no toca el estado", () => {
+    // Null y no "active": una visita no puede revivir una membresía cancelada.
+    expect(estadoDeMembresia("cliente.visita")).toBeNull();
+    expect(estadoDeMembresia("cliente.registrado")).toBeNull();
+  });
+});
+
+describe("los campos de la membresía que se escriben", () => {
+  const ALTA = {
+    membresia: {
+      id: "mem_1", planId: "plan_oro", plan: "Plan Oro",
+      esDePago: true, vigenteHasta: "2027-01-01T00:00:00.000Z",
+    },
+  };
+  /** Lo que MembeGo manda de verdad al cancelar: la membresía, no la ficha. */
+  const BAJA = { membresia: { id: "mem_1", planId: "plan_oro", estado: "CANCELADA" } };
+
+  it("el alta escribe las cinco", () => {
+    expect(camposDeMembresia(membresiaFromPayload(ALTA))).toEqual({
+      membership_id: "mem_1",
+      plan_id: "plan_oro",
+      plan_name: "Plan Oro",
+      membership_paid: true,
+      membership_valid_until: "2027-01-01T00:00:00.000Z",
+    });
+  });
+
+  it("LA BAJA NO BORRA EL NOMBRE DEL PLAN NI LA VIGENCIA", () => {
+    // El fallo que esto impide: en un upsert, una clave ausente conserva su
+    // valor y una clave en null lo pisa. Escribir los nulls de este payload
+    // dejaría el espejo diciendo «cancelada» sin poder decir CUÁL.
+    const campos = camposDeMembresia(membresiaFromPayload(BAJA));
+    expect(campos).toEqual({ membership_id: "mem_1", plan_id: "plan_oro" });
+    expect(campos).not.toHaveProperty("plan_name");
+    expect(campos).not.toHaveProperty("membership_valid_until");
+    expect(campos).not.toHaveProperty("membership_paid");
+  });
+
+  it("sin bloque de membresía no se escribe ningún campo suyo", () => {
+    // Una visita no habla de la membresía: su upsert no puede tocarla.
+    expect(camposDeMembresia(membresiaFromPayload({ clienteId: "c1" }))).toEqual({});
+    expect(camposDeMembresia(null)).toEqual({});
   });
 });

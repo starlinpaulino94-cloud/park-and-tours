@@ -565,4 +565,15 @@ export const MIGRATION_CHECKS = [
     ],
     // Igual que arriba: el índice lo verifica `0070_parte_2_verificacion.sql`.
   },
+  {
+    migration: "0077 — el estado de la membresía en el espejo de MembeGo",
+    columns: [
+      // Sin esta columna, cancelar o vencer una membresía en MembeGo no tenía
+      // dónde escribirse: el espejo seguía diciendo «Plan Oro» de una baja de
+      // hace semanas. Y si falta en la base, el upsert del webhook revienta y
+      // los eventos se acumulan en la cola de MembeGo — por eso el verificador
+      // tiene que preguntarla antes de que alguien dé el despliegue por bueno.
+      ["membego_customer", ["membership_status"]],
+    ],
+  },
 ];

@@ -1622,6 +1622,67 @@ describe("integración con MembeGo", () => {
     expect(sql).toMatch(/event_id\s+text primary key/);
     expect(sql).toMatch(/jti\s+text primary key/);
   });
+
+  /**
+   * El cuerpo de UNA función, no el fichero entero.
+   *
+   * Mirar todo el fichero da falsos verdes y falsos rojos: `from("customer")`
+   * aparece cuarenta líneas más abajo en `matchOrCreateCustomer`, que es
+   * legítimo, y una guardia que lo viera ahí diría que el borrado arrasa con la
+   * ficha local cuando no lo hace —o al revés, lo daría por bueno porque el
+   * fichero contiene la palabra correcta en otro sitio.
+   */
+  function cuerpo(src: string, firma: string): string {
+    const at = src.indexOf(firma);
+    expect(at, `no existe ${firma}`).toBeGreaterThan(-1);
+    const fin = src.indexOf("\n}\n", at);
+    return src.slice(at, fin < 0 ? undefined : fin);
+  }
+
+  it("el borrado de un cliente suelta la COPIA, nunca la ficha de la organización", () => {
+    const service = read("src/lib/membego-service.ts");
+
+    // Tiene que salir ANTES del upsert del espejo: pasar por él resucitaría la
+    // fila en el mismo evento que manda borrarla, y encima con los datos del
+    // propio evento —así que el fantasma parecería recién sincronizado.
+    const efectos = cuerpo(service, "async function applyEffects");
+    const iBorrado = efectos.indexOf('"cliente.eliminado"');
+    const iUpsert = efectos.indexOf(".upsert(");
+    expect(iBorrado).toBeGreaterThan(-1);
+    expect(iUpsert).toBeGreaterThan(-1);
+    expect(iBorrado).toBeLessThan(iUpsert);
+
+    // Y borra el ESPEJO, no `customer`. Park & Tours puede tener reservas,
+    // facturas y pagos colgando de esa ficha: que MembeGo borre su cliente no le
+    // da autoridad sobre la historia comercial de aquí, y un borrado en cascada
+    // disparado desde otra plataforma es el fallo que nadie ve venir.
+    const olvido = cuerpo(service, "async function forgetCustomer");
+    expect(olvido).toContain('from("membego_customer")');
+    expect(olvido).not.toContain('from("customer")');
+    expect(olvido).toContain('.eq("organization_id"');
+  });
+
+  it("una edición en MembeGo no pisa la ficha que escribió alguien de aquí", () => {
+    // Misma regla que el rol en `provisionSsoUser`: lo que una persona de esta
+    // organización puso a mano no lo sobrescribe una plataforma de fuera. Un
+    // cliente que ya compraba aquí tiene su teléfono corregido en el mostrador,
+    // y perder eso a cambio de consistencia aparente es perder trabajo real.
+    const refresco = cuerpo(
+      read("src/lib/membego-service.ts"),
+      "async function refreshLocalCustomer"
+    );
+    expect(refresco).toMatch(/source !== "membego"/);
+    expect(refresco).toMatch(/return;/);
+  });
+
+  it("el estado de la membresía es una columna con dominio cerrado", () => {
+    const sql = read("supabase/migrations/0068_membego_membership_status.sql");
+    expect(sql).toMatch(/add column if not exists membership_status/);
+    expect(sql).toMatch(/check \(membership_status in \('active', 'cancelled', 'expired'\)\)/);
+    // El SQL va ANTES del despliegue, así que tiene que poder correrse dos
+    // veces y no puede quitar nada de lo que ya funciona.
+    expect(sql).not.toMatch(/drop table|drop column|delete from/i);
+  });
 });
 
 describe("el plan se aplica en la API, no solo en el menú", () => {
