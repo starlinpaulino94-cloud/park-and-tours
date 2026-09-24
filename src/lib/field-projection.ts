@@ -1,6 +1,6 @@
 import "server-only";
 import type { AppRole } from "@/lib/auth";
-import { atLeast, esDeSocio, esAdminDeSocio } from "@/lib/tenant";
+import { atLeast, esDeSocio, esDeProveedor, esInterno, esAdminDeSocio } from "@/lib/tenant";
 import { refId } from "@/lib/types";
 import { relationResource } from "@/lib/supabase/expand";
 
@@ -102,16 +102,122 @@ export const ES_PROPIA: Record<string, (row: Record<string, unknown>, ctx: Proje
     (esAdminDeSocio(ctx) && Boolean(ctx.partnerId) && refId(row.partner as never) === ctx.partnerId),
 };
 
+/**
+ * LO QUE EL PROVEEDOR SÍ VE. LISTA BLANCA, NO LISTA NEGRA.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ AL REVÉS QUE EL SOCIO
+ *
+ * Al socio se le ESCONDEN campos (`OCULTO_AL_SOCIO`), que es razonable cuando
+ * lo que se tapa son dos notas internas sobre una tabla que él ya conoce.
+ *
+ * El proveedor es otra cosa: es el actor con más datos personales de terceros
+ * al alcance, y las tablas que ve —el recurso asignado, la ruta que conduce—
+ * crecen con cada entrega. Con lista negra, cada columna nueva sale por
+ * omisión, y una columna nueva en `pickup_route` es un teléfono de cliente en
+ * la pantalla de un transportista. Con lista blanca, lo que nadie declaró no
+ * sale, y el fallo es que a alguien le falte un dato — que se arregla con una
+ * línea y una llamada.
+ *
+ * Es la misma decisión que la exportación del socio (5.5), tomada por el mismo
+ * motivo y con el mismo precio.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * QUÉ ENTRA: LO OPERATIVO, Y NI UN CAMPO MÁS
+ *
+ * Lo que necesita para prestar el servicio: qué, cuándo, dónde y cuánta gente.
+ * No entran el coste ni la moneda de SU línea —eso es lo que la operadora le
+ * paga, y se ve en su estado de cuenta, no colgando de cada fila— ni las notas
+ * internas, que es donde alguien escribe «este chofer llegó tarde dos veces».
+ */
+export const VISIBLE_AL_PROVEEDOR: Record<string, string[]> = {
+  departure_resource: [
+    "_id", "departure", "resource_role", "pax_assigned",
+    "start_time", "end_time", "status", "vehicle", "staff", "supplier",
+    // Lo que tiene que contestar y hasta cuándo (0087). Sin declararlo, la
+    // lista blanca se lo come y el proveedor recibe sus servicios sin saber
+    // cuáles están esperando su respuesta — que es toda la función.
+    "acceptance", "acceptance_deadline", "confirmation_number",
+    // Cuándo es (0086). Sin declararla, la lista blanca se la come y el
+    // proveedor recibe sus servicios sin fecha — que es exactamente lo que
+    // esta lista tiene que hacer con una columna que nadie declaró, y por eso
+    // se añade aquí y no se relaja la regla.
+    "service_date",
+  ],
+  pickup_route: [
+    "_id", "departure", "zone", "name", "start_time",
+    "pax_total", "stops_count", "status", "vehicle", "driver", "guide", "supplier",
+    "acceptance", "acceptance_deadline", "confirmation_number",
+    "service_date",
+  ],
+  // De la salida, lo que le dice a qué servicio va. NO el cupo vendido ni los
+  // ingresos: es una excursión de la operadora, no suya.
+  departure: ["_id", "product", "departure_at", "departure_time", "meeting_point", "status", "capacity"],
+  zone: ["_id", "name", "code"],
+  /**
+   * Del producto, su nombre y cuánto dura. NADA de precios, ni el coste, ni la
+   * descripción comercial: el proveedor necesita saber a qué servicio va, no
+   * por cuánto se vendió.
+   *
+   * Está aquí porque la salida lo trae expandido, y sin declararlo el recorte
+   * lo borra entero — dejando al proveedor con una lista de servicios sin
+   * nombre.
+   */
+  product: ["_id", "name", "duration_hours"],
+  // Su propia ficha, sin el saldo: lo que se le debe tiene su pantalla, con su
+  // detalle y su forma de discutirlo.
+  supplier: [
+    "_id", "name", "supplier_type", "contact_name", "email", "phone",
+    "currency", "payment_terms_days", "status",
+  ],
+};
+
+/**
+ * Los campos de esta tabla que NO ve el proveedor.
+ *
+ * Devuelve la lista de lo que hay que quitar de ESTA fila, calculada sobre sus
+ * propias claves: la lista blanca dice lo que entra, así que todo lo demás sale.
+ *
+ * Una tabla SIN lista declarada no devuelve «nada que quitar»: devuelve todas
+ * sus claves. Es la parte que hace que falle por omisión — si el ámbito abre
+ * una tabla y nadie declaró sus campos, el proveedor recibe filas vacías y se
+ * queja, en vez de recibirlas enteras y que no se entere nadie.
+ */
+export function camposFueraDeLaListaBlanca(table: string, row: Record<string, unknown>): string[] {
+  const permitidos = VISIBLE_AL_PROVEEDOR[table];
+  const todas = Object.keys(row);
+  if (!permitidos) return todas;
+  const blanca = new Set(permitidos);
+  return todas.filter((campo) => !blanca.has(campo));
+}
+
 export interface ProjectionCtx {
   role: AppRole;
   sellerId?: string | null;
-  /** Los que deciden `esDeSocio` y `esAdminDeSocio`; el contexto ya los trae. */
+  /** Los que deciden `esDeSocio`, `esDeProveedor` y `esAdminDeSocio`. */
   partnerId?: string | null;
   isPartnerMember?: boolean;
   partnerRole?: string | null;
+  /** El que decide `esDeProveedor`. */
+  supplierId?: string | null;
 }
 
-export function hasHiddenFields(table: string): boolean {
+/**
+ * ¿Esta tabla recorta algo para alguien?
+ *
+ * OJO CON USARLA PARA SALTARSE EL RECORTE. Hoy no la llama nadie fuera de su
+ * prueba, y conviene que siga así: la tentación evidente es
+ * `if (!hasHiddenFields(t)) devolver las filas tal cual`, y con el eje del
+ * proveedor eso sería un agujero — su lista blanca quita lo que NADIE declaró,
+ * así que una tabla sin nada declarado es justo la que más hay que recortar,
+ * no la que se puede saltar.
+ *
+ * Por eso el tercer eje entra aquí como `true` para cualquier tabla: mientras
+ * exista un actor de lista blanca, no hay tabla de la que se pueda decir que no
+ * recorta nada.
+ */
+export function hasHiddenFields(table: string, paraProveedor = false): boolean {
+  if (paraProveedor) return true;
   return (
     Object.prototype.hasOwnProperty.call(HIDDEN_BELOW, table) ||
     Object.prototype.hasOwnProperty.call(OCULTO_AL_SOCIO, table)
@@ -134,7 +240,14 @@ function propiaDe(table: string, ctx: ProjectionCtx, row: Record<string, unknown
 /** Todo lo que hay que quitarle a QUIEN consulta, por los dos ejes. */
 export function camposRecortadosPara(table: string, ctx: ProjectionCtx): string[] {
   const porRango = hiddenFieldsFor(table, ctx.role);
-  if (!esDeSocio(ctx)) return porRango;
+  /**
+   * `esInterno` y no `!esDeSocio`: con el proveedor (0084) la negación dejó de
+   * querer decir «es de la operadora». Aquí un proveedor caería en el recorte
+   * por rango a secas — que hoy esconde lo suficiente porque su rango es el más
+   * bajo, pero que dejaría de hacerlo en cuanto alguien le suba el rango por
+   * cualquier motivo.
+   */
+  if (esInterno(ctx)) return porRango;
   return [...new Set([...porRango, ...(OCULTO_AL_SOCIO[table] ?? [])])];
 }
 
@@ -161,6 +274,16 @@ function proyectarFila(
   const ocultos = [
     ...(propiaDe(table, ctx, row) ? [] : hiddenFieldsFor(table, ctx.role)),
     ...(esDeSocio(ctx) ? OCULTO_AL_SOCIO[table] ?? [] : []),
+    /**
+     * Y el eje del proveedor, que va al revés: lista blanca.
+     *
+     * Se calcula sobre las claves de ESTA fila y no sobre una lista fija,
+     * porque lo que hay que quitar es «todo lo que no esté declarado», y eso
+     * solo se sabe mirando lo que la fila trae. Una columna nueva sale por
+     * omisión — que es exactamente lo que no puede pasar en la pantalla del
+     * actor con más datos de terceros al alcance.
+     */
+    ...(esDeProveedor(ctx) ? camposFueraDeLaListaBlanca(table, row) : []),
   ];
   if (ocultos.length > 0) {
     salida = { ...row };

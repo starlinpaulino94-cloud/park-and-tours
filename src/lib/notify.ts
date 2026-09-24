@@ -334,6 +334,58 @@ export const NOTIFY_EVENTS = {
     link: () => "/portal/liquidaciones",
   },
 
+  /**
+   * ─────────────────────────────────────────────────────────────────────────
+   * EL PROVEEDOR CONTESTA — O NO CONTESTA (0087)
+   *
+   * Los tres son INTERNOS, con audiencia `operations`, y eso es la decisión:
+   * quien tiene que hacer algo cuando un transportista dice que no es el
+   * despacho, esta tarde, no el gerente mañana. El proveedor ya se entera por
+   * su portal; lo que falta es que la casa se entere sin entrar a mirar.
+   */
+  supplier_service_rejected: {
+    type: "alert",
+    audience: "operations",
+    title: (v) => `${v.proveedor ?? "Un proveedor"} rechazó un servicio`,
+    message: (v) =>
+      [v.producto, v.fecha ? `del ${v.fecha}` : null, v.motivo ? `· ${v.motivo}` : null,
+       "Hay que buscarle otro."].filter(Boolean).join(" "),
+    link: () => "/dashboard/operaciones/despacho",
+  },
+
+  /**
+   * Venció el plazo y NADIE contestó. Es el valor por defecto de la política de
+   * vencimiento, y el aviso es toda la política: no se reasigna solo, no se da
+   * por bueno solo. Alguien lo ve y llama.
+   */
+  supplier_service_expired: {
+    type: "alert",
+    audience: "operations",
+    title: (v) => `Sin respuesta de ${v.proveedor ?? "un proveedor"}`,
+    message: (v) =>
+      [v.producto, v.fecha ? `del ${v.fecha}` : null,
+       "Se pasó el plazo para confirmar y el servicio sigue sin conformidad."]
+        .filter(Boolean).join(" "),
+    link: () => "/dashboard/operaciones/despacho",
+  },
+
+  /**
+   * Venció el plazo y la política de ESE proveedor dice que quien calla otorga.
+   * Avisa igual —y a propósito—: una conformidad que nadie dio es justo la que
+   * hay que poder mirar, porque es la que se discute cuando el autobús no
+   * aparece.
+   */
+  supplier_service_tacit: {
+    type: "operation",
+    audience: "operations",
+    title: (v) => `Aceptado por silencio: ${v.proveedor ?? "un proveedor"}`,
+    message: (v) =>
+      [v.producto, v.fecha ? `del ${v.fecha}` : null,
+       "Venció el plazo y su acuerdo dice que sin respuesta se da por aceptado."]
+        .filter(Boolean).join(" "),
+    link: () => "/dashboard/operaciones/despacho",
+  },
+
   /** Un comprobante fiscal anulado. Se justifica ante la DGII, no se esconde. */
   invoice_voided: {
     type: "alert",
@@ -527,9 +579,8 @@ export function dedupeKeyFor(event: NotifyEventKey, input: DedupeInput = {}): st
 
 /* ------------------------------------------------------------- el alcance */
 
-const ROLE_RANK: Record<string, number> = {
-  superadmin: 100, owner: 90, admin: 80, manager: 60, operations: 40, cashier: 40, seller: 20, partner: 10,
-};
+// El rango sale de `roles.ts`. Aquí había la tercera copia de la misma tabla.
+import { rankOf } from "@/lib/roles";
 
 /**
  * Los destinos que alcanza quien tiene este rol.
@@ -541,8 +592,8 @@ const ROLE_RANK: Record<string, number> = {
 const AUDIENCES: AudienceRole[] = ["owner", "admin", "manager", "operations", "cashier", "seller"];
 
 export function audienceRolesFor(role: string): AudienceRole[] {
-  const rank = ROLE_RANK[role] ?? 0;
-  return AUDIENCES.filter((candidate) => ROLE_RANK[candidate] <= rank);
+  const rank = rankOf(role);
+  return AUDIENCES.filter((candidate) => rankOf(candidate) <= rank);
 }
 
 /** Quien pregunta por su bandeja. */

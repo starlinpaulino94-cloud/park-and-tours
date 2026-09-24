@@ -1,6 +1,10 @@
 import "server-only";
 import { cache } from "react";
 import type { AppRole } from "@/lib/auth";
+// El rango vive en `roles.ts`, que es puro: hasta hoy había tres copias de la
+// misma tabla —aquí, en `nav.ts` y en `notify.ts`— que solo coinciden mientras
+// nadie añada un rol.
+import { atLeast } from "@/lib/roles";
 import type { Company, ModuleKey } from "@/lib/types";
 import { pgTable } from "@/lib/data-backend";
 import {
@@ -65,6 +69,19 @@ export interface TenantContext {
    * efecto en la siguiente petición, sin esperar a que el token se renueve.
    */
   sellerId?: string | null;
+  /**
+   * EL PROVEEDOR DE QUIEN CONSULTA (0084).
+   *
+   * Tercer actor externo, y el mismo patrón que los dos anteriores: el
+   * aislamiento lo decide ESTE identificador y no el nombre del rol. Sale del
+   * token —la RLS lo necesita ahí— y su vigencia se comprueba en cada petición,
+   * así que desvincular o desactivar a un transportista surte efecto en la
+   * siguiente, no cuando su sesión se renueve.
+   *
+   * Nulo no es «cualquier proveedor»: es «no es un proveedor». El ámbito acota
+   * a nada con él en nulo, no abre.
+   */
+  supplierId?: string | null;
   company: Company | null;
   /** true while a superadmin is operating inside a tenant (always audited). */
   impersonating?: boolean;
@@ -212,16 +229,6 @@ export async function requireSuperadmin(): Promise<TenantContext> {
   return ctx;
 }
 
-const ROLE_RANK: Record<AppRole, number> = {
-  superadmin: 100,
-  owner: 90,
-  admin: 80,
-  manager: 60,
-  operations: 40,
-  cashier: 40,
-  seller: 20,
-  partner: 10,
-};
 
 /**
  * ¿ESTA PERSONA ES DE UN SOCIO? LA REGLA, EN UN SOLO SITIO.
@@ -259,6 +266,58 @@ export function esDeSocio(
 }
 
 /**
+ * ¿ESTA PERSONA ES DE UN PROVEEDOR? LA MISMA REGLA, EL TERCER ACTOR.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR IDENTIFICADOR, NO POR NOMBRE, Y ESTA VEZ DESDE EL PRINCIPIO
+ *
+ * El aislamiento del socio se escribió primero comparando el nombre del rol, y
+ * costó una fase entera (4.2) sacarlo de veintinueve sitios. El del proveedor
+ * nace ya con la regla buena: **identificador presente ⇒ acotado**, diga lo que
+ * diga el rol.
+ *
+ * Y mira el rol TAMBIÉN, por el mismo motivo que su hermana: varios servicios
+ * fabrican contextos a mano —el motor público, el de revendedor, el sembrador—
+ * y ninguno rellena los campos nuevos.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LO QUE **NO** SIGNIFICA
+ *
+ * Que no sea de un socio no lo hace interno. Con tres actores, `!esDeSocio(ctx)`
+ * pasó de querer decir «es de la operadora» a querer decir «es de la operadora
+ * O es un proveedor», y esa frase está escrita en cuarenta y nueve sitios. Por
+ * eso existe `esInterno`, abajo: para que preguntar por lo interno sea una
+ * afirmación y no la negación de otra cosa.
+ */
+export function esDeProveedor(
+  ctx: { role: AppRole; supplierId?: string | null }
+): boolean {
+  return Boolean(ctx.supplierId) || ctx.role === "supplier";
+}
+
+/**
+ * QUIEN TRABAJA DENTRO DE LA OPERADORA.
+ *
+ * Existe porque con tres actores la negación dejó de servir. `!esDeSocio(ctx)`
+ * era «es interno» mientras el socio fue el único de fuera; con el proveedor
+ * pasó a ser «es interno o es proveedor», y cada uno de esos sitios tenía que
+ * revisarse a mano para saber cuál de las dos cosas quería decir.
+ *
+ * Preguntarlo en positivo cuesta lo mismo y no cambia de significado cuando
+ * llegue el cuarto.
+ */
+export function esInterno(
+  ctx: {
+    role: AppRole;
+    partnerId?: string | null;
+    isPartnerMember?: boolean;
+    supplierId?: string | null;
+  }
+): boolean {
+  return !esDeSocio(ctx) && !esDeProveedor(ctx);
+}
+
+/**
  * QUIEN ADMINISTRA LA CUENTA DE SU TOUR CENTER.
  *
  * Vive aquí, junto a `esDeSocio`, y no en el módulo del equipo, porque desde
@@ -280,9 +339,9 @@ export function hasRole(role: AppRole, ...allowed: AppRole[]): boolean {
   return allowed.includes(role);
 }
 
-export function atLeast(role: AppRole, minimum: AppRole): boolean {
-  return (ROLE_RANK[role] ?? 0) >= (ROLE_RANK[minimum] ?? 0);
-}
+
+
+export { atLeast };
 
 export function requireAtLeast(ctx: TenantContext, minimum: AppRole) {
   if (!atLeast(ctx.role, minimum)) {

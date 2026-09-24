@@ -2781,3 +2781,275 @@ Y la tabla dice dos cosas más que no se preguntaban:
   «abrir turno» aquí le dejaría declararse el fondo de apertura contra el que
   luego se le cuadra.
 - **Mutación: catorce, las catorce muertas.**
+
+### Fase 8.1 — el rol nuevo habría entrado como vendedor
+- **Lo que el plan mandaba hacer antes de crear el rol era auditar**, y la
+  auditoría encontró esto: `auth-context` guardaba su propia lista de roles
+  válidos, y lo que hacía con lo que no reconocía **no era rechazarlo: lo
+  convertía en `seller`**. Añadir el rol de proveedor a la base sin acordarse de
+  esa línea no lo habría dejado fuera — lo habría **ascendido al rango 20**, el
+  que abre las veintiuna rutas que exigen vendedor: cotizar, cobrar, cancelar y
+  reprogramar. Y nada habría fallado por el camino.
+- **Ahora la lista sale de la tabla de rango y lo desconocido cae al último.**
+  Si alguien se queda fuera se ve el primer día; al revés no se ve nunca. La
+  prueba que decía «cae a vendedor» decía el fallo, no el contrato.
+- **Había TRES tablas de rango**, idénticas y separadas: `tenant.ts` decidía los
+  permisos, `nav.ts` qué entradas de menú se ven y `notify.ts` a quién alcanza un
+  aviso. Copiadas, así que coincidían; separadas, así que el día que alguien
+  añadiera un rol coincidirían dos de tres. Y la discrepancia no se ve: un rol
+  que en `tenant` está por debajo del vendedor y en `nav` por encima enseña un
+  menú que lleva a un 403 — al revés, esconde una pantalla que la ruta sí sirve.
+  Viven en `roles.ts`, que es puro y lo puede importar cualquiera: esa era la
+  razón técnica de las tres copias.
+- **«No es socio» dejó de querer decir «es interno».** Con el tercer actor,
+  `!esDeSocio(ctx)` pasó de «es de la operadora» a «es de la operadora O es un
+  proveedor», y esa frase decidía en tres sitios: el recorte de campos, el
+  portal B2B y **la lista blanca de exportación** — donde un proveedor habría
+  caído en la rama de la operadora y se habría llevado el juego de columnas
+  interno. Se pregunta en positivo (`esInterno`) para que no cambie de
+  significado cuando llegue el cuarto.
+- **El proveedor se reconoce por su IDENTIFICADOR desde el primer día.** El
+  aislamiento del socio se escribió comparando el nombre del rol y costó una
+  fase entera (4.2) sacarlo de veintinueve sitios; éste nace con la regla buena.
+- **Y su vigencia se comprueba en cada petición, fallando cerrado.** Aquí importa
+  más que en el vendedor: lo que hay al otro lado son datos personales de
+  terceros — una hoja de ruta es una lista de clientes con hotel, habitación y
+  teléfono. Si un fallo de red devolviera «sigue siendo proveedor», un
+  transportista desactivado seguiría viéndolas.
+- **UNA MUTACIÓN APUNTÓ MAL Y DESTAPÓ UN HUECO REAL.** El texto que quería
+  romper en la comprobación del proveedor aparecía antes, idéntico, en
+  `loadSellerId`, así que el mutador rompió esa otra y **las pruebas pasaron
+  igual**: sin `user_id`, esa consulta devuelve la primera ficha de vendedor
+  activa de la empresa y se la cuelga a quien sea —sus ventas, sus comisiones,
+  su ámbito—. Lleva ahí desde la fase 1 sin nada que la sujete. Ahora tiene su
+  guarda.
+- **Alcance decidido, y por qué así.** `supplier.supplier_type` ya distingue
+  transporte, restaurante, embarcación, parque, guías, hotel y equipos desde
+  0009, así que servir a todos no cuesta nada más que a uno — que es lo que el
+  propio plan apuntaba al dejar la decisión abierta. Si la operadora quiere
+  limitarlo a transporte, es una línea de filtro, no un rediseño.
+- **El portal nace con su guarda en el layout**, que es la norma que el plan
+  fija para toda pantalla de actor externo, y con una sola entrada: sus
+  servicios llegan en la entrega siguiente, y un menú lleno de enlaces a
+  pantallas que no existen es peor que uno corto.
+- **Mutación: dieciocho, las dieciocho muertas.**
+
+### Fase 8.2 — el proveedor solo ve lo suyo, y se filtra por columna
+- **El vínculo existía, pero de LADO.** Un recurso de salida apunta a un
+  vehículo o a una persona, y son ELLOS los que cuelgan del proveedor. Para
+  acotar habría que filtrar por una columna de una tabla unida, y la capa de
+  consulta de esta aplicación no sabe hacerlo — la misma razón por la que la
+  fecha de servicio tuvo que copiarse a `commission` en 0070.
+- **Y el riesgo de no desnormalizar es peor que la incomodidad**: un filtro
+  sobre una columna que no existe **no da error, devuelve la empresa entera**.
+  Es el «fallo silencioso» que el plan marca como riesgo transversal, y aquí lo
+  que se devolvería son los clientes de otro proveedor con su hotel, su
+  habitación y su teléfono.
+- **Lo rellena un disparador, no quien escribe.** Un dato desnormalizado que se
+  copia a mano se queda viejo el día que alguien cambie el vehículo desde otra
+  pantalla, y en esta tabla «ver» significa leer datos personales de terceros.
+- **Manda el vehículo; sin vehículo, la persona.** Con un autobús de A y un
+  chofer de B, la ruta queda de A y el chofer de B no la ve. Es deliberado:
+  enseñar de menos en una pantalla llena de datos de clientes se arregla con una
+  llamada; enseñar de más, no.
+- **La compuerta se evalúa ANTES del ámbito**, que es el primer riesgo
+  transversal del plan: meter una tabla en el ámbito de un actor no la abre,
+  porque `READ_ROLE` rechaza por rango antes de que el filtro por fila llegue a
+  aplicarse — y el proveedor tiene el rango más bajo que hay, así que le pasaría
+  con todas. La exención no sube el rango: salta la compuerta y deja decidir a
+  `supplierScopeFor`, que **deniega por defecto**.
+- **El ámbito se ACUMULA, no se elige.** Tercer actor en `row-scope`, misma
+  regla: un `if/else if` aplicaría solo el primero el día que alguien sea las
+  dos cosas. Y en las dos funciones, porque el filtro del listado no protege el
+  detalle.
+- **LISTA BLANCA de campos, al revés que con el socio.** Al socio se le esconden
+  campos concretos, que es razonable para dos notas internas. Aquí no: las
+  tablas que el proveedor ve crecen con cada entrega, y con lista negra **cada
+  columna nueva sale por omisión** — una columna nueva en una ruta de recogida
+  es un teléfono de cliente en la pantalla de un transportista. Una tabla sin
+  lista declarada devuelve filas **vacías**: el proveedor se queja, que es mejor
+  que recibirlas enteras y que no se entere nadie.
+- **No entra el coste de su línea** ni su moneda: lo que la operadora le paga se
+  ve en su estado de cuenta, con su detalle y su forma de discutirlo, no
+  colgando de cada fila. Ni el saldo en su ficha, ni las notas internas — que es
+  donde alguien escribe «este chofer llegó tarde dos veces».
+- **`hasHiddenFields` no tenía ningún llamante**, y la tentación evidente
+  —`if (!hasHiddenFields(t)) devolver tal cual`— sería un agujero con el eje de
+  lista blanca: una tabla sin nada declarado es justo la que MÁS hay que
+  recortar. Queda escrito en la propia función.
+- **Y lo que ya existía se rellena**, copiando lo que el vínculo de lado ya dice
+  hoy. Sin eso, el primer proveedor que entre ve su portal vacío aunque lleve
+  seis meses conduciendo.
+- **Dos guardas no mordían**: una comprobaba que el disparador existiera y que
+  sus dos ramas estuvieran, pero no que ASIGNARA —el disparador seguiría
+  creándose, correría en cada escritura y no haría nada—; la otra buscaba la
+  condición del relleno con `toMatch` y le bastaba con que una de las cuatro
+  pasadas la conservara.
+- **Mutación: quince, las quince muertas.**
+
+### Fase 8.3 — el portal del proveedor: lo que le toca hacer, y cuándo
+- **Un recurso de salida no sabe CUÁNDO es.** La fecha vive en
+  `departure.departure_at`, tabla unida, y la capa de consulta no sabe filtrar
+  ni ordenar por ahí — exactamente lo que obligó a copiar la fecha de servicio a
+  `commission` en 0070 y el proveedor a estas dos tablas en 0085. Tercera vez, y
+  ya es un patrón con nombre: **se desnormaliza aquello por lo que se filtra**.
+- **Lo que se hace hoy sin la columna está escrito**, en `asset-impact.ts`:
+  pedir quinientas filas y filtrar por fecha **en memoria**. Funciona hasta la
+  fila quinientos uno, que desaparece sin que nada avise. En el portal del
+  proveedor esa fila es un servicio que alguien tiene que ir a prestar.
+- **0086 la copia, y en DOS mitades.** Una la rellena al escribir la fila; la
+  otra la mueve cuando la salida se reprograma. Con solo la primera, el
+  proveedor vería el servicio el día que no es, o dejaría de verlo en
+  «próximos» estando todavía por delante.
+- **Y aquí la fecha SÍ se mueve, al revés que la de la comisión.** En 0070 se
+  copia una vez y no se toca a propósito: reprogramar cambiaría el período de
+  liquidación de un dinero ya devengado. Aquí no hay dinero devengado, hay una
+  guagua que tiene que estar en un sitio a una hora.
+- **Dos tablas, una lista.** El proveedor aparece en la operación por dos sitios
+  —como recurso de una salida y como dueño de una ruta de recogida— y para él
+  son la misma cosa: cosas que tiene que ir a hacer. Y el orden es **del
+  conjunto**: vienen de dos consultas ordenadas cada una por su lado, y
+  concatenarlas sin reordenar enseña todos los recursos y luego todas las rutas
+  —cada bloque en orden y el conjunto en ninguno—, que es la forma de que
+  alguien se salte el servicio de las nueve porque estaba debajo del de las
+  cinco de la tarde.
+- **El recorte va ANTES del mapeo.** El mapeo elige a mano lo que la pantalla
+  pinta, así que hoy no saca nada que no deba — pero es una lista escrita por
+  una persona. Pasando las filas por la lista blanca de 0085 primero, un campo
+  prohibido llega ya borrado y el mapeo lo lee como `undefined`: el recorte no
+  depende de que el mapeo esté bien escrito.
+- **La ruta se acota por la FICHA, no por el parámetro.** Atender un
+  `?supplier_id=` cuando quien pregunta es un proveedor convertiría esta ruta en
+  la forma de leer los servicios del transportista de enfrente, con sus puntos
+  de recogida y su número de pasajeros. El interno sí puede mirar el de otro
+  —es como se atiende un «no me sale nada» por teléfono— y necesita rango.
+- **El reloj entra por parámetro.** Con dos lecturas, un servicio que empieza
+  justo ahora cabría en las dos listas o en ninguna. Y el que empieza
+  exactamente ahora cuenta como próximo: todavía no pasó.
+- **La lista blanca se comió `service_date` en cuanto existió**, que es
+  precisamente lo que tiene que hacer con una columna que nadie declaró. Se
+  arregló declarándola —y `product`, que la salida trae expandido— en vez de
+  relajar la regla: el eje de lista blanca vale porque no tiene excepciones.
+- **Y eso destapó que mi propia prueba de orden pasaba por el motivo
+  equivocado.** Con la fecha recortada, todos los servicios salían con
+  `service_date` nulo, `localeCompare` devolvía 0 en todas las comparaciones y
+  el orden de concatenación coincidía por casualidad con el esperado. La prueba
+  ahora siembra una RUTA de la una antes de un RECURSO de las cinco: es la única
+  línea que distingue «ordenado» de «ordenado por bloques».
+- **El doble de la base no expandía en cascada, y el proveedor de verdad sí.**
+  `expandRows` recurre —salida → producto—; el doble expandía un solo nivel y la
+  prueba recibía `producto: "p-1"` en vez de `"Isla Saona"`. Se arregló el
+  doble, no la prueba: un doble que miente por debajo es peor que no tenerlo,
+  porque convierte cada prueba que lo use en una prueba de otra cosa. Las 3034
+  restantes siguieron pasando.
+- **La pantalla no enseña ni un dato del pasajero.** Ni nombre, ni hotel, ni
+  teléfono: existe para que sepa QUÉ tiene que hacer y CUÁNDO, no quién va
+  dentro. Eso está en la hoja de ruta, que es otra pantalla, para otro momento y
+  con otro ámbito. Y la guarda se escribió **sobre el tipo**, con lista exacta,
+  porque buscar la palabra «hotel» a pelo se rompía con el pie de la propia
+  pantalla —que dice, en castellano, dónde están esos datos— mientras dejaba
+  pasar un `s.guest_phone`.
+- **Mutación: veinticuatro, las veinticuatro muertas** a la primera, que es la
+  primera vez en esta rama que no hubo que reforzar ninguna guarda.
+
+### Fase 8.4 — aceptar o rechazar, con su plazo, su número y su enlace de un solo uso
+- **DOS EJES, NO UNO.** `status` dice lo que la operadora sabe del recurso
+  —previsto, confirmado, en conflicto—; `acceptance` dice lo que contestó el
+  proveedor. Meterlo en la misma columna haría que «confirmado» quisiera decir
+  dos cosas a la vez, y la primera vez que haya que decidir si sale la guagua esa
+  ambigüedad se resuelve a favor de lo que le convenga al que mira.
+- **Nace en `not_required`, no en `pending`.** Lo desconocido es lo de hoy: hoy
+  nadie pregunta nada. Con `pending` por defecto, el despliegue convertiría de
+  golpe cada recurso histórico en un servicio sin confirmar y el tablero de
+  despacho amanecería en rojo por una migración. Y `not_required` es además lo
+  honesto para lo que ya pasó: no es que el proveedor no contestara, es que nunca
+  se le preguntó — poner `accepted` sería escribir una conformidad que nadie dio.
+- **Asignar es preguntar, y lo pone la BASE.** Un disparador, no la pantalla que
+  asigna: dejarlo en manos de quien escribe significa que el día que se asigne
+  desde la mesa de despacho, una importación o un arreglo a mano, el servicio
+  saldría sin que nadie lo hubiera pedido y el proveedor se enteraría al llegar
+  el autobús.
+- **EL NOMBRE DEL DISPARADOR NO ES DECORACIÓN.** Postgres dispara los `before` de
+  una fila en orden ALFABÉTICO, y este tiene que correr después del de 0085, que
+  es el que calcula `supplier_id`. Con cualquier otro nombre leería el proveedor
+  viejo. Se llama `..._supplier_acceptance` para ordenar detrás, y **la migración
+  falla si el orden deja de cumplirse** — un comentario no habría bastado para
+  algo que se rompe sin que nadie lo note.
+- **Y la respuesta del proveedor anterior se BORRA al reasignar.** Si A había
+  aceptado y el servicio pasa a B, conservar «aceptado» deja una fila diciendo
+  que hay conformidad de quien ya no tiene nada que ver con ese viaje, con su
+  número de confirmación al lado.
+- **El plazo nunca pasa de la salida.** Un plazo que vence después de que el
+  servicio ocurra no es un plazo, es un recordatorio para después del entierro. Y
+  las veinticuatro horas por defecto son el MISMO número en el disparador y en el
+  dominio, con guarda: si el disparador diera veinticuatro y la pantalla dijera
+  cuarenta y ocho, el proveedor leería un plazo y tendría otro.
+- **QUÉ PASA AL VENCER: se declara por proveedor, con `alert` por defecto.**
+  `alert` marca el servicio como vencido y avisa a operaciones, y es el de por
+  omisión porque es el único que no decide nada en nombre de nadie. `tacit` —quien
+  calla otorga— existe porque hay proveedores de toda la vida con los que se
+  trabaja así, y aun así deja escrito que NADIE contestó: `responded_via` queda
+  en «tacito», no en «enlace».
+- **Y `reassign` NO es un valor declarable, a propósito.** El plan lo mencionaba
+  como tercera opción; no es una política, es una función que no existe. Habría
+  que elegir otro vehículo, comprobar sus documentos y sus conflictos y avisar a
+  dos proveedores. Ofrecerlo como una casilla que en realidad no mueve nada sería
+  peor que no ofrecerlo — y mover una guagua de verdad sin que lo decida una
+  persona, peor todavía.
+- **El enlace se guarda en HASH, nunca en claro**, y es deliberadamente distinto
+  del token de la encuesta (0067), que sí se guarda a secas: aquel pone una nota
+  a un viaje que ya terminó, este compromete a una empresa a poner un autobús con
+  cuarenta personas dentro. Treinta y dos bytes de azar criptográfico, no los
+  siete caracteres de la encuesta: un enlace que se puede adivinar probando es un
+  enlace con el que alguien acepta servicios en nombre del transportista de
+  enfrente.
+- **La tabla del enlace tiene RLS encendida y CERO políticas.** No es la política
+  de siempre con un filtro más: es la ausencia de política. Lo único que entra
+  ahí es el cliente de servicio; ni el proveedor, ni el socio, ni el personal
+  interno tienen nada que hacer leyendo material de credenciales — lo que
+  necesitan saber está en la fila del recurso.
+- **Contestar es UNA sola escritura, en Postgres.** Hay que gastar el enlace y
+  escribir la respuesta, y partirlo en dos tiene dos formas de salir mal: marcar
+  usado y fallar al escribir deja al proveedor sin poder contestar y sin constar
+  que contestó; escribir y fallar al marcar usado deja el enlace vivo, y entonces
+  no es de un solo uso. Misma lección que la comisión retenida en 0083. Y el
+  estado del recurso se mira ANTES de gastar el enlace, para que quien ya contestó
+  desde el portal lea «ya contestado» y no «este enlace no sirve».
+- **ABRIR NO ES USAR.** El robot que previsualiza el enlace en WhatsApp lo abre;
+  si eso lo gastara, el proveedor recibiría un enlace ya quemado por algo que él
+  no pidió. Se gasta al CONTESTAR.
+- **Y cada apertura se anota, incluida la de un enlace que no existe.** El intento
+  fallido es el que más dice: cuarenta aperturas de un enlace inexistente desde la
+  misma dirección son alguien probando. Una bitácora que solo apunta los aciertos
+  no sirve para verlo.
+- **El cron quería ser horario y una guarda vieja lo impidió — con razón.** El
+  plan de Vercel en el que esto corre solo admite trabajos diarios; un cron más
+  frecuente NO DESPLIEGA y tumba el despliegue entero, y hay una guarda escrita
+  desde que pasó. Así que el barrido es diario, **y eso acota lo que puede
+  prometer**: da el estado al día y el aviso de la mañana, no una alarma
+  inmediata. Lo que sostiene el plazo no es el cron — `puedeResponder` lo compara
+  con el reloj en cada consulta, así que un cron caído nunca permite contestar
+  tarde.
+- **SIETE GUARDAS PREEXISTENTES SALTARON A LA VEZ**, y las siete pedían algo real:
+  la exención de CSRF y la del plan para la ruta pública, la tabla y las doce
+  columnas nuevas en el verificador de migraciones, la expectativa de vigilancia
+  del cron, la frecuencia del cron, y **la lista exacta de campos que escribí en
+  8.3** — que obligó a declarar el eje de la respuesta a propósito en vez de
+  dejarlo colarse.
+- **EL DOBLE DE LA BASE ENTREGA COPIAS, y cuatro pruebas pasaron sin probar
+  nada.** `db.rows()` clona, así que escribir en lo que devuelve no cambia la
+  base: las cuatro pruebas que preparaban su caso así lo preparaban contra una
+  copia y comprobaban el caso de partida. Se arreglaron pasando por el servicio.
+  Es la misma familia que el doble que no expandía en cascada de la ola anterior:
+  un doble que miente por debajo convierte cada prueba que lo use en una prueba de
+  otra cosa.
+- **Cinco guardas no mordieron a la primera, y las cinco eran defectos de guarda:**
+  dos de «la guarda encuentra su texto en otro sitio del mismo fichero» —el `case
+  when … then p_confirmation` aparece en el `update` y en el `return`, y la
+  restricción de `responded_via` existe en las dos tablas—, una de `toMatch`
+  donde hacían falta dos coincidencias contadas, y **una repetición exacta de la
+  lección de 8.3**: la prueba comprobaba el valor POR DEFECTO del eje de
+  aceptación, que es justo lo que devuelve una columna recortada por la lista
+  blanca, así que pasaba idéntica con la columna borrada. Ahora comprueba un
+  valor que no es el de por defecto.
+- **Mutación: cincuenta y cuatro, las cincuenta y cuatro muertas.**

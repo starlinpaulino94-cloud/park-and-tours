@@ -480,6 +480,58 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0087 — aceptar o rechazar, con plazo y número",
+    // El eje del proveedor va aparte del de la operadora: `status` dice lo que
+    // sabe la casa, `acceptance` lo que contestó él. Con una sola columna,
+    // «confirmado» querría decir dos cosas.
+    tables: ["supplier_response_token"],
+    columns: [
+      ["departure_resource", [
+        "acceptance", "acceptance_deadline", "responded_at", "responded_by",
+        "response_note", "responded_via", "confirmation_number",
+      ]],
+      ["pickup_route", [
+        "acceptance", "acceptance_deadline", "responded_at", "responded_by",
+        "response_note", "responded_via", "confirmation_number",
+      ]],
+      ["supplier", ["acceptance_window_hours", "on_deadline_expiry"]],
+    ],
+    // Y la función que gasta el enlace y escribe la respuesta a la vez: sin
+    // ella, el enlace de un solo uso deja de serlo en cuanto algo falle entre
+    // las dos escrituras.
+    rpc: ["respond_to_supplier_service"],
+  },
+  {
+    migration: "0086 — la fecha del servicio, donde se consulta",
+    // Sin ella, un recurso de salida no sabe cuándo es: la fecha vive en la
+    // salida, tabla unida. Lo que se hace sin la columna es pedir quinientas
+    // filas y filtrar en memoria.
+    columns: [
+      ["departure_resource", ["service_date"]],
+      ["pickup_route", ["service_date"]],
+    ],
+  },
+  {
+    migration: "0085 — el proveedor solo ve lo suyo",
+    // El vínculo existía de lado —el recurso apunta al vehículo o a la persona,
+    // y son ELLOS los que cuelgan del proveedor—, y la capa de consulta no sabe
+    // filtrar por columna de una tabla unida. Sin esta columna, el filtro no se
+    // aplica y devuelve la empresa entera: los clientes de otro proveedor con
+    // su hotel, su habitación y su teléfono.
+    columns: [
+      ["departure_resource", ["supplier_id"]],
+      ["pickup_route", ["supplier_id"]],
+    ],
+  },
+  {
+    migration: "0084 — el proveedor entra al sistema",
+    // Tercer actor externo, mismo patrón: un identificador en su ficha, en el
+    // token para que la RLS acote, y su estado comprobado en cada petición.
+    columns: [
+      ["supplier", ["user_id"]],
+    ],
+  },
+  {
     migration: "0083 — la comisión retenida, en una sola escritura",
     // En dos pasos hay dos finales malos: si se apunta el movimiento y falla la
     // comisión, el vendedor se llevó su dinero y la comisión sigue pendiente —

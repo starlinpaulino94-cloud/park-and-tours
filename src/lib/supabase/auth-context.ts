@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { supabaseServer } from "@/lib/supabase/server";
 import { supabaseService } from "@/lib/supabase/service";
 import type { AppRole } from "@/lib/auth";
+import { ROLES } from "@/lib/roles";
 import { mfaGate, hasVerifiedFactor } from "@/lib/mfa";
 import type { Company } from "@/lib/types";
 import { esAdminDeSocio, type TenantContext } from "@/lib/tenant";
@@ -22,6 +23,7 @@ export interface AppClaims {
   org_id?: string;
   app_role?: string;
   partner_id?: string | null;
+  supplier_id?: string | null;
   /** Sucursal de la membresía activa; null = toda la empresa. */
   branch_id?: string | null;
   status?: string;
@@ -31,9 +33,19 @@ export interface AppClaims {
   app_metadata?: { mfa_enabled?: boolean } | null;
 }
 
-const VALID_ROLES = new Set<AppRole>([
-  "superadmin", "owner", "admin", "manager", "operations", "cashier", "seller", "partner",
-]);
+/**
+ * LOS ROLES VÁLIDOS SALEN DE LA TABLA DE RANGO, NO DE UNA LISTA A MANO.
+ *
+ * Aquí había una cuarta copia de la lista de roles —después de las tres tablas
+ * de rango— y esta era la peligrosa, porque lo que hace con lo que no reconoce
+ * no es rechazarlo: lo convierte en `seller`.
+ *
+ * Es decir: añadir un rol a la base sin acordarse de esta línea no deja fuera a
+ * ese actor, lo ASCIENDE al rango 20 — el que abre las veintiuna rutas que
+ * exigen `seller`. Un proveedor habría entrado a cotizar, a cobrar y a cancelar
+ * reservas, y nada habría fallado por el camino.
+ */
+const VALID_ROLES = new Set<AppRole>(ROLES);
 const IMPERSONATION_COOKIE = "tf_impersonate_company";
 const WORKSPACE_COOKIE = "tf_active_company";
 
@@ -87,7 +99,19 @@ export function mapClaimsToContext(
   if (!claims.org_id) return null;
   if (claims.status && claims.status !== "active") return null;
 
-  const role = (VALID_ROLES.has(claims.app_role as AppRole) ? claims.app_role : "seller") as AppRole;
+  /**
+   * Y lo que no se reconoce cae al rango MÁS BAJO, no a `seller`.
+   *
+   * Un rol desconocido es un rol del que no se sabe nada: puede venir de un
+   * token viejo, de una migración a medias o de una base tocada a mano.
+   * Tratarlo como vendedor es fallar hacia arriba justo donde más caro sale —
+   * `seller` ya vende, cobra y cancela—. El último de la lista es el que menos
+   * puede, y si alguien se queda fuera se ve el primer día; al revés no se ve
+   * nunca.
+   */
+  const role = (VALID_ROLES.has(claims.app_role as AppRole)
+    ? claims.app_role
+    : ROLES[ROLES.length - 1]) as AppRole;
   return {
     userId: user.id,
     // El correo sigue disponible en el contexto para `/dashboard/perfil` y para
@@ -106,6 +130,15 @@ export function mapClaimsToContext(
      * buscar, y el día que un actor nuevo necesite lo mismo hay dónde ponerlo.
      */
     isPartnerMember: Boolean(claims.partner_id),
+    /**
+     * El proveedor, del token (0084).
+     *
+     * Mismo papel que `partner_id` y por el mismo motivo: la RLS lo necesita en
+     * el token para poder acotar. Su ESTADO se comprueba abajo, en cada
+     * petición, porque desactivar a un transportista tiene que surtir efecto
+     * ahora y no cuando a su sesión le toque renovarse.
+     */
+    supplierId: claims.supplier_id || null,
     branchId: claims.branch_id || null,
     company,
   };
@@ -245,6 +278,41 @@ async function loadSellerId(
     return data?.id ?? null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * ¿SIGUE SIENDO ESTA FICHA DE ESTE PROVEEDOR, Y SIGUE ACTIVA?
+ *
+ * El token trae el identificador de cuando se emitió. Entre eso y ahora, la
+ * operadora puede haber desactivado al proveedor o haberle desvinculado la
+ * cuenta, y las dos cosas tienen que surtir efecto en la petición siguiente.
+ *
+ * FALLA CERRADO: cualquier problema devuelve `false` y el contexto se queda sin
+ * proveedor, que acota a nada en vez de abrir. Aquí eso importa más que en el
+ * vendedor, porque lo que hay al otro lado son datos personales de terceros —
+ * una hoja de ruta es una lista de clientes con su hotel, su habitación y su
+ * teléfono.
+ */
+async function supplierSigueActivo(
+  orgId: string,
+  supplierId: string,
+  userId: string
+): Promise<boolean> {
+  try {
+    const sb = supabaseService();
+    const { data } = await sb
+      .from("supplier")
+      .select("id")
+      .eq("id", supplierId)
+      .eq("organization_id", orgId)
+      .eq("user_id", userId)
+      .eq("status", "active")
+      .limit(1)
+      .maybeSingle();
+    return Boolean(data?.id);
+  } catch {
+    return false;
   }
 }
 
@@ -418,6 +486,24 @@ export async function getSupabaseTenantContext(): Promise<TenantContext | null> 
    * Preguntar igualmente costaría una consulta por petición para un dato que
    * nadie va a mirar.
    */
+  /**
+   * Y el proveedor sigue estando activo.
+   *
+   * FALLA CERRADO, como el estado del socio y por lo mismo: si un fallo de red
+   * devolviera «sigue siendo proveedor», un transportista desactivado seguiría
+   * viendo las hojas de ruta —con los nombres, los teléfonos y las
+   * habitaciones de los clientes— por el simple expediente de que la consulta
+   * se cayera.
+   *
+   * Y se comprueba que la ficha siga SIENDO SUYA: el token trae el
+   * identificador de cuando se emitió, y entre eso y ahora la operadora puede
+   * haberle desvinculado la cuenta.
+   */
+  if (ctx.supplierId) {
+    const sigue = await supplierSigueActivo(ctx.companyId!, ctx.supplierId, user.id);
+    if (!sigue) ctx.supplierId = null;
+  }
+
   const esAdminDelSocio = esAdminDeSocio(ctx);
   if (ctx.role !== "superadmin" && !esAdminDelSocio) {
     ctx.sellerId = await loadSellerId(ctx.companyId!, user.id, ctx.partnerId ?? null);

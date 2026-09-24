@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireTenant, tenantQuery, TenantError, esDeSocio } from "@/lib/tenant";
+import { requireTenant, tenantQuery, TenantError, esInterno } from "@/lib/tenant";
 import { getResource, assertCanReadTable } from "@/lib/resources";
 import { fail } from "@/lib/api-response";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
@@ -62,8 +62,21 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ reso
      * declare nada— convierte cada tabla nueva en una fuga silenciosa que se
      * descubre cuando ya está en el Excel de alguien.
      */
-    const columnasDelSocio = esDeSocio(ctx) ? columnasParaSocio(resource) : null;
-    if (esDeSocio(ctx) && !columnasDelSocio) {
+    /**
+     * Y la lista blanca vale para CUALQUIER actor de fuera, no solo el socio.
+     *
+     * Preguntaba `esDeSocio(ctx)`, que mientras el socio fue el único externo
+     * quería decir «es de fuera». Con el proveedor (0084) pasó a querer decir
+     * «es de fuera, salvo que sea proveedor»: un transportista caía en la rama
+     * de la operadora y se llevaba el juego de columnas INTERNO.
+     *
+     * Hoy no llegaría —su rango no pasa la compuerta de `assertCanReadTable`—,
+     * pero apoyar una lista blanca en que otra comprobación aguante es
+     * exactamente cómo se abre una fuga el día que la otra se relaja.
+     */
+    const deFuera = !esInterno(ctx);
+    const columnasDelSocio = deFuera ? columnasParaSocio(resource) : null;
+    if (deFuera && !columnasDelSocio) {
       throw new TenantError(
         "Esta exportación todavía no está disponible para empresas asociadas. Pídesela a tu operador.",
         403

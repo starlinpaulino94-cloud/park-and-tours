@@ -1,7 +1,7 @@
 import type { ModuleKey } from "@/lib/types";
 import "server-only";
 import type { AppRole } from "@/lib/auth";
-import { TenantError, atLeast, esDeSocio } from "@/lib/tenant";
+import { TenantError, atLeast, esDeSocio, esDeProveedor } from "@/lib/tenant";
 
 /**
  * Registry of tables exposed through the generic REST layer
@@ -1489,6 +1489,53 @@ const PARTNER_SHARED_TABLES = new Set([
   "cancellation_policy", "hotel", "zone",
 ]);
 
+/**
+ * LO QUE VE UN PROVEEDOR, Y NADA MÁS.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LA LISTA ES CORTA A PROPÓSITO
+ *
+ * Es el actor con más datos personales de terceros al alcance: una ruta de
+ * recogida es una lista de clientes con su hotel, su habitación y su teléfono.
+ * Así que aquí solo entran las dos tablas donde vive SU trabajo —el recurso que
+ * se le asignó y la ruta que conduce—, y las dos tienen ya su columna de
+ * proveedor (0085) para poder filtrar sin unir.
+ *
+ * El recorte de campos es lo que decide qué columnas de esas dos filas ve; esta
+ * lista solo dice a qué filas llega.
+ */
+const SUPPLIER_OWNED_TABLES = new Set(["departure_resource", "pickup_route"]);
+
+/**
+ * Y lo que puede mirar sin ser suyo: el catálogo mínimo para entender el
+ * servicio que le toca. `departure` dice qué excursión y a qué hora; `zone`, el
+ * área de recogida. Ninguna de las dos lleva datos de clientes.
+ *
+ * `hotel` NO está, y es la ausencia que importa: un proveedor necesita saber a
+ * qué hotel va —y eso se lo dice su parada—, no la lista de todos los hoteles
+ * con los que la operadora trabaja.
+ */
+const SUPPLIER_SHARED_TABLES = new Set(["departure", "zone"]);
+
+export type SupplierScope =
+  | { kind: "denied" }
+  | { kind: "shared" }
+  | { kind: "own"; field: string; supplierId: string };
+
+/**
+ * Cómo accede un proveedor a una tabla. DENIEGA POR DEFECTO.
+ *
+ * Igual que la del socio y por el mismo motivo: una tabla nueva no se abre sola
+ * a un actor externo por el hecho de existir.
+ */
+export function supplierScopeFor(table: string, supplierId: string | null): SupplierScope {
+  if (!supplierId) return { kind: "denied" };
+  if (table === "supplier") return { kind: "own", field: "_id", supplierId };
+  if (SUPPLIER_OWNED_TABLES.has(table)) return { kind: "own", field: "supplier", supplierId };
+  if (SUPPLIER_SHARED_TABLES.has(table)) return { kind: "shared" };
+  return { kind: "denied" };
+}
+
 export type PartnerScope =
   | { kind: "denied" }
   | { kind: "shared" }
@@ -1681,11 +1728,30 @@ export function sellerCanReadTable(table: string): boolean {
  * queda atrás suele ser la exportación, que es la que se lleva TODO—.
  */
 export function assertCanReadTable(
-  ctx: { role: AppRole; sellerId?: string | null },
+  ctx: {
+    role: AppRole;
+    sellerId?: string | null;
+    partnerId?: string | null;
+    isPartnerMember?: boolean;
+    supplierId?: string | null;
+  },
   table: string
 ): void {
   // El ámbito del socio lo aplica `buildListFilter`; su rango fallaría aquí.
   if (esDeSocio(ctx)) return;
+  /**
+   * Y el del proveedor, por lo mismo (0085).
+   *
+   * «La compuerta se evalúa ANTES del ámbito» es el primer riesgo transversal
+   * del plan: meter una tabla en el ámbito de un actor NO la abre, porque este
+   * rango la rechaza antes de que el filtro por fila llegue a aplicarse. Y el
+   * proveedor tiene el rango más bajo que hay, así que le pasaría con todas.
+   *
+   * La salida es la misma que con el socio: saltar la compuerta y dejar que
+   * decida `supplierScopeFor`, que DENIEGA POR DEFECTO. Lo que se abre es esa
+   * lista corta, no el rango.
+   */
+  if (esDeProveedor(ctx)) return;
   // Y el del vendedor sobre lo suyo, acotado fila a fila por `seller-scope.ts`.
   if (ctx.role === "seller" && sellerCanReadTable(table)) return;
 
