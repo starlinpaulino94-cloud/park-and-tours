@@ -480,6 +480,15 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0088 — la hoja de ruta, acotada y con hora",
+    // `loadRunSheet` devolvía nombres, habitaciones y teléfonos de cualquier
+    // ruta a cualquiera con sesión. Acotarla exige saber de quién es cada
+    // parada, y eso solo se sabía uniendo con la ruta.
+    columns: [
+      ["pickup", ["supplier_id", "service_date", "marked_at", "marked_by", "marked_via"]],
+    ],
+  },
+  {
     migration: "0087 — aceptar o rechazar, con plazo y número",
     // El eje del proveedor va aparte del de la operadora: `status` dice lo que
     // sabe la casa, `acceptance` lo que contestó él. Con una sola columna,

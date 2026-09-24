@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { PageHeader } from "@/components/tf/page-header";
@@ -187,6 +188,23 @@ export default function ProveedorServiciosPage() {
             ) },
             { key: "punto_de_encuentro", header: "Punto de encuentro", render: (s: Servicio) => (
               s.punto_de_encuentro || <span className="text-muted-foreground">—</span>
+            ) },
+            /**
+             * La hoja de ruta, solo para las RUTAS y solo cuando están por
+             * delante. Un enlace a la hoja de un servicio de hace un mes sería
+             * un enlace a una lista de clientes que ya no hace falta ver — y el
+             * servidor lo rechazaría, así que enseñarlo solo enseña un botón
+             * que no funciona.
+             */
+            { key: "hoja", header: "", render: (s: Servicio) => (
+              s.tipo === "ruta" && ventana === "proximos" ? (
+                <Link
+                  href={`/proveedor/hoja-de-ruta/${s._id}`}
+                  className="text-sm font-medium underline underline-offset-4"
+                >
+                  Hoja de ruta
+                </Link>
+              ) : null
             ) },
             /**
              * «—» y no «0 pax» cuando no hay número: un cero dice que no va

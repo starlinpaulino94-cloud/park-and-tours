@@ -3080,3 +3080,69 @@ Y la tabla dice dos cosas más que no se preguntaban:
   saber quién define cada objeto por primera vez se leen TODAS las migraciones,
   también las anteriores a la 0021 — sin eso, `can_read_partner` parecía nacer
   en 0072 y habría dado por ejecutada una migración que igual no se ejecutó.
+
+### Fase 8.5 — la hoja de ruta del chofer, y el despacho que solo pedía sesión
+- **TRES RUTAS BAJO `/api/operations/` EXIGÍAN SESIÓN Y NADA MÁS**: el despacho
+  del día, rehacer las rutas de recogida y la hoja de ruta. Lo que devuelven o
+  mueven son los clientes del día con su hotel, y a qué hora pasa el transporte
+  a buscarlos.
+- **Y `loadRunSheet` no recibía ningún actor.** `loadRunSheet(companyId, routeId)`
+  devolvía, por parada, el nombre del cliente, su hotel, su habitación y su
+  teléfono, de CUALQUIER ruta que se le pidiera. Mientras los únicos con sesión
+  eran empleados de la operadora eso era un permiso que faltaba; desde 0073 hay
+  tour centers con cuenta y desde 0084 proveedores, así que era **la lista de
+  clientes de la operadora a un identificador de distancia** — y en manos del
+  actor con más datos de terceros a tiro.
+- **El ámbito va en el SERVICIO, no en la ruta HTTP.** La hoja se lee desde la
+  pantalla interna y desde el portal del proveedor: una comprobación por
+  llamante es una comprobación que alguien se deja.
+- **Y se comprueba por INVENTARIO**, no ruta por ruta: lo que se cierra no son
+  tres ficheros, es la idea de que bajo `operations/` vive lo de la casa. Rango
+  de operaciones y nada de actores externos, comprobado recorriendo el
+  directorio.
+- **Aquí SÍ salen los datos del cliente, y es deliberado.** En «Mis servicios»
+  no sale ni un nombre, y es correcto: allí el proveedor mira qué le toca hacer.
+  En la hoja de ruta está recogiendo a esas personas, así que necesita saber a
+  quién busca, en qué habitación está y a qué teléfono llamar. Lo que se acota
+  no es esconder campos: es **cuándo y cuánto**.
+- **Solo sus rutas, y solo alrededor del servicio.** Doce horas por delante y
+  doce por detrás. Sin ventana, la hoja de ruta no es la hoja del día: es el
+  histórico de clientes de la operadora, con teléfono, descargable cuando
+  quiera. Y **una ruta sin fecha NO abre** — lo contrario de lo que pide el
+  cuerpo, porque «sin fecha» querría decir «siempre».
+- **Cada apertura del proveedor queda anotada, no solo las que fallan.** Es una
+  lectura de datos personales de gente que no es suya, y una bitácora que solo
+  apunta los intentos fallidos no responde «quién vio esta lista», que es la
+  única pregunta que se hace cuando un teléfono se filtra.
+- **De quién es cada parada, POR COLUMNA.** Cuarta vez que aparece el patrón
+  —la fecha de la comisión (0070), el proveedor en recursos (0085), la fecha de
+  servicio (0086)—: un filtro sobre una columna que no existe no da error,
+  devuelve la empresa entera. Aquí eso serían los clientes del día de todos los
+  proveedores. Con las dos mitades del disparador, porque reasignar una ruta
+  tiene que llevarse sus paradas: si no, el chofer anterior sigue viendo los
+  clientes de un servicio que ya no es suyo.
+- **«RECOGIDO» Y «NO-SHOW» ESTABAN EN EL ESQUEMA DESDE 0011 Y NADIE LOS
+  ESCRIBÍA.** La operadora se enteraba de que un cliente no bajó cuando ese
+  cliente llamaba a reclamar. Ahora se marcan desde el móvil del chofer, con la
+  hora y con el nombre de quien marcó (0088).
+- **Y un no-show no es un dato, es una ACUSACIÓN**: dice que alguien pagó, no se
+  presentó y no le toca reembolso. Por eso se guarda la hora al lado de la
+  prevista —que es lo que dice si se esperó—, se anota con severidad de aviso, y
+  **no se bloquea** marcarlo antes de tiempo: un chofer que no puede marcar deja
+  la hoja a medias y la operadora se queda sin saber qué pasó, que es peor que
+  una marca temprana anotada como tal.
+- **Sin hora prevista, no se dice que no esperó.** `null` y no `false`: inventar
+  esa respuesta sería inventar la acusación que luego se discute.
+- **Cancelar no es del chofer.** Solo dos marcas. Una parada cancelada no se
+  marca: el cliente avisó, y ponerle un no-show le cuelga un incumplimiento a
+  quien hizo las cosas bien.
+- **La pantalla es de pulgar, no de ratón.** El chofer está parado en la puerta
+  de un hotel a las siete de la mañana con una mano en el volante: bloques
+  grandes y dos botones grandes, no filas de tabla. Y el teléfono es un enlace
+  `tel:`, porque con el motor encendido copiar un número no es una opción.
+- **Una prueba mía volvió a pasar por el motivo equivocado.** La del orden de
+  las paradas: los datos sembrados ya venían ordenados, así que pasaba idéntica
+  con el orden quitado. Ahora siembra una parada SIN secuencia y con la hora más
+  temprana de todas —la consulta la devuelve primero y tiene que salir la
+  última—. Es la tercera ola seguida en que aparece la misma familia.
+- **Mutación: cuarenta y una, las cuarenta y una muertas.**

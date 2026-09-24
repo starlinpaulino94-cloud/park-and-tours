@@ -1,5 +1,10 @@
 import "server-only";
-import { requireAtLeast, tenantCreate, tenantQuery, tenantUpdate, type TenantContext } from "@/lib/tenant";
+import {
+  requireAtLeast, tenantCreate, tenantQuery, tenantUpdate,
+  TenantError, esDeProveedor, esInterno, type TenantContext,
+} from "@/lib/tenant";
+import { hojaAbierta, ordenarParadas } from "@/lib/hoja-de-ruta";
+import { writeAudit } from "@/lib/audit";
 import { companyTimeZone, dayBounds, wallTimeOf } from "@/lib/time";
 import { assignmentBlock, certificationsToRenew, dayOf, type CertificationLike } from "@/lib/hr";
 import {
@@ -417,6 +422,8 @@ export async function buildDayRoutes(
 /* ═════════════════════════════════════════════════════════ hoja de ruta ══ */
 
 export interface RunSheetStop {
+  /** La parada, para poder marcarla. Sin esto la hoja es solo de lectura. */
+  id: string;
   sequence: number;
   time: string | null;
   planned_time: string | null;
@@ -428,6 +435,9 @@ export interface RunSheetStop {
   phone: string | null;
   status: string | null;
   note: string | null;
+  /** Cuándo y por dónde se marcó el estado actual (0088). */
+  marked_at: string | null;
+  marked_via: string | null;
 }
 
 export interface RunSheet {
@@ -445,7 +455,12 @@ export interface RunSheet {
  * desordenada obliga a decidir el recorrido en la calle, que es justo lo que
  * esta pantalla existe para evitar.
  */
-export async function loadRunSheet(companyId: string, routeId: string): Promise<RunSheet> {
+export async function loadRunSheet(
+  ctx: TenantContext & { companyId: string },
+  routeId: string,
+  ahora: Date = new Date()
+): Promise<RunSheet> {
+  const companyId = ctx.companyId;
   const rutas = await tenantQuery<Record<string, unknown>>(companyId, "pickup_route", {
     _filter: { _id: routeId }, _limit: 1,
     vehicle: true, driver: true, guide: true, zone: true,
@@ -453,6 +468,47 @@ export async function loadRunSheet(companyId: string, routeId: string): Promise<
   });
   const route = rutas[0];
   if (!route) throw Object.assign(new Error("Ruta no encontrada"), { status: 404 });
+
+  /**
+   * EL ÁMBITO SE COMPRUEBA AQUÍ, NO EN LA RUTA HTTP.
+   *
+   * Esta función recibía `companyId` a secas y devolvía nombres, habitaciones y
+   * teléfonos de cualquier ruta que se le pidiera. Mientras los únicos con
+   * sesión eran empleados, eso era un permiso que faltaba; desde 0084 hay
+   * proveedores con cuenta, y pasó a ser la lista de clientes de la operadora a
+   * un identificador de distancia.
+   *
+   * Va aquí y no en el `route.ts` porque la hoja se lee desde tres sitios —la
+   * pantalla interna, el portal del proveedor y el PDF— y una comprobación por
+   * llamante es una comprobación que alguien se deja.
+   */
+  if (esDeProveedor(ctx)) {
+    if (!ctx.supplierId || refId(route.supplier) !== ctx.supplierId) {
+      throw new TenantError("Esta ruta no es tuya", 403);
+    }
+    /**
+     * Y solo alrededor del servicio. Sin ventana, la hoja de ruta es un
+     * histórico de clientes con teléfono que el transportista puede sacar
+     * cuando quiera.
+     */
+    if (!hojaAbierta(route.service_date as string | null, ahora)) {
+      throw new TenantError("Esta hoja de ruta ya no está disponible", 403);
+    }
+    // Es una lectura de datos personales de gente que no es suya: queda
+    // anotada SIEMPRE, no solo cuando falla.
+    await writeAudit({
+      companyId,
+      userId: ctx.userId,
+      action: "supplier.runsheet.open",
+      entityType: "pickup_route",
+      entityId: routeId,
+      description: "El proveedor abrió la hoja de ruta",
+      metadata: { supplier_id: ctx.supplierId },
+    });
+  } else if (!esInterno(ctx)) {
+    // Ni proveedor ni interno —un socio, por ejemplo—: esto no es suyo.
+    throw new TenantError("No tienes acceso a este recurso", 403);
+  }
 
   const pickups = await tenantQuery<Record<string, unknown>>(companyId, "pickup", {
     _filter: { route: routeId }, _limit: 300,
@@ -471,6 +527,7 @@ export async function loadRunSheet(companyId: string, routeId: string): Promise<
         : null;
       const hotelName = String(hotel?.name || "Sin hotel");
       return {
+        id: String(p._id ?? ""),
         sequence: Number(p.sequence) || 0,
         time: (p.pickup_time as string) || (p.planned_time as string) || null,
         planned_time: (p.planned_time as string) || null,
@@ -482,18 +539,16 @@ export async function loadRunSheet(companyId: string, routeId: string): Promise<
         phone: (customer?.phone as string) || (customer?.whatsapp as string) || null,
         status: (p.status as string) ?? null,
         note: (p.notes as string) || null,
+        marked_at: (p.marked_at as string) ?? null,
+        marked_via: (p.marked_via as string) ?? null,
       };
-    })
-    .sort((a, b) => {
-      if (a.sequence && b.sequence && a.sequence !== b.sequence) return a.sequence - b.sequence;
-      if (a.sequence !== b.sequence) return (a.sequence || 9999) - (b.sequence || 9999);
-      return String(a.time ?? "99:99").localeCompare(String(b.time ?? "99:99"));
     });
 
+  const enOrden = ordenarParadas(stops);
   return {
     route,
     departure: (route.departure as Record<string, unknown>) ?? null,
-    stops,
-    paxTotal: stops.reduce((s, x) => s + x.pax, 0),
+    stops: enOrden,
+    paxTotal: enOrden.reduce((s, x) => s + x.pax, 0),
   };
 }

@@ -8448,4 +8448,212 @@ describe("el socio que integra por API", () => {
     const servicio = cuerpoDe("src/lib/respuesta-proveedor.ts");
     expect(servicio).toMatch(/puedeResponder\(fila, ahora\)/);
   });
+
+  /* ════════════ Fase 8.5 · la hoja de ruta del chofer y el despacho cerrado */
+
+  const sql88 = () =>
+    read("supabase/migrations/0088_run_sheet_scope.sql").replace(/^\s*--.*$/gm, "");
+
+  it("BAJO /api/operations/ NO HAY NADA QUE SOLO PIDA SESIÓN", () => {
+    /**
+     * Tres rutas —el despacho del día, rehacer las rutas y la hoja de ruta—
+     * exigían sesión y nada más. Lo que devuelven o mueven son los clientes del
+     * día con su hotel, y a qué hora pasa el transporte a buscarlos.
+     *
+     * Mientras los únicos con sesión eran empleados eso era un permiso que
+     * faltaba. Desde 0073 hay tour centers con cuenta y desde 0084 proveedores,
+     * así que era la operación completa a una petición de distancia.
+     *
+     * Se comprueba por INVENTARIO y no una por una: lo que se cierra no son
+     * tres ficheros, es la idea de que bajo `operations/` vive lo de la casa.
+     */
+    const sinRango: string[] = [];
+    for (const file of walk(path.join(ROOT, "src/app/api/operations"))) {
+      const rel = path.relative(ROOT, file).replace(/\\/g, "/");
+      const src = sinComentariosDe(rel);
+      if (!/requireAtLeast\(ctx, "(operations|manager|admin|owner)"\)/.test(src)) {
+        sinRango.push(`${rel}: sin rango`);
+      }
+      // Y cerrada a los actores externos: el rango no basta, porque el
+      // proveedor y el socio tienen el suyo y algún día alguien subirá uno.
+      if (!/esInterno\(ctx\)/.test(src)) sinRango.push(`${rel}: abierta a actores externos`);
+    }
+    expect(sinRango, "rutas del despacho que solo exigen sesión").toEqual([]);
+  });
+
+  it("LA HOJA DE RUTA SE ACOTA EN EL SERVICIO, no en la ruta HTTP", () => {
+    /**
+     * `loadRunSheet` recibía `companyId` a secas y devolvía nombres,
+     * habitaciones y teléfonos de CUALQUIER ruta que se le pidiera. Se lee
+     * desde la pantalla interna y desde el portal del proveedor: una
+     * comprobación por llamante es una comprobación que alguien se deja.
+     */
+    const servicio = cuerpoDe("src/lib/dispatch-service.ts");
+    const i = servicio.indexOf("export async function loadRunSheet");
+    expect(i, "no existe la hoja de ruta").toBeGreaterThan(-1);
+    const cuerpo = servicio.slice(i, servicio.indexOf("\n  const enOrden", i));
+
+    // Recibe al ACTOR, no una empresa suelta.
+    expect(servicio.slice(i, i + 220)).toMatch(/ctx: TenantContext & \{ companyId: string \}/);
+    // Solo sus rutas.
+    expect(cuerpo).toMatch(/refId\(route\.supplier\) !== ctx\.supplierId/);
+    // Solo alrededor del servicio.
+    expect(cuerpo).toMatch(/if \(!hojaAbierta\(route\.service_date as string \| null, ahora\)\)/);
+    // Y ni proveedor ni interno se queda fuera.
+    expect(cuerpo).toMatch(/\} else if \(!esInterno\(ctx\)\) \{/);
+  });
+
+  it("y CADA APERTURA DEL PROVEEDOR QUEDA ANOTADA, no solo las que fallan", () => {
+    /**
+     * Es una lectura de datos personales de gente que no es suya. Una bitácora
+     * que solo apunta los intentos fallidos no responde «quién vio esta lista»,
+     * que es la única pregunta que se hace cuando un teléfono se filtra.
+     */
+    const servicio = cuerpoDe("src/lib/dispatch-service.ts");
+    const i = servicio.indexOf("if (esDeProveedor(ctx)) {");
+    const rama = servicio.slice(i, servicio.indexOf("} else if (!esInterno(ctx))", i));
+    expect(rama).toMatch(/await writeAudit\(\{/);
+    expect(rama).toMatch(/action: "supplier\.runsheet\.open"/);
+    // Dentro de la rama del proveedor y DESPUÉS de las dos comprobaciones: una
+    // anotación antes diría que vio una lista que no llegó a ver.
+    expect(rama.indexOf("hojaAbierta")).toBeLessThan(rama.indexOf("writeAudit"));
+  });
+
+  it("DE QUIÉN ES CADA PARADA, POR COLUMNA", () => {
+    /**
+     * Cuarta vez que aparece —la fecha de la comisión (0070), el proveedor en
+     * recursos (0085), la fecha de servicio (0086)—: la capa de consulta no
+     * sabe filtrar por columna de una tabla unida, y un filtro sobre una
+     * columna que no existe NO da error, devuelve la empresa entera. Aquí eso
+     * serían los clientes del día de todos los proveedores.
+     */
+    const sql = sql88();
+    expect(sql).toMatch(/alter table pickup\s*\n\s*add column if not exists supplier_id\s+uuid references supplier\(id\)/);
+    expect(sql).toMatch(/add column if not exists service_date timestamptz;/);
+    expect(sql).toMatch(/on pickup \(organization_id, supplier_id, service_date desc\)/);
+
+    // Y la política, en la misma entrega: aquí con más motivo que en ninguna.
+    expect(sql).toMatch(/create policy tenant_select on public\.pickup for select/);
+    expect(sql).toMatch(/app\.can_read_supplier\(supplier_id\)/);
+  });
+
+  it("y lo rellena un disparador EN LAS DOS MITADES", () => {
+    /**
+     * Una al escribir la parada, otra cuando la RUTA cambia de proveedor o de
+     * fecha. Con solo la primera, reasignar una ruta deja al chofer anterior
+     * viendo los clientes de un servicio que ya no es suyo — que es
+     * exactamente lo que esta columna existe para impedir.
+     */
+    const sql = sql88();
+    const i = sql.indexOf("create or replace function app.fill_pickup_from_route");
+    const fn = sql.slice(i, sql.indexOf("$fn$;", i));
+    expect(fn, "el disparador corre y no escribe nada")
+      .toMatch(/into new\.supplier_id, new\.service_date/);
+    // Sin ruta, sin proveedor: heredar el anterior dejaría la parada colgando
+    // de quien ya no la lleva.
+    expect(fn).toMatch(/new\.supplier_id\s+:= null;/);
+    expect(sql).toMatch(/create trigger pickup_supplier\b(?!_)/);
+    expect(sql).toMatch(/before insert or update of route_id on pickup\b(?!_)/);
+
+    const j = sql.indexOf("create or replace function app.sync_pickup_from_route");
+    const sync = sql.slice(j, sql.indexOf("$fn2$;", j));
+    expect(sync).toMatch(/set supplier_id\s+= new\.supplier_id,/);
+    expect(sync).toMatch(/service_date = new\.service_date/);
+    expect(sql).toMatch(/create trigger pickup_route_sync_pickups\b(?!_)/);
+    /**
+     * Con `when` y no `update of`: `supplier_id` de la ruta la escribe un
+     * disparador `before` (0085), y `update of` mira las columnas de la
+     * SENTENCIA, no lo que los disparadores cambiaron.
+     */
+    expect(sql).toMatch(/for each row when \(new\.supplier_id is distinct from old\.supplier_id\s*\n\s*or new\.service_date is distinct from old\.service_date\)/);
+
+    // Y lo que ya existía se rellena, o el primer chofer ve su hoja vacía.
+    expect(sql).toMatch(/^update pickup p\s*\n\s*set supplier_id\s+= r\.supplier_id,/m);
+  });
+
+  it("RECOGIDO Y NO-SHOW, CON HORA Y CON NOMBRE", () => {
+    /**
+     * Los dos estados estaban en el esquema desde 0011 y NADIE los escribía: la
+     * operadora se enteraba de que un cliente no bajó cuando llamaba a
+     * reclamar. Y un no-show es una acusación —«pagó, no se presentó, no le
+     * toca reembolso»—, así que sin hora la discusión es la palabra del chofer
+     * contra la del turista.
+     */
+    const sql = sql88();
+    for (const col of ["marked_at", "marked_by", "marked_via"]) {
+      expect(sql, `la marca no guarda ${col}`)
+        .toMatch(new RegExp(`add column if not exists ${col}\\b`));
+    }
+    expect(sql).toMatch(/check \(marked_via is null or marked_via in \('chofer','operacion'\)\)/);
+
+    const servicio = cuerpoDe("src/lib/hoja-de-ruta-service.ts");
+    expect(servicio).toMatch(/marked_at: marcadoEn, marked_by: ctx\.userId \?\? null, marked_via: via/);
+    // Y el no-show se anota como AVISO: es lo que alguien busca cuando el
+    // turista reclama.
+    expect(servicio).toMatch(/severity: marca === "no_show" \? "warning" : "info"/);
+    expect(servicio).toMatch(/espero_lo_suficiente: espero/);
+  });
+
+  it("y la identidad de la parada va en el WHERE", () => {
+    /**
+     * Comprobar arriba y escribir después deja una rendija: la parada puede
+     * cambiar de ruta en ese hueco. En el WHERE no hay rendija, y dos toques
+     * del mismo botón no son dos marcas distintas.
+     */
+    const servicio = cuerpoDe("src/lib/hoja-de-ruta-service.ts");
+    expect(servicio).toMatch(/\.neq\("status", "cancelled"\)/);
+    expect(servicio).toMatch(/if \(esDeProveedor\(ctx\)\) escritura = escritura\.eq\("supplier_id", ctx\.supplierId as string\)/);
+    // Y las MISMAS reglas que para abrir la hoja: si la hoja se cierra a las
+    // doce horas y las marcas siguieran abiertas, la ventana no serviría.
+    expect(servicio).toMatch(/if \(!hojaAbierta\(fila\.service_date, ahora\)\)/);
+  });
+
+  it("el chofer marca DOS cosas, y cancelar no es una de ellas", () => {
+    // Cancelar una parada es una decisión comercial con un reembolso detrás.
+    const dominio = cuerpoDe("src/lib/hoja-de-ruta.ts");
+    expect(dominio).toMatch(/export const MARCAS_DEL_CHOFER = \["picked_up", "no_show"\] as const;/);
+    expect(dominio).toMatch(/return estado !== "cancelled";/);
+    const ruta = cuerpoDe("src/app/api/proveedor/hoja-de-ruta/route.ts");
+    expect(ruta).toMatch(/if \(!esMarcaDelChofer\(marca\)\) throw new TenantError/);
+  });
+
+  it("SIN FECHA LA HOJA NO SE ABRE", () => {
+    /**
+     * Es lo contrario de lo que pide el cuerpo —«será un dato que falta, déjalo
+     * pasar»— y es a propósito: sin fecha no hay ventana que aplicar, así que
+     * «sin fecha» querría decir «siempre», y la hoja pasaría a ser un listado
+     * de clientes sin caducidad.
+     */
+    const dominio = cuerpoDe("src/lib/hoja-de-ruta.ts");
+    const i = dominio.indexOf("export function hojaAbierta");
+    const cuerpo = dominio.slice(i, dominio.indexOf("\n}", i));
+    expect(cuerpo).toMatch(/if \(!servicio\) return false;/);
+  });
+
+  it("la pantalla del chofer existe y se llega desde sus servicios", () => {
+    expect(existe("src/app/proveedor/hoja-de-ruta/[id]/page.tsx")).toBe(true);
+    const servicios = cuerpoDe("src/app/proveedor/servicios/page.tsx");
+    /**
+     * Solo para las RUTAS y solo para lo que viene: un enlace a la hoja de un
+     * servicio de hace un mes es un enlace a una lista de clientes que ya no
+     * hace falta ver, y el servidor lo rechazaría — así que enseñarlo solo
+     * enseña un botón roto.
+     */
+    expect(servicios).toMatch(/s\.tipo === "ruta" && ventana === "proximos"/);
+    expect(servicios).toMatch(/\/proveedor\/hoja-de-ruta\//);
+  });
+
+  it("y sus botones son de pulgar, no de ratón", () => {
+    /**
+     * El chofer está parado en la puerta de un hotel a las siete de la mañana
+     * con una mano en el volante. Una tabla en un móvil obliga a hacer zoom
+     * para pulsar, y eso acaba en marcas puestas en la fila de al lado.
+     */
+    const pantalla = read("src/app/proveedor/hoja-de-ruta/[id]/page.tsx");
+    expect((pantalla.match(/min-h-11/g) || []).length,
+      "los dos botones de marcar tienen que ser grandes").toBeGreaterThanOrEqual(2);
+    // Y el teléfono es un enlace, no un número suelto: con el motor encendido,
+    // copiar un número no es una opción.
+    expect(pantalla).toMatch(/href=\{`tel:\$\{p\.phone\}`\}/);
+  });
 });

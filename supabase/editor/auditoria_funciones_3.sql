@@ -16,7 +16,11 @@ with o(mig,tipo,nom,propio) as (values
   ('0087','trg','departure_resource_token_revoke',true),
   ('0087','trg','pickup_route_token_revoke',true),
   ('0087','trg','departure_resource_token_cleanup',true),
-  ('0087','trg','pickup_route_token_cleanup',true)
+  ('0087','trg','pickup_route_token_cleanup',true),
+  ('0088','fn','app.fill_pickup_from_route',true),
+  ('0088','fn','app.sync_pickup_from_route',true),
+  ('0088','trg','pickup_supplier',true),
+  ('0088','trg','pickup_route_sync_pickups',true)
 )
 select o.mig as migracion,
        case when o.tipo = 'fn' then 'funcion ' else 'disparador ' end || o.nom as objeto,

@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant } from "@/lib/tenant";
+import { requireTenant, requireAtLeast, TenantError, esInterno } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import { loadDispatch } from "@/lib/dispatch-service";
 
@@ -14,10 +14,24 @@ import { loadDispatch } from "@/lib/dispatch-service";
  * respuesta: cuando estaba todo junto no había forma de probar que una guagua
  * en el tour de las 8 y en el de las 2 no es un conflicto, y durante meses se
  * marcó en rojo todas las mañanas.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * EXIGÍA SESIÓN Y NADA MÁS, Y DEVUELVE EL DÍA ENTERO CON SUS CLIENTES
+ *
+ * `loadDispatch` expande las reservas con su cliente y su hotel. Mientras los
+ * únicos con sesión eran empleados eso era un permiso que faltaba; desde 0084
+ * hay proveedores con cuenta y desde 0073 tour centers, así que era la
+ * operación completa del día —con nombres y hoteles— a una petición de
+ * distancia.
+ *
+ * El despacho es de la casa: no se acota, se CIERRA. Un proveedor ve lo suyo
+ * por su portal, y un socio no tiene nada que hacer aquí.
  */
 export async function GET(req: NextRequest) {
   try {
     const ctx = await requireTenant();
+    if (!esInterno(ctx)) throw new TenantError("No tienes acceso a este recurso", 403);
+    requireAtLeast(ctx, "operations");
     return ok(await loadDispatch(ctx, req.nextUrl.searchParams.get("date")));
   } catch (err) {
     return fail(err);
