@@ -1,193 +1,58 @@
 #!/usr/bin/env node
 /**
- * Escribe `supabase/editor/auditoria_migraciones_N.sql` a partir del inventario.
+ * Escribe `supabase/editor/auditoria_migraciones*.sql` a partir del inventario.
  *
  * ────────────────────────────────────────────────────────────────────────────
- * POR QUÉ NO SE ESCRIBE A MANO
+ * PARA QUÉ
  *
- * Ya existe `verify-migrations.mjs`, que pregunta lo mismo a la base — pero
- * necesita la llave de servicio en el entorno, y quien aplica las migraciones a
- * mano lo está haciendo desde el editor SQL de Supabase, donde no hay Node ni
- * variables de entorno. Esto le da la misma respuesta pegando un texto.
+ * Responde «¿qué migraciones me faltan por ejecutar?» desde el editor SQL de
+ * Supabase. `verify-migrations.mjs` responde lo mismo, pero necesita la llave
+ * de servicio en el entorno — y quien aplica las migraciones a mano lo hace
+ * desde el editor, donde no hay Node ni variables de entorno.
  *
- * Y se GENERA porque una copia escrita a mano se queda atrás a la primera
- * migración nueva, y entonces dice «todo aplicado» sin haber mirado lo último
- * — que es justo el verde del que nadie debe fiarse. `schema-contract.test.ts`
- * comprueba que lo que hay en disco es lo que este script produce hoy.
+ * Se GENERA porque una copia escrita a mano se queda atrás a la primera
+ * migración nueva, y entonces dice «todo aplicado» sin haber mirado lo último.
+ * `schema-contract.test.ts` comprueba que lo de disco es lo que esto produce.
  *
  * ────────────────────────────────────────────────────────────────────────────
- * POR QUÉ EN VARIOS TROZOS
+ * TRES COSAS APRENDIDAS A BASE DE QUE FALLARA EN EL EDITOR
  *
- * El editor de Supabase trunca los pegados largos y no avisa: sale «syntax
- * error at end of input» o, peor, corre la mitad. Seiscientas comprobaciones no
- * caben en uno solo.
+ *  1. LA CONSULTA VA PRIMERO y la explicación detrás del punto y coma final.
+ *     La primera vez que esto falló, lo que había llegado al editor era solo la
+ *     cabecera de comentarios: «syntax error at end of input», línea 0, que no
+ *     se parece en nada a la causa. Con el orden al revés, un pegado a medias
+ *     todavía trae la consulta.
+ *  2. CORTO. El tope real del editor está por debajo de lo que parecía, así que
+ *     cada trozo se aprieta y la consulta se escribió con lo justo.
+ *  3. NADA DE EMOJI. `⚠️` lleva detrás un selector de variación (U+FE0F) que
+ *     algunos portapapeles parten por la mitad, y entonces lo que se pega ya no
+ *     es lo que se copió. Los estados se dicen con palabras.
  *
- * Uso:  node scripts/build-auditoria-migraciones.mjs
+ * Uso:  node scripts/build-auditoria-migraciones.mjs [directorio]
  */
 import fs from "node:fs";
 import path from "node:path";
 import { MIGRATION_CHECKS } from "./migration-checks.mjs";
 
 /**
- * Dónde escribir. Por defecto, su sitio; con un argumento, otro directorio.
+ * Dónde escribir. Por defecto su sitio; con un argumento, otro directorio.
  *
- * Ese argumento existe para la PRUEBA que comprueba que lo de disco está al
- * día: si regenerase encima de los ficheros buenos, otra prueba que esté
- * leyéndolos en ese instante vería uno a medio escribir. Pasó una vez, y una
- * prueba que falla una de cada cuatro veces es peor que no tenerla — se acaba
- * volviendo a ejecutar hasta que pasa.
+ * Ese argumento existe para la prueba que comprueba que lo de disco está al
+ * día: regenerando encima de los ficheros buenos, otra prueba que los esté
+ * leyendo en ese instante ve uno a medio escribir. Pasó, y una prueba que falla
+ * una de cada cuatro veces se acaba volviendo a ejecutar hasta que pasa.
  */
 const SALIDA = path.resolve(process.cwd(), process.argv[2] || "supabase/editor");
 fs.mkdirSync(SALIDA, { recursive: true });
-/** El editor trunca por encima de 8000; se deja margen para la cabecera. */
-const TOPE = 6800;
 
-const comilla = (s) => `'${String(s).replace(/'/g, "''")}'`;
-
-/** Una fila por objeto que la migración tiene que haber dejado en la base. */
-function filasDe(grupo) {
-  const filas = [];
-  for (const tabla of grupo.tables ?? []) {
-    filas.push([grupo.migration, "tabla", tabla, ""]);
-  }
-  for (const [tabla, columnas] of grupo.columns ?? []) {
-    // Las columnas de una tabla viajan juntas en un solo texto: una fila por
-    // columna multiplicaría por seis el tamaño del pegado, y el editor lo corta.
-    filas.push([grupo.migration, "columnas", tabla, columnas.join(",")]);
-  }
-  for (const nombre of grupo.rpc ?? []) {
-    filas.push([grupo.migration, "funcion", nombre, ""]);
-  }
-  for (const [tabla, columna, valor] of grupo.enums ?? []) {
-    filas.push([grupo.migration, "valor", tabla, `${columna}=${valor}`]);
-  }
-  return filas;
-}
-
-const CABECERA = (n, total) => `-- Auditoría de migraciones · parte ${n} de ${total}
---
--- GENERADO por \`scripts/build-auditoria-migraciones.mjs\`. No lo edites a mano:
--- se regenera y perderías el cambio, y hay una prueba que lo comprueba.
---
--- QUÉ RESPONDE
---   ¿Qué migraciones me faltan por ejecutar?
---
--- Pega este trozo en el editor SQL de Supabase y ejecútalo. Cada fila es una
--- migración: «✅ aplicada» o «❌ FALTA», y en la tercera columna exactamente lo
--- que no encontró. Solo LEE: no escribe, no borra, no consume nada.
---
--- Un «PARCIAL» quiere decir que la migración se aplicó a medias — casi siempre
--- porque el editor truncó el pegado. Se vuelve a ejecutar entera: todas están
--- escritas para poder correrse dos veces.
---
--- Ejecuta las ${total} partes; cada una cubre un tramo distinto.
-
-`;
-
-const PIE = `
-),
-objetivo as (
-  select e.migracion, e.tipo, e.objeto, e.detalle,
-         nullif(trim(both from col), '') as columna
-    from esperado e
-    left join lateral unnest(
-           case when e.tipo = 'columnas' then string_to_array(e.detalle, ',')
-                else array[null]::text[] end
-         ) as col on true
-),
-falta as (
-  select o.migracion,
-         case o.tipo
-           when 'funcion' then 'función ' || o.objeto || '()'
-           when 'valor'   then o.objeto || '.' || o.detalle
-           else o.objeto || coalesce('.' || o.columna, '')
-         end as que
-    from objetivo o
-   where case o.tipo
-           when 'funcion' then not exists (
-             select 1 from pg_proc p
-               join pg_namespace n on n.oid = p.pronamespace
-              where n.nspname = 'public' and p.proname = o.objeto)
-           -- Un valor admitido: o es una etiqueta de un tipo enum de verdad, o
-           -- lo admite una restricción \`check\`. El esquema usa las dos formas,
-           -- así que se miran las dos. Darlo por bueno con solo comprobar que
-           -- la tabla existe sería una comprobación que parece una garantía y
-           -- no lo es.
-           when 'valor' then
-             not exists (
-               select 1
-                 from information_schema.columns c
-                 join pg_type ty on ty.typname = c.udt_name
-                 join pg_enum en on en.enumtypid = ty.oid
-                where c.table_schema = 'public' and c.table_name = o.objeto
-                  and c.column_name = split_part(o.detalle, '=', 1)
-                  and en.enumlabel = split_part(o.detalle, '=', 2))
-             and not exists (
-               select 1 from pg_constraint k
-                where k.conrelid = to_regclass('public.' || o.objeto)
-                  and k.contype = 'c'
-                  and pg_get_constraintdef(k) like '%' || split_part(o.detalle, '=', 1) || '%'
-                  and pg_get_constraintdef(k) like '%''' || split_part(o.detalle, '=', 2) || '''%')
-           else not exists (
-             select 1 from information_schema.tables t
-              where t.table_schema = 'public' and t.table_name = o.objeto)
-             or (o.columna is not null and not exists (
-             select 1 from information_schema.columns c
-              where c.table_schema = 'public' and c.table_name = o.objeto
-                and c.column_name = o.columna))
-         end
-),
-total as (
-  select migracion, count(*) as objetos
-    from objetivo group by migracion
-),
-ausentes as (
-  select migracion, count(*) as n,
-         string_agg(que, ', ' order by que) as detalle
-    from falta group by migracion
-)
-select t.migracion,
-       case when a.n is null then '✅ aplicada'
-            when a.n >= t.objetos then '❌ FALTA ENTERA'
-            else '⚠️ PARCIAL — vuelve a ejecutarla' end as estado,
-       coalesce(a.detalle, '') as lo_que_no_esta
-  from total t
-  left join ausentes a on a.migracion = t.migracion
- order by t.migracion;
-`;
-
-/**
- * EL RESUMEN: un solo pegado que responde la pregunta de cabecera.
- *
- * Por migración se comprueban sus tablas, sus funciones, sus valores y la
- * ÚLTIMA columna que su fichero .sql escribe. Lo último es lo que importa: el
- * modo en que estas migraciones fallan de verdad es que el editor trunque el
- * pegado, y entonces lo que falta es siempre el final. Si el último objeto está,
- * el fichero se ejecutó entero.
- *
- * No sustituye al detalle: una migración que salga en rojo aquí se mira en las
- * partes, que sí dicen columna por columna qué falta.
- */
-function ultimoObjetoDe(grupo, textoSql) {
-  const candidatos = [];
-  for (const [tabla, columnas] of grupo.columns ?? []) {
-    for (const col of columnas) candidatos.push([tabla, col]);
-  }
-  if (candidatos.length === 0) return null;
-  // Por posición en el fichero, que en un script lineal ES el orden de
-  // ejecución. Sin fichero —no debería pasar— se queda el último declarado.
-  if (!textoSql) return candidatos[candidatos.length - 1];
-  let mejor = candidatos[candidatos.length - 1];
-  let mejorPos = -1;
-  for (const [tabla, col] of candidatos) {
-    const pos = textoSql.lastIndexOf(col);
-    if (pos > mejorPos) { mejorPos = pos; mejor = [tabla, col]; }
-  }
-  return mejor;
-}
+/** Bytes de comprobaciones por trozo, con margen de sobra. */
+const TOPE = 3000;
 
 const MIGRACIONES_DIR = path.resolve(process.cwd(), "supabase/migrations");
 const ficheros = fs.readdirSync(MIGRACIONES_DIR).filter((f) => f.endsWith(".sql"));
+const comilla = (s) => `'${String(s).replace(/'/g, "''")}'`;
+const numeroDe = (migration) => /^[\d/]+/.exec(migration)?.[0] ?? migration;
+
 function sqlDe(migration) {
   // El inventario nombra «0034/0035 — …»: vale el primero de los dos.
   const numero = /^(\d{4})/.exec(migration)?.[1];
@@ -195,27 +60,169 @@ function sqlDe(migration) {
   return archivo ? fs.readFileSync(path.join(MIGRACIONES_DIR, archivo), "utf8") : null;
 }
 
-// ── el reparto en trozos ─────────────────────────────────────────────────────
-// Se corta POR MIGRACIÓN y nunca por dentro de una: media migración en un trozo
-// y media en otro daría dos veredictos distintos sobre la misma, y los dos
-// equivocados.
+/**
+ * La ÚLTIMA columna que el fichero de la migración escribe.
+ *
+ * Es lo que el resumen comprueba: estas migraciones fallan porque el editor
+ * trunca el pegado, y entonces lo que falta es el final. Por posición en el
+ * texto, que en un script lineal es el orden de ejecución.
+ */
+function ultimaColumnaDe(grupo) {
+  const candidatos = [];
+  for (const [tabla, columnas] of grupo.columns ?? []) {
+    for (const col of columnas) candidatos.push([tabla, col]);
+  }
+  if (candidatos.length === 0) return null;
+  const texto = sqlDe(grupo.migration);
+  if (!texto) return candidatos[candidatos.length - 1];
+  let mejor = candidatos[candidatos.length - 1];
+  let mejorPos = -1;
+  for (const [tabla, col] of candidatos) {
+    const pos = texto.lastIndexOf(col);
+    if (pos > mejorPos) { mejorPos = pos; mejor = [tabla, col]; }
+  }
+  return mejor;
+}
+
 const grupos = [...MIGRATION_CHECKS].sort((a, b) => a.migration.localeCompare(b.migration));
+
+/* ═══════════════════════════════════ el resumen: un solo pegado */
+
+/**
+ * El resumen NO distingue «falta entera» de «a medias».
+ *
+ * Con una o dos comprobaciones por migración esa distinción no diría nada, y el
+ * agregado que hace falta para calcularla ocupa más que todas las
+ * comprobaciones juntas. Quien necesite el detalle tiene las partes.
+ */
+const resumen = [];
+const sinComprobacion = new Set();
+for (const grupo of grupos) {
+  const mig = numeroDe(grupo.migration);
+  const conColumnas = new Set((grupo.columns ?? []).map(([t]) => t));
+  const antes = resumen.length;
+  for (const tabla of grupo.tables ?? []) {
+    if (!conColumnas.has(tabla)) resumen.push(`  (${comilla(mig)},${comilla(tabla)},'')`);
+  }
+  const ultima = ultimaColumnaDe(grupo);
+  if (ultima) resumen.push(`  (${comilla(mig)},${comilla(ultima[0])},${comilla(ultima[1])})`);
+  /**
+   * Una migración que no deja tabla ni columna —solo cambia una función o una
+   * política— NO se calla: sale con su fila diciendo que aquí no se puede
+   * comprobar. Omitirla haría que «no aparece» se leyera como «nada que hacer»,
+   * que es justo lo contrario de lo que pasa.
+   */
+  if (resumen.length === antes) {
+    resumen.push(`  (${comilla(mig)},'','')`);
+    sinComprobacion.add(mig);
+  }
+}
+
+/**
+ * Y las migraciones que el inventario ni siquiera nombra: las que solo tocan
+ * funciones o políticas. Van en el pie, para que quien lea el resultado sepa
+ * que esas hay que mirarlas a mano y no dé por hecho que están.
+ */
+const numerosInventariados = new Set(grupos.flatMap((g) => numeroDe(g.migration).split("/")));
+const fueraDelInventario = ficheros
+  .map((f) => f.slice(0, 4))
+  .filter((n) => Number(n) >= 21 && !numerosInventariados.has(n))
+  .sort();
+
+fs.writeFileSync(
+  path.join(SALIDA, "auditoria_migraciones.sql"),
+  `-- Que migraciones me faltan por ejecutar. GENERADO: no lo edites a mano.
+-- Pegalo ENTERO en el editor SQL de Supabase. Solo lee, no escribe nada.
+
+with e(mig,obj,col) as (values
+${resumen.join(",\n")}
+)
+select e.mig as migracion,
+       case when to_regclass('public.' || e.obj) is null
+              then 'FALTA - no existe ' || e.obj
+            when e.obj = '' then 'SIN COMPROBACION AUTOMATICA - mirala a mano'
+            when e.col <> '' and not exists (
+              select 1 from information_schema.columns c
+               where c.table_schema = 'public' and c.table_name = e.obj
+                 and c.column_name = e.col)
+              then 'FALTA - ' || e.obj || ' sin ' || e.col
+            else 'OK' end as estado
+  from e order by 1, 2;
+
+-- Si el pegado llego entero, la linea de arriba termina en "order by 1, 2;".
+--
+-- Comprueba, de cada migracion, la ULTIMA columna que su fichero escribe (y
+-- las tablas que no declaran columnas). Lo ultimo es lo que importa: estas
+-- migraciones fallan porque el editor trunca el pegado, y entonces lo que
+-- falta es siempre el final.
+--
+-- "SIN COMPROBACION AUTOMATICA": esa migracion no deja tabla ni columna, solo
+-- cambia una funcion o una politica. Se mira con su propio fichero de
+-- verificacion en supabase/editor/.
+--
+-- Y estas migraciones no salen arriba por lo mismo, no hay nada que preguntar
+-- por catalogo de tablas: ${fueraDelInventario.join(", ") || "ninguna"}
+--
+-- Para el detalle columna por columna: auditoria_migraciones_N.sql
+`
+);
+
+/* ═══════════════════════════════════ el detalle: todo, en trozos */
+
+/** El final de la consulta del detalle. Cada trozo lo lleva entero. */
+const PIE = `
+), obj as (
+  select e.mig, e.tipo, e.obj, nullif(trim(both from c), '') as col
+    from e left join lateral unnest(
+      case when e.tipo = 'col' then string_to_array(e.det, ',')
+           else array[null]::text[] end) as c on true
+), falta as (
+  select o.mig, o.obj || coalesce('.' || o.col, '') as que from obj o
+   where case when o.tipo = 'fn' then not exists (
+                select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                 where n.nspname = 'public' and p.proname = o.obj)
+              when o.tipo = 'val' then not exists (
+                select 1 from pg_constraint k
+                 where k.conrelid = to_regclass('public.' || o.obj) and k.contype = 'c'
+                   and pg_get_constraintdef(k) like '%''' || o.det || '''%')
+              else to_regclass('public.' || o.obj) is null
+                or (o.col is not null and not exists (
+                     select 1 from information_schema.columns c
+                      where c.table_schema = 'public' and c.table_name = o.obj
+                        and c.column_name = o.col)) end
+), hay as (select mig, count(*) n from obj group by 1),
+   no_hay as (select mig, count(*) n, string_agg(que, ', ') d from falta group by 1)
+select h.mig as migracion,
+       case when f.n is null then 'OK'
+            when f.n >= h.n then 'FALTA ENTERA'
+            else 'A MEDIAS - vuelve a ejecutarla' end as estado,
+       coalesce(f.d, '') as lo_que_no_esta
+  from hay h left join no_hay f on f.mig = h.mig order by 1;
+`;
+
+const fila = (mig, tipo, obj, det) =>
+  `  (${comilla(mig)},${comilla(tipo)},${comilla(obj)},${comilla(det)})`;
+
+// Se corta POR MIGRACIÓN y nunca por dentro de una: media migración en un trozo
+// y media en otro daría dos veredictos sobre la misma, y los dos equivocados.
 const trozos = [];
 let actual = [];
 let tamano = 0;
 for (const grupo of grupos) {
-  const filas = filasDe(grupo).map(
-    ([m, tipo, objeto, detalle]) =>
-      `  (${comilla(m)}, ${comilla(tipo)}, ${comilla(objeto)}, ${comilla(detalle)})`
-  );
-  const texto = filas.join(",\n");
-  if (actual.length > 0 && tamano + texto.length > TOPE - PIE.length) {
+  const mig = grupo.migration;
+  const filas = [
+    ...(grupo.tables ?? []).map((t) => fila(mig, "tab", t, "")),
+    ...(grupo.columns ?? []).map(([t, cols]) => fila(mig, "col", t, cols.join(","))),
+    ...(grupo.rpc ?? []).map((f) => fila(mig, "fn", f, "")),
+    ...(grupo.enums ?? []).map(([t, , v]) => fila(mig, "val", t, v)),
+  ].join(",\n");
+  if (actual.length > 0 && tamano + filas.length > TOPE) {
     trozos.push(actual);
     actual = [];
     tamano = 0;
   }
-  actual.push(texto);
-  tamano += texto.length + 2;
+  actual.push(filas);
+  tamano += filas.length + 2;
 }
 if (actual.length > 0) trozos.push(actual);
 
@@ -224,109 +231,16 @@ for (const archivo of fs.readdirSync(SALIDA)) {
 }
 trozos.forEach((trozo, i) => {
   const sql =
-    CABECERA(i + 1, trozos.length) +
-    "with esperado(migracion, tipo, objeto, detalle) as (values\n" +
-    trozo.join(",\n") +
-    PIE;
-  const destino = path.join(SALIDA, `auditoria_migraciones_${i + 1}.sql`);
-  fs.writeFileSync(destino, sql);
-  console.log(`${path.relative(process.cwd(), destino)} — ${sql.length} bytes`);
+    `-- Auditoria de migraciones, parte ${i + 1} de ${trozos.length}. GENERADO.\n` +
+    `-- Pegalo ENTERO en el editor SQL de Supabase. Solo lee.\n\n` +
+    "with e(mig,tipo,obj,det) as (values\n" + trozo.join(",\n") + PIE +
+    `\n-- Ejecuta las ${trozos.length} partes: cada una cubre un tramo distinto.\n` +
+    `-- "A MEDIAS" quiere decir que ese pegado se trunco en su dia; vuelve a\n` +
+    `-- ejecutar esa migracion entera, que todas aguantan correrse dos veces.\n`;
+  fs.writeFileSync(path.join(SALIDA, `auditoria_migraciones_${i + 1}.sql`), sql);
 });
 
-// ── el resumen, en un solo fichero ───────────────────────────────────────────
-const filasResumen = [];
-for (const grupo of grupos) {
-  /**
-   * La clave es el NÚMERO a secas y no el nombre entero: el nombre se repite en
-   * cada fila y son cien filas, y el pegado se pasaría del tope del editor. Lo
-   * que hace falta aquí es saber CUÁL falta; el nombre está en las partes.
-   *
-   * Los valores de enum tampoco entran en el resumen — las migraciones que los
-   * añaden traen además tablas o columnas, así que siguen cubiertas, y el
-   * detalle sí los mira.
-   */
-  const clave = /^[\d/]+/.exec(grupo.migration)?.[0] ?? grupo.migration;
-  for (const tabla of grupo.tables ?? []) filasResumen.push([clave, "tabla", tabla, ""]);
-  for (const nombre of grupo.rpc ?? []) filasResumen.push([clave, "funcion", nombre, ""]);
-  const ultimo = ultimoObjetoDe(grupo, sqlDe(grupo.migration));
-  if (ultimo) filasResumen.push([clave, "columnas", ultimo[0], ultimo[1]]);
+for (const f of ["auditoria_migraciones.sql", ...trozos.map((_, i) => `auditoria_migraciones_${i + 1}.sql`)]) {
+  const bytes = fs.readFileSync(path.join(SALIDA, f), "utf8").length;
+  console.log(`${f} — ${bytes} bytes${bytes > 5000 ? "  (pasado de tope)" : ""}`);
 }
-
-const PIE_RESUMEN = `
-),
-objetivo as (
-  select e.migracion, e.tipo, e.objeto,
-         nullif(trim(both from col), '') as columna
-    from esperado e
-    left join lateral unnest(
-           case when e.tipo = 'columnas' then string_to_array(e.detalle, ',')
-                else array[null]::text[] end
-         ) as col on true
-),
-falta as (
-  select o.migracion,
-         case when o.tipo = 'funcion' then 'función ' || o.objeto || '()'
-              else o.objeto || coalesce('.' || o.columna, '') end as que
-    from objetivo o
-   where case when o.tipo = 'funcion' then not exists (
-             select 1 from pg_proc p
-               join pg_namespace n on n.oid = p.pronamespace
-              where n.nspname = 'public' and p.proname = o.objeto)
-         else not exists (
-             select 1 from information_schema.tables t
-              where t.table_schema = 'public' and t.table_name = o.objeto)
-             or (o.columna is not null and not exists (
-             select 1 from information_schema.columns c
-              where c.table_schema = 'public' and c.table_name = o.objeto
-                and c.column_name = o.columna))
-         end
-),
-total as (select migracion, count(*) as objetos from objetivo group by migracion),
-ausentes as (
-  select migracion, count(*) as n, string_agg(que, ', ' order by que) as detalle
-    from falta group by migracion
-)
-select t.migracion,
-       case when a.n is null then '✅ aplicada'
-            when a.n >= t.objetos then '❌ FALTA ENTERA'
-            else '⚠️ A MEDIAS — vuelve a ejecutarla' end as estado,
-       coalesce(a.detalle, '') as lo_que_no_esta
-  from total t
-  left join ausentes a on a.migracion = t.migracion
- order by t.migracion;
-`;
-
-const CABECERA_RESUMEN = `-- ¿Qué migraciones me faltan por ejecutar?
---
--- GENERADO por \`scripts/build-auditoria-migraciones.mjs\`. No lo edites a mano.
---
--- UN SOLO PEGADO. Pégalo en el editor SQL de Supabase y ejecútalo: cada fila es
--- una migración, con «✅ aplicada» o «❌ FALTA». Solo LEE.
---
--- QUÉ COMPRUEBA, Y POR QUÉ ESO BASTA
---   De cada migración: las tablas y funciones que crea, y la ÚLTIMA columna que
---   su fichero escribe. Lo último es lo que importa, porque la forma en que
---   estas migraciones fallan de verdad es que el editor trunque el pegado — y
---   entonces lo que falta es siempre el final.
---
--- QUÉ NO COMPRUEBA
---   Columna por columna, ni los valores nuevos de un enum. Para eso están las
---   partes \`auditoria_migraciones_N.sql\`, que lo miran todo y dicen
---   exactamente qué falta. Míralas si una sale en rojo, o antes de desplegar.
-
-`;
-
-fs.writeFileSync(
-  path.join(SALIDA, "auditoria_migraciones.sql"),
-  CABECERA_RESUMEN +
-    "with esperado(migracion, tipo, objeto, detalle) as (values\n" +
-    filasResumen
-      .map(([m, tipo, objeto, detalle]) =>
-        `  (${comilla(m)}, ${comilla(tipo)}, ${comilla(objeto)}, ${comilla(detalle)})`)
-      .join(",\n") +
-    PIE_RESUMEN
-);
-console.log(
-  `supabase/editor/auditoria_migraciones.sql — ` +
-  `${fs.readFileSync(path.join(SALIDA, "auditoria_migraciones.sql"), "utf8").length} bytes (resumen)`
-);

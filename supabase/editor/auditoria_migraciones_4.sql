@@ -1,121 +1,59 @@
--- Auditoría de migraciones · parte 4 de 6
---
--- GENERADO por `scripts/build-auditoria-migraciones.mjs`. No lo edites a mano:
--- se regenera y perderías el cambio, y hay una prueba que lo comprueba.
---
--- QUÉ RESPONDE
---   ¿Qué migraciones me faltan por ejecutar?
---
--- Pega este trozo en el editor SQL de Supabase y ejecútalo. Cada fila es una
--- migración: «✅ aplicada» o «❌ FALTA», y en la tercera columna exactamente lo
--- que no encontró. Solo LEE: no escribe, no borra, no consume nada.
---
--- Un «PARCIAL» quiere decir que la migración se aplicó a medias — casi siempre
--- porque el editor truncó el pegado. Se vuelve a ejecutar entera: todas están
--- escritas para poder correrse dos veces.
---
--- Ejecuta las 6 partes; cada una cubre un tramo distinto.
+-- Auditoria de migraciones, parte 4 de 7. GENERADO.
+-- Pegalo ENTERO en el editor SQL de Supabase. Solo lee.
 
-with esperado(migracion, tipo, objeto, detalle) as (values
-  ('0057 — canje de beneficios MembeGo', 'tabla', 'membego_redemption', ''),
-  ('0057 — canje de beneficios MembeGo', 'columnas', 'membego_redemption', 'order_id,booking_id,customer_id,membego_cliente_id,benefit_type,benefit_id,redemption_id,uses_left,effect_kind,amount_discounted,status,idempotency_key'),
-  ('0057 — canje de beneficios MembeGo', 'columnas', 'booking', 'membego_benefit,membego_discount'),
-  ('0058 — atribución comercial', 'tabla', 'seller_type', ''),
-  ('0058 — atribución comercial', 'tabla', 'seller_link', ''),
-  ('0058 — atribución comercial', 'tabla', 'seller_attribution', ''),
-  ('0058 — atribución comercial', 'columnas', 'seller_link', 'seller_id,slug,name,channel,product_id,campaign,status'),
-  ('0058 — atribución comercial', 'columnas', 'seller_attribution', 'seller_id,link_id,customer_id,visitor_id,stage,channel,landing,campaign,order_id,booking_id'),
-  ('0058 — atribución comercial', 'columnas', 'seller', 'seller_type_id'),
-  ('0058 — atribución comercial', 'columnas', 'sales_order', 'attribution_id,attribution_policy'),
-  ('0058 — atribución comercial', 'columnas', 'organizations', 'attribution_policy,attribution_window_days'),
-  ('0059 — profundidad de las comisiones', 'tabla', 'commission_adjustment', ''),
-  ('0059 — profundidad de las comisiones', 'columnas', 'commission_adjustment', 'commission_id,amount,currency,reason,reason_code,booking_id,settlement_id,created_by'),
-  ('0059 — profundidad de las comisiones', 'columnas', 'commission', 'breakdown,pax_adults,pax_children,adjustment_total,net_amount'),
-  ('0059 — profundidad de las comisiones', 'columnas', 'commission_rule', 'tier_basis,effective_from,effective_to'),
-  ('0059 — profundidad de las comisiones', 'valor', 'commission_rule', 'calc_type=per_adult'),
-  ('0060 — metas comerciales y bonos', 'tabla', 'seller_goal', ''),
-  ('0060 — metas comerciales y bonos', 'tabla', 'seller_bonus', ''),
-  ('0060 — metas comerciales y bonos', 'columnas', 'seller_goal', 'seller_id,seller_type_id,branch_id,product_id,category_id,period,period_from,period_to,target_signups,target_bookings,target_sales,target_pax,target_revenue,currency,reward,status'),
-  ('0060 — metas comerciales y bonos', 'columnas', 'seller_bonus', 'seller_id,goal_id,description,condition,amount,currency,payout_kind,status,settlement_id,awarded_at,paid_at,approved_by'),
-  ('0060 — metas comerciales y bonos', 'columnas', 'settlement', 'bonus_total,in_kind_total'),
-  ('0061 — combos y paquetes', 'tabla', 'product_bundle_item', ''),
-  ('0061 — combos y paquetes', 'columnas', 'product_bundle_item', 'bundle_id,product_id,modality_id,day_offset,sort_order,fixed_time,allow_overlap,is_optional'),
-  ('0061 — combos y paquetes', 'columnas', 'product', 'is_bundle,bundle_buffer_minutes'),
-  ('0061 — combos y paquetes', 'columnas', 'booking', 'bundle_booking_id,bundle_item_id'),
-  ('0062 — búsqueda sin acentos', 'columnas', 'customer', 'search_text'),
-  ('0062 — búsqueda sin acentos', 'columnas', 'seller', 'search_text'),
-  ('0062 — búsqueda sin acentos', 'columnas', 'product', 'search_text'),
-  ('0062 — búsqueda sin acentos', 'columnas', 'supplier', 'search_text'),
-  ('0064 — salud del sistema', 'tabla', 'job_run', ''),
-  ('0064 — salud del sistema', 'tabla', 'system_incident', ''),
-  ('0064 — salud del sistema', 'columnas', 'job_run', 'organization_id,job,trigger,started_at,finished_at,status,summary,error'),
-  ('0064 — salud del sistema', 'columnas', 'system_incident', 'organization_id,fingerprint,source,message,level,occurrences,first_seen_at,last_seen_at,status,context')
-),
-objetivo as (
-  select e.migracion, e.tipo, e.objeto, e.detalle,
-         nullif(trim(both from col), '') as columna
-    from esperado e
-    left join lateral unnest(
-           case when e.tipo = 'columnas' then string_to_array(e.detalle, ',')
-                else array[null]::text[] end
-         ) as col on true
-),
-falta as (
-  select o.migracion,
-         case o.tipo
-           when 'funcion' then 'función ' || o.objeto || '()'
-           when 'valor'   then o.objeto || '.' || o.detalle
-           else o.objeto || coalesce('.' || o.columna, '')
-         end as que
-    from objetivo o
-   where case o.tipo
-           when 'funcion' then not exists (
-             select 1 from pg_proc p
-               join pg_namespace n on n.oid = p.pronamespace
-              where n.nspname = 'public' and p.proname = o.objeto)
-           -- Un valor admitido: o es una etiqueta de un tipo enum de verdad, o
-           -- lo admite una restricción `check`. El esquema usa las dos formas,
-           -- así que se miran las dos. Darlo por bueno con solo comprobar que
-           -- la tabla existe sería una comprobación que parece una garantía y
-           -- no lo es.
-           when 'valor' then
-             not exists (
-               select 1
-                 from information_schema.columns c
-                 join pg_type ty on ty.typname = c.udt_name
-                 join pg_enum en on en.enumtypid = ty.oid
-                where c.table_schema = 'public' and c.table_name = o.objeto
-                  and c.column_name = split_part(o.detalle, '=', 1)
-                  and en.enumlabel = split_part(o.detalle, '=', 2))
-             and not exists (
-               select 1 from pg_constraint k
-                where k.conrelid = to_regclass('public.' || o.objeto)
-                  and k.contype = 'c'
-                  and pg_get_constraintdef(k) like '%' || split_part(o.detalle, '=', 1) || '%'
-                  and pg_get_constraintdef(k) like '%''' || split_part(o.detalle, '=', 2) || '''%')
-           else not exists (
-             select 1 from information_schema.tables t
-              where t.table_schema = 'public' and t.table_name = o.objeto)
-             or (o.columna is not null and not exists (
-             select 1 from information_schema.columns c
-              where c.table_schema = 'public' and c.table_name = o.objeto
-                and c.column_name = o.columna))
-         end
-),
-total as (
-  select migracion, count(*) as objetos
-    from objetivo group by migracion
-),
-ausentes as (
-  select migracion, count(*) as n,
-         string_agg(que, ', ' order by que) as detalle
-    from falta group by migracion
-)
-select t.migracion,
-       case when a.n is null then '✅ aplicada'
-            when a.n >= t.objetos then '❌ FALTA ENTERA'
-            else '⚠️ PARCIAL — vuelve a ejecutarla' end as estado,
-       coalesce(a.detalle, '') as lo_que_no_esta
-  from total t
-  left join ausentes a on a.migracion = t.migracion
- order by t.migracion;
+with e(mig,tipo,obj,det) as (values
+  ('0051 — RR. HH.','tab','payroll_run',''),
+  ('0051 — RR. HH.','tab','payroll_line',''),
+  ('0051 — RR. HH.','col','staff','payroll_code,salary_type,base_salary,hourly_rate,social_security_id,bank_account,bank_name,applies_social_security,termination_date'),
+  ('0051 — RR. HH.','col','certification','reminder_sent_at,checked_at'),
+  ('0051 — RR. HH.','col','shift','published_at,published_by'),
+  ('0051 — RR. HH.','col','attendance','break_min,regular_hours,approved_at,payroll_run_id'),
+  ('0051 — RR. HH.','col','payroll_run','period_start,period_end,period_type,status,sfs_employee_pct,afp_employee_pct,sfs_employer_pct,afp_employer_pct,risk_employer_pct,employer_cost'),
+  ('0051 — RR. HH.','col','payroll_line','staff_id,days_worked,regular_hours,overtime_hours,extra_overtime_hours,gross_amount,sfs_employee,afp_employee,isr_amount,net_amount'),
+  ('0052 — recepción de compra y existencias apartadas','col','stock_movement','purchase_order_line_id,booking_extra_id'),
+  ('0052 — recepción de compra y existencias apartadas','col','product_extra','inventory_item_id,warehouse_id,consumes_stock,stock_per_unit'),
+  ('0052 — recepción de compra y existencias apartadas','col','booking_extra','inventory_item_id,warehouse_id,stock_quantity,stock_state'),
+  ('0052 — recepción de compra y existencias apartadas','col','purchase_order','receipt_count,last_received_by'),
+  ('0053 — cierre contable','tab','accounting_period',''),
+  ('0053 — cierre contable','col','accounting_period','period,status,closed_at,closed_by,locked_at,reopened_at'),
+  ('0053 — cierre contable','col','ledger_entry','is_closing,closes_year'),
+  ('0053 — cierre contable','col','invoice','void_reason_code'),
+  ('0054 — motor de cupos','col','booking','allotment_id,allotment_seats'),
+  ('0054 — motor de cupos','col','allotment','released_at,release_runs,closed_at,closed_by'),
+  ('0055 — la marca en los documentos','col','organizations','whatsapp,address,city,group_name,notes,logo_url,brand_color,document_footer,voucher_terms,invoice_terms'),
+  ('0056 — conector OTA (OCTO)','col','booking','octo_uuid,octo_option_id,octo_status,octo_reseller_reference,octo_unit_items,octo_contact,octo_test_mode,octo_confirmed_at,octo_api_key_id'),
+  ('0056 — conector OTA (OCTO)','col','organizations','octo_max_hold_minutes'),
+  ('0057 — canje de beneficios MembeGo','tab','membego_redemption',''),
+  ('0057 — canje de beneficios MembeGo','col','membego_redemption','order_id,booking_id,customer_id,membego_cliente_id,benefit_type,benefit_id,redemption_id,uses_left,effect_kind,amount_discounted,status,idempotency_key'),
+  ('0057 — canje de beneficios MembeGo','col','booking','membego_benefit,membego_discount')
+), obj as (
+  select e.mig, e.tipo, e.obj, nullif(trim(both from c), '') as col
+    from e left join lateral unnest(
+      case when e.tipo = 'col' then string_to_array(e.det, ',')
+           else array[null]::text[] end) as c on true
+), falta as (
+  select o.mig, o.obj || coalesce('.' || o.col, '') as que from obj o
+   where case when o.tipo = 'fn' then not exists (
+                select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                 where n.nspname = 'public' and p.proname = o.obj)
+              when o.tipo = 'val' then not exists (
+                select 1 from pg_constraint k
+                 where k.conrelid = to_regclass('public.' || o.obj) and k.contype = 'c'
+                   and pg_get_constraintdef(k) like '%''' || o.det || '''%')
+              else to_regclass('public.' || o.obj) is null
+                or (o.col is not null and not exists (
+                     select 1 from information_schema.columns c
+                      where c.table_schema = 'public' and c.table_name = o.obj
+                        and c.column_name = o.col)) end
+), hay as (select mig, count(*) n from obj group by 1),
+   no_hay as (select mig, count(*) n, string_agg(que, ', ') d from falta group by 1)
+select h.mig as migracion,
+       case when f.n is null then 'OK'
+            when f.n >= h.n then 'FALTA ENTERA'
+            else 'A MEDIAS - vuelve a ejecutarla' end as estado,
+       coalesce(f.d, '') as lo_que_no_esta
+  from hay h left join no_hay f on f.mig = h.mig order by 1;
+
+-- Ejecuta las 7 partes: cada una cubre un tramo distinto.
+-- "A MEDIAS" quiere decir que ese pegado se trunco en su dia; vuelve a
+-- ejecutar esa migracion entera, que todas aguantan correrse dos veces.
