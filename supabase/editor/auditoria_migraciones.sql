@@ -85,6 +85,12 @@ select e.mig as migracion,
 -- migraciones fallan porque el editor trunca el pegado, y entonces lo que
 -- falta es siempre el final.
 --
+-- CUIDADO CON EL "OK" DE LAS MIGRACIONES DE VARIOS TROZOS. De 0077 en
+-- adelante lo que cada una aporta son funciones y disparadores, y van al final
+-- del fichero: esta consulta mira una columna que crea la PRIMERA linea, asi
+-- que dice OK aunque solo se ejecutara el primer trozo. Para eso estan
+-- auditoria_funciones_N.sql, que miran lo ultimo de verdad.
+--
 -- "SIN COMPROBACION AUTOMATICA": esa migracion no deja tabla ni columna, solo
 -- cambia una funcion o una politica. Se mira con su propio fichero de
 -- verificacion en supabase/editor/.

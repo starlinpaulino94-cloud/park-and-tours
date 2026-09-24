@@ -3053,3 +3053,30 @@ Y la tabla dice dos cosas más que no se preguntaban:
   blanca, así que pasaba idéntica con la columna borrada. Ahora comprueba un
   valor que no es el de por defecto.
 - **Mutación: cincuenta y cuatro, las cincuenta y cuatro muertas.**
+
+### La auditoría de migraciones, y el «OK» que no probaba nada
+- **El pegado falló en el editor** con «syntax error at end of input» en la
+  línea 0. Lo que había llegado eran solo los comentarios de cabecera, y un
+  bloque de comentarios a secas es una sentencia vacía. Tres cambios: **la
+  consulta va primero** y la explicación detrás del `;` final —así un pegado a
+  medias todavía trae la consulta—, el fichero baja de 7,3 kB a 4 kB, y fuera
+  los emoji: `⚠️` lleva detrás un selector de variación (U+FE0F) que algunos
+  portapapeles parten por la mitad.
+- **Y después el resumen dijo «OK» de todo, incluido 0087, y eso era falso.**
+  El resumen comprueba la última COLUMNA que el fichero escribe. De 0077 en
+  adelante lo que cada migración aporta son **funciones y disparadores**, que
+  van al final — mientras la columna la crea la primera línea. Una migración de
+  cinco partes de la que solo se ejecutó la primera salía en verde.
+- **Es exactamente el fallo del que venimos**: un verde que alguien usa para
+  decidir que puede desplegar, y que no había mirado lo que importa. El
+  inventario no lo cubría porque sirve a `verify-migrations.mjs`, que habla por
+  PostgREST y no ve los catálogos de Postgres.
+- **`auditoria_funciones_N.sql`** se genera leyendo los propios ficheros de
+  migración —no una lista a mano, que se quedaría atrás a la primera migración
+  nueva— y comprueba cada función y cada disparador.
+- **Y distingue crear de reemplazar.** `app.custom_access_token_hook` existe
+  desde 0063 y `app.can_read_partner` desde 0001: verlas no prueba que 0084 o
+  0072 se ejecutaran. Esas salen como «solo lo reemplaza», no como OK. Para
+  saber quién define cada objeto por primera vez se leen TODAS las migraciones,
+  también las anteriores a la 0021 — sin eso, `can_read_partner` parecía nacer
+  en 0072 y habría dado por ejecutada una migración que igual no se ejecutó.
