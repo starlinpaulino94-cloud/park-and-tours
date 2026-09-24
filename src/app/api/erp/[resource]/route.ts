@@ -15,6 +15,7 @@ import { sellerStampFor } from "@/lib/seller-scope";
 import { protectedFieldChanges, protectedFieldMessage } from "@/lib/field-write-role";
 import { assertSellerUserLinkable } from "@/lib/seller-identity";
 import { assertPayloadAssignable } from "@/lib/hr-service";
+import { assertPayloadVehicleUsable } from "@/lib/flota-service";
 
 /** Generic tenant-scoped list endpoint: GET /api/erp/:resource */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ resource: string }> }) {
@@ -149,6 +150,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ res
     // que el guía suba al bote es esta línea, porque por aquí pasan el turno,
     // el recurso de la salida y la ruta de recogida.
     await assertPayloadAssignable(ctx.companyId, def.table, sellado);
+
+    /**
+     * Y la misma idea con la flota: `vehicleBlock` existía desde 0065 y solo
+     * pintaba de rojo la mesa de despacho. Lo que impide que salga una guagua
+     * con el seguro vencido es esta línea, porque por aquí pasan el recurso de
+     * la salida y la ruta de recogida — y también el encargado que asigna desde
+     * el móvil, que no mira ninguna pantalla.
+     */
+    await assertPayloadVehicleUsable(ctx.companyId, def.table, sellado);
 
     const created = await tenantCreate(ctx.companyId, def.table, sellado);
 

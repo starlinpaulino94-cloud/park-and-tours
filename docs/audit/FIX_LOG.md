@@ -3146,3 +3146,50 @@ Y la tabla dice dos cosas más que no se preguntaban:
   temprana de todas —la consulta la devuelve primero y tiene que salir la
   última—. Es la tercera ola seguida en que aparece la misma familia.
 - **Mutación: cuarenta y una, las cuarenta y una muertas.**
+
+### Fase 8.6 — no sale una guagua sin papeles
+- **LA REGLA EXISTÍA DESDE 0065 Y NO PARABA NADA.** `vehicleBlock` está escrito,
+  probado y usado… para **pintar en rojo la mesa de despacho**. Nunca impidió
+  una escritura: el encargado que asigna desde el móvil a las seis de la mañana,
+  la pantalla genérica de recursos de salida y cualquier integración que escriba
+  por la API pasaban de largo con el seguro vencido.
+- **Es la misma historia que la certificación del guía en 0051**, y se cierra en
+  el mismo sitio y por la misma razón: la comprobación va en la ESCRITURA, que
+  es por donde pasa todo el mundo, y no en la pantalla, que es por donde pasa
+  quien mira. El chokepoint ya existía —`assertPayloadAssignable`—; esto es su
+  hermano para la flota.
+- **Y al editar también.** Con la guarda solo en el alta bastaba con crear el
+  recurso vacío y colgarle el vehículo en una segunda petición. Literalmente la
+  lección que dejó 0051, aplicada antes de que la repitiera.
+- **SE MIRA CONTRA EL DÍA DEL SERVICIO, NO CONTRA HOY.** La mesa de despacho
+  pregunta por el día que está mirando y para eso está bien; al escribir, no:
+  con «hoy» se reserva para dentro de un mes una guagua cuyo seguro vence la
+  semana que viene, y el día del viaje nadie se entera hasta que la para la
+  policía. El día se busca por tres sitios en orden —lo que trae el payload, la
+  salida a la que se engancha, y la fila que ya existe cuando se edita, porque
+  una edición que solo cambia el vehículo no trae la salida—.
+- **Lo que NO bloquea importa tanto como lo que bloquea.** Solo las dos tablas
+  que DESPACHAN el vehículo: el recurso de una salida y la ruta de recogida. Una
+  incidencia, una inspección, una orden de trabajo o un plan de mantenimiento
+  también apuntan a un vehículo, y bloquearlas sería absurdo: se registra una
+  inspección sobre esa guagua **precisamente porque** tiene los papeles
+  vencidos. Bloquear ahí la dejaría sin poder arreglarse.
+- **Un solo sitio donde la regla está escrita.** El servicio llama a
+  `vehicleBlock`, no rehace la comparación de fechas — con dos copias, el día
+  que cambie el criterio una se queda vieja, y la que se quede corta decide. Hay
+  guarda que comprueba que el servicio ni siquiera nombra las columnas de
+  caducidad.
+- **El motor de rutas ya descartaba la flota bloqueada** desde 0065, y deja el
+  motivo como aviso. Lo que faltaba era la asignación a mano, no la automática.
+- **Todo recurso escribible declara su rango**, y ahora hay guarda. Es lo que
+  mantiene al proveedor fuera de la escritura genérica: su rango es el más bajo
+  que existe, así que cualquier `writeRole` lo rechaza — pero un recurso
+  escribible SIN rango declarado no lo rechazaría, y ahí se colaría un
+  transportista escribiendo en el ERP de la operadora. Hoy se cumple en los 55
+  recursos; la guarda existe para que siga cumpliéndose.
+- **Lo que queda fuera, dicho a propósito:** el choque de agenda al escribir —la
+  misma guagua en dos salidas que se solapan—. `resourceConflicts` existe y es
+  puro, pero está pensado para el día entero; comprobarlo en una escritura suelta
+  exige reconstruir las ventanas de esa salida, y es una ola propia. Hoy lo
+  sigue detectando la mesa de despacho.
+- **Mutación: catorce, las catorce muertas.**

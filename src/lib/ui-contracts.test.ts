@@ -8656,4 +8656,129 @@ describe("el socio que integra por API", () => {
     // copiar un número no es una opción.
     expect(pantalla).toMatch(/href=\{`tel:\$\{p\.phone\}`\}/);
   });
+
+  /* ════════════ Fase 8.6 · no sale una guagua sin papeles */
+
+  it("EL BLOQUEO DE LA FLOTA VA EN LA ESCRITURA, no en la pantalla", () => {
+    /**
+     * `vehicleBlock` está escrito, probado y usado desde 0065… para PINTAR EN
+     * ROJO la mesa de despacho. Nunca impidió una escritura: el encargado que
+     * asigna desde el móvil a las seis de la mañana, la pantalla genérica de
+     * recursos y cualquier integración por API pasaban de largo con el seguro
+     * vencido.
+     *
+     * Misma historia que la certificación del guía en 0051, y se cierra en el
+     * mismo sitio y por la misma razón: la escritura es por donde pasa todo el
+     * mundo; la pantalla, solo por donde pasa quien mira.
+     */
+    for (const fichero of [
+      "src/app/api/erp/[resource]/route.ts",
+      "src/app/api/erp/[resource]/[id]/route.ts",
+    ]) {
+      const src = cuerpoDe(fichero);
+      expect(src, `${fichero} escribe sin comprobar los papeles del vehículo`)
+        .toMatch(/await assertPayloadVehicleUsable\(ctx\.companyId, def\.table, \w+(, id)?\);/);
+      /**
+       * DESPUÉS de limpiar el payload y ANTES de escribir. Antes de limpiar
+       * comprobaría un campo que el recurso ni siquiera acepta; después de
+       * escribir no comprobaría nada.
+       */
+      const limpia = src.indexOf("sanitizePayload(");
+      const mira = src.indexOf("assertPayloadVehicleUsable(");
+      const escribe = Math.max(src.indexOf("await tenantCreate("), src.indexOf("await tenantUpdate("));
+      expect(limpia, `${fichero}: no limpia el payload`).toBeGreaterThan(-1);
+      expect(mira, `${fichero}: la comprobación va antes de limpiar`).toBeGreaterThan(limpia);
+      expect(mira, `${fichero}: la comprobación va después de escribir`).toBeLessThan(escribe);
+    }
+  });
+
+  it("y al EDITAR también, o bastaba con asignar el vehículo un segundo después", () => {
+    /**
+     * Es la lección que dejó 0051: con la guarda solo en el alta, se creaba el
+     * recurso vacío y se le colgaba el vehículo en una segunda petición.
+     *
+     * Y en el editar se le pasa el id, porque una edición que solo cambia el
+     * vehículo no trae la salida — y sin salida no se sabe contra qué día
+     * comprobar los papeles.
+     */
+    const detalle = cuerpoDe("src/app/api/erp/[resource]/[id]/route.ts");
+    expect(detalle).toMatch(/assertPayloadVehicleUsable\(ctx\.companyId, def\.table, payload, id\)/);
+  });
+
+  it("SE MIRA CONTRA EL DÍA DEL SERVICIO, no contra hoy", () => {
+    /**
+     * La mesa de despacho pregunta por el día que está mirando, y para eso está
+     * bien. Al escribir no: con «hoy» se reserva para dentro de un mes una
+     * guagua cuyo seguro vence la semana que viene, y el día del viaje nadie se
+     * entera hasta que la para la policía.
+     */
+    const servicio = cuerpoDe("src/lib/flota-service.ts");
+    expect(servicio).toMatch(/const day = await diaDelServicio\(companyId, table, payload, recordId\);/);
+    const i = servicio.indexOf("async function diaDelServicio");
+    const cuerpo = servicio.slice(i, servicio.indexOf("\n}", i));
+    // Por tres sitios y en orden: el payload, la salida, y la fila que ya existe.
+    expect(cuerpo).toMatch(/dayOf\(payload\.service_date as string \| undefined\)/);
+    expect(cuerpo).toMatch(/refId\(payload\.departure\)/);
+    expect(cuerpo).toMatch(/if \(!departureId && recordId\)/);
+    expect(cuerpo).toMatch(/dayOf\(salida\?\.departure_at\) \?\? hoy\(\)/);
+  });
+
+  it("y la regla sigue teniendo UN solo sitio donde está escrita", () => {
+    /**
+     * El servicio LLAMA a `vehicleBlock`, no rehace la comparación de fechas.
+     * Con dos copias, el día que cambie el criterio —un margen de gracia, un
+     * papel más— una de las dos se queda vieja, y la que se quede corta decide.
+     */
+    const servicio = cuerpoDe("src/lib/flota-service.ts");
+    expect(servicio).toMatch(/const bloqueo = vehicleBlock\(vehiculo, day\);/);
+    expect(servicio, "el servicio rehace la comparación de fechas por su cuenta")
+      .not.toMatch(/insurance_expiry|inspection_expiry/);
+  });
+
+  it("solo bloquean las dos tablas que DESPACHAN el vehículo", () => {
+    /**
+     * Una incidencia, una inspección, una orden de trabajo o un plan de
+     * mantenimiento también apuntan a un vehículo. Bloquearlas sería absurdo:
+     * se registra una inspección sobre esa guagua PRECISAMENTE porque tiene los
+     * papeles vencidos, y bloquear ahí la dejaría sin poder arreglarse.
+     */
+    const servicio = cuerpoDe("src/lib/flota-service.ts");
+    const i = servicio.indexOf("export const VEHICLE_DISPATCH_FIELDS");
+    const mapa = servicio.slice(i, servicio.indexOf("};", i));
+    expect(mapa).toMatch(/departure_resource: \["vehicle"\]/);
+    expect(mapa).toMatch(/pickup_route: \["vehicle"\]/);
+    for (const tabla of ["incident", "inspection", "work_order", "maintenance_plan", "asset"]) {
+      expect(mapa, `${tabla} no despacha nada y bloquearía su propio arreglo`)
+        .not.toContain(`${tabla}:`);
+    }
+  });
+
+  it("el motor de rutas ya descartaba la flota bloqueada, y se queda igual", () => {
+    // Lo que faltaba era la escritura a mano, no la automática: `buildRoutes`
+    // filtra desde 0065 y además deja el motivo como aviso, para que el
+    // despacho sepa por qué no se usó esa guagua.
+    const dominio = cuerpoDe("src/lib/dispatch.ts");
+    expect(dominio).toMatch(/const bloqueo = vehicleBlock\(v, today\);\s*\n\s*if \(bloqueo\) warnings\.push\(bloqueo\.reason\);\s*\n\s*return !bloqueo;/);
+  });
+
+  it("TODO RECURSO ESCRIBIBLE DECLARA SU RANGO", () => {
+    /**
+     * Es lo que mantiene al proveedor fuera de la escritura genérica. Su rango
+     * es el más bajo que existe (5), así que cualquier `writeRole` lo rechaza —
+     * pero un recurso escribible SIN rango declarado no lo rechazaría, y ahí se
+     * colaría un transportista escribiendo en el ERP de la operadora.
+     *
+     * El socio tiene su propia línea explícita en la ruta; el proveedor no la
+     * necesita mientras esta invariante se cumpla. Por eso se comprueba.
+     */
+    const src = read("src/lib/resources.ts");
+    const sinRango: string[] = [];
+    for (const bloque of src.matchAll(/^  (\w+):\s*\{\n([\s\S]*?)^  \},/gm)) {
+      const cuerpo = bloque[2];
+      if (!/writable:/.test(cuerpo)) continue;
+      if (/writable:\s*\[\s*\]/.test(cuerpo)) continue;   // de solo lectura
+      if (!/writeRole:/.test(cuerpo)) sinRango.push(bloque[1]);
+    }
+    expect(sinRango, "recursos escribibles sin rango declarado").toEqual([]);
+  });
 });

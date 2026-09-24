@@ -11,6 +11,7 @@ import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { assertModule } from "@/lib/plan-service";
 import { assertPayloadAssignable } from "@/lib/hr-service";
+import { assertPayloadVehicleUsable } from "@/lib/flota-service";
 import { isSellerScoped } from "@/lib/seller-scope";
 import { assertRowInScope } from "@/lib/row-scope";
 import { protectedFieldChanges, protectedFieldMessage, hasProtectedFields } from "@/lib/field-write-role";
@@ -127,6 +128,12 @@ export async function PUT(req: NextRequest, { params }: Params) {
     // 0051 — la misma guarda que al crear. Sin ella, bastaba con crear el turno
     // vacío y asignarle después la persona para saltarse el bloqueo entero.
     await assertPayloadAssignable(ctx.companyId, def.table, payload);
+
+    // Y la de la flota, también en el editar: sin ella bastaba con crear el
+    // recurso vacío y asignarle el vehículo un segundo después. Aquí se le pasa
+    // el id porque una edición que solo cambia el vehículo no trae la salida, y
+    // sin salida no se sabe contra qué día comprobar los papeles.
+    await assertPayloadVehicleUsable(ctx.companyId, def.table, payload, id);
 
     const updated = await tenantUpdate(ctx.companyId, def.table, id, payload);
 
