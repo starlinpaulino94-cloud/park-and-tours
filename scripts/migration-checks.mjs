@@ -480,6 +480,16 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0086 — la fecha del servicio, donde se consulta",
+    // Sin ella, un recurso de salida no sabe cuándo es: la fecha vive en la
+    // salida, tabla unida. Lo que se hace sin la columna es pedir quinientas
+    // filas y filtrar en memoria.
+    columns: [
+      ["departure_resource", ["service_date"]],
+      ["pickup_route", ["service_date"]],
+    ],
+  },
+  {
     migration: "0085 — el proveedor solo ve lo suyo",
     // El vínculo existía de lado —el recurso apunta al vehículo o a la persona,
     // y son ELLOS los que cuelgan del proveedor—, y la capa de consulta no sabe

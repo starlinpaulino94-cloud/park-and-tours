@@ -2886,3 +2886,68 @@ Y la tabla dice dos cosas más que no se preguntaban:
   condición del relleno con `toMatch` y le bastaba con que una de las cuatro
   pasadas la conservara.
 - **Mutación: quince, las quince muertas.**
+
+### Fase 8.3 — el portal del proveedor: lo que le toca hacer, y cuándo
+- **Un recurso de salida no sabe CUÁNDO es.** La fecha vive en
+  `departure.departure_at`, tabla unida, y la capa de consulta no sabe filtrar
+  ni ordenar por ahí — exactamente lo que obligó a copiar la fecha de servicio a
+  `commission` en 0070 y el proveedor a estas dos tablas en 0085. Tercera vez, y
+  ya es un patrón con nombre: **se desnormaliza aquello por lo que se filtra**.
+- **Lo que se hace hoy sin la columna está escrito**, en `asset-impact.ts`:
+  pedir quinientas filas y filtrar por fecha **en memoria**. Funciona hasta la
+  fila quinientos uno, que desaparece sin que nada avise. En el portal del
+  proveedor esa fila es un servicio que alguien tiene que ir a prestar.
+- **0086 la copia, y en DOS mitades.** Una la rellena al escribir la fila; la
+  otra la mueve cuando la salida se reprograma. Con solo la primera, el
+  proveedor vería el servicio el día que no es, o dejaría de verlo en
+  «próximos» estando todavía por delante.
+- **Y aquí la fecha SÍ se mueve, al revés que la de la comisión.** En 0070 se
+  copia una vez y no se toca a propósito: reprogramar cambiaría el período de
+  liquidación de un dinero ya devengado. Aquí no hay dinero devengado, hay una
+  guagua que tiene que estar en un sitio a una hora.
+- **Dos tablas, una lista.** El proveedor aparece en la operación por dos sitios
+  —como recurso de una salida y como dueño de una ruta de recogida— y para él
+  son la misma cosa: cosas que tiene que ir a hacer. Y el orden es **del
+  conjunto**: vienen de dos consultas ordenadas cada una por su lado, y
+  concatenarlas sin reordenar enseña todos los recursos y luego todas las rutas
+  —cada bloque en orden y el conjunto en ninguno—, que es la forma de que
+  alguien se salte el servicio de las nueve porque estaba debajo del de las
+  cinco de la tarde.
+- **El recorte va ANTES del mapeo.** El mapeo elige a mano lo que la pantalla
+  pinta, así que hoy no saca nada que no deba — pero es una lista escrita por
+  una persona. Pasando las filas por la lista blanca de 0085 primero, un campo
+  prohibido llega ya borrado y el mapeo lo lee como `undefined`: el recorte no
+  depende de que el mapeo esté bien escrito.
+- **La ruta se acota por la FICHA, no por el parámetro.** Atender un
+  `?supplier_id=` cuando quien pregunta es un proveedor convertiría esta ruta en
+  la forma de leer los servicios del transportista de enfrente, con sus puntos
+  de recogida y su número de pasajeros. El interno sí puede mirar el de otro
+  —es como se atiende un «no me sale nada» por teléfono— y necesita rango.
+- **El reloj entra por parámetro.** Con dos lecturas, un servicio que empieza
+  justo ahora cabría en las dos listas o en ninguna. Y el que empieza
+  exactamente ahora cuenta como próximo: todavía no pasó.
+- **La lista blanca se comió `service_date` en cuanto existió**, que es
+  precisamente lo que tiene que hacer con una columna que nadie declaró. Se
+  arregló declarándola —y `product`, que la salida trae expandido— en vez de
+  relajar la regla: el eje de lista blanca vale porque no tiene excepciones.
+- **Y eso destapó que mi propia prueba de orden pasaba por el motivo
+  equivocado.** Con la fecha recortada, todos los servicios salían con
+  `service_date` nulo, `localeCompare` devolvía 0 en todas las comparaciones y
+  el orden de concatenación coincidía por casualidad con el esperado. La prueba
+  ahora siembra una RUTA de la una antes de un RECURSO de las cinco: es la única
+  línea que distingue «ordenado» de «ordenado por bloques».
+- **El doble de la base no expandía en cascada, y el proveedor de verdad sí.**
+  `expandRows` recurre —salida → producto—; el doble expandía un solo nivel y la
+  prueba recibía `producto: "p-1"` en vez de `"Isla Saona"`. Se arregló el
+  doble, no la prueba: un doble que miente por debajo es peor que no tenerlo,
+  porque convierte cada prueba que lo use en una prueba de otra cosa. Las 3034
+  restantes siguieron pasando.
+- **La pantalla no enseña ni un dato del pasajero.** Ni nombre, ni hotel, ni
+  teléfono: existe para que sepa QUÉ tiene que hacer y CUÁNDO, no quién va
+  dentro. Eso está en la hoja de ruta, que es otra pantalla, para otro momento y
+  con otro ámbito. Y la guarda se escribió **sobre el tipo**, con lista exacta,
+  porque buscar la palabra «hotel» a pelo se rompía con el pie de la propia
+  pantalla —que dice, en castellano, dónde están esos datos— mientras dejaba
+  pasar un `s.guest_phone`.
+- **Mutación: veinticuatro, las veinticuatro muertas** a la primera, que es la
+  primera vez en esta rama que no hubo que reforzar ninguna guarda.

@@ -137,7 +137,9 @@ export function fakeDb(inicial: Record<string, Fila[]> = {}): FakeDb {
     // Las relaciones pedidas (`product: true`, `customer: { … }`) se resuelven
     // aquí porque media aplicación lee `booking.product.name`: devolver el uuid
     // haría fallar la prueba por un motivo que no es el que se investiga.
-    const relaciones = Object.keys(opts).filter((k) => !k.startsWith("_"));
+    const relaciones = Object.fromEntries(
+      Object.entries(opts).filter(([k]) => !k.startsWith("_"))
+    );
     return filas.map((fila) => expandir(fila, relaciones, tabla));
   };
 
@@ -147,20 +149,38 @@ export function fakeDb(inicial: Record<string, Fila[]> = {}): FakeDb {
     to_org: "organizations", from_org: "organizations",
   };
 
-  function expandir(fila: Fila, relaciones: string[], tabla: string): Fila {
-    if (relaciones.length === 0) return clon(fila);
+  /**
+   * Las relaciones ANIDADAS de un nodo: `departure: { product: true }`.
+   *
+   * Se resolvían solo en el primer nivel, y eso es un hueco justo en lo que
+   * este doble promete. El proveedor de verdad SÍ baja —`expandRows` se llama
+   * a sí misma—, así que una prueba podía pasar con el uuid donde en
+   * producción llega el objeto, o al revés: dar por bueno un código que lee
+   * `recurso.departure.product.name` y que en el banco nunca lo encontraba.
+   *
+   * Lo destapó el portal del proveedor, que pide exactamente esa forma.
+   */
+  const anidadas = (spec: unknown): Record<string, unknown> =>
+    spec && typeof spec === "object" && !Array.isArray(spec)
+      ? Object.fromEntries(Object.entries(spec as Fila).filter(([k]) => !k.startsWith("_")))
+      : {};
+
+  function expandir(fila: Fila, relaciones: Record<string, unknown>, tabla: string): Fila {
+    const nombres = Object.keys(relaciones);
+    if (nombres.length === 0) return clon(fila);
     const salida: Fila = clon(fila);
-    for (const rel of relaciones) {
+    for (const rel of nombres) {
       const destino = DESTINO[rel] ?? rel;
+      const dentro = anidadas(relaciones[rel]);
       const id = ref(fila[rel]);
       if (id) {
         const hijo = de(destino).find((f) => f._id === id);
-        if (hijo) salida[rel] = clon(hijo);
+        if (hijo) salida[rel] = expandir(clon(hijo), dentro, destino);
         continue;
       }
       // Uno-a-muchos: las filas de `destino` que apuntan a esta.
       const hijos = de(destino).filter((f) => ref(f[tabla]) === fila._id);
-      if (hijos.length > 0) salida[rel] = hijos.map((h) => clon(h));
+      if (hijos.length > 0) salida[rel] = hijos.map((h) => expandir(clon(h), dentro, destino));
     }
     return salida;
   }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import path from "node:path";
-import { PORTAL_NAV } from "@/lib/nav";
+import { PORTAL_NAV, PROVEEDOR_NAV } from "@/lib/nav";
 import { rankOf } from "@/lib/roles";
 
 /**
@@ -7739,5 +7739,231 @@ describe("el socio que integra por API", () => {
     const sql = read("supabase/migrations/0085_supplier_row_scope.sql").replace(/^\s*--.*$/gm, "");
     expect(sql).toMatch(/app\.can_read_supplier\(supplier_id\)/);
     expect(sql).toMatch(/array\['departure_resource', 'pickup_route'\]/);
+  });
+
+  /* ════════════ Fase 8.3 · el portal del proveedor: lo que le toca hacer */
+
+  it("LA FECHA DEL SERVICIO VIVE DONDE SE CONSULTA", () => {
+    /**
+     * Un recurso de salida no sabe cuándo es: la fecha está en `departure`,
+     * tabla unida, y la capa de consulta de esta aplicación no sabe filtrar ni
+     * ordenar por ahí. Es lo mismo que obligó a copiar la fecha a `commission`
+     * en 0070 y el proveedor a estas dos tablas en 0085.
+     *
+     * Lo que se hace hoy sin la columna está en `asset-impact.ts`: pedir
+     * quinientas filas y filtrar por fecha en memoria. Funciona hasta la fila
+     * quinientos uno, que desaparece sin que nada avise — y aquí esa fila es un
+     * servicio que alguien tiene que ir a prestar.
+     */
+    const sql = read("supabase/migrations/0086_service_date_on_resources.sql").replace(/^\s*--.*$/gm, "");
+    for (const tabla of ["departure_resource", "pickup_route"]) {
+      expect(sql, `${tabla} sin fecha de servicio`)
+        .toMatch(new RegExp(`alter table ${tabla}\\s*\\n\\s*add column if not exists service_date`));
+      // Y con índice por (empresa, proveedor, fecha): es exactamente el filtro
+      // que hace el portal, y sin él son dos barridos por cada carga.
+      expect(sql, `${tabla} sin índice por el filtro que se usa`)
+        .toMatch(new RegExp(`on ${tabla} \\(organization_id, supplier_id, service_date desc\\)`));
+    }
+  });
+
+  it("y la rellena un disparador EN LAS DOS MITADES", () => {
+    /**
+     * Las dos hacen falta. Con solo la primera, reprogramar una salida deja a
+     * sus recursos con la fecha vieja: el proveedor vería el servicio el día
+     * que no es, o dejaría de verlo en «próximos» estando todavía por delante.
+     *
+     * Es la diferencia con la fecha de la comisión (0070), que se copia UNA vez
+     * y NO se mueve a propósito: allí reprogramar cambiaría el período de
+     * liquidación de un dinero ya devengado. Aquí no hay dinero devengado, hay
+     * una guagua que tiene que estar en un sitio a una hora.
+     */
+    const sql = read("supabase/migrations/0086_service_date_on_resources.sql").replace(/^\s*--.*$/gm, "");
+
+    // Mitad uno: al escribir la fila, se copia de su salida.
+    expect(sql).toMatch(/create trigger departure_resource_service_date\b(?!_)/);
+    expect(sql).toMatch(/create trigger pickup_route_service_date\b(?!_)/);
+    /**
+     * Y `insert` además de `update`: sin la parte de alta, el recurso nace sin
+     * fecha y no sale ni en próximos ni en pasados — un servicio asignado que
+     * su proveedor no ve en ninguna de las dos listas.
+     */
+    expect(
+      (sql.match(/before insert or update of departure_id on (departure_resource|pickup_route)/g) || []).length,
+      "alguna de las dos tablas no se rellena al dar de alta"
+    ).toBe(2);
+    const iFn = sql.indexOf("create or replace function app.fill_service_date_from_departure");
+    const fn = sql.slice(iFn, sql.indexOf("$fn$;", iFn));
+    expect(fn, "el disparador no escribe la columna")
+      .toMatch(/select d\.departure_at into new\.service_date/);
+    // Y sin salida, sin fecha: heredar la anterior dejaría la fila diciendo un
+    // día que ya no es de nadie.
+    expect(fn).toMatch(/new\.service_date := null;/);
+
+    // Mitad dos: cuando la salida se mueve, se lleva a sus hijos con ella.
+    expect(sql).toMatch(/create trigger departure_service_date_sync\b(?!_)/);
+    expect(sql).toMatch(/after update of departure_at on departure\b(?!_)/);
+    const iSync = sql.indexOf("create or replace function app.sync_service_date_to_children");
+    const sync = sql.slice(iSync, sql.indexOf("$fn2$;", iSync));
+    /**
+     * CONTADAS, no `toMatch`. La mutación que importa es borrar UNA de las dos
+     * actualizaciones: la otra sigue ahí, el disparador sigue existiendo y la
+     * guarda por coincidencia pasa — mientras las rutas de recogida se quedan
+     * el día que la salida ya no tiene. Es la misma lección del relleno de 0085.
+     */
+    expect(
+      (sync.match(/set service_date = new\.departure_at/g) || []).length,
+      "la sincronización se olvida de una de las dos tablas"
+    ).toBe(2);
+  });
+
+  it("y lo que ya existía se rellena, o el portal nace vacío", () => {
+    // Sin el relleno, todo lo anterior a la migración se queda sin fecha y no
+    // sale ni en «próximos» ni en «pasados»: el proveedor entra a su portal y
+    // no ve los servicios que tiene mañana.
+    const sql = read("supabase/migrations/0086_service_date_on_resources.sql").replace(/^\s*--.*$/gm, "");
+    expect(
+      (sql.match(/^update (departure_resource|pickup_route) (dr|pr)\b/gm) || []).length,
+      "una de las dos tablas se queda sin relleno"
+    ).toBe(2);
+  });
+
+  it("EL RECORTE VA ANTES DEL MAPEO, no después", () => {
+    /**
+     * El mapeo elige a mano lo que la pantalla pinta, así que hoy no saca nada
+     * que no deba. Pero es una lista escrita por una persona, y el día que
+     * alguien añada ahí el coste de la línea no habría nada que lo parara.
+     *
+     * Pasando las filas por la lista blanca del actor (0085) primero, ese campo
+     * llega ya borrado y el mapeo lo lee como `undefined`: el recorte no
+     * depende de que el mapeo esté bien escrito.
+     */
+    const cuerpo = cuerpoDe("src/lib/servicios-proveedor.ts");
+    const iRecorte = cuerpo.indexOf("projectRows(");
+    const iMapeo = cuerpo.indexOf(".map(deRecurso)");
+    expect(iRecorte, "no se recorta nada").toBeGreaterThan(-1);
+    expect(iMapeo, "no se mapea nada").toBeGreaterThan(-1);
+    expect(iRecorte, "el recorte iría después del mapeo").toBeLessThan(iMapeo);
+    /**
+     * Y sobre las filas RECORTADAS. Mover el `projectRows` a su sitio y seguir
+     * mapeando las crudas deja la guarda de orden contenta y el recorte en
+     * nada: el resultado sería idéntico al de no recortar.
+     */
+    expect(cuerpo, "el mapeo lee las filas crudas y no las recortadas")
+      .not.toMatch(/Crud[ao]s\.map\(/);
+    // Las DOS tablas, no solo una.
+    expect((cuerpo.match(/projectRows\(/g) || []).length).toBe(2);
+  });
+
+  it("y las dos consultas filtran POR COLUMNA, no en memoria", () => {
+    // Un filtro en memoria sobre un tope de filas es lo que hace hoy
+    // `asset-impact.ts`, y es el fallo que no avisa: la fila que sobra no da
+    // error, desaparece.
+    const cuerpo = cuerpoDe("src/lib/servicios-proveedor.ts");
+    expect(
+      (cuerpo.match(/_filter: \{ supplier: supplierId, service_date: rango \}/g) || []).length,
+      "alguna de las dos tablas no se acota por proveedor y fecha"
+    ).toBe(2);
+    expect(cuerpo, "no se filtra por fecha después de traer las filas")
+      .not.toMatch(/\.filter\([^)]*service_date/);
+  });
+
+  it("y el conjunto se vuelve a ordenar, no solo cada bloque", () => {
+    /**
+     * Vienen de dos consultas ordenadas cada una por su lado. Concatenarlas sin
+     * reordenar enseña todos los recursos y luego todas las rutas, cada bloque
+     * en orden y el conjunto en ninguno — que es la forma de que alguien se
+     * salte el servicio de las nueve porque estaba debajo del de las cinco.
+     */
+    const cuerpo = cuerpoDe("src/lib/servicios-proveedor.ts");
+    expect(cuerpo).toMatch(/juntos\.sort\(/);
+    // Y el reloj entra por parámetro: con dos lecturas, un servicio que empieza
+    // justo ahora cabe en las dos listas o en ninguna.
+    expect(cuerpo).toMatch(/ahora: Date = new Date\(\)/);
+    expect(cuerpo).toMatch(/const corte = ahora\.toISOString\(\);/);
+  });
+
+  it("LA RUTA SE ACOTA POR LA FICHA, y ningún parámetro la mueve", () => {
+    /**
+     * Atender un `?supplier_id=` cuando quien pregunta es un proveedor
+     * convertiría esta ruta en la forma de leer los servicios del transportista
+     * de enfrente, con sus puntos de recogida y su número de pasajeros.
+     */
+    const ruta = cuerpoDe("src/app/api/proveedor/servicios/route.ts");
+    const iProv = ruta.indexOf("if (esDeProveedor(ctx))");
+    const iElse = ruta.indexOf("} else if (esInterno(ctx))");
+    expect(iProv, "la ruta no distingue al proveedor").toBeGreaterThan(-1);
+    expect(iElse, "la ruta no distingue al interno").toBeGreaterThan(iProv);
+    const ramaProveedor = ruta.slice(iProv, iElse);
+    expect(ramaProveedor).toMatch(/supplierId = ctx\.supplierId \?\? null;/);
+    expect(ramaProveedor, "el proveedor puede elegir de quién son los servicios")
+      .not.toContain("supplier_id");
+    // El interno sí puede mirar el de otro —es como se atiende un «no me sale
+    // nada» por teléfono— y necesita rango para hacerlo.
+    expect(ruta.slice(iElse)).toMatch(/requireAtLeast\(ctx, "operations"\)/);
+    /**
+     * Y quien no es ninguna de las dos cosas —un socio, por ejemplo— se queda
+     * fuera con un 403. Sin ese `else`, caería con `supplierId` sin asignar:
+     * que en TypeScript es un error de compilación hoy, y el día que alguien lo
+     * inicialice a `null` sería un 400 en vez de un 403.
+     */
+    expect(ruta).toMatch(/throw new TenantError\("No tienes acceso a este recurso", 403\)/);
+  });
+
+  it("y una ventana desconocida cae en lo que viene, no en lo que pasó", () => {
+    // Lo desconocido es lo de hoy: el portal enseña «próximos» por defecto, así
+    // que un parámetro escrito mal devuelve eso y no un historial.
+    const ruta = cuerpoDe("src/app/api/proveedor/servicios/route.ts");
+    expect(ruta).toMatch(/VENTANAS\.has\(pedida\) \? pedida : "proximos"/);
+  });
+
+  it("la pantalla existe y está en el menú del proveedor", () => {
+    // Una pantalla sin menú es un módulo muerto; una entrada de menú sin
+    // pantalla es un 404 con el nombre de la operadora encima.
+    expect(existe("src/app/proveedor/servicios/page.tsx")).toBe(true);
+    const ids = PROVEEDOR_NAV.map((i) => i.href);
+    expect(ids).toContain("/proveedor/servicios");
+    for (const item of PROVEEDOR_NAV) {
+      expect(existe(`src/app${item.href}/page.tsx`), `${item.href} en el menú sin pantalla`).toBe(true);
+    }
+  });
+
+  it("y no enseña ni un dato del pasajero", () => {
+    /**
+     * El proveedor es el actor con más datos personales de terceros a tiro.
+     * Esta lista existe para que sepa QUÉ tiene que hacer y CUÁNDO, no quién va
+     * dentro: nombres, hoteles y teléfonos están en la hoja de ruta, que es
+     * otra pantalla, para otro momento y con otro ámbito.
+     */
+    const pantalla = cuerpoDe("src/app/proveedor/servicios/page.tsx");
+    /**
+     * Se comprueba sobre el TIPO, no buscando palabras sueltas: el pie de la
+     * pantalla dice, en castellano, que el nombre y el hotel del pasajero están
+     * en la hoja de ruta — y una guarda que busca «hotel» a pelo se rompería
+     * con esa frase mientras deja pasar un `s.guest_phone`.
+     *
+     * La lista es EXACTA. Con `not.toContain` por campo prohibido, el día que
+     * la ruta devuelva un campo nuevo habría que acordarse de añadirlo aquí;
+     * así, cualquier campo que no esté en esta lista rompe la prueba y obliga a
+     * decidir a propósito.
+     */
+    const iTipo = pantalla.indexOf("interface Servicio {");
+    const tipo = pantalla.slice(iTipo, pantalla.indexOf("\n}", iTipo));
+    const campos = [...tipo.matchAll(/^\s{2}(\w+)\s*[?:]/gm)].map((m) => m[1]);
+    expect(campos.sort()).toEqual([
+      "_id", "detalle", "pax", "producto", "punto_de_encuentro", "service_date", "status", "tipo",
+    ].sort());
+    // Y el tipo que pinta es el que la ruta devuelve: si un día divergen, el
+    // recorte del servidor deja de ser lo que limita a la pantalla.
+    const dominio = cuerpoDe("src/lib/servicios-proveedor.ts");
+    const iDom = dominio.indexOf("export interface ServicioDeProveedor {");
+    const domTipo = dominio.slice(iDom, dominio.indexOf("\n}", iDom));
+    expect([...domTipo.matchAll(/^\s{2}(\w+)\s*[?:]/gm)].map((m) => m[1]).sort())
+      .toEqual(campos.sort());
+    // Ni lo que se le paga: eso vive en su estado de cuenta, con su detalle y
+    // su forma de discutirlo.
+    for (const prohibido of ["cost", "amount", "balance", "customer", "guest"]) {
+      expect(pantalla, `la pantalla del proveedor lee ${prohibido}`)
+        .not.toMatch(new RegExp(`\\.${prohibido}`));
+    }
   });
 });

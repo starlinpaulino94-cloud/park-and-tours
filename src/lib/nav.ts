@@ -804,11 +804,13 @@ export const QUICK_ACTIONS: NavItem[] = [
 /**
  * El portal del PROVEEDOR (0084).
  *
- * Nace con una sola entrada a propósito: sus servicios, su hoja de ruta y su
- * estado de cuenta llegan en las entregas siguientes, y una navegación llena de
- * enlaces a pantallas que no existen es peor que una corta.
+ * Su hoja de ruta y su estado de cuenta llegan en las entregas siguientes, y no
+ * se anuncian aquí hasta que existan: una navegación llena de enlaces a
+ * pantallas que no están es peor que una corta.
  */
 export const PROVEEDOR_NAV: NavItem[] = [
+  { id: "prov-servicios", href: "/proveedor/servicios", label: "Mis servicios", icon: "CalendarRange",
+    description: "Lo que te toca prestar, con su día y su punto de encuentro." },
   { id: "prov-inicio", href: "/proveedor", label: "Mi ficha", icon: "Truck",
     description: "Lo que la operadora tiene registrado de ti." },
 ];

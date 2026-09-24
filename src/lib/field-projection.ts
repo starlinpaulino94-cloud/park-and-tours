@@ -134,15 +134,31 @@ export const VISIBLE_AL_PROVEEDOR: Record<string, string[]> = {
   departure_resource: [
     "_id", "departure", "resource_role", "pax_assigned",
     "start_time", "end_time", "status", "vehicle", "staff", "supplier",
+    // Cuándo es (0086). Sin declararla, la lista blanca se la come y el
+    // proveedor recibe sus servicios sin fecha — que es exactamente lo que
+    // esta lista tiene que hacer con una columna que nadie declaró, y por eso
+    // se añade aquí y no se relaja la regla.
+    "service_date",
   ],
   pickup_route: [
     "_id", "departure", "zone", "name", "start_time",
     "pax_total", "stops_count", "status", "vehicle", "driver", "guide", "supplier",
+    "service_date",
   ],
   // De la salida, lo que le dice a qué servicio va. NO el cupo vendido ni los
   // ingresos: es una excursión de la operadora, no suya.
   departure: ["_id", "product", "departure_at", "departure_time", "meeting_point", "status", "capacity"],
   zone: ["_id", "name", "code"],
+  /**
+   * Del producto, su nombre y cuánto dura. NADA de precios, ni el coste, ni la
+   * descripción comercial: el proveedor necesita saber a qué servicio va, no
+   * por cuánto se vendió.
+   *
+   * Está aquí porque la salida lo trae expandido, y sin declararlo el recorte
+   * lo borra entero — dejando al proveedor con una lista de servicios sin
+   * nombre.
+   */
+  product: ["_id", "name", "duration_hours"],
   // Su propia ficha, sin el saldo: lo que se le debe tiene su pantalla, con su
   // detalle y su forma de discutirlo.
   supplier: [
