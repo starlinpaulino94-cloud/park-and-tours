@@ -480,6 +480,28 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0087 — aceptar o rechazar, con plazo y número",
+    // El eje del proveedor va aparte del de la operadora: `status` dice lo que
+    // sabe la casa, `acceptance` lo que contestó él. Con una sola columna,
+    // «confirmado» querría decir dos cosas.
+    tables: ["supplier_response_token"],
+    columns: [
+      ["departure_resource", [
+        "acceptance", "acceptance_deadline", "responded_at", "responded_by",
+        "response_note", "responded_via", "confirmation_number",
+      ]],
+      ["pickup_route", [
+        "acceptance", "acceptance_deadline", "responded_at", "responded_by",
+        "response_note", "responded_via", "confirmation_number",
+      ]],
+      ["supplier", ["acceptance_window_hours", "on_deadline_expiry"]],
+    ],
+    // Y la función que gasta el enlace y escribe la respuesta a la vez: sin
+    // ella, el enlace de un solo uso deja de serlo en cuanto algo falle entre
+    // las dos escrituras.
+    rpc: ["respond_to_supplier_service"],
+  },
+  {
     migration: "0086 — la fecha del servicio, donde se consulta",
     // Sin ella, un recurso de salida no sabe cuándo es: la fecha vive en la
     // salida, tabla unida. Lo que se hace sin la columna es pedir quinientas

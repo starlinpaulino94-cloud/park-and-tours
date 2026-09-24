@@ -1,6 +1,7 @@
 import "server-only";
 import { tenantQuery } from "@/lib/tenant";
 import { projectRows } from "@/lib/field-projection";
+import type { EstadoDeAceptacion } from "@/lib/aceptacion-proveedor";
 
 /**
  * LOS SERVICIOS DE UN PROVEEDOR.
@@ -38,6 +39,10 @@ export interface ServicioDeProveedor {
   punto_de_encuentro: string | null;
   pax: number | null;
   status: string | null;
+  /** Lo que la operadora sabe del recurso NO es lo que él contestó (0087). */
+  acceptance: EstadoDeAceptacion;
+  acceptance_deadline: string | null;
+  confirmation_number: string | null;
 }
 
 const LIMITE = 200;
@@ -49,6 +54,27 @@ function textoDe(valor: unknown): string | null {
     return typeof r.name === "string" ? r.name.trim() || null : null;
   }
   return null;
+}
+
+/**
+ * El eje de la respuesta, igual en las dos tablas.
+ *
+ * Escrito una vez y no dos: son las mismas tres columnas con el mismo
+ * significado, y dos copias son dos sitios donde acordarse de añadir la
+ * siguiente.
+ */
+function respuesta(fila: Record<string, unknown>): {
+  acceptance: EstadoDeAceptacion;
+  acceptance_deadline: string | null;
+  confirmation_number: string | null;
+} {
+  return {
+    // Lo desconocido es lo de hoy: sin columna —o recortada— no hay nada que
+    // contestar, que es como funcionaba antes de 0087.
+    acceptance: (typeof fila.acceptance === "string" ? fila.acceptance : "not_required") as EstadoDeAceptacion,
+    acceptance_deadline: typeof fila.acceptance_deadline === "string" ? fila.acceptance_deadline : null,
+    confirmation_number: typeof fila.confirmation_number === "string" ? fila.confirmation_number : null,
+  };
 }
 
 function fechaDe(fila: Record<string, unknown>): string | null {
@@ -119,6 +145,7 @@ export async function serviciosDeProveedor(
       punto_de_encuentro: typeof salida.meeting_point === "string" ? salida.meeting_point : null,
       pax: typeof fila.pax_assigned === "number" ? fila.pax_assigned : null,
       status: typeof fila.status === "string" ? fila.status : null,
+      ...respuesta(fila),
     };
   };
 
@@ -133,6 +160,7 @@ export async function serviciosDeProveedor(
       punto_de_encuentro: typeof salida.meeting_point === "string" ? salida.meeting_point : null,
       pax: typeof fila.pax_total === "number" ? fila.pax_total : null,
       status: typeof fila.status === "string" ? fila.status : null,
+      ...respuesta(fila),
     };
   };
 

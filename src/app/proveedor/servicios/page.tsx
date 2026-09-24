@@ -9,6 +9,11 @@ import { DataTable } from "@/components/tf/data-table";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatDateTime, formatNumber } from "@/lib/format";
+import { Button } from "@/components/ui/button";
+import {
+  ETIQUETA_DE_ACEPTACION, horasQueQuedan, puedeResponder,
+  type EstadoDeAceptacion,
+} from "@/lib/aceptacion-proveedor";
 
 interface Servicio {
   _id: string;
@@ -19,6 +24,9 @@ interface Servicio {
   punto_de_encuentro: string | null;
   pax: number | null;
   status: string | null;
+  acceptance: EstadoDeAceptacion;
+  acceptance_deadline: string | null;
+  confirmation_number: string | null;
 }
 
 const VENTANAS = [
@@ -68,6 +76,8 @@ export default function ProveedorServiciosPage() {
   const [ventana, setVentana] = useState<Ventana>("proximos");
   const [servicios, setServicios] = useState<Servicio[]>([]);
   const [cargando, setCargando] = useState(true);
+  /** El servicio que se está contestando, para no dejar pulsar dos veces. */
+  const [contestando, setContestando] = useState<string | null>(null);
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -81,6 +91,42 @@ export default function ProveedorServiciosPage() {
     }
     setServicios(res.data?.servicios ?? []);
   }, [ventana]);
+
+  /**
+   * Contestar.
+   *
+   * El servidor decide: aquí no se toca el estado de la fila a mano ni se
+   * intenta adivinar el número de confirmación. Se recarga. Pintar «aceptado»
+   * en el navegador sin que el servidor lo haya escrito es la forma de que un
+   * proveedor se vaya convencido de que confirmó algo que no confirmó.
+   */
+  const responder = useCallback(async (s: Servicio, respuesta: "accepted" | "rejected") => {
+    const nota = respuesta === "rejected"
+      ? (window.prompt("¿Por qué no puedes prestarlo? (opcional)") || "").trim()
+      : "";
+    setContestando(s._id);
+    const res = await api.post<{ confirmation_number: string | null }>("/api/proveedor/respuesta", {
+      tipo: s.tipo === "ruta" ? "pickup_route" : "departure_resource",
+      id: s._id,
+      respuesta,
+      nota: nota || null,
+    });
+    setContestando(null);
+    if (!res.ok) {
+      toast.error(res.error?.message || "No se pudo registrar tu respuesta");
+      // Y se recarga IGUAL: el motivo más común de que falle es que la fila ya
+      // no esté como esta pantalla cree —se reasignó, venció, se contestó desde
+      // el enlace—, y dejarla pintada como estaba invita a volver a pulsar.
+      void cargar();
+      return;
+    }
+    toast.success(
+      respuesta === "accepted"
+        ? `Aceptado. Tu número de confirmación es ${res.data?.confirmation_number ?? "—"}.`
+        : "Registrado. Avisamos a la operadora para que busque otro."
+    );
+    void cargar();
+  }, [cargar]);
 
   useEffect(() => { void cargar(); }, [cargar]);
 
@@ -153,6 +199,46 @@ export default function ProveedorServiciosPage() {
             { key: "status", header: "Estado", render: (s: Servicio) => {
               const e = ESTADO[s.status || ""];
               return <Badge variant="outline" className={e?.tono}>{e?.texto || s.status || "—"}</Badge>;
+            } },
+            /**
+             * TU RESPUESTA — el eje del proveedor, separado del de la casa.
+             *
+             * `status` dice lo que la operadora sabe del recurso; esta columna
+             * dice lo que él contestó. Juntarlas haría que «confirmado»
+             * quisiera decir dos cosas, y la primera vez que haya que decidir
+             * si sale la guagua esa ambigüedad se resuelve a favor de lo que le
+             * convenga al que mira.
+             */
+            { key: "acceptance", header: "Tu respuesta", render: (s: Servicio) => {
+              const abierto = puedeResponder(s, new Date());
+              if (abierto.ok) {
+                const quedan = horasQueQuedan(s.acceptance_deadline, new Date());
+                return (
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex flex-wrap gap-1.5">
+                      <Button size="sm" disabled={contestando === s._id}
+                        onClick={() => void responder(s, "accepted")}>Acepto</Button>
+                      <Button size="sm" variant="outline" disabled={contestando === s._id}
+                        onClick={() => void responder(s, "rejected")}>No puedo</Button>
+                    </div>
+                    {quedan != null ? (
+                      <span className="text-xs text-muted-foreground">
+                        {quedan > 0 ? `Te quedan ${quedan} h` : "Última hora para contestar"}
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              }
+              return (
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-sm">{ETIQUETA_DE_ACEPTACION[s.acceptance]}</span>
+                  {s.confirmation_number ? (
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {s.confirmation_number}
+                    </span>
+                  ) : null}
+                </div>
+              );
             } },
           ]}
         />

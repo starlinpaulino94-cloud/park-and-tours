@@ -38,6 +38,7 @@ function base() {
         _id: "dr-1", supplier: PROV, departure: "d-tarde",
         service_date: "2026-07-15T17:00:00.000Z",
         resource_role: "vehicle", pax_assigned: 40, status: "confirmed",
+        acceptance: "pending", acceptance_deadline: "2026-07-15T16:00:00.000Z",
         cost: 900, currency: "usd", notes: "el chofer llegó tarde dos veces",
       },
       {
@@ -54,6 +55,7 @@ function base() {
         _id: "pr-1", supplier: PROV, departure: "d-manana", zone: "z-1",
         service_date: "2026-07-16T07:00:00.000Z",
         name: "Bávaro AM", pax_total: 12, stops_count: 5, status: "planned",
+        acceptance: "accepted", confirmation_number: "CNF-2607-RUTA01",
         notes: "nota interna",
       },
     ],
@@ -144,6 +146,50 @@ describe("los servicios de un proveedor", () => {
     expect(enLasDos, "ningún servicio puede estar en las dos listas").toEqual([]);
     // Y el que empieza exactamente ahora cuenta como próximo: todavía no pasó.
     expect(proximos.map((s) => s._id)).toContain("dr-1");
+  });
+
+  it("EL EJE DE LA RESPUESTA LLEGA, que es para lo que existe la pantalla", async () => {
+    /**
+     * `status` dice lo que la operadora sabe del recurso; `acceptance` dice lo
+     * que contestó él. Si la lista blanca se comiera estas columnas —que es lo
+     * que hace con toda columna que nadie declara—, el proveedor recibiría sus
+     * servicios sin saber cuáles están esperando su respuesta, y la función
+     * entera no se vería.
+     */
+    const [servicio] = await serviciosDeProveedor(ORG, PROV, "proximos", AHORA);
+    expect(servicio.acceptance).toBe("pending");
+    expect(servicio.acceptance_deadline).toBe("2026-07-15T16:00:00.000Z");
+  });
+
+  it("y en las DOS tablas, no solo en una", async () => {
+    /**
+     * La ruta de recogida lleva su propia lista blanca. Comprobarlo solo sobre
+     * el recurso deja pasar la mutación que quita el eje de la otra — y
+     * entonces el transportista ve la mitad de sus servicios esperando
+     * respuesta y la otra mitad sin decir nada.
+     *
+     * Y se comprueba con un valor QUE NO ES EL DE POR DEFECTO: con «aceptado»
+     * recortado a «no hace falta», una prueba que esperase el valor por defecto
+     * pasaría exactamente igual con la columna borrada. (Pasó.)
+     */
+    const ruta = (await serviciosDeProveedor(ORG, PROV, "proximos", AHORA))
+      .find((s) => s._id === "pr-1")!;
+    expect(ruta.acceptance).toBe("accepted");
+    expect(ruta.confirmation_number).toBe("CNF-2607-RUTA01");
+  });
+
+  it("y una fila sin ese eje se lee como «no hay nada que contestar»", async () => {
+    // Lo desconocido es lo de hoy: antes de 0087 nadie preguntaba nada, así que
+    // una fila sin la columna no puede aparecer esperando una respuesta que
+    // nadie pidió.
+    db.seed("pickup_route", [{
+      _id: "pr-antiguo", supplier: PROV, departure: "d-manana", zone: "z-1",
+      service_date: "2026-07-16T09:00:00.000Z", name: "De antes de 0087", status: "planned",
+    }]);
+    const ruta = (await serviciosDeProveedor(ORG, PROV, "proximos", AHORA))
+      .find((s) => s._id === "pr-antiguo")!;
+    expect(ruta.acceptance).toBe("not_required");
+    expect(ruta.acceptance_deadline).toBeNull();
   });
 
   it("sin servicios, una lista vacía y no un error", async () => {

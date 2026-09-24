@@ -124,6 +124,14 @@ export const JOB_EXPECTATIONS: JobExpectation[] = [
     consequence: "No se avisó de las certificaciones por vencer: alguien puede quedar sin poder trabajar.",
   },
   {
+    job: "supplier-acceptance",
+    label: "Plazos de respuesta de proveedores",
+    everyHours: 24,
+    graceMinutes: 180,
+    consequence:
+      "Los plazos vencidos siguen figurando como pendientes y nadie avisó de los servicios sin conformidad.",
+  },
+  {
     job: "allotments",
     label: "Liberación de cupo",
     everyHours: 24,

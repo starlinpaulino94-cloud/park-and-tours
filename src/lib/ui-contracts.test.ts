@@ -1523,6 +1523,19 @@ describe("blindaje CSRF de las rutas mutantes", () => {
     // nota, escribir un comentario y darse de baja. Nada que mueva dinero,
     // nada que enseñe datos de otro cliente, y caduca a los treinta días.
     /^src\/app\/api\/opinar\//,
+    /**
+     * El enlace de un clic del proveedor: no hay sesión con cookies que
+     * proteger —ese es justo el caso de uso, un transportista que contesta
+     * desde un WhatsApp— así que exigir mismo origen no aportaría nada.
+     *
+     * Y aquí la exención pesa más que en la encuesta, porque lo que este token
+     * PUEDE hacer sí importa: compromete a una empresa a poner un autobús. Lo
+     * que lo sostiene no es el origen, es el propio enlace — treinta y dos
+     * bytes de azar, guardado solo su hash, de un solo uso, atado a esa fila,
+     * caducado con la salida, revocado al reasignar y anotado en cada apertura.
+     * Hay guarda propia para las seis cosas.
+     */
+    /^src\/app\/api\/servicio\//,
   ];
 
   it("toda ruta mutante verifica el origen de la solicitud", () => {
@@ -1718,6 +1731,18 @@ describe("el plan se aplica en la API, no solo en el menú", () => {
      * mismo razonamiento que la exención del segundo factor.
      */
     /^src\/app\/api\/opinar\//,
+    /**
+     * El enlace del proveedor, por el mismo motivo que la encuesta: lo que se
+     * escribe no es una operación de la operadora, es la respuesta de UN
+     * TERCERO a algo que ella ya le preguntó —el enlace salió cuando el plan
+     * estaba al día—. Negarla por un impago dejaría un autobús sin conformidad
+     * y a un transportista pulsando un botón que no hace nada, sin que ninguno
+     * de los dos pueda hacer nada al respecto.
+     *
+     * Contestar DESDE EL PORTAL no está exento: allí hay sesión de la empresa y
+     * el plan se aplica como en cualquier otra escritura.
+     */
+    /^src\/app\/api\/servicio\//,
   ];
 
   it("toda ruta que escribe exige una suscripción que permita escribir", () => {
@@ -3119,6 +3144,15 @@ describe("las notificaciones internas", () => {
     ["commission_approved", "src/app/api/commissions/bulk/route.ts"],
     ["settlement_paid", "src/app/api/settlements/[id]/pay/route.ts"],
     ["booking_cancelled_for_seller", "src/app/api/bookings/[id]/cancel/route.ts"],
+    /**
+     * Los tres del proveedor salen del MISMO módulo a propósito: contestar y
+     * que venza el plazo son el mismo hecho mirado desde los dos lados, y
+     * partirlos en dos ficheros sería tener dos sitios donde acordarse de
+     * cambiar el estado.
+     */
+    ["supplier_service_rejected", "src/lib/respuesta-proveedor.ts"],
+    ["supplier_service_expired", "src/lib/respuesta-proveedor.ts"],
+    ["supplier_service_tacit", "src/lib/respuesta-proveedor.ts"],
   ];
 
   it("las metas del vendedor IGNORAN el parámetro de la consulta", () => {
@@ -7951,6 +7985,9 @@ describe("el socio que integra por API", () => {
     const campos = [...tipo.matchAll(/^\s{2}(\w+)\s*[?:]/gm)].map((m) => m[1]);
     expect(campos.sort()).toEqual([
       "_id", "detalle", "pax", "producto", "punto_de_encuentro", "service_date", "status", "tipo",
+      // El eje de la respuesta (0087). Entra con nombre y apellido, como todo
+      // lo demás: la lista es exacta para que un campo nuevo obligue a decidir.
+      "acceptance", "acceptance_deadline", "confirmation_number",
     ].sort());
     // Y el tipo que pinta es el que la ruta devuelve: si un día divergen, el
     // recorte del servidor deja de ser lo que limita a la pantalla.
@@ -7965,5 +8002,450 @@ describe("el socio que integra por API", () => {
       expect(pantalla, `la pantalla del proveedor lee ${prohibido}`)
         .not.toMatch(new RegExp(`\\.${prohibido}`));
     }
+  });
+
+  /* ════════════ Fase 8.4 · aceptar o rechazar, con plazo y enlace */
+
+  const sql87 = () =>
+    read("supabase/migrations/0087_supplier_acceptance.sql").replace(/^\s*--.*$/gm, "");
+
+  it("DOS EJES, NO UNO: lo que sabe la casa y lo que contestó él", () => {
+    /**
+     * `status` dice lo que la operadora sabe del recurso —previsto, confirmado,
+     * en conflicto—. Meter ahí la respuesta del proveedor haría que
+     * «confirmado» quisiera decir dos cosas a la vez, y la primera vez que
+     * alguien tenga que decidir si sale la guagua esa ambigüedad se resuelve a
+     * favor de lo que le convenga al que mira.
+     */
+    const sql = sql87();
+    for (const tabla of ["departure_resource", "pickup_route"]) {
+      expect(sql, `${tabla} sin eje de aceptación`)
+        .toMatch(new RegExp(`alter table ${tabla}\\s*\\n\\s*add column if not exists acceptance text`));
+    }
+    // Y los cinco estados, contados: con `toMatch` bastaba con que una de las
+    // dos tablas conservara la restricción.
+    expect(
+      (sql.match(/check \(acceptance in \('not_required','pending','accepted','rejected','expired'\)\)/g) || []).length,
+      "alguna de las dos tablas admite cualquier cosa en la columna"
+    ).toBe(2);
+  });
+
+  it("y nace en «no hace falta», NO en «pendiente»", () => {
+    /**
+     * Lo desconocido es lo de hoy: hoy nadie pregunta nada. Si la columna
+     * naciera en `pending`, el despliegue convertiría de golpe cada recurso
+     * histórico en un servicio sin confirmar y el tablero de despacho
+     * amanecería en rojo por una migración.
+     *
+     * Y `not_required` es lo HONESTO para lo que ya pasó: no es que el
+     * proveedor no contestara, es que nunca se le preguntó. `accepted` sería
+     * escribir en la base una conformidad que nadie dio.
+     */
+    const sql = sql87();
+    expect(
+      (sql.match(/add column if not exists acceptance text not null default 'not_required'/g) || []).length
+    ).toBe(2);
+    // El relleno solo pregunta por lo que TODAVÍA NO HA PASADO: preguntar por
+    // un servicio de la semana pasada es pedirle a alguien que confirme un
+    // viaje que ya hizo.
+    expect((sql.match(/and (dr|pr)\.service_date > now\(\)/g) || []).length,
+      "el relleno pregunta por servicios que ya ocurrieron").toBe(2);
+  });
+
+  it("ASIGNAR ES PREGUNTAR, y lo pone la base", () => {
+    /**
+     * Dejarlo en manos de quien escribe significa que el día que se asigne
+     * desde otro sitio —la mesa de despacho, una importación, un arreglo a
+     * mano— el servicio saldría sin que nadie lo hubiera pedido, y el proveedor
+     * se enteraría al llegar el autobús.
+     */
+    const sql = sql87();
+    const i = sql.indexOf("create or replace function app.set_acceptance_on_assign");
+    const fn = sql.slice(i, sql.indexOf("$fn$;", i));
+    expect(i, "no hay disparador de aceptación").toBeGreaterThan(-1);
+    expect(fn, "el disparador corre y no pone nada").toMatch(/new\.acceptance\s+:= 'pending';/);
+    expect(fn).toMatch(/new\.acceptance_deadline := v_deadline;/);
+    // Solo cuando CAMBIA de proveedor: sin esto, cada actualización de la fila
+    // —mover la hora, cambiar el pax— volvería a preguntar y borraría una
+    // conformidad ya dada.
+    expect(fn).toMatch(/if tg_op = 'UPDATE' and new\.supplier_id is not distinct from old\.supplier_id then\s*\n\s*return new;/);
+    // Y sin proveedor, no hay a quién preguntarle.
+    expect(fn).toMatch(/new\.acceptance\s+:= 'not_required';/);
+  });
+
+  it("y la respuesta del proveedor anterior SE BORRA", () => {
+    /**
+     * El caso que parece un detalle y no lo es: si A había aceptado y el
+     * servicio pasa a B, conservar «aceptado» deja una fila diciendo que hay
+     * conformidad de un proveedor que ya no tiene nada que ver con ese viaje —
+     * y con su número de confirmación al lado.
+     */
+    const sql = sql87();
+    const i = sql.indexOf("create or replace function app.set_acceptance_on_assign");
+    const fn = sql.slice(i, sql.indexOf("$fn$;", i));
+    for (const campo of ["responded_at", "responded_by", "response_note", "responded_via", "confirmation_number"]) {
+      expect(fn, `al reasignar se conserva ${campo} del proveedor anterior`)
+        .toMatch(new RegExp(`new\\.${campo}\\s+:= null;`));
+    }
+  });
+
+  it("EL PLAZO NUNCA PASA DE LA SALIDA, y el número lo dice un solo sitio", () => {
+    /**
+     * Un plazo que vence después de que el servicio ocurra no es un plazo: el
+     * autobús tenía que estar en el hotel a las siete y a las siete y cinco da
+     * igual lo que conteste nadie.
+     */
+    const sql = sql87();
+    const i = sql.indexOf("create or replace function app.set_acceptance_on_assign");
+    const fn = sql.slice(i, sql.indexOf("$fn$;", i));
+    expect(fn).toMatch(/if new\.service_date is not null and new\.service_date < v_deadline then\s*\n\s*v_deadline := new\.service_date;/);
+
+    /**
+     * Y las veinticuatro horas por defecto son el MISMO número en el disparador
+     * y en el dominio. Si el disparador diera veinticuatro y la pantalla dijera
+     * cuarenta y ocho, el proveedor leería un plazo y tendría otro.
+     */
+    expect(fn).toMatch(/coalesce\(v_horas, 24\)/);
+    const dominio = cuerpoDe("src/lib/aceptacion-proveedor.ts");
+    expect(dominio).toMatch(/export const VENTANA_POR_DEFECTO_HORAS = 24;/);
+    expect(dominio, "el dominio no acota el plazo con la hora de la salida")
+      .toMatch(/if \(servicio && servicio\.getTime\(\) < porVentana\.getTime\(\)\) return servicio;/);
+  });
+
+  it("el disparador de aceptación corre DESPUÉS del que calcula el proveedor", () => {
+    /**
+     * Postgres dispara los `before` de una fila en ORDEN ALFABÉTICO. Con
+     * cualquier otro nombre, este leería el proveedor viejo y no se enteraría
+     * del cambio — y eso es exactamente la clase de detalle que se rompe sin
+     * que nadie lo note, así que la migración lo comprueba y falla si deja de
+     * cumplirse.
+     */
+    const sql = sql87();
+    for (const tabla of ["departure_resource", "pickup_route"]) {
+      expect(sql).toMatch(new RegExp(`create trigger ${tabla}_supplier_acceptance\\b(?!_)`));
+      expect(`${tabla}_supplier_acceptance` > `${tabla}_supplier`,
+        `el disparador de aceptación de ${tabla} ordenaría antes`).toBe(true);
+    }
+    expect(sql, "la migración no comprueba el orden de disparo")
+      .toMatch(/raise exception 'El disparador de aceptación de % ordena ANTES/);
+  });
+
+  it("REVOCABLE AL REASIGNAR, que es la otra mitad del enlace", () => {
+    /**
+     * Si el servicio pasa de A a B y el enlace que ya le mandamos a A sigue
+     * vivo, A puede aceptar un servicio que hace diez minutos dejó de ser suyo
+     * — y quedarían dos conformidades sobre la misma guagua.
+     */
+    const sql = sql87();
+    const i = sql.indexOf("create or replace function app.revoke_supplier_tokens");
+    const fn = sql.slice(i, sql.indexOf("$fn2$;", i));
+    expect(fn).toMatch(/set revoked_at = now\(\)/);
+    // Solo los que siguen sirviendo: revocar uno ya usado borraría el rastro de
+    // que se usó.
+    expect(fn).toMatch(/and used_at is null\s*\n\s*and revoked_at is null;/);
+    // Y al borrarse la fila el enlace se va con ella: `resource_id` no tiene
+    // clave foránea que lo arrastre.
+    expect(fn).toMatch(/delete from supplier_response_token/);
+
+    for (const tabla of ["departure_resource", "pickup_route"]) {
+      expect(sql).toMatch(new RegExp(`create trigger ${tabla}_token_revoke\\b(?!_)`));
+      expect(sql).toMatch(new RegExp(`create trigger ${tabla}_token_cleanup\\b(?!_)`));
+    }
+    /**
+     * Con `when` y no `update of supplier_id`: esa columna la escribe un
+     * disparador `before`, y `update of` mira las columnas de la SENTENCIA, no
+     * lo que los disparadores cambiaron. Con `update of` no se dispararía nunca
+     * al cambiar el vehículo, que es como se reasigna de verdad.
+     */
+    expect(
+      (sql.match(/for each row when \(new\.supplier_id is distinct from old\.supplier_id\)/g) || []).length
+    ).toBe(2);
+  });
+
+  it("EL ENLACE SE GUARDA EN HASH, nunca en claro", () => {
+    /**
+     * Mismo criterio que las llaves de la API pública, y deliberadamente
+     * DISTINTO del token de la encuesta (0067), que sí se guarda a secas: aquel
+     * pone una nota a un viaje que ya terminó, este compromete a una empresa a
+     * poner un autobús con cuarenta personas dentro.
+     */
+    const sql = sql87();
+    const i = sql.indexOf("create table if not exists supplier_response_token");
+    const tabla = sql.slice(i, sql.indexOf(");", i));
+    expect(tabla).toMatch(/token_hash\s+text not null unique/);
+    expect(tabla, "la tabla guarda el enlace en claro").not.toMatch(/^\s*token\s+text/m);
+    // Atado al recurso, caducado, revocable y contado.
+    for (const col of ["resource_kind", "resource_id", "expires_at", "used_at", "revoked_at", "opened_count"]) {
+      expect(tabla, `al enlace le falta ${col}`).toContain(col);
+    }
+    expect(tabla).toMatch(/expires_at\s+timestamptz not null/);
+
+    const enlace = cuerpoDe("src/lib/enlace-proveedor.ts");
+    expect(enlace).toMatch(/randomBytes\(32\)/);
+    expect(enlace).toMatch(/createHash\("sha256"\)/);
+    const servicio = cuerpoDe("src/lib/respuesta-proveedor.ts");
+    expect(servicio, "se guarda el enlace y no su huella").toMatch(/token_hash: hash,/);
+    expect(servicio, "la tabla del enlace recibe el token en claro")
+      .not.toMatch(/token: token,/);
+  });
+
+  it("y esa tabla no la lee nadie por la vía normal", () => {
+    /**
+     * No es la política de siempre con un filtro más: es la AUSENCIA de
+     * política. Lo único que entra aquí es el cliente de servicio, que es quien
+     * verifica el enlace; ni el proveedor, ni el socio, ni el personal interno
+     * tienen nada que hacer leyendo material de credenciales.
+     */
+    const sql = sql87();
+    expect(sql).toMatch(/alter table supplier_response_token enable row level security;/);
+    expect(sql).toMatch(/alter table supplier_response_token force row level security;/);
+    expect(sql, "se le puso una política a la tabla del enlace")
+      .not.toMatch(/create policy \w+ on (public\.)?supplier_response_token/);
+    expect(sql, "el enlace entra en el mapa de recursos del ERP genérico").toBeTruthy();
+    expect(cuerpoDe("src/lib/resources.ts"), "la tabla del enlace es alcanzable por la API genérica")
+      .not.toContain("supplier_response_token");
+  });
+
+  it("CONTESTAR ES UNA SOLA ESCRITURA, en Postgres", () => {
+    /**
+     * Hay que gastar el enlace y escribir la respuesta, y las dos cosas tienen
+     * que pasar juntas o ninguna. Partirlo en dos tiene dos formas de salir
+     * mal: marcar usado y fallar al escribir deja al proveedor sin poder
+     * contestar y sin constar que contestó; escribir y fallar al marcar usado
+     * deja el enlace vivo, y entonces no es de un solo uso.
+     *
+     * Misma lección que la comisión retenida en 0083.
+     */
+    const sql = sql87();
+    const i = sql.indexOf("create or replace function public.respond_to_supplier_service");
+    expect(i, "no existe la función").toBeGreaterThan(-1);
+    const fn = sql.slice(i, sql.indexOf("$fn3$;", i));
+    expect(sql.slice(i, i + 400)).toMatch(/security definer set search_path = public, app/);
+
+    // Falla cerrada: se salta la RLS, así que solo la llama el servidor.
+    expect(fn).toMatch(/if v_role <> 'service_role' then/);
+    expect(sql).toMatch(/revoke execute on function public\.respond_to_supplier_service\(text, text, text, text\)\s*\n\s*from anon, public, authenticated;/);
+    expect(sql).toMatch(/grant execute on function public\.respond_to_supplier_service\(text, text, text, text\)\s*\n\s*to service_role;/);
+
+    // El `for update` es lo que SERIALIZA: dos clics seguidos esperan aquí uno
+    // a otro, y el segundo encuentra el enlace ya gastado.
+    expect(fn).toMatch(/from supplier_response_token\s*\n\s*where token_hash = p_token_hash\s*\n\s*for update;/);
+    for (const [campo, motivo] of [["revoked_at", "revoked"], ["used_at", "already_used"]] as const) {
+      expect(fn, `no se mira ${campo}`).toMatch(new RegExp(`if v_tok\\.${campo} is not null then[\\s\\S]{0,120}'${motivo}'`));
+    }
+    expect(fn).toMatch(/if v_tok\.expires_at <= now\(\) then[\s\S]{0,120}'expired'/);
+
+    /**
+     * Y el estado del recurso se mira ANTES de gastar el enlace: si ya se
+     * contestó desde el portal, el enlace no se consume, así que quien lo abra
+     * después verá «ya contestado» y no «este enlace no sirve».
+     */
+    const donde = fn.indexOf("'already_answered'");
+    const gasta = fn.indexOf("update supplier_response_token set used_at");
+    expect(donde, "no se mira si ya se contestó").toBeGreaterThan(-1);
+    expect(gasta, "el enlace no se gasta").toBeGreaterThan(-1);
+    expect(donde, "el enlace se gasta antes de saber si valía").toBeLessThan(gasta);
+    // Y sigue siendo suyo: el disparador revoca al reasignar, pero esto no
+    // depende de que aquel haya corrido.
+    expect(fn).toMatch(/if v_supplier is distinct from v_tok\.supplier_id then[\s\S]{0,120}'reassigned'/);
+  });
+
+  it("EL NÚMERO DE CONFIRMACIÓN SOLO SALE CON UN SÍ", () => {
+    /**
+     * Un número emitido con un rechazo sería un papel que dice que hay
+     * conformidad de lo que nadie aceptó. Y emitirlo con la PETICIÓN tampoco
+     * probaría nada: lo tendría igual quien nunca contestó.
+     */
+    const sql = sql87();
+    const i = sql.indexOf("create or replace function public.respond_to_supplier_service");
+    const fn = sql.slice(i, sql.indexOf("$fn3$;", i));
+    /**
+     * CONTADAS, y son dos: la del `update` que escribe la fila y la del `return`
+     * que le contesta a la pantalla. Con `toMatch` bastaba con que sobreviviera
+     * la del return —la mutación borró la condición del update y la guarda la
+     * encontró tres líneas más abajo, tan contenta—. Es la misma familia que
+     * «la guarda encuentra su texto en otro sitio del mismo fichero».
+     */
+    expect(
+      (fn.match(/case when p_answer = 'accepted' then p_confirmation else null end/g) || []).length,
+      "se escribe el número sin mirar si la respuesta fue que sí"
+    ).toBe(2);
+    // Y queda escrito por dónde contestó: una conformidad dada por el enlace y
+    // otra dada desde el portal no prueban lo mismo.
+    expect(fn, "la respuesta por enlace no deja constancia de por dónde entró")
+      .toMatch(/responded_via = ''enlace''/);
+
+    const servicio = cuerpoDe("src/lib/respuesta-proveedor.ts");
+    expect(servicio, "el portal emite número también al rechazar")
+      .toMatch(/const numero = respuesta === "accepted" \? newSupplierConfirmation\(\) : null;/);
+  });
+
+  it("LA CONDICIÓN VA EN EL WHERE, no en un `if` de JavaScript", () => {
+    /**
+     * Las dos escrituras que cambian el estado sin pasar por Postgres —la del
+     * portal y la del barrido de vencimientos— llevan `acceptance = 'pending'`
+     * DENTRO de la sentencia. Es lo que las hace seguras sin transacción: dos
+     * clics seguidos no escriben dos veces porque el segundo no encuentra
+     * ninguna fila que cumpla, y el barrido no puede pisar una respuesta que
+     * llegó mientras él leía.
+     *
+     * Comprobarlo con `toMatch` dejaba pasar la mutación que se lo quita a UNA
+     * de las dos: la otra seguía ahí y la guarda la encontraba.
+     */
+    const servicio = cuerpoDe("src/lib/respuesta-proveedor.ts");
+    expect(
+      (servicio.match(/\.eq\("acceptance", "pending"\)\s*\n\s*\.select\("id"\)/g) || []).length,
+      "alguna escritura decide el estado fuera de la sentencia que lo cambia"
+    ).toBe(2);
+    // Y el proveedor también va en el WHERE: comprobarlo antes en una lectura y
+    // escribir después deja una rendija entre las dos.
+    expect(servicio).toMatch(/\.eq\("supplier_id", supplierId\)/);
+  });
+
+  it("el portal lo contesta EL PROVEEDOR, y el enlace lo emite la casa", () => {
+    /**
+     * Aquí no entra el personal interno ni con rango: aceptar en nombre de un
+     * transportista es exactamente lo que esta función existe para evitar. Si
+     * la casa puede marcar «aceptado», la conformidad deja de probar nada y el
+     * enlace de un clic sobra.
+     *
+     * Y al revés con el enlace: es una credencial, así que la crea quien asigna
+     * y con rango. Un proveedor pidiéndose enlaces a sí mismo sería una forma
+     * de fabricar credenciales a demanda para mandárselas a quien sea.
+     */
+    const respuesta = cuerpoDe("src/app/api/proveedor/respuesta/route.ts");
+    expect(respuesta).toMatch(/if \(!esDeProveedor\(ctx\) \|\| !ctx\.supplierId\)/);
+    expect(respuesta, "el interno puede contestar por el proveedor")
+      .not.toMatch(/requireAtLeast/);
+    expect(respuesta, "el proveedor viene del cuerpo de la petición y no de la ficha")
+      .toMatch(/ctx\.supplierId,/);
+
+    const enlace = cuerpoDe("src/app/api/proveedor/enlace/route.ts");
+    expect(enlace).toMatch(/if \(!esInterno\(ctx\)\) throw new TenantError/);
+    expect(enlace).toMatch(/requireAtLeast\(ctx, "operations"\)/);
+  });
+
+  it("y un servicio tiene UN enlace vivo", () => {
+    // Si se le manda otro por WhatsApp porque el correo no llegó, el primero
+    // deja de valer. Con dos vivos, «de un solo uso» dejaría de ser verdad por
+    // la vía de tener dos usos.
+    const servicio = cuerpoDe("src/lib/respuesta-proveedor.ts");
+    const i = servicio.indexOf("export async function emitirEnlaceDeRespuesta");
+    const fin = servicio.indexOf("export ", i + 10);
+    const cuerpo = servicio.slice(i, fin);
+    const revoca = cuerpo.indexOf('revoked_reason: "reemplazado"');
+    const emite = cuerpo.indexOf("nuevoEnlaceDeRespuesta()");
+    expect(revoca, "no se revocan los anteriores").toBeGreaterThan(-1);
+    expect(revoca, "se emite el nuevo antes de matar el viejo").toBeLessThan(emite);
+  });
+
+  it("CADA APERTURA SE ANOTA, incluida la que no existe", () => {
+    /**
+     * Lo que el encargo pide saber es quién tocó el enlace. El intento fallido
+     * es el que más dice: un enlace inexistente abierto cuarenta veces desde la
+     * misma dirección es alguien probando. Una bitácora que solo apunta los
+     * aciertos no sirve para verlo.
+     */
+    const servicio = cuerpoDe("src/lib/respuesta-proveedor.ts");
+    const i = servicio.indexOf("export async function abrirEnlace");
+    const cuerpo = servicio.slice(i, servicio.indexOf("\nfunction motivoDelToken", i));
+    expect((cuerpo.match(/writeAudit\(/g) || []).length,
+      "alguna rama de apertura no deja rastro").toBe(2);
+    expect(cuerpo).toMatch(/action: "supplier\.link\.open"/);
+    // Y el recuento sube siempre: contando solo las válidas, un enlace revocado
+    // abierto cien veces se vería igual que uno que nadie tocó.
+    const sube = cuerpo.indexOf("opened_count:");
+    const decide = cuerpo.indexOf("const motivo = motivoDelToken(");
+    expect(sube, "no se cuentan las aperturas").toBeGreaterThan(-1);
+    expect(sube, "solo se cuentan las aperturas que valen").toBeLessThan(decide);
+  });
+
+  it("y ABRIR NO ES USAR", () => {
+    /**
+     * El robot que previsualiza el enlace en WhatsApp lo abre. Si eso lo
+     * gastara, el proveedor recibiría un enlace ya quemado por una
+     * previsualización que él no pidió.
+     */
+    const servicio = cuerpoDe("src/lib/respuesta-proveedor.ts");
+    const i = servicio.indexOf("export async function abrirEnlace");
+    const cuerpo = servicio.slice(i, servicio.indexOf("\nfunction motivoDelToken", i));
+    expect(cuerpo, "abrir el enlace lo gasta").not.toMatch(/used_at:/);
+  });
+
+  it("al vencer NO se acepta por nadie, salvo pacto expreso", () => {
+    /**
+     * La decisión de la ola. La aceptación tácita obliga a un tercero que no
+     * hizo nada; reasignar solo movería un autobús de verdad sin que lo
+     * decidiera una persona. Por eso lo único que ocurre sin que nadie lo mande
+     * es que se marque vencido y suene un aviso.
+     */
+    const dominio = cuerpoDe("src/lib/aceptacion-proveedor.ts");
+    expect(dominio).toMatch(/if \(politica === "tacit"\) return \{ estado: "accepted", via: "tacito", avisa: true \};/);
+    expect(dominio).toMatch(/return \{ estado: "expired", via: null, avisa: true \};/);
+    /**
+     * Y `reassign` NO es un valor declarable en ninguna parte. Reasignar no es
+     * una política: es una función que no existe. Ofrecerla como una casilla
+     * que en realidad no mueve nada sería peor que no ofrecerla.
+     */
+    expect(dominio).toMatch(/export type PoliticaDeVencimiento = "alert" \| "tacit";/);
+    expect(sql87()).toMatch(/check \(on_deadline_expiry in \('alert','tacit'\)\)/);
+    expect(sql87(), "«reasignar solo» aparece como valor declarable")
+      .not.toMatch(/on_deadline_expiry in \([^)]*reassign/);
+  });
+
+  it("y el silencio que acepta deja escrito que nadie contestó", () => {
+    // «tacito», no «enlace». El día que se discuta si el proveedor aceptó de
+    // verdad, esa palabra es toda la prueba que hay.
+    const sql = sql87();
+    // Contadas: son dos tablas, y el mutador solo tiene que estrechar una para
+    // que un `toMatch` siga encontrando la otra.
+    expect(
+      (sql.match(/responded_via in \('portal','enlace','tacito'\)/g) || []).length,
+      "alguna de las dos tablas no admite el silencio como tal"
+    ).toBe(2);
+    const servicio = cuerpoDe("src/lib/respuesta-proveedor.ts");
+    expect(servicio).toMatch(/responded_via: desenlace\.via,/);
+  });
+
+  it("la página del enlace existe, no se indexa y no enseña pasajeros", () => {
+    /**
+     * Es una credencial en una dirección: que un buscador la recorra sería
+     * repartir enlaces de confirmación por internet.
+     */
+    expect(existe("src/app/servicio/[token]/page.tsx")).toBe(true);
+    const pagina = read("src/app/servicio/[token]/page.tsx");
+    expect(pagina).toMatch(/robots: \{ index: false, follow: false \}/);
+    const cuerpo = cuerpoDe("src/app/servicio/[token]/page.tsx");
+    for (const prohibido of ["customer", "phone", "room", "first_name", "guest"]) {
+      expect(cuerpo, `la página pública lee ${prohibido}`).not.toMatch(new RegExp(`\\.${prohibido}`));
+    }
+    // Y el resumen que le llega tampoco los trae: la lista es exacta.
+    const servicio = cuerpoDe("src/lib/respuesta-proveedor.ts");
+    const i = servicio.indexOf("const servicio = {");
+    const campos = [...servicio.slice(i, servicio.indexOf("\n  };", i)).matchAll(/^\s{4}(\w+):/gm)]
+      .map((m) => m[1]);
+    expect(campos.sort()).toEqual([
+      "acceptance", "acceptance_deadline", "confirmation_number", "detalle",
+      "pax", "producto", "proveedor", "punto_de_encuentro", "service_date", "tipo",
+    ].sort());
+  });
+
+  it("el barrido de plazos está vigilado y no depende de él ninguna lectura", () => {
+    /**
+     * Mismo criterio que la caducidad de aprobaciones: el plazo se compara con
+     * el reloj en CADA consulta, así que un cron caído no permite contestar
+     * tarde. Lo único que se pierde si no corre es que el estado guardado y el
+     * aviso lleguen tarde.
+     */
+    const cron = cuerpoDe("src/app/api/cron/supplier-acceptance/route.ts");
+    expect(cron).toMatch(/process\.env\.CRON_SECRET/);
+    expect(cron).toMatch(/startJobRun\("supplier-acceptance"\)/);
+    // El MISMO instante para todas las empresas: leyendo el reloj por empresa,
+    // una que tarde en procesarse aplicaría un corte distinto al de la anterior.
+    expect(cron).toMatch(/const ahora = new Date\(\);/);
+    expect(cron).toMatch(/barrerVencimientos\(companyId, ahora\)/);
+    // Y quien decide si se puede contestar es el dominio, contra el reloj.
+    const servicio = cuerpoDe("src/lib/respuesta-proveedor.ts");
+    expect(servicio).toMatch(/puedeResponder\(fila, ahora\)/);
   });
 });

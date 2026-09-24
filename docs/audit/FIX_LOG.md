@@ -2951,3 +2951,105 @@ Y la tabla dice dos cosas más que no se preguntaban:
   pasar un `s.guest_phone`.
 - **Mutación: veinticuatro, las veinticuatro muertas** a la primera, que es la
   primera vez en esta rama que no hubo que reforzar ninguna guarda.
+
+### Fase 8.4 — aceptar o rechazar, con su plazo, su número y su enlace de un solo uso
+- **DOS EJES, NO UNO.** `status` dice lo que la operadora sabe del recurso
+  —previsto, confirmado, en conflicto—; `acceptance` dice lo que contestó el
+  proveedor. Meterlo en la misma columna haría que «confirmado» quisiera decir
+  dos cosas a la vez, y la primera vez que haya que decidir si sale la guagua esa
+  ambigüedad se resuelve a favor de lo que le convenga al que mira.
+- **Nace en `not_required`, no en `pending`.** Lo desconocido es lo de hoy: hoy
+  nadie pregunta nada. Con `pending` por defecto, el despliegue convertiría de
+  golpe cada recurso histórico en un servicio sin confirmar y el tablero de
+  despacho amanecería en rojo por una migración. Y `not_required` es además lo
+  honesto para lo que ya pasó: no es que el proveedor no contestara, es que nunca
+  se le preguntó — poner `accepted` sería escribir una conformidad que nadie dio.
+- **Asignar es preguntar, y lo pone la BASE.** Un disparador, no la pantalla que
+  asigna: dejarlo en manos de quien escribe significa que el día que se asigne
+  desde la mesa de despacho, una importación o un arreglo a mano, el servicio
+  saldría sin que nadie lo hubiera pedido y el proveedor se enteraría al llegar
+  el autobús.
+- **EL NOMBRE DEL DISPARADOR NO ES DECORACIÓN.** Postgres dispara los `before` de
+  una fila en orden ALFABÉTICO, y este tiene que correr después del de 0085, que
+  es el que calcula `supplier_id`. Con cualquier otro nombre leería el proveedor
+  viejo. Se llama `..._supplier_acceptance` para ordenar detrás, y **la migración
+  falla si el orden deja de cumplirse** — un comentario no habría bastado para
+  algo que se rompe sin que nadie lo note.
+- **Y la respuesta del proveedor anterior se BORRA al reasignar.** Si A había
+  aceptado y el servicio pasa a B, conservar «aceptado» deja una fila diciendo
+  que hay conformidad de quien ya no tiene nada que ver con ese viaje, con su
+  número de confirmación al lado.
+- **El plazo nunca pasa de la salida.** Un plazo que vence después de que el
+  servicio ocurra no es un plazo, es un recordatorio para después del entierro. Y
+  las veinticuatro horas por defecto son el MISMO número en el disparador y en el
+  dominio, con guarda: si el disparador diera veinticuatro y la pantalla dijera
+  cuarenta y ocho, el proveedor leería un plazo y tendría otro.
+- **QUÉ PASA AL VENCER: se declara por proveedor, con `alert` por defecto.**
+  `alert` marca el servicio como vencido y avisa a operaciones, y es el de por
+  omisión porque es el único que no decide nada en nombre de nadie. `tacit` —quien
+  calla otorga— existe porque hay proveedores de toda la vida con los que se
+  trabaja así, y aun así deja escrito que NADIE contestó: `responded_via` queda
+  en «tacito», no en «enlace».
+- **Y `reassign` NO es un valor declarable, a propósito.** El plan lo mencionaba
+  como tercera opción; no es una política, es una función que no existe. Habría
+  que elegir otro vehículo, comprobar sus documentos y sus conflictos y avisar a
+  dos proveedores. Ofrecerlo como una casilla que en realidad no mueve nada sería
+  peor que no ofrecerlo — y mover una guagua de verdad sin que lo decida una
+  persona, peor todavía.
+- **El enlace se guarda en HASH, nunca en claro**, y es deliberadamente distinto
+  del token de la encuesta (0067), que sí se guarda a secas: aquel pone una nota
+  a un viaje que ya terminó, este compromete a una empresa a poner un autobús con
+  cuarenta personas dentro. Treinta y dos bytes de azar criptográfico, no los
+  siete caracteres de la encuesta: un enlace que se puede adivinar probando es un
+  enlace con el que alguien acepta servicios en nombre del transportista de
+  enfrente.
+- **La tabla del enlace tiene RLS encendida y CERO políticas.** No es la política
+  de siempre con un filtro más: es la ausencia de política. Lo único que entra
+  ahí es el cliente de servicio; ni el proveedor, ni el socio, ni el personal
+  interno tienen nada que hacer leyendo material de credenciales — lo que
+  necesitan saber está en la fila del recurso.
+- **Contestar es UNA sola escritura, en Postgres.** Hay que gastar el enlace y
+  escribir la respuesta, y partirlo en dos tiene dos formas de salir mal: marcar
+  usado y fallar al escribir deja al proveedor sin poder contestar y sin constar
+  que contestó; escribir y fallar al marcar usado deja el enlace vivo, y entonces
+  no es de un solo uso. Misma lección que la comisión retenida en 0083. Y el
+  estado del recurso se mira ANTES de gastar el enlace, para que quien ya contestó
+  desde el portal lea «ya contestado» y no «este enlace no sirve».
+- **ABRIR NO ES USAR.** El robot que previsualiza el enlace en WhatsApp lo abre;
+  si eso lo gastara, el proveedor recibiría un enlace ya quemado por algo que él
+  no pidió. Se gasta al CONTESTAR.
+- **Y cada apertura se anota, incluida la de un enlace que no existe.** El intento
+  fallido es el que más dice: cuarenta aperturas de un enlace inexistente desde la
+  misma dirección son alguien probando. Una bitácora que solo apunta los aciertos
+  no sirve para verlo.
+- **El cron quería ser horario y una guarda vieja lo impidió — con razón.** El
+  plan de Vercel en el que esto corre solo admite trabajos diarios; un cron más
+  frecuente NO DESPLIEGA y tumba el despliegue entero, y hay una guarda escrita
+  desde que pasó. Así que el barrido es diario, **y eso acota lo que puede
+  prometer**: da el estado al día y el aviso de la mañana, no una alarma
+  inmediata. Lo que sostiene el plazo no es el cron — `puedeResponder` lo compara
+  con el reloj en cada consulta, así que un cron caído nunca permite contestar
+  tarde.
+- **SIETE GUARDAS PREEXISTENTES SALTARON A LA VEZ**, y las siete pedían algo real:
+  la exención de CSRF y la del plan para la ruta pública, la tabla y las doce
+  columnas nuevas en el verificador de migraciones, la expectativa de vigilancia
+  del cron, la frecuencia del cron, y **la lista exacta de campos que escribí en
+  8.3** — que obligó a declarar el eje de la respuesta a propósito en vez de
+  dejarlo colarse.
+- **EL DOBLE DE LA BASE ENTREGA COPIAS, y cuatro pruebas pasaron sin probar
+  nada.** `db.rows()` clona, así que escribir en lo que devuelve no cambia la
+  base: las cuatro pruebas que preparaban su caso así lo preparaban contra una
+  copia y comprobaban el caso de partida. Se arreglaron pasando por el servicio.
+  Es la misma familia que el doble que no expandía en cascada de la ola anterior:
+  un doble que miente por debajo convierte cada prueba que lo use en una prueba de
+  otra cosa.
+- **Cinco guardas no mordieron a la primera, y las cinco eran defectos de guarda:**
+  dos de «la guarda encuentra su texto en otro sitio del mismo fichero» —el `case
+  when … then p_confirmation` aparece en el `update` y en el `return`, y la
+  restricción de `responded_via` existe en las dos tablas—, una de `toMatch`
+  donde hacían falta dos coincidencias contadas, y **una repetición exacta de la
+  lección de 8.3**: la prueba comprobaba el valor POR DEFECTO del eje de
+  aceptación, que es justo lo que devuelve una columna recortada por la lista
+  blanca, así que pasaba idéntica con la columna borrada. Ahora comprueba un
+  valor que no es el de por defecto.
+- **Mutación: cincuenta y cuatro, las cincuenta y cuatro muertas.**

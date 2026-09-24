@@ -134,6 +134,10 @@ export const VISIBLE_AL_PROVEEDOR: Record<string, string[]> = {
   departure_resource: [
     "_id", "departure", "resource_role", "pax_assigned",
     "start_time", "end_time", "status", "vehicle", "staff", "supplier",
+    // Lo que tiene que contestar y hasta cuándo (0087). Sin declararlo, la
+    // lista blanca se lo come y el proveedor recibe sus servicios sin saber
+    // cuáles están esperando su respuesta — que es toda la función.
+    "acceptance", "acceptance_deadline", "confirmation_number",
     // Cuándo es (0086). Sin declararla, la lista blanca se la come y el
     // proveedor recibe sus servicios sin fecha — que es exactamente lo que
     // esta lista tiene que hacer con una columna que nadie declaró, y por eso
@@ -143,6 +147,7 @@ export const VISIBLE_AL_PROVEEDOR: Record<string, string[]> = {
   pickup_route: [
     "_id", "departure", "zone", "name", "start_time",
     "pax_total", "stops_count", "status", "vehicle", "driver", "guide", "supplier",
+    "acceptance", "acceptance_deadline", "confirmation_number",
     "service_date",
   ],
   // De la salida, lo que le dice a qué servicio va. NO el cupo vendido ni los
