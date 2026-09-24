@@ -606,6 +606,53 @@ describe("el esquema cubre todo lo que la aplicación escribe", () => {
     expect(sinInventariar, "columnas nuevas que el verificador de migraciones no comprueba").toEqual([]);
   });
 
+  it("la auditoría que se pega en el editor está al día", () => {
+    /**
+     * `supabase/editor/auditoria_migraciones*.sql` se GENERA del inventario, y
+     * responde la única pregunta que importa al aplicar migraciones a mano:
+     * «¿cuáles me faltan?».
+     *
+     * Una copia generada que nadie regenera es peor que no tenerla: a la
+     * primera migración nueva diría «todo aplicado» sin haber mirado lo último
+     * — y ese verde es justo el que alguien usa para decidir que puede
+     * desplegar. Así que aquí se vuelve a generar y se compara.
+     */
+    const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+    const { mkdtempSync, rmSync } = require("node:fs") as typeof import("node:fs");
+    const os = require("node:os") as typeof import("node:os");
+    const RAIZ = path.resolve(__dirname, "../..");
+    const EDITOR = path.join(RAIZ, "supabase/editor");
+
+    const enDisco = new Map<string, string>();
+    for (const f of readdirSync(EDITOR).filter((n) => /^auditoria_migraciones/.test(n))) {
+      enDisco.set(f, readFileSync(path.join(EDITOR, f), "utf8"));
+    }
+    expect(enDisco.size, "no hay auditoría generada").toBeGreaterThan(0);
+
+    /**
+     * Se regenera EN OTRO SITIO, no encima. Escribir sobre los ficheros buenos
+     * mientras otra prueba los lee deja ver uno a medio escribir — y una prueba
+     * que falla una de cada cuatro veces se acaba volviendo a ejecutar hasta
+     * que pasa, que es no tener prueba.
+     */
+    const tmp = mkdtempSync(path.join(os.tmpdir(), "auditoria-"));
+    try {
+      execFileSync("node", ["scripts/build-auditoria-migraciones.mjs", tmp], {
+        cwd: RAIZ, stdio: "pipe",
+      });
+      const recien = readdirSync(tmp).filter((n) => /^auditoria_migraciones/.test(n));
+      expect(recien.sort(), "cambió el número de trozos: regenera y súbelos")
+        .toEqual([...enDisco.keys()].sort());
+      for (const f of recien) {
+        expect(readFileSync(path.join(tmp, f), "utf8"),
+          `${f} se quedó atrás: corre node scripts/build-auditoria-migraciones.mjs`)
+          .toBe(enDisco.get(f));
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("cada relación declarada en resources.ts se puede resolver", () => {
     // Un `expand` que no corresponde a ninguna referencia real no fallaba
     // mientras las expansiones se ignoraban: ahora dispara una consulta que la
