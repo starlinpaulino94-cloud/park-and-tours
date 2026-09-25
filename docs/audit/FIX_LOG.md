@@ -4261,3 +4261,129 @@ probado nunca.
   volver a entrar**: el token que ya tienes en el navegador sigue siendo válido
   durante su vida entera y sigue sin `branch_id` ni empresa activa; el enganche solo
   se ejecuta al emitir uno nuevo.
+
+### Ola 9.11 — los techos silenciosos: P-001 deja de estar en blanco
+
+**Encargo: mirar el rendimiento, que era la única puerta del informe de
+producción en FALLA/FALLA.** Lo primero fue medir en vez de opinar: levanté un
+Postgres 16 con las 93 migraciones y fui a buscar los índices que faltaran. No
+faltaban. Las tablas calientes —`booking`, `sales_order`, `payment`,
+`departure`, `commission`, `customer`— tienen índices compuestos bien pensados,
+encabezados por `organization_id` y con la segunda columna puesta donde toca; y
+las cuatro ayudas de inquilino son `stable`, así que la RLS no las reevalúa por
+fila. La historia fácil de «falta un índice» no era la historia.
+
+**La historia era otra, y no es de rendimiento: es de corrección.** Los trabajos
+programados leían con un tope fijo —`.limit(1000)`, `.limit(2000)`,
+`.limit(3000)`— y trataban lo que saliera. Un tope es correcto cuando es UNA
+PÁGINA de una lista que alguien puede seguir pasando. Es un fallo cuando es un
+TECHO sobre un trabajo que tiene que pasar por todas las filas, porque lo que
+queda fuera no se retrasa, no se reintenta y no se avisa: **desaparece**.
+
+**Y desaparece siempre lo mismo.** Medido, no supuesto. Con 2 500 retenciones
+vencidas y el tope de mil de la cobranza:
+
+```
+pasada 1: 1000 filas
+pasada 2: 1000 filas
+diferencia entre las dos pasadas: 0 filas
+jamás atendidas: 1500
+
+la más VIEJA que se atiende | 16:40:17
+la más VIEJA que se ignora  | 1 day 17:40:17
+```
+
+Cero diferencias entre pasadas: las mismas mil filas, siempre. Y como ninguna
+consulta tenía `order`, el orden que salía era el del montón —el de inserción—,
+así que el barrido atendía retenciones vencidas hacía dieciséis horas mientras
+ignoraba, para siempre, una vencida hacía un día y diecisiete. **La cola se
+atendía al revés: el que más llevaba esperando era justo el que no se atendía
+nunca.** Y empeora con el éxito: mientras la operadora tiene ochocientas
+retenciones el tope no se nota; el día que pasa de mil, las plazas se quedan
+apartadas sin un error en ninguna pantalla.
+
+**Doce techos, en cuatro trabajos.** Lo que cada uno se dejaba sin hacer:
+
+- **`cron/collections`** (cuatro). El peor: el de las retenciones leía FILAS
+  para sacar EMPRESAS, así que bastaba con que una operadora grande llenara la
+  página para que a otra **no se le liberara ni una plaza** —y siempre la misma.
+  Los otros tres dejaban cuotas vencidas diciendo «pendiente», clientes sin el
+  recordatorio de saldo que el sistema promete, y deudas de 120 días con la
+  antigüedad en «corriente».
+- **`cron/allotments`** (3 000). Cupos garantizados a un socio que ya no los va a
+  usar y que nadie más puede vender. Es el mismo fallo que esta migración vino a
+  arreglar en su día —«existe desde 0010 y no liberaba nunca»—, reabierto por la
+  puerta del tope.
+- **`cron/certifications`** (3 000). Un chofer con el permiso vencido que el
+  sistema sigue dando por bueno: `blocks_assignment` no se enciende, el despacho
+  lo asigna, y sube a la guagua alguien que no puede conducirla.
+- **`cron/dispatch-messages`** (cuatro). Una operadora que no aparece en la lista
+  se queda sin encolar **nada**: ni encuesta, ni manifiesto, ni el recordatorio
+  de la víspera —que es el que lleva la hora de recogida—.
+
+**La solución: `src/lib/barrido.ts`, y dos formas de barrer que no son
+intercambiables.**
+
+- **Recorrido.** Tratar la fila NO la saca del filtro (poner una cuota en
+  `overdue` cuando el filtro admite `overdue`). Hay que **avanzar** la ventana.
+- **Drenaje.** Tratar la fila SÍ la saca (un mensaje que se manda). Hay que pedir
+  **siempre la primera página**, porque avanzar se saltaría tantas filas como se
+  llevaran tratadas.
+
+Al revés, cada uno rompe de la forma del otro: un recorrido drenando da vueltas
+para siempre y un drenaje recorriendo se salta la mitad. Por eso el modo se
+declara en la llamada y no se adivina, y hay dos pruebas dedicadas a enseñar qué
+pasa cuando se confunden.
+
+- **El techo sigue existiendo, pero se oye.** Un barrido sin techo es una forma
+  de tumbar la base desde un cron. El techo se queda —20 000, un número que una
+  operadora sana no toca nunca, para que tocarlo signifique algo— y cuando se
+  toca **`barridoVigilado` levanta un incidente** y lo apunta en el resumen del
+  trabajo. Es la única diferencia de fondo con el tope de antes: aquel también se
+  quedaba corto; este lo dice.
+- **La salida por atasco.** Si el tratamiento falla en todas las filas, la fila
+  se queda en el filtro y la vuelta siguiente la trae otra vez. Sin esa salida el
+  cron daría vueltas hasta el techo sobre las mismas quinientas filas rotas y
+  terminaría diciendo «truncado» — la explicación equivocada del problema
+  equivocado. Se compara por identidad y no por número: una vuelta con la misma
+  cantidad pero otras filas sí está avanzando.
+- **Todas las lecturas van ordenadas, y con desempate por `id`.** Paginar sin
+  orden declarado es el fallo silencioso de la paginación: dos páginas pueden
+  solaparse y dejar filas en medio sin tratar. Y ordenar por una sola columna no
+  basta cuando empata —dos cupos de la misma salida, dos cuotas del mismo día—:
+  el desempate por identidad es lo que hace el orden total. El criterio de orden
+  es siempre el de **urgencia** (`hold_until`, `due_date`, `expires_at`,
+  `scheduled_at`), así que si algún día se toca el techo, lo tratado es lo que
+  más urgía.
+
+**El doble de Supabase perdonaba exactamente el error que se estaba probando.**
+`range(desde, hasta)` descartaba `desde` y solo calculaba el tamaño, y `order`
+se quedaba con la ÚLTIMA llamada en vez de encadenarlas. Con eso, **la prueba de
+un barrido que no avanza su cursor habría salido en verde**, y la de un barrido
+sin desempate también. Los dos arreglados en el doble, con su comentario: un
+doble que perdona el fallo que se prueba no prueba nada, y es de los fallos más
+caros que hay porque se descubre en producción.
+
+- **Dos mutaciones sobrevivieron a la primera.** Una era un hueco en mi propia
+  prueba de `atascado`: el caso «sin vuelta anterior» con la actual vacía, que
+  `every` sobre una lista vacía resuelve a verdadero. Se cerró probando el
+  contrato que la función ya declaraba —no haber mirado todavía no es prueba de
+  nada—. La otra era un hueco de verdad: **ningún test ejecutaba
+  `cron/collections`**, así que el campo del resumen que dice qué barrido se
+  quedó corto podía renombrarse sin que nada se enterara. Se cerró con una prueba
+  de ruta completa (cinco casos) que además es la que demuestra el fallo original
+  en una línea: con 2 500 retenciones, la operadora que estaba detrás del tope
+  ahora sí recibe la liberación de su cupo.
+- **Mutación: veintidós, las veintidós muertas.**
+- **Considerado y dejado como está:** el `.limit(60)` sobre las cuotas de UNA
+  venta. Es una cota real del dominio —sesenta cuotas mensuales son cinco años—,
+  no un barrido de plataforma, y la guarda de estructura prohíbe a propósito solo
+  los topes de cuatro cifras: prohibir los de dos o tres la habría convertido en
+  ruido que alguien desactiva.
+- **Lo que sigue abierto de P-001:** esto cierra los techos silenciosos, que era
+  el defecto de corrección escondido detrás de la puerta de rendimiento. **No
+  cierra P-001**: sigue sin haber pruebas de carga ni un `EXPLAIN` sistemático
+  sobre las consultas del panel con volumen de producción. Lo que sí quedó
+  medido, y se apunta aquí para no repetirlo: los índices de las seis tablas
+  calientes están bien y las ayudas de inquilino son `stable`.
+- **No hay migración en esta ola** y no hay nada que ejecutar en la base.

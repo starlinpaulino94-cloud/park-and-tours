@@ -11,7 +11,8 @@
  *
  * Este doble entiende el trozo de la gramática de PostgREST que la aplicación
  * usa de verdad, y nada más: `from`, `select`, `insert`, `update`, `eq`, `in`,
- * `not`, `lt`, `lte`, `gt`, `gte`, `order`, `limit`, `single` y `maybeSingle`.
+ * `not`, `lt`, `lte`, `gt`, `gte`, `order` (encadenable), `limit`, `range`,
+ * `single` y `maybeSingle`.
  * Añadir lo que no se usa sería escribir un motor de base de datos, que es
  * exactamente lo que no queremos tener que mantener.
  *
@@ -119,7 +120,9 @@ class Builder implements PromiseLike<Resultado> {
   private filtros: Filtro[] = [];
   /** Columnas de `onConflict` cuando la escritura es un `upsert`. */
   private conflicto: string[] = [];
-  private orden: { columna: string; asc: boolean } | null = null;
+  private orden: { columna: string; asc: boolean }[] = [];
+  /** Desde qué fila empieza el resultado. `range` lo usa; `limit` no lo toca. */
+  private desde = 0;
   private tope = 0;
   private modo: "select" | "insert" | "update" | "delete" = "select";
   private payload: Fila | Fila[] | null = null;
@@ -240,12 +243,32 @@ class Builder implements PromiseLike<Resultado> {
 
   /* ── forma del resultado ─────────────────────────────────────────────── */
 
+  /**
+   * ORDENAR POR VARIAS COLUMNAS, COMO PostgREST.
+   *
+   * Encadenar `.order()` dos veces en PostgREST ordena por las dos, en ese
+   * orden. Este doble se quedaba solo con la ÚLTIMA, y eso importa porque un
+   * barrido paginado necesita un desempate estable: sin él, dos filas con la
+   * misma fecha pueden salir en distinto orden en dos páginas consecutivas, y
+   * entonces una se repite y otra no sale nunca. Justo el fallo que el barrido
+   * existe para evitar, y el doble lo habría dado por bueno.
+   */
   order(columna: string, opts?: { ascending?: boolean }) {
-    this.orden = { columna, asc: opts?.ascending !== false };
+    this.orden.push({ columna, asc: opts?.ascending !== false });
     return this;
   }
   limit(n: number) { this.tope = n; return this; }
-  range(desde: number, hasta: number) { this.tope = hasta - desde + 1; return this; }
+  /**
+   * `range` ES UNA VENTANA, NO UN TOPE.
+   *
+   * Esto descartaba `desde` y solo calculaba el tamaño. Con eso, un barrido
+   * que pidiera la página 2 recibía otra vez la página 1 —y como cada pasada
+   * devolvía filas, el bucle habría dado vueltas para siempre sobre las
+   * mismas, o peor: la prueba de un barrido que NO avanza su cursor habría
+   * salido en verde. Un doble que perdona el error que se está probando no
+   * prueba nada.
+   */
+  range(desde: number, hasta: number) { this.desde = desde; this.tope = hasta - desde + 1; return this; }
   single() { this.unico = "single"; return this; }
   maybeSingle() { this.unico = "maybeSingle"; return this; }
 
@@ -253,14 +276,18 @@ class Builder implements PromiseLike<Resultado> {
 
   private filas(): Fila[] {
     let filas = this.db.rows(this.tabla).filter((f) => this.filtros.every((p) => p(f)));
-    if (this.orden) {
-      const { columna, asc } = this.orden;
+    if (this.orden.length > 0) {
       filas = [...filas].sort((a, b) => {
-        const x = String(valorDe(a, columna) ?? "");
-        const y = String(valorDe(b, columna) ?? "");
-        return asc ? x.localeCompare(y) : y.localeCompare(x);
+        for (const { columna, asc } of this.orden) {
+          const x = String(valorDe(a, columna) ?? "");
+          const y = String(valorDe(b, columna) ?? "");
+          const c = x.localeCompare(y);
+          if (c !== 0) return asc ? c : -c;
+        }
+        return 0;
       });
     }
+    if (this.desde > 0) filas = filas.slice(this.desde);
     if (this.tope > 0) filas = filas.slice(0, this.tope);
     return filas;
   }

@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { supabaseService } from "@/lib/supabase/service";
 import { ok, fail } from "@/lib/api-response";
-import { startJobRun, finishJobRun, reportIncident } from "@/lib/system-health-service";
+import { startJobRun, finishJobRun, reportIncident, barridoVigilado } from "@/lib/system-health-service";
+import type { ResumenBarrido } from "@/lib/barrido";
 import { TenantError } from "@/lib/tenant";
 import { notify } from "@/lib/notify-service";
 import { certificationState, EXPIRING_WINDOW_DAYS } from "@/lib/hr";
@@ -69,18 +70,40 @@ export async function GET(req: NextRequest) {
 
     // Solo lo que puede cambiar de estado hoy: lo que vence dentro de la
     // ventana o ya venció. Lo que caduca en 2030 no se toca todas las mañanas.
-    const { data, error } = await supabaseService()
-      .from("certification")
-      .select("id, organization_id, name, expires_at, status, blocks_assignment, reminder_sent_at, staff_id")
-      .not("expires_at", "is", null)
-      .lte("expires_at", horizon)
-      // Revocada y pendiente son decisiones de una persona: el calendario no
-      // las pisa.
-      .not("status", "in", "(revoked,pending)")
-      .limit(3000);
-
-    if (error) throw new Error(error.message);
-    const rows = (data || []) as CertRow[];
+    /**
+     * RECORRIDO: marcar una certificación como `expired` la deja dentro del
+     * filtro —solo se excluyen `revoked` y `pending`—, así que la ventana
+     * avanza.
+     *
+     * Por fecha de vencimiento: lo que venció antes se trata antes. El tope de
+     * tres mil de antes no tenía orden, así que cuál se quedaba fuera lo
+     * decidía el montón. Y lo que se queda fuera aquí es un chofer con el
+     * permiso vencido que el sistema sigue dando por bueno: `blocks_assignment`
+     * no se enciende, el despacho lo asigna, y sube a la guagua alguien que no
+     * puede conducirla.
+     */
+    const rows: CertRow[] = [];
+    const barrido: ResumenBarrido = await barridoVigilado<CertRow>({
+      etiqueta: "certificaciones",
+      modo: "recorrido",
+      idDe: (row) => row.id,
+      leer: async (desde, hasta) => {
+        const { data, error } = await supabaseService()
+          .from("certification")
+          .select("id, organization_id, name, expires_at, status, blocks_assignment, reminder_sent_at, staff_id")
+          .not("expires_at", "is", null)
+          .lte("expires_at", horizon)
+          // Revocada y pendiente son decisiones de una persona: el calendario
+          // no las pisa.
+          .not("status", "in", "(revoked,pending)")
+          .order("expires_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(desde, hasta);
+        if (error) throw new Error(error.message);
+        return (data || []) as CertRow[];
+      },
+      tratar: async (filas) => { rows.push(...filas); },
+    });
 
     // El nombre de la persona, para que el aviso diga a quién buscar. Una sola
     // consulta: un cron que hace una lectura por fila se cae en la empresa que
@@ -146,8 +169,8 @@ export async function GET(req: NextRequest) {
     }
 
     console.log(`[cron/certifications] ${rows.length} revisadas · ${updated} al día · ${notified} avisos`);
-    await finishJobRun(runId, { status: "ok", summary: { reviewed: rows.length, updated, notified } });
-    return ok({ reviewed: rows.length, updated, notified, ranAt: now.toISOString() });
+    await finishJobRun(runId, { status: "ok", summary: { reviewed: rows.length, updated, notified, barrido } });
+    return ok({ reviewed: rows.length, updated, notified, barrido, ranAt: now.toISOString() });
   } catch (err) {
     console.error("[cron/certifications] error:", err);
     await finishJobRun(runId, { status: "failed", error: String(err) });

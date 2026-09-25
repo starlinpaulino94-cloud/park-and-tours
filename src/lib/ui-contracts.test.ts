@@ -10394,3 +10394,103 @@ describe("el simulacro de restauración prueba algo (DR-001)", () => {
     expect(sql).toMatch(/ENGANCHE DEL TOKEN REGISTRADO/);
   });
 });
+
+/**
+ * LOS TECHOS SILENCIOSOS (ola 9.11).
+ *
+ * Un `.limit(n)` es correcto cuando es UNA PÁGINA de una lista que alguien
+ * puede seguir pasando. Es un fallo cuando es un TECHO sobre un trabajo que
+ * tiene que pasar por todas las filas, porque lo que queda fuera no se
+ * procesa, no se reintenta y no se avisa: desaparece. Y desaparece siempre lo
+ * mismo, porque sin `order` el corte cae donde caiga el montón y el montón no
+ * cambia entre pasadas.
+ *
+ * Estas guardas no pueden distinguir una página de un techo mirando un número
+ * —eso es una decisión de negocio—, así que comprueban lo otro: que los cuatro
+ * trabajos programados que barren la plataforma entera lo hagan con el
+ * barrido, y que el barrido pida orden antes de pedir ventana.
+ */
+describe("barridos: ningún trabajo se queda corto en silencio", () => {
+  const CRONES = [
+    "src/app/api/cron/collections/route.ts",
+    "src/app/api/cron/allotments/route.ts",
+    "src/app/api/cron/certifications/route.ts",
+    "src/app/api/cron/dispatch-messages/route.ts",
+  ];
+
+  it.each(CRONES)("%s no lee con un tope fijo", (ruta) => {
+    const src = read(ruta);
+    /**
+     * Se prohíbe el tope de cuatro cifras, que es la forma que tenían todos
+     * los de esta ola: 1 000, 2 000 y 3 000. Los topes de dos o tres cifras se
+     * dejan en paz a propósito —`.limit(60)` sobre las cuotas de UNA venta es
+     * una cota real del dominio, no un barrido— y prohibirlos habría
+     * convertido esta guarda en ruido que alguien desactiva.
+     */
+    const topes = src.match(/\.limit\(\s*\d{4,}\s*\)/g) ?? [];
+    expect(topes, `${ruta} todavía lee con un tope fijo: ${topes.join(", ")}`).toEqual([]);
+  });
+
+  it.each(CRONES)("%s barre con barridoVigilado", (ruta) => {
+    // Vigilado, no `barrer` a secas: lo que convierte el techo en algo que se
+    // oye es el incidente, y `barrer` por su cuenta no lo levanta.
+    expect(read(ruta)).toContain("barridoVigilado");
+  });
+
+  it.each(CRONES)("%s pide orden antes de pedir ventana", (ruta) => {
+    const src = read(ruta);
+    /**
+     * Paginar sin orden declarado es el fallo silencioso de la paginación: dos
+     * páginas pueden solaparse y dejar filas en medio sin tratar. Y ordenar
+     * por una sola columna no basta cuando empata —dos cupos de la misma
+     * salida, dos cuotas del mismo día—: el desempate por `id` es lo que hace
+     * el orden total.
+     */
+    for (const trozo of src.split(".range(").slice(0, -1)) {
+      const cola = trozo.slice(-400);
+      expect(cola, `una lectura de ${ruta} pagina sin orden`).toMatch(/\.order\(/);
+      expect(cola, `una lectura de ${ruta} pagina sin desempate por id`)
+        .toMatch(/\.order\("id"/);
+    }
+  });
+
+  it("el barrido avisa cuando no llega al final", () => {
+    // Es la única diferencia de fondo con el tope de antes: aquel también se
+    // quedaba corto. Este lo dice.
+    const salud = read("src/lib/system-health-service.ts");
+    expect(salud).toContain("export async function barridoVigilado");
+    const cuerpo = salud.slice(salud.indexOf("export async function barridoVigilado"));
+    expect(cuerpo.slice(0, 900)).toMatch(/resumen\.truncado \|\| resumen\.atascado/);
+    expect(cuerpo.slice(0, 900)).toMatch(/reportIncident/);
+  });
+
+  it("el doble de Supabase respeta el DESPLAZAMIENTO de range", () => {
+    /**
+     * Sin esto, un barrido que pidiera la página 2 recibiría otra vez la
+     * página 1 y la prueba de un barrido que NO avanza su cursor habría salido
+     * en verde. Un doble que perdona el error que se está probando no prueba
+     * nada, y es de los fallos más caros que hay: se descubre en producción.
+     */
+    const doble = read("src/test/fake-supabase.ts");
+    expect(doble).toMatch(/range\(desde: number, hasta: number\) \{ this\.desde = desde;/);
+    expect(doble).toMatch(/if \(this\.desde > 0\) filas = filas\.slice\(this\.desde\);/);
+    // Y encadena `order`, porque el desempate es una segunda llamada.
+    expect(doble).toMatch(/this\.orden\.push\(/);
+  });
+
+  it("los dos modos de barrido están escritos y explicados", () => {
+    /**
+     * Confundirlos es el fallo: un recorrido drenando da vueltas para siempre,
+     * y un drenaje recorriendo se salta la mitad. Por eso el modo se declara
+     * en cada llamada y no se adivina, y por eso los dos nombres tienen que
+     * seguir estando en el módulo con su explicación.
+     */
+    const src = read("src/lib/barrido.ts");
+    expect(src).toMatch(/\*\*Recorrido\.\*\*/);
+    expect(src).toMatch(/\*\*Drenaje\.\*\*/);
+    expect(src).toMatch(/modo === "drenaje" \? 0 : vistas/);
+    // Y la salida del atasco, que es lo que evita gastar el techo entero
+    // dando vueltas sobre filas que fallan.
+    expect(src).toMatch(/export function atascado/);
+  });
+});

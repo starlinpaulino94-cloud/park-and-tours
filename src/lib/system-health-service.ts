@@ -6,6 +6,7 @@ import {
   fingerprintOf, safeMessage, safeContext, sortBySeverity,
   type HealthCheck, type HealthLevel, type JobRunLite, type IncidentLite,
 } from "@/lib/system-health";
+import { barrer, avisoDeTope, type OpcionesDeBarrido, type ResumenBarrido } from "@/lib/barrido";
 
 /**
  * LO QUE HABLA CON LA BASE.
@@ -68,6 +69,32 @@ export async function finishJobRun(
   } catch (err) {
     console.error("[salud] no se pudo cerrar el diario:", err);
   }
+}
+
+/**
+ * Un barrido que, si no llega al final, LO DICE.
+ *
+ * `barrer` recorre y devuelve el resumen sin opinar. Esto es lo que convierte
+ * un resumen en un aviso: el techo y el atasco dejan de ser un número en un
+ * JSON que nadie abre y pasan a ser un incidente en la pantalla de salud, con
+ * la misma forma que cualquier otro fallo del sistema.
+ *
+ * Es la diferencia entera de esta ola. El tope de antes también era un límite;
+ * lo que lo hacía peligroso no era el número, era que no se oía.
+ */
+export async function barridoVigilado<T>(opciones: OpcionesDeBarrido<T>): Promise<ResumenBarrido> {
+  const resumen = await barrer(opciones);
+  if (resumen.truncado || resumen.atascado) {
+    const aviso = avisoDeTope(opciones.etiqueta, resumen);
+    console.error(`[barrido] ${aviso}`);
+    await reportIncident({
+      source: `barrido:${opciones.etiqueta}`,
+      error: aviso,
+      level: "error",
+      context: resumen as unknown as Record<string, unknown>,
+    });
+  }
+  return resumen;
 }
 
 /** Lo que hizo un trabajo PARA UNA EMPRESA, que es lo que a esa empresa le importa. */

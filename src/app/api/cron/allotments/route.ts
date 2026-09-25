@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { supabaseService } from "@/lib/supabase/service";
 import { ok, fail } from "@/lib/api-response";
-import { startJobRun, finishJobRun, reportIncident } from "@/lib/system-health-service";
+import { startJobRun, finishJobRun, reportIncident, barridoVigilado } from "@/lib/system-health-service";
+import type { ResumenBarrido } from "@/lib/barrido";
 import { TenantError } from "@/lib/tenant";
 import { notify } from "@/lib/notify-service";
 import { shouldRelease, releasableSeats, type AllotmentRow } from "@/lib/allotments";
@@ -61,17 +62,41 @@ export async function GET(req: NextRequest) {
     // Solo los cupos que APARTAN plazas y están atados a una salida: un cupo de
     // producto sin salida no tiene fecha contra la que contar los días, y
     // liberarlo «por si acaso» le quitaría plazas a un contrato vigente.
-    const { data, error } = await supabaseService()
-      .from("allotment")
-      .select("id, organization_id, allotment_type, seats, seats_used, seats_released, release_days, release_runs, departure_id, partner_id")
-      .eq("allotment_type", "guaranteed")
-      .eq("status", "active")
-      .not("release_days", "is", null)
-      .not("departure_id", "is", null)
-      .limit(3000);
-
-    if (error) throw new Error(error.message);
-    const rows = (data || []) as unknown as Row[];
+    /**
+     * RECORRIDO, y entero.
+     *
+     * Liberar plazas escribe `seats_released` y `release_runs` pero deja el
+     * cupo en `active`, así que la fila sigue dentro del filtro: hay que
+     * avanzar la ventana. Y el tope de tres mil de antes era un techo sobre
+     * TODA la plataforma, sin orden: pasada esa cifra, los mismos cupos se
+     * quedaban sin liberar todos los días, y eran plazas garantizadas a un
+     * socio que ya no las iba a usar y que nadie más podía vender.
+     *
+     * Por `departure_id` para que el orden sea estable entre páginas —sin un
+     * orden declarado, dos páginas pueden solaparse y dejarse filas en medio,
+     * que es el fallo que este barrido existe para no tener—.
+     */
+    const rows: Row[] = [];
+    const barrido: ResumenBarrido = await barridoVigilado<Row>({
+      etiqueta: "cupos:liberacion",
+      modo: "recorrido",
+      idDe: (row) => row.id,
+      leer: async (desde, hasta) => {
+        const { data, error } = await supabaseService()
+          .from("allotment")
+          .select("id, organization_id, allotment_type, seats, seats_used, seats_released, release_days, release_runs, departure_id, partner_id")
+          .eq("allotment_type", "guaranteed")
+          .eq("status", "active")
+          .not("release_days", "is", null)
+          .not("departure_id", "is", null)
+          .order("departure_id", { ascending: true })
+          .order("id", { ascending: true })
+          .range(desde, hasta);
+        if (error) throw new Error(error.message);
+        return (data || []) as unknown as Row[];
+      },
+      tratar: async (filas) => { rows.push(...filas); },
+    });
 
     // Las fechas de salida, en una consulta. Un cron que hace una lectura por
     // fila se cae en la empresa que más cupos tiene, que es justo donde más
@@ -132,8 +157,11 @@ export async function GET(req: NextRequest) {
     }
 
     console.log(`[cron/allotments] ${rows.length} cupos revisados · ${released} liberados · ${seatsTotal} plazas`);
-    await finishJobRun(runId, { status: "ok", summary: { reviewed: rows.length, released, seats: seatsTotal } });
-    return ok({ reviewed: rows.length, released, seats: seatsTotal, ranAt: now.toISOString() });
+    await finishJobRun(runId, {
+      status: "ok",
+      summary: { reviewed: rows.length, released, seats: seatsTotal, barrido },
+    });
+    return ok({ reviewed: rows.length, released, seats: seatsTotal, barrido, ranAt: now.toISOString() });
   } catch (err) {
     console.error("[cron/allotments] error:", err);
     await finishJobRun(runId, { status: "failed", error: String(err) });
