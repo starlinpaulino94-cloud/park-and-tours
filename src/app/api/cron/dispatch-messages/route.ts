@@ -7,6 +7,9 @@ import { dispatchQueue } from "@/lib/messaging/outbox";
 import { serviceStore } from "@/lib/messaging/service-store";
 import { enqueuePreTourReminder } from "@/lib/messaging/events";
 import { sweepDueSurveys, expireSurveys, SWEEP_LOOKBACK_DAYS } from "@/lib/voice-service";
+import { barrerManifiestos } from "@/lib/manifiesto-envio-service";
+import { fuenteDeServicio } from "@/lib/manifest-service";
+import { VENTANA_DE_ENVIO_HORAS } from "@/lib/manifiesto-envio";
 import type { Booking } from "@/lib/types";
 import { configuredChannels } from "@/lib/messaging/providers";
 import type { Company } from "@/lib/types";
@@ -125,6 +128,28 @@ async function sweepReminders(): Promise<{ enqueued: number; companies: string[]
  * aparte, la primera encuesta de una operadora no saldría nunca —no hay nada
  * encolado hasta que alguien la encola—.
  */
+/**
+ * Las empresas que tienen algo que salir pronto.
+ *
+ * El manifiesto se encola por SALIDA, igual que la encuesta, así que tampoco
+ * aparece en la cola de mensajes: sin buscarlas aparte, el primer manifiesto de
+ * una operadora no saldría nunca.
+ */
+async function companiesWithUpcomingDepartures(now: Date): Promise<string[]> {
+  const hasta = new Date(now.getTime() + VENTANA_DE_ENVIO_HORAS * 3_600_000).toISOString();
+  const { data, error } = await supabaseService()
+    .from("departure")
+    .select("organization_id")
+    .gte("departure_at", now.toISOString())
+    .lte("departure_at", hasta)
+    .limit(2000);
+  if (error) {
+    console.error("[cron/dispatch-messages] no se pudieron leer las salidas próximas:", error.message);
+    return [];
+  }
+  return [...new Set((data ?? []).map((r) => String(r.organization_id)))];
+}
+
 async function companiesWithFinishedDepartures(now: Date): Promise<string[]> {
   const desde = new Date(now.getTime() - SWEEP_LOOKBACK_DAYS * 86_400_000).toISOString();
   const { data, error } = await supabaseService()
@@ -178,8 +203,14 @@ export async function GET(req: NextRequest) {
       // Y las que operaron una salida hace poco: su encuesta todavía no está
       // encolada, así que no aparecería por la cola de mensajes.
       ...(await companiesWithFinishedDepartures(new Date())),
+      // Y las que tienen una salida a la vuelta de la esquina: su manifiesto
+      // tampoco está encolado todavía.
+      ...(await companiesWithUpcomingDepartures(new Date())),
     ])];
-    const report = { companies: companyIds.length, sent: 0, failed: 0, waiting: 0, surveys: 0, surveysExpired: 0 };
+    const report = {
+      companies: companyIds.length, sent: 0, failed: 0, waiting: 0,
+      surveys: 0, surveysExpired: 0, manifests: 0,
+    };
     const notConfigured = new Set<string>();
 
     for (const companyId of companyIds) {
@@ -215,6 +246,28 @@ export async function GET(req: NextRequest) {
         console.error(`[cron/dispatch-messages] caducidad de encuestas de ${companyId} falló:`, err);
       }
 
+      /**
+       * El manifiesto de lo que sale pronto, también ANTES de despachar: lo que
+       * se encole aquí sale en esta misma pasada. Con la cadencia diaria,
+       * dejarlo para después sería mandarle al chofer la lista un día tarde.
+       *
+       * Con la fuente DE SERVICIO. Escrito contra las ayudas de inquilino no
+       * habría fallado: habría leído cero salidas y dicho que no había nada que
+       * mandar, que es el fallo que no se nota.
+       *
+       * Y con su propio try, como los otros dos: un manifiesto que no se pudo
+       * componer no puede dejar a una empresa sin el recordatorio que lleva la
+       * hora de recogida de sus clientes.
+       */
+      try {
+        const manifiestos = await barrerManifiestos(
+          company, companyId, new Date(), serviceStore(), fuenteDeServicio()
+        );
+        report.manifests += manifiestos.encolados;
+      } catch (err) {
+        console.error(`[cron/dispatch-messages] manifiestos de ${companyId} fallaron:`, err);
+      }
+
       try {
         const result = await dispatchQueue(company, companyId, 100, serviceStore());
         report.sent += result.sent;
@@ -229,7 +282,8 @@ export async function GET(req: NextRequest) {
 
     console.log(
       `[cron/dispatch-messages] ${report.companies} empresas · ${report.sent} enviados · ` +
-      `${report.failed} fallidos · ${report.waiting} en espera · ${report.surveys} encuestas`
+      `${report.failed} fallidos · ${report.waiting} en espera · ${report.surveys} encuestas · ` +
+      `${report.manifests} manifiestos`
     );
 
     await finishJobRun(runId, {
@@ -237,6 +291,7 @@ export async function GET(req: NextRequest) {
       summary: {
         companies: report.companies, sent: report.sent, failed: report.failed,
         waiting: report.waiting, surveys: report.surveys, surveysExpired: report.surveysExpired,
+        manifests: report.manifests,
       },
     });
 

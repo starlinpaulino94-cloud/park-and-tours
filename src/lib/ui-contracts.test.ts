@@ -466,11 +466,16 @@ describe("Panel ejecutivo", () => {
     /**
      * Es una lista de clientes: un socio no ve las reservas de la competencia.
      *
-     * Se comprueba `esDeSocio` y no el nombre del rol: un empleado de un tour
-     * center dado de alta como `seller` TIENE identificador de socio y no ese
-     * rol, así que por el nombre se habría llevado el manifiesto entero.
+     * Se pregunta por el IDENTIFICADOR y no por el nombre del rol: un empleado
+     * de un tour center dado de alta como `seller` TIENE identificador de socio y
+     * no ese rol, así que por el nombre se habría llevado el manifiesto entero.
+     *
+     * Y se pregunta EN POSITIVO. Decía `esDeSocio`, que mientras el socio fue el
+     * único de fuera quería decir «interno»; desde 0084 el proveedor tiene sesión
+     * en la empresa y esa negación pasó a querer decir «interno O proveedor».
      */
-    expect(route).toMatch(/esDeSocio\(ctx\)/);
+    expect(route).toMatch(/if \(!esInterno\(ctx\)\) throw new TenantError/);
+    expect(route, "vuelve a decidir por la negación").not.toMatch(/esDeSocio\(ctx\)/);
 
     // Y está hecha para imprimirse.
     expect(page).toContain("window.print()");
@@ -5614,7 +5619,20 @@ describe("el aislamiento del socio no depende del nombre del rol", () => {
      * la guarda de abajo, que prohíbe la comparación por nombre, es la que
      * impide que esto se convierta en un coladero.
      */
-    const mudos = PUNTOS_DE_AISLAMIENTO.filter((rel) => !/es(?:Admin)?DeSocio\s*\(/.test(sinComentariosDe(rel)));
+    /**
+     * `esInterno` cuenta también, y por el mismo motivo: está construida SOBRE
+     * `esDeSocio` (`!esDeSocio(ctx) && !esDeProveedor(ctx)`) y pregunta lo mismo
+     * en positivo. Hizo falta desde que el proveedor tiene sesión: con tres
+     * actores `!esDeSocio(ctx)` dejó de querer decir «interno» y pasó a querer
+     * decir «interno o proveedor», así que varios de estos puntos tenían que
+     * cambiar de forma para seguir diciendo lo que decían. Lo que la regla
+     * persigue —que la decisión salga del identificador y no del nombre del
+     * rol— se cumple igual, y la guarda de abajo sigue prohibiendo la
+     * comparación por nombre.
+     */
+    const mudos = PUNTOS_DE_AISLAMIENTO.filter(
+      (rel) => !/(es(?:Admin)?DeSocio|esInterno)\s*\(/.test(sinComentariosDe(rel))
+    );
     expect(mudos, "estos ficheros decidían el aislamiento del socio y ya no preguntan").toEqual([]);
   });
 
@@ -8999,5 +9017,221 @@ describe("el socio que integra por API", () => {
     expect(pantalla).toMatch(/liq\.acciones\.facturar/);
     expect(pantalla, "la pantalla decide por su cuenta cuándo se puede aceptar")
       .not.toMatch(/liq\.status === "/);
+  });
+});
+
+/* ========================================================================== */
+/*  Fase 8.8 — el manifiesto sale solo, y sale recortado                      */
+/* ========================================================================== */
+
+describe("el manifiesto sale solo, y no sale entero", () => {
+  it("LAS DOS PUERTAS DEL MANIFIESTO PREGUNTAN EN POSITIVO", () => {
+    /**
+     * Decían `esDeSocio`, y mientras el socio fue el único de fuera eso quería
+     * decir «interno». Desde 0084 el proveedor tiene sesión en la empresa, y esa
+     * negación pasó a querer decir «interno O proveedor»: cualquier cuenta de
+     * transporte podía pedir el manifiesto de CUALQUIER salida y bajarse
+     * nombres, teléfonos, correos, habitaciones y el saldo de cada cliente.
+     *
+     * Se comprueban las DOS —la pantalla y el PDF— porque son dos puertas al
+     * mismo dato: cerrar una y dejar la otra no cierra nada.
+     */
+    for (const ruta of [
+      "src/app/api/departures/[id]/manifest/route.ts",
+      "src/app/api/departures/[id]/manifest/pdf/route.ts",
+    ]) {
+      const cuerpo = cuerpoDe(ruta);
+      expect(cuerpo, `${ruta}: no exige ser de dentro`).toMatch(/if \(!esInterno\(ctx\)\) throw new TenantError/);
+      expect(cuerpo, `${ruta}: sigue preguntando por la negación`).not.toMatch(/esDeSocio\(ctx\)/);
+    }
+  });
+
+  it("el recorte es una LISTA BLANCA y se aplica a la fila cruda", () => {
+    /**
+     * Construir la fila recortada desde la lista de permitidos, y no copiando y
+     * borrando: borrar deja dentro lo que nadie se acordó de borrar, y el día que
+     * `manifestRow` gane un campo el campo nuevo sale solo.
+     */
+    const dominio = cuerpoDe("src/lib/manifiesto-envio.ts");
+    expect(dominio).toMatch(/for \(const campo of CAMPOS_DEL_MANIFIESTO\[publico\]\)/);
+    expect(dominio, "el recorte borra en vez de elegir").not.toMatch(/delete (salida|out|fila)/);
+    // Y llega al segundo nivel: una parada lleva sus reservas dentro.
+    expect(dominio).toMatch(/bookings: recortarManifiesto\(publico, p\.bookings\)/);
+  });
+
+  it("EL PDF SACA SUS COLUMNAS DE LA MISMA LISTA, no de un if aparte", () => {
+    /**
+     * Si las columnas estuvieran fijas y el recorte solo viviera en las filas,
+     * habría DOS sitios donde se decide lo mismo: el día que uno cambiara, el
+     * papel y la respuesta de la API dirían cosas distintas. Y el papel del
+     * chofer llevaría una columna «Cobrar» vacía, que es la pista de que el dato
+     * existe.
+     */
+    const pdf = cuerpoDe("src/lib/pdf/documents.ts");
+    expect(pdf).toMatch(/const columnas = todasLasColumnas\.filter\(\(c\) => c\.campo === null \|\| incluye\(publico, c\.campo\)\)/);
+    // El dinero del resumen va atado al MISMO permiso que la columna.
+    expect(pdf).toMatch(/incluye\(publico, "balance"\)\s*\n?\s*\?/);
+    // Y las notas internas de la salida no salen de la casa.
+    expect(pdf).toMatch(/if \(publico === "interno" \|\| publico === "guia"\) pdf\.block\("Notas de la salida"/);
+    /**
+     * Dos sitios donde el dato se cuela por DENTRO de una columna permitida, y
+     * que por eso no los cierra el filtro de columnas:
+     *
+     *  · La habitación se imprime pegada al hotel («Bahía Príncipe · 412»), en
+     *    la columna del hotel. Sin este `incluye`, el papel del proveedor —que no
+     *    puede ver habitaciones— las llevaría todas.
+     *  · Los requerimientos se rotulan con el nombre del pasajero, fuera de la
+     *    tabla. Sin este `incluye`, la copia del proveedor sale sin nombres en la
+     *    lista y CON nombres en los requerimientos.
+     */
+    expect(pdf).toMatch(/incluye\(publico, "room"\) && r\.room/);
+    expect(pdf).toMatch(/const quien = incluye\(publico, "lead_name"\)/);
+    // Y el aviso del seguro, que es para quien completa las fichas.
+    expect(pdf).toMatch(/incluye\(publico, "unnamed_pax"\)/);
+  });
+
+  it("el adjunto SIN recorte declarado no se compone", () => {
+    /**
+     * `attachment_scope` nulo, o con un valor que nadie reconoce, tiene que
+     * acabar en «no se adjunta». Componer el manifiesto entero «por si acaso» es
+     * justo la forma de que un valor mal escrito en una fila entregue teléfonos
+     * y saldos a una empresa de transporte.
+     */
+    const adjuntos = cuerpoDe("src/lib/messaging/attachments.ts");
+    expect(adjuntos).toMatch(/if \(!PUBLICOS_DEL_MANIFIESTO\.includes\(scope as PublicoDelManifiesto\)\) \{[\s\S]{0,300}?return null;/);
+    // Y el recorte SE LE PASA al dibujo: reconocerlo y no usarlo dibuja el papel
+    // entero igual, con la comprobación puesta y sin efecto.
+    expect(adjuntos).toMatch(/m\.rows, m\.stops, m\.summary, publico/);
+  });
+
+  it("y el WhatsApp no lleva adjunto NI recorte guardado", () => {
+    const bandeja = cuerpoDe("src/lib/messaging/outbox.ts");
+    expect(bandeja).toMatch(/input\.channel === "email" && input\.attachmentKind \? input\.attachmentScope/);
+    /**
+     * DOS PUERTAS, Y LA SEGUNDA NO SE PUEDE COMPROBAR MIRANDO LO QUE PASA.
+     *
+     * La bandeja ya descarta el adjunto de lo que no es correo, así que quitar la
+     * condición del servicio no cambia NADA observable: la fila sale igual. Pero
+     * el día que la bandeja deje de filtrar —o que alguien encole por otro
+     * camino— un WhatsApp con PDF es un fallo de entrega por mensaje, y el chofer
+     * se queda sin las paradas.
+     *
+     * Por eso esta guarda es estructural y no de comportamiento: lo que sostiene
+     * es que quien encola siga declarándolo por canal.
+     */
+    expect(cuerpoDe("src/lib/manifiesto-envio-service.ts"))
+      .toMatch(/attachmentKind: channel === "email" \? "manifest" : null,/);
+  });
+
+  it("QUIEN LEE SIN SESIÓN LEE CON LA LLAVE DE SERVICIO", () => {
+    /**
+     * La trampa que documenta `outbox.ts`: con `SUPABASE_USE_RLS=true` —que en
+     * producción es obligatorio— las ayudas de inquilino resuelven el cliente a
+     * partir de la petición. Un manifiesto armado con ellas desde el cron NO
+     * habría fallado: habría salido VACÍO, y un PDF con cero pasajeros que se
+     * manda igual no lo nota nadie hasta que el chofer llega al hotel.
+     */
+    const cron = cuerpoDe("src/app/api/cron/dispatch-messages/route.ts");
+    expect(cron).toMatch(/barrerManifiestos\(\s*company, companyId, new Date\(\), serviceStore\(\), fuenteDeServicio\(\)\s*\)/);
+
+    // Y la entrega también: el adjunto se compone desde el despachador.
+    expect(cuerpoDe("src/lib/messaging/attachments.ts"))
+      .toMatch(/loadManifest\(companyId, departureId, fuenteDeServicio\(\)\)/);
+
+    /**
+     * Y EL DEFECTO DE `loadManifest` ES LA FUENTE DEL INQUILINO.
+     *
+     * Al revés no habría fallado tampoco: la pantalla habría leído con la llave
+     * de servicio, que se salta la RLS. Todo seguiría funcionando —y las
+     * políticas de fila de 0084/0085, que son lo que acota al proveedor, dejarían
+     * de aplicarse en el único camino donde importan.
+     */
+    expect(cuerpoDe("src/lib/manifest-service.ts"))
+      .toMatch(/fuente: FuenteDelManifiesto = fuenteDeInquilino\s*\n\): Promise<ManifestPayload>/);
+
+    /**
+     * Y las empresas con una salida próxima se buscan APARTE.
+     *
+     * El manifiesto se encola por salida, no por mensaje pendiente: sin esta
+     * lista, una operadora que no tenga nada más en la cola no aparece en la
+     * pasada y su primer manifiesto no sale nunca. Es el mismo motivo por el que
+     * las encuestas tienen su propia búsqueda.
+     */
+    expect(cron).toMatch(/\.\.\.\(await companiesWithUpcomingDepartures\(new Date\(\)\)\),/);
+
+    // El servicio del envío no puede tener consultas de inquilino sueltas: lo
+    // que lee, lo lee por la fuente que le pasan.
+    const servicio = cuerpoDe("src/lib/manifiesto-envio-service.ts");
+    expect(servicio, "el servicio lee con las ayudas de inquilino").not.toMatch(/tenantQuery|tenantFindOne/);
+    expect((servicio.match(/eq\("organization_id", companyId\)/g) || []).length,
+      "la consulta de la agenda perdió su filtro por empresa").toBe(1);
+  });
+
+  it("las dos fuentes del manifiesto piden lo MISMO", () => {
+    /**
+     * Dos implementaciones de la misma lectura son dos sitios donde divergir. Lo
+     * que se comprueba aquí es lo que de verdad se olvida: los alias. En
+     * `booking` la columna es `hotel_id` y la aplicación la lee como
+     * `pickup_hotel` — sin el alias, `manifestRow` no encuentra el hotel y TODAS
+     * las paradas salen como «Punto de encuentro», sin fallar.
+     */
+    const servicio = cuerpoDe("src/lib/manifest-service.ts");
+    expect(servicio).toMatch(/pickup_hotel:hotel_id \(\*, zone:zone_id \(\*\)\)/);
+    // Y las relaciones que el armado necesita, en las dos.
+    for (const relacion of ["customer", "partner", "seller", "participant"]) {
+      expect(servicio, `la fuente de servicio no pide ${relacion}`)
+        .toMatch(new RegExp(`${relacion}[:( ]`));
+    }
+    // Las dos fuentes traen el equipo, que es de donde salen los destinatarios.
+    expect((servicio.match(/equipo[:(]/g) || []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("quien rechazó el encargo NO recibe la lista de clientes", () => {
+    /**
+     * Es la mitad que faltaba de la aceptación de 0087: sin esto, decir «no» no
+     * quitaba ningún acceso.
+     */
+    const servicio = cuerpoDe("src/lib/manifiesto-envio-service.ts");
+    expect(servicio).toMatch(/const ACEPTACIONES_SIN_DERECHO = new Set\(\["rejected", "expired"\]\)/);
+    expect(servicio).toMatch(/if \(ACEPTACIONES_SIN_DERECHO\.has\(String\(fila\.acceptance/);
+  });
+
+  it("la clave de deduplicación lleva la HUELLA de la lista", () => {
+    /**
+     * Un manifiesto no es un aviso: es una lista que cambia. Con la clave atada
+     * solo a la salida, la reserva que entra por la tarde no llega nunca al
+     * chofer — y él cree que tiene la lista.
+     */
+    const servicio = cuerpoDe("src/lib/manifiesto-envio-service.ts");
+    expect(servicio).toMatch(/dedupeKey: claveDeEnvio\(departureId, destino\.publico, channel, destino\.fuente, huella\)/);
+  });
+
+  it("mandarlo a mano exige rango de operación, ser de dentro y queda en la bitácora", () => {
+    const ruta = cuerpoDe("src/app/api/departures/[id]/manifest/enviar/route.ts");
+    expect(ruta).toMatch(/assertSameOriginMutation\(req\)/);
+    expect(ruta).toMatch(/if \(!esInterno\(ctx\)\) throw new TenantError/);
+    expect(ruta).toMatch(/requireAtLeast\(ctx, "operations"\)/);
+    // Se audita SIEMPRE, también cuando no salió: «se mandó» y «se intentó y la
+    // salida ya había pasado» son respuestas distintas a la misma pregunta.
+    expect(ruta).toMatch(/action: "manifest_dispatched"/);
+    expect(ruta).toMatch(/veto: envio\.veto/);
+    // Y la ventana NO se reimplementa en la puerta.
+    expect(ruta, "la ruta se escribe su propia ventana").not.toMatch(/VENTANA_DE_ENVIO_HORAS|vetoDeEnvio/);
+  });
+
+  it("la pantalla tiene el botón y sabe decir «ya lo tenían»", () => {
+    const pantalla = cuerpoDe("src/app/dashboard/salidas/[id]/manifiesto/page.tsx");
+    expect(pantalla).toMatch(/\/api\/departures\/\$\{id\}\/manifest\/enviar/);
+    /**
+     * Las tres respuestas son distintas y la pantalla las dice distintas: salió,
+     * ya lo tenían, y no salió por esto.
+     *
+     * Se comprueba la CONDICIÓN y no la mención: `envio.veto` aparece también en
+     * el texto del aviso (`No salió: ${envio.veto}`), así que una guarda que solo
+     * buscara el nombre se cumplía con el `if` quitado — y entonces la pantalla
+     * dice «manifiesto en camino» de un manifiesto que no salió.
+     */
+    expect(pantalla).toMatch(/if \(envio\.veto\) \{/);
+    expect(pantalla).toMatch(/if \(envio\.encolados === 0\) \{/);
   });
 });

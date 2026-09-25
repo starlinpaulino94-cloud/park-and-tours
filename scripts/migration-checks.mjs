@@ -480,6 +480,22 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0090 — el manifiesto sale solo, y sale recortado",
+    // El documento no se guarda: se compone al entregar. Sin decir en la fila
+    // para quién se recorta, el despachador no sabría qué corte generar y
+    // mandaría el manifiesto ENTERO —teléfonos, habitaciones y saldos de
+    // clientes— a la empresa de transporte.
+    columns: [
+      ["message", ["attachment_scope"]],
+    ],
+    // Las dos restricciones que esta migración reescribe (`message_template.key`
+    // y `message.attachment_kind`) NO se comprueban aquí: este verificador habla
+    // con PostgREST, que acepta la columna y solo rechazaría el valor al
+    // escribirlo. Las comprueba `supabase/editor/0090_parte_2_verificacion.sql`,
+    // que consulta `pg_constraint` y devuelve una fila legible por cada una.
+    // Declararlas aquí sin comprobarlas habría parecido una garantía sin serlo.
+  },
+  {
     migration: "0089 — el estado de cuenta del proveedor",
     // La conformidad es la otra mitad de la disputa: sin ella, el silencio de
     // un proveedor y su acuerdo se parecen demasiado. Y el NCF lo escribe quien

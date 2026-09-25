@@ -3263,3 +3263,115 @@ Y la tabla dice dos cosas más que no se preguntaban:
   MAPEO y no el recorte, así que pasaba idéntica con el recorte quitado. Ahora
   hay guarda estructural de que el recorte va delante.
 - **Mutación: treinta y cinco, las treinta y cinco muertas.**
+
+### Fase 8.8 — el manifiesto sale solo, y sale recortado
+- **DOS AGUJEROS QUE ABRIÓ 0084 SIN QUE NADIE LOS TOCARA.** Las dos puertas del
+  manifiesto —la pantalla y el PDF— decían `if (esDeSocio(ctx)) throw`. Mientras
+  el socio fue el único de fuera, eso quería decir «interno». Desde que el
+  proveedor tiene sesión en la empresa, esa negación quiere decir «interno **o**
+  proveedor»: **cualquier cuenta de una empresa de transporte podía pedir el
+  manifiesto de cualquier salida** —también de las que no opera— y llevarse
+  nombre, teléfono, correo, idioma, nacionalidad, número de habitación y el saldo
+  de cada cliente. Es el mismo hallazgo de 8.5 con `loadRunSheet`, en el
+  documento que lleva más datos de terceros de todo el sistema.
+- **Lo que sustituye.** El manifiesto existía en dos sitios y los dos detrás de
+  una sesión. El chofer que arranca a las seis no tiene sesión y el transportista
+  tampoco, así que alguien de la oficina abría la pantalla, bajaba el PDF y lo
+  reenviaba a mano por WhatsApp la noche antes. Cuando se acordaba. Cuando no, el
+  chofer salía con la lista de la semana pasada.
+- **LO QUE DECIDE EL MÓDULO NO ES A QUIÉN SE LE MANDA, SINO QUÉ DICE EL PAPEL
+  SEGÚN QUIÉN LO ABRE.** Mandar el manifiesto entero a una empresa de transporte
+  es entregarle la cartera de clientes de la operadora con el saldo de cada uno
+  dentro — y además exactamente lo que necesita para llamarlos el año que viene
+  por su cuenta.
+- **Y son CUATRO públicos, no tres.** `guia` es el guía de la casa: viaja con el
+  grupo y **cobra a bordo**, así que el saldo le hace falta de verdad. `chofer`
+  llama a la puerta de la habitación 412: nombre, hotel, habitación, teléfono y
+  hora, y **ni un número de dinero** —un chofer ajeno cobrando en la puerta es
+  dinero que no vuelve—. `proveedor` es la OFICINA del transportista: planifica
+  vehículos, así que lleva paradas, horas y cuánta gente sube, y **ningún
+  nombre**. Esa última distinción es la que evita que la lista de clientes acabe
+  archivada en el ordenador de otra empresa.
+- **Un guía PRESTADO por el transportista sale por el corte de chofer.** Hace el
+  mismo trabajo y no es quien cobra. Sin esa distinción, «guía» habría querido
+  decir «alguien autorizado a pedirle dinero al cliente en nombre de la
+  operadora».
+- **La lista es de PERMITIDOS, no de prohibidos.** El día que `manifestRow` gane
+  un campo —el documento de identidad, la alergia, el número de vuelo— ese campo
+  NO sale hasta que alguien lo escriba a mano. Con una lista de prohibidos habría
+  salido solo, que es como se filtra lo que nadie decidió filtrar.
+- **El PDF saca sus columnas de la MISMA lista.** Con las columnas fijas habría
+  dos sitios donde se decide lo mismo, y el papel del chofer llevaría una columna
+  «Cobrar» vacía — que es la pista de que el dato existe. Dos fugas más se colaban
+  **por dentro de una columna permitida** y no las cierra el filtro de columnas: la
+  habitación va pegada al hotel, y los requerimientos se rotulan con el nombre del
+  pasajero fuera de la tabla.
+- **Y el dinero del resumen va atado al MISMO permiso que el de la fila.**
+  Quitar `balance` de las filas y dejar `to_collect` en la cabecera habría
+  publicado lo mismo sumado, y encima con pinta de estar recortado.
+- **El recorte llega al segundo nivel.** Una parada lleva sus reservas DENTRO
+  (`PickupStop.bookings`): mandar las paradas «tal cual» habría entregado por la
+  puerta de atrás justo lo que la lista blanca quita por la de delante.
+- **EL WHATSAPP NO LLEVA LA LISTA, NI PARA EL CHOFER QUE SÍ PUEDE VERLA.** El
+  canal decide, no solo el público: un mensaje se reenvía de un grupo a otro sin
+  pensarlo y una captura de pantalla viaja más lejos que un adjunto. Lleva las
+  paradas —hotel, hora y cuánta gente—, que es lo que se mira en el semáforo.
+- **UN MANIFIESTO NO ES UN AVISO: ES UNA LISTA QUE CAMBIA.** Se manda a las
+  seis, entra una reserva a las dos de la tarde, y el chofer sale con una lista a
+  la que le falta gente — peor que no haberla mandado, porque cree que la tiene.
+  La clave de deduplicación lleva dentro una **huella** de lo material (quién
+  viaja, cuántos, dónde y cuándo se recoge): mientras no cambie, barrer cien
+  veces deja un mensaje; en cuanto cambia, sale una versión nueva sola. El
+  embarque y el saldo **no** entran en la huella: se marcan durante la salida y
+  mandarían un manifiesto nuevo por cada pasajero que sube.
+- **QUIEN RECHAZÓ EL ENCARGO NO RECIBE LA LISTA.** Era la mitad que faltaba de
+  la aceptación de 0087: hasta ahora, decir «no» no quitaba ningún acceso y el
+  proveedor seguía recibiendo los clientes de un servicio que no va a operar.
+  Igual con el plazo vencido.
+- **DE DÓNDE SE LEE ES UN PARÁMETRO, Y NO POR ELEGANCIA.** Quien compone y manda
+  es un cron sin cookies. Con `SUPABASE_USE_RLS=true` —obligatorio en producción,
+  lo exige `data-backend.ts`— las ayudas de inquilino resuelven el cliente a
+  partir de la petición: el barrido escrito contra ellas **no habría fallado**,
+  habría leído cero salidas y dicho que no había nada que mandar, y el adjunto
+  habría salido con cero pasajeros. Un PDF vacío que se manda igual no lo nota
+  nadie hasta que el chofer llega al hotel. Es la misma trampa que documenta
+  `outbox.ts`, y se evita igual: `FuenteDelManifiesto` con dos implementaciones.
+- **Sin cron nuevo.** Se cuelga del barrido diario que ya existe
+  (`dispatch-messages`, 06:00), encolando **antes** de despachar para que salga en
+  la misma pasada. El plan de Vercel no admite crons sub-diarios y una cadencia
+  más fina tumba el despliegue entero, así que la ventana es de **36 horas** y no
+  de 24: con 24 la salida de pasado mañana a primera hora se quedaría fuera y el
+  proveedor no tendría tiempo de asignar vehículo.
+- **Y un botón, porque el barrido corre una vez al día.** Cuando se reasigna el
+  vehículo a las cuatro de la tarde, la operadora no puede esperar a mañana. La
+  huella hace que apretarlo tres veces deje un mensaje, y la pantalla sabe decir
+  las tres respuestas distintas: salió, ya lo tenían, y no salió por esto.
+- **UNA RESTRICCIÓN QUE MENTÍA DESDE 0034.** `message_template_key_check`
+  enumeraba SIETE claves y el código declaraba OCHO: una empresa que intentara
+  reescribir el texto de «te movemos la excursión de fecha» —que el sistema sí
+  manda— se llevaba un 23514 de PostgreSQL sin que nada lo anticipara. Faltaba
+  también en `MESSAGE_TEMPLATE_KEY`, así que el desplegable no la ofrecía. No se
+  veía leyendo el código porque la lista de verdad estaba en SQL: ahora una
+  guarda lee las migraciones y las compara con la unión de TypeScript.
+- **El manifiesto no depende del teléfono que la empresa haya rellenado.** Un
+  hueco sin rellenar no se manda, y en los demás avisos eso es correcto: un
+  cliente que lee «escríbenos a » no sabe a dónde. Aquí el destinatario es el
+  guía o el transportista, que ya tienen el número — y una operadora que no
+  rellenó su propia ficha se habría quedado sin mandar **ningún** manifiesto, con
+  el autobús saliendo igual.
+- **Y quien solo tiene un canal recibe por ese.** `enqueueMessage` guarda como
+  fallido lo que no puede entregar, que para un aviso a un cliente es lo correcto.
+  Para el manifiesto no: el barrido pasa todos los días y el chofer sin correo
+  generaría una fila fallida por pasada hasta hacer la bandeja ilegible.
+- **Doce guardas no mordieron a la primera.** Dos eran huecos de prueba de
+  verdad: **la fuente de servicio no estaba probada en absoluto** —quitarle el
+  `eq("organization_id", …)` no rompía nada, y con la llave de servicio ese `eq`
+  es todo el aislamiento que hay— y no había caso de un destinatario alcanzable
+  por un solo canal. Una era **la lección de siempre otra vez**: la guarda buscaba
+  `envio.veto`, que aparece también en el texto del aviso (`No salió: ${…}`), así
+  que se cumplía con el `if` quitado. Dos eran restricciones de SQL que ningún
+  código lee. Cuatro eran recortes del PDF sin guarda. Dos eran valores por
+  defecto —la fuente de `loadManifest`, la lista de empresas del cron— cuyo
+  cambio no rompe nada visible. Y una era un error del mutador: el fichero
+  equivocado.
+- **Mutación: setenta, las setenta muertas.**

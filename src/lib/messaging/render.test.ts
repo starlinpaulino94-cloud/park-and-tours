@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync, readdirSync } from "node:fs";
 import {
   variablesIn, missingVariables, renderTemplate, renderMessage,
   normalizePhone, normalizeEmail, recipientFor, scheduledAt, isStale,
 } from "@/lib/messaging/render";
 import { DEFAULT_TEMPLATES, TEMPLATE_VARIABLES, defaultTemplate } from "@/lib/messaging/templates";
+import { PUBLICOS_DEL_MANIFIESTO } from "@/lib/manifiesto-envio";
 
 describe("mensajería — composición de la plantilla", () => {
   it("encuentra las variables, con o sin espacios, sin repetir", () => {
@@ -156,6 +158,131 @@ describe("mensajería — plantillas por defecto", () => {
       expect(t.body).toContain("{{hora_recogida}}");
       expect(t.body).toContain("{{lugar_recogida}}");
       expect(t.offset_hours).toBe(-24);
+    }
+  });
+});
+
+describe("las claves de plantilla que el código declara y las que la base admite", () => {
+  /**
+   * LA RESTRICCIÓN QUE MENTÍA DURANTE VARIAS FASES.
+   *
+   * `message_template_key_check` (0034) enumeraba SIETE claves. El código
+   * declaraba OCHO desde que existe la plantilla de cambio de fecha: una empresa
+   * que intentara reescribir el texto de «te movemos la excursión» se llevaba un
+   * 23514 de PostgreSQL, y nada en la aplicación lo anticipaba — el formulario de
+   * plantillas ofrecía una clave que la base rechazaba.
+   *
+   * No se podía ver leyendo el código, porque la lista de verdad estaba en SQL.
+   * Esta guarda lee las dos y las compara: es la única forma de que la próxima
+   * clave nueva no repita exactamente el mismo fallo.
+   */
+  const MIGRACIONES = "supabase/migrations";
+
+  /** La última definición de la restricción, que es la que manda. */
+  function clavesEnLaBase(): string[] {
+    const archivos = readdirSync(MIGRACIONES).filter((f) => f.endsWith(".sql")).sort();
+    let ultima: string | null = null;
+    for (const archivo of archivos) {
+      const sql = readFileSync(`${MIGRACIONES}/${archivo}`, "utf8");
+      const m = [...sql.matchAll(
+        /add\s+constraint\s+message_template_key_check\s+check\s*\(\s*key\s+in\s*\(([\s\S]*?)\)\s*\)/gi
+      )];
+      if (m.length > 0) ultima = m[m.length - 1][1];
+    }
+    if (!ultima) throw new Error("ninguna migración define message_template_key_check");
+    return [...ultima.matchAll(/'([a-z_]+)'/g)].map((x) => x[1]).sort();
+  }
+
+  it("dicen exactamente lo mismo", () => {
+    const enElCodigo = Object.keys(TEMPLATE_VARIABLES).sort();
+    expect(clavesEnLaBase()).toEqual(enElCodigo);
+  });
+
+  /**
+   * La misma lectura, para las dos restricciones que 0090 reescribe. Ninguna de
+   * las dos la mira el código: PostgREST acepta la columna y solo rechazaría el
+   * valor al escribirlo, así que un `check` que no admita `manifest` no rompe
+   * nada hasta que un manifiesto de verdad intenta salir — en producción, de
+   * madrugada, con el autobús esperando.
+   */
+  function valoresDeCheck(constraint: string): string[] {
+    const archivos = readdirSync(MIGRACIONES).filter((f) => f.endsWith(".sql")).sort();
+    let ultima: string | null = null;
+    for (const archivo of archivos) {
+      const sql = readFileSync(`${MIGRACIONES}/${archivo}`, "utf8");
+      const m = [...sql.matchAll(
+        new RegExp(`add\\s+constraint\\s+${constraint}\\s+check\\s*\\(([\\s\\S]*?)\\);`, "gi")
+      )];
+      if (m.length > 0) ultima = m[m.length - 1][1];
+    }
+    if (!ultima) throw new Error(`ninguna migración define ${constraint}`);
+    return [...ultima.matchAll(/'([a-z_]+)'/g)].map((x) => x[1]).sort();
+  }
+
+  it("el manifiesto cabe como documento adjunto", () => {
+    expect(valoresDeCheck("message_attachment_kind_check")).toEqual(["manifest", "quote", "voucher"]);
+  });
+
+  it("y los recortes que la base admite son EXACTAMENTE los que el código conoce", () => {
+    /**
+     * Si la base admitiera uno que el código no reconoce, ese adjunto no se
+     * compondría nunca y nadie sabría por qué. Si el código usara uno que la base
+     * no admite, la fila no se podría ni encolar.
+     */
+    expect(valoresDeCheck("message_attachment_scope_check")).toEqual([...PUBLICOS_DEL_MANIFIESTO].sort());
+  });
+
+  it("y toda clave declarada trae su plantilla de verdad", () => {
+    // Una clave en la unión sin plantilla detrás es un desplegable que ofrece
+    // algo que no existe.
+    for (const key of Object.keys(TEMPLATE_VARIABLES)) {
+      expect(DEFAULT_TEMPLATES.some((t) => t.key === key), key).toBe(true);
+    }
+  });
+});
+
+describe("el manifiesto es la única plantilla que no va a un cliente", () => {
+  const manifiestos = () => DEFAULT_TEMPLATES.filter((t) => t.key === "manifest_dispatch");
+
+  it("sale EN CUANTO SE SABE, no programado respecto a la salida", () => {
+    /**
+     * Con `offset_hours: -24`, el barrido diario de las 6:00 lo habría dejado
+     * programado para una hora antes de la salida — cuando el chofer ya va camino
+     * del primer hotel. La ventana la decide quien encola (`vetoDeEnvio`).
+     */
+    for (const t of manifiestos()) expect(t.offset_hours, t.channel).toBeUndefined();
+  });
+
+  it("no depende del teléfono que la empresa haya rellenado en su ficha", () => {
+    /**
+     * Un hueco sin rellenar NO se manda. En los demás avisos eso es correcto: un
+     * cliente que recibe «escríbenos a » no sabe a dónde. Aquí el destinatario es
+     * el guía o el transportista, que ya tienen el número de la oficina — y una
+     * operadora que no rellenó su propio teléfono se habría quedado sin mandar
+     * NINGÚN manifiesto, con el autobús saliendo igual.
+     */
+    for (const t of manifiestos()) {
+      expect(t.body, t.channel).not.toContain("{{telefono_empresa}}");
+      expect(t.subject || "", t.channel).not.toContain("{{telefono_empresa}}");
+    }
+    expect(TEMPLATE_VARIABLES.manifest_dispatch).not.toContain("telefono_empresa");
+  });
+
+  it("lleva lo que hace falta para operar, en los dos canales y los dos idiomas", () => {
+    // Cuatro: correo y WhatsApp, español e inglés.
+    expect(manifiestos()).toHaveLength(4);
+    for (const t of manifiestos()) {
+      for (const variable of ["{{producto}}", "{{fecha}}", "{{hora}}", "{{pax}}", "{{paradas}}"]) {
+        expect(t.body, `${t.channel}/${t.language} sin ${variable}`).toContain(variable);
+      }
+    }
+  });
+
+  it("y el WhatsApp manda al correo por la lista, en vez de intentar llevarla", () => {
+    // Un mensaje se reenvía de un grupo a otro sin pensarlo y una captura viaja
+    // más lejos que un adjunto.
+    for (const t of manifiestos().filter((x) => x.channel === "whatsapp")) {
+      expect(t.body.toLowerCase(), t.language).toMatch(/correo|email/);
     }
   });
 });

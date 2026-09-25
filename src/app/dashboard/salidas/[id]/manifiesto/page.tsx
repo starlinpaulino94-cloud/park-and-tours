@@ -64,6 +64,7 @@ export default function ManifestPage({ params }: { params: Promise<{ id: string 
   const [expanded, setExpanded] = useState<string | null>(null);
   const [form, setForm] = useState({ incident_notes: "", guide_notes: "", reason: "" });
   const [force, setForce] = useState(false);
+  const [sending, setSending] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -118,6 +119,42 @@ export default function ManifestPage({ params }: { params: Promise<{ id: string 
     toast.success("Salida cerrada");
     setClosing(false);
     void load();
+  };
+
+  /**
+   * Mandarlo a quien lo opera, ahora.
+   *
+   * El barrido diario ya lo manda solo; este botón es para cuando algo cambia a
+   * media tarde —se reasigna el vehículo, entra un grupo de doce— y el chofer
+   * tiene que salir con la lista de ahora y no con la de esta mañana. Apretarlo
+   * tres veces no escribe tres veces a nadie: la huella de la lista hace que un
+   * manifiesto que no cambió se reconozca como el mismo.
+   */
+  const sendManifest = async () => {
+    setSending(true);
+    const res = await api.post(`/api/departures/${id}/manifest/enviar`, {});
+    setSending(false);
+    if (!res.ok) {
+      toast.error(res.error?.message || "No se pudo mandar el manifiesto");
+      return;
+    }
+    const envio = res.data as {
+      encolados: number; duplicados: number; veto: string | null;
+      destinatarios: { nombre: string; publico: string }[];
+    };
+    if (envio.veto) {
+      toast.error(`No salió: ${envio.veto}`);
+      return;
+    }
+    if (envio.encolados === 0) {
+      // «Ya lo tienen» es una respuesta correcta y hay que decirla: sin esto, el
+      // botón parecería no hacer nada y alguien lo apretaría cinco veces.
+      toast.success("Ya tenían esta versión del manifiesto: no se ha vuelto a mandar");
+      return;
+    }
+    toast.success(
+      `Manifiesto en camino a ${envio.destinatarios.map((d) => d.nombre).join(", ")}`
+    );
   };
 
   const exportCsv = () => {
@@ -196,6 +233,14 @@ export default function ManifestPage({ params }: { params: Promise<{ id: string 
                   <Icon name="FileText" className="size-4" /> PDF
                 </Button>
               </a>
+              {/* Y al equipo que lo opera: el guía, el chofer y la oficina del
+                  proveedor, cada uno con su recorte. Ver
+                  `src/lib/manifiesto-envio.ts`. */}
+              {!closed && (
+                <Button variant="outline" className="gap-1.5" onClick={sendManifest} disabled={sending}>
+                  <Icon name="Send" className="size-4" /> {sending ? "Mandando…" : "Mandar al equipo"}
+                </Button>
+              )}
               {!closed && (
                 <Button className="gap-1.5" onClick={() => setClosing(true)} disabled={busy}>
                   <Icon name="CircleCheck" className="size-4" /> Cerrar salida

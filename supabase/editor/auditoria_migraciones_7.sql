@@ -17,7 +17,8 @@ with e(mig,tipo,obj,det) as (values
   ('0087 — aceptar o rechazar, con plazo y número','col','supplier','acceptance_window_hours,on_deadline_expiry'),
   ('0087 — aceptar o rechazar, con plazo y número','fn','respond_to_supplier_service',''),
   ('0088 — la hoja de ruta, acotada y con hora','col','pickup','supplier_id,service_date,marked_at,marked_by,marked_via'),
-  ('0089 — el estado de cuenta del proveedor','col','settlement','accepted_at,accepted_by,supplier_invoice_number,supplier_ncf,supplier_ncf_type,supplier_invoice_at,supplier_invoice_by')
+  ('0089 — el estado de cuenta del proveedor','col','settlement','accepted_at,accepted_by,supplier_invoice_number,supplier_ncf,supplier_ncf_type,supplier_invoice_at,supplier_invoice_by'),
+  ('0090 — el manifiesto sale solo, y sale recortado','col','message','attachment_scope')
 ), obj as (
   select e.mig, e.tipo, e.obj, nullif(trim(both from c), '') as col
     from e left join lateral unnest(

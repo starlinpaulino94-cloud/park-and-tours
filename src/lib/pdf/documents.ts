@@ -9,6 +9,10 @@ import { documentBrand, type CompanyBranding, type DocumentKind } from "@/lib/br
 import { fetchLogo } from "@/lib/pdf/logo";
 import { APP_URL } from "@/lib/stripe";
 import type { ManifestRow, PickupStop, PaxSummary } from "@/lib/manifest";
+import {
+  incluye, ETIQUETA_DEL_PUBLICO,
+  type PublicoDelManifiesto, type CampoDelManifiesto,
+} from "@/lib/manifiesto-envio";
 import { montoEnLetras } from "@/lib/monto-en-letras";
 
 /**
@@ -577,7 +581,21 @@ export async function buildManifestPdf(
   data: ManifestPdfData,
   rows: ManifestRow[],
   stops: PickupStop[],
-  summary: PaxSummary
+  summary: PaxSummary,
+  /**
+   * PARA QUIÉN SE DIBUJA ESTE PAPEL.
+   *
+   * Las columnas NO están fijas: se filtran con la MISMA lista blanca que
+   * recorta las filas (`src/lib/manifiesto-envio.ts`). Dibujar siempre las ocho
+   * columnas y confiar en que la fila venga recortada habría impreso una
+   * columna «Cobrar» vacía en el papel del chofer — y, lo que importa más,
+   * habría dejado dos sitios donde decidir lo mismo: el día que uno de los dos
+   * cambiara, el PDF y la respuesta de la API dirían cosas distintas.
+   *
+   * El defecto es `interno` porque quien no dice nada es la propia operadora
+   * pidiendo su papel; quien manda hacia fuera SIEMPRE lo dice.
+   */
+  publico: PublicoDelManifiesto = "interno"
 ): Promise<Uint8Array> {
   const { brand, logo } = await brandFor(company, "manifest");
   const pdf = await PdfBuilder.create({
@@ -602,8 +620,13 @@ export async function buildManifestPdf(
   pdf.row("Reservas", formatNumber(summary.bookings));
   pdf.row("Plazas", `${formatNumber(summary.seats)}${data.capacity ? ` de ${formatNumber(data.capacity)}` : ""}`, { strong: true });
   pdf.row("Desglose", `${summary.adults} adultos · ${summary.children} niños · ${summary.infants} bebés`);
-  const toCollect = Object.entries(summary.to_collect_by_currency)
-    .map(([currency, amount]) => formatMoney(amount, currency)).join(" + ");
+  // El dinero va atado al MISMO permiso que la columna de la tabla: quitarlo de
+  // las filas y dejarlo sumado en la cabecera habría publicado la misma
+  // información, solo que de una vez.
+  const toCollect = incluye(publico, "balance")
+    ? Object.entries(summary.to_collect_by_currency)
+        .map(([currency, amount]) => formatMoney(amount, currency)).join(" + ")
+    : "";
   if (toCollect) pdf.row("Por cobrar a bordo", toCollect);
   if (data.vehicles?.length) {
     pdf.row("Vehículos", data.vehicles.map((v) => `${v.plate || v.name}${v.capacity ? ` (${v.capacity})` : ""}`).join(" · "));
@@ -630,49 +653,93 @@ export async function buildManifestPdf(
     pdf.gap(12);
   }
 
-  pdf.eyebrow(`Pasajeros · ${rows.length} reservas`);
+  /**
+   * LA TABLA SE ARMA DESDE LA LISTA BLANCA.
+   *
+   * Cada columna declara de qué campo vive; si ese campo no está permitido para
+   * este público, la columna no se dibuja. Así el papel del proveedor sale sin
+   * nombres porque `lead_name` no está en su lista, no porque aquí haya un `if`
+   * que alguien tenga que acordarse de escribir.
+   */
+  interface ColumnaDelManifiesto {
+    /** De qué campo vive. `null` = no depende de ninguno. */
+    campo: CampoDelManifiesto | null;
+    header: string;
+    width: number;
+    align?: "right";
+    valor: (row: ManifestRow) => string;
+  }
+
+  const todasLasColumnas: ColumnaDelManifiesto[] = [
+    { campo: "pickup_time", header: "Hora", width: 0.65, valor: (r) => r.pickup_time },
+    { campo: "lead_name", header: "Pasajero", width: 2.1, valor: (r) => r.lead_name },
+    {
+      campo: "pickup_hotel", header: "Hotel / hab.", width: 2,
+      valor: (r) =>
+        [r.pickup_hotel, incluye(publico, "room") && r.room ? `· ${r.room}` : ""].filter(Boolean).join(" ")
+        || r.pickup_location || "Punto de encuentro",
+    },
+    { campo: "phone", header: "Teléfono", width: 1.2, valor: (r) => r.phone },
+    { campo: "seats", header: "Pax", width: 0.75, valor: (r) => `${r.adults}A ${r.children}N ${r.infants}B` },
+    {
+      campo: "balance", header: "Cobrar", width: 0.9, align: "right",
+      valor: (r) => (r.paid ? "" : formatMoney(r.balance, r.currency)),
+    },
+    // Casilla vacía a propósito: quien opera marca a mano quién sube. No
+    // depende de ningún campo, así que la ve todo el mundo.
+    { campo: null, header: "OK", width: 0.4, valor: () => "[  ]" },
+  ];
+  const columnas = todasLasColumnas.filter((c) => c.campo === null || incluye(publico, c.campo));
+
+  pdf.eyebrow(
+    publico === "interno"
+      ? `Pasajeros · ${rows.length} reservas`
+      : `Pasajeros · ${rows.length} reservas · copia para ${ETIQUETA_DEL_PUBLICO[publico].toLowerCase()}`
+  );
   pdf.table(
     [
-      { header: "#", width: 0.3, align: "right" },
-      { header: "Hora", width: 0.65 },
-      { header: "Pasajero", width: 2.1 },
-      { header: "Hotel / hab.", width: 2 },
-      { header: "Teléfono", width: 1.2 },
-      { header: "Pax", width: 0.75 },
-      { header: "Cobrar", width: 0.9, align: "right" },
-      { header: "OK", width: 0.4 },
+      { header: "#", width: 0.3, align: "right" as const },
+      ...columnas.map((c) => ({ header: c.header, width: c.width, align: c.align })),
     ],
-    rows.map((row, i) => [
-      String(i + 1),
-      row.pickup_time,
-      row.lead_name,
-      [row.pickup_hotel, row.room ? `· ${row.room}` : ""].filter(Boolean).join(" ") || row.pickup_location || "Punto de encuentro",
-      row.phone,
-      `${row.adults}A ${row.children}N ${row.infants}B`,
-      row.paid ? "" : formatMoney(row.balance, row.currency),
-      // Casilla vacía a propósito: el guía marca a mano quien sube.
-      "[  ]",
-    ]),
+    rows.map((row, i) => [String(i + 1), ...columnas.map((c) => c.valor(row))]),
     { size: 8 }
   );
 
-  // Lo que no cabe en una tabla pero no puede perderse.
+  // Lo que no cabe en una tabla pero no puede perderse. Una silla de ruedas
+  // cambia el vehículo, así que va también en la copia del proveedor — pero
+  // rotulada con la parada y no con el nombre, que él no tiene.
   const withRequirements = rows.filter((r) => r.requirements.length > 0);
   if (withRequirements.length > 0) {
     pdf.gap(12);
     pdf.eyebrow("Requerimientos especiales");
     for (const row of withRequirements) {
-      pdf.paragraph(`${row.lead_name}: ${row.requirements.join(" · ")}`, 9);
+      const quien = incluye(publico, "lead_name")
+        ? row.lead_name
+        : `${row.pickup_time} · ${row.pickup_hotel || "Punto de encuentro"}`;
+      pdf.paragraph(`${quien}: ${row.requirements.join(" · ")}`, 9);
     }
   }
 
-  const unnamed = rows.reduce((s, r) => s + r.unnamed_pax, 0);
+  // El aviso del seguro es para quien completa las fichas, que es la operadora
+  // y su guía. Al transportista no le dice nada que pueda arreglar.
+  const unnamed = incluye(publico, "unnamed_pax")
+    ? rows.reduce((s, r) => s + r.unnamed_pax, 0)
+    : 0;
   if (unnamed > 0) {
     pdf.gap(10);
     pdf.notice(`${unnamed} pasajero(s) viajan sin nombre registrado. El manifiesto no cubre el seguro así: complétalos antes de salir.`);
   }
 
-  pdf.block("Notas de la salida", data.notes);
+  // Las notas internas de la salida no salen de la casa.
+  if (publico === "interno" || publico === "guia") pdf.block("Notas de la salida", data.notes);
+
+  if (publico !== "interno") {
+    pdf.gap(10);
+    pdf.paragraph(
+      `Datos de clientes de ${company?.name || "la operadora"}, entregados para operar este servicio. No se reenvían ni se usan para otra cosa.`,
+      7
+    );
+  }
   return pdf.finish();
 }
 
