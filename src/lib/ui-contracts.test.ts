@@ -9434,3 +9434,193 @@ describe("el proveedor asigna su propia flota", () => {
     expect(NOTIFY_EVENTS.supplier_fleet_assigned.link()).toBe("/dashboard/operaciones/despacho");
   });
 });
+
+/* ========================================================================== */
+/*  Ola 9.1 — el aislamiento de los tres actores, de extremo a extremo         */
+/* ========================================================================== */
+
+describe("el aislamiento se prueba con un navegador de verdad", () => {
+  const E2E = (rel: string) => read(`tests/e2e/${rel}`);
+
+  it("LOS TRES ACTORES ACOTADOS TIENEN SU SPEC", () => {
+    /**
+     * Ocho fases de aislamiento multi-actor y, hasta esta ola, una sola prueba de
+     * extremo a extremo: la del vendedor. Las unitarias dicen que las reglas son
+     * correctas y que las rutas las llaman; ninguna ejercita la cadena que produce
+     * el identificador —membresía → enganche del token → `auth-context` → la
+     * función de ámbito—, porque en todas ellas ese identificador sale de un `mock`.
+     */
+    for (const spec of [
+      "vendedor-aislamiento.spec.ts",
+      "socio-aislamiento.spec.ts",
+      "proveedor-aislamiento.spec.ts",
+    ]) {
+      expect(existe(`tests/e2e/${spec}`), spec).toBe(true);
+    }
+  });
+
+  it("y cada uno entra con SU cuenta, no con la de propietario", () => {
+    /**
+     * Con la cuenta de propietario no se prueba nada: ve todo por definición. El
+     * correo de cada actor se deriva del de pruebas, así que hereda su garantía de
+     * ser una dirección dedicada.
+     */
+    expect(E2E("socio-aislamiento.spec.ts")).toMatch(/emailDerivado\(email!, E2E_PARTNER_SUFFIX\)/);
+    expect(E2E("proveedor-aislamiento.spec.ts")).toMatch(/emailDerivado\(email!, E2E_SUPPLIER_SUFFIX\)/);
+    expect(E2E("vendedor-aislamiento.spec.ts")).toMatch(/emailDerivado\(email!, E2E_SELLER_SUFFIX\)/);
+  });
+
+  it("EL SPEC DEL PROVEEDOR SIGUE CUBRIENDO LAS PUERTAS QUE CERRÓ LA FASE 8", () => {
+    /**
+     * Cada una de estas líneas es una fase. Sin esta guarda, el spec podría
+     * quedarse con la mitad de sus afirmaciones —o convertirse en «entra y no
+     * revienta»— y seguir en verde: es lo que le pasa a un E2E que nadie vigila.
+     *
+     * Y se comprueban las LÍNEAS QUE PIDEN, no las cadenas que menciona: el
+     * comentario de cabecera del spec enumera las ocho puertas para explicar de
+     * dónde viene cada una, así que una guarda que buscara «/manifest» a secas se
+     * cumplía con la explicación y el `fetch` quitado. Es el mismo fallo de guarda
+     * que ya ha morderme cinco veces en esta rama.
+     */
+    const spec = E2E("proveedor-aislamiento.spec.ts");
+    for (const pedido of [
+      '`/api/departures/${UUID_INVENTADO}/manifest`',              // 8.8
+      '`/api/departures/${UUID_INVENTADO}/manifest/pdf`',           // 8.8
+      '"/api/operations/dispatch"',                                  // 8.5
+      '`/api/operations/routes/${UUID_INVENTADO}/run-sheet`',        // 8.5
+      'pedir(page, "/api/erp/settlement?limit=200")',                // 8.7
+      'pedir(page, "/api/erp/vehicle?limit=50")',                    // 8.9
+      '["payable", "customer", "payment", "commission"]',            // 8.7
+    ]) {
+      expect(spec, `el spec dejó de pedir ${pedido}`).toContain(pedido);
+    }
+
+    /**
+     * CONTADAS, y son dos: el bloque del manifiesto y el del despacho. Con
+     * `toContain` bastaba con que sobreviviera una —el mutador cambió la primera y
+     * la guarda encontró la segunda—, y entonces la mitad de las negativas pasaría
+     * a aceptar cualquier respuesta como buena.
+     */
+    expect(
+      (spec.match(/expect\(res\.status, ruta\)\.toBe\(403\)/g) || []).length,
+      "una de las dos tandas de negativas dejó de exigir 403"
+    ).toBe(2);
+
+    // Y las dos afirmaciones que no son un código de estado.
+    expect(spec, "dejó de comprobar que la tarifa diaria no sale")
+      .toMatch(/expect\(res\.texto\)\.not\.toContain\("daily_rate"\)/);
+    expect(spec, "dejó de comprobar que solo llega SU liquidación")
+      .toMatch(/expect\(codigos\)\.not\.toContain\(LIQUIDACION_AJENA\)/);
+    // Aterrizar en su portal es lo que prueba que el token trae su identificador:
+    // sin `supplier_id`, el layout lo manda a `/dashboard` y el login falla.
+    expect(spec).toMatch(/expectPath: "\/proveedor",/);
+  });
+
+  it("y el del socio sigue afirmando las tres cosas, no solo entrando", () => {
+    /**
+     * Las tres son distintas y ninguna se deduce de las otras: que ve lo suyo, que
+     * NO ve lo de la operadora, y que la lista de clientes le está negada. Un spec
+     * que solo comprobara la primera pasaría con el filtro por socio quitado.
+     */
+    const spec = E2E("socio-aislamiento.spec.ts");
+    expect(spec).toMatch(/expect\(numeros\)\.toContain\(ORDEN_DEL_SOCIO\)/);
+    expect(spec).toMatch(/expect\(numeros\)\.not\.toContain\(ORDEN_PROPIA\)/);
+    expect(spec).toMatch(/expect\(status\)\.toBeGreaterThanOrEqual\(400\)/);
+    expect(spec).toMatch(/expectPath: "\/portal",/);
+  });
+
+  it("y comprueba que NO le llega ni un dato del cliente", () => {
+    /**
+     * La afirmación central: es el actor con más datos personales de terceros a
+     * tiro. Se busca sobre el cuerpo CRUDO de la respuesta y no sobre la pantalla —
+     * lo que importa es que el servidor no lo entregue, no que la pantalla no lo
+     * pinte— y los tres literales se importan del arranque para que no puedan
+     * divergir de lo que se sembró: un spec que busca una cadena que nadie sembró
+     * pasa siempre.
+     */
+    const spec = E2E("proveedor-aislamiento.spec.ts");
+    expect(spec).toMatch(/for \(const dato of \[CLIENTE_DEL_MANIFIESTO, TELEFONO_DEL_CLIENTE, HABITACION_DEL_CLIENTE\]\)/);
+    expect(spec).toMatch(/expect\(res\.texto, `se entregó «\$\{dato\}»`\)\.not\.toContain\(dato\)/);
+  });
+
+  it("las negativas se piden con un identificador que NO existe, y eso prueba más", () => {
+    /**
+     * En el manifiesto y en el despacho la guarda corre ANTES de buscar la fila.
+     * Con un uuid de nadie, la respuesta correcta sigue siendo 403 y no 404: si
+     * alguien quitara la guarda, la ruta pasaría a buscar y contestaría 404. O sea
+     * que el 403 sobre un identificador inventado prueba que no llega ni a mirar.
+     *
+     * Y por eso el uuid tiene que estar BIEN FORMADO: uno inválido daría 400 por
+     * otro motivo y la prueba pasaría sin comprobar la guarda.
+     */
+    const spec = E2E("proveedor-aislamiento.spec.ts");
+    expect(spec).toMatch(/const UUID_INVENTADO = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"/);
+    // Contadas: son las cuatro rutas donde la guarda precede a la búsqueda.
+    expect((spec.match(/UUID_INVENTADO/g) || []).length).toBeGreaterThanOrEqual(5);
+    expect(spec).toMatch(/expect\(res\.status, ruta\)\.toBe\(403\)/);
+  });
+
+  it("y lo negado se comprueba como NEGADO, no como lista vacía", () => {
+    // Una lista vacía es indistinguible de «no hay nada»: el día que el filtro se
+    // rompiera, nadie lo notaría.
+    expect(E2E("proveedor-aislamiento.spec.ts"))
+      .toMatch(/expect\(res\.status, recurso\)\.toBeGreaterThanOrEqual\(400\)/);
+  });
+
+  it("EL PANEL INTERNO ECHA A LOS DOS ACTORES DE FUERA, no solo al socio", () => {
+    /**
+     * Esta línea decía solo `esDeSocio`. Desde 0084 —que le dio sesión al
+     * proveedor— una cuenta de transportista que escribiera `/dashboard` cargaba el
+     * armazón interno entero, con su menú de finanzas, caja, comisiones y clientes.
+     * Los datos no salían —cada ruta de dentro lo rechaza—, pero el armazón le
+     * enseña el mapa completo de la operación de otra empresa, y el portal del
+     * proveedor nace con guarda en el layout precisamente porque el menú no es una
+     * barrera.
+     */
+    const layout = cuerpoDe("src/app/dashboard/layout.tsx");
+    expect(layout).toMatch(/if \(esDeSocio\(ctx\)\) redirect\("\/portal"\);/);
+    expect(layout).toMatch(/if \(esDeProveedor\(ctx\)\) redirect\("\/proveedor"\);/);
+    // Y los dos specs lo comprueban tecleando la URL, que es donde el menú no
+    // protege.
+    expect(E2E("socio-aislamiento.spec.ts")).toMatch(/page\.goto\("\/dashboard"\)/);
+    expect(E2E("proveedor-aislamiento.spec.ts")).toMatch(/page\.goto\("\/dashboard"\)/);
+  });
+
+  it("el arranque siembra un OTRO de cada clase, porque sin otro no hay aislamiento", () => {
+    /**
+     * El aislamiento consiste en NO ver lo del vecino, así que hace falta un
+     * vecino: dos fichas de proveedor con sus dos liquidaciones y dos servicios
+     * sobre la MISMA salida, y una venta de la operadora que el socio no puede ver.
+     * Con una sola fila de cada cosa, los specs pasarían con el filtro quitado.
+     */
+    const setup = E2E("global-setup.ts");
+    /**
+     * Las LLAMADAS, no los nombres: las cuatro constantes se declaran y se exportan
+     * en este mismo fichero, así que una guarda que buscara `LIQUIDACION_AJENA` a
+     * secas se cumplía con la declaración y el sembrado quitado — y entonces la
+     * afirmación «no ve la del vecino» pasaría porque no hay vecino.
+     */
+    expect(setup).toMatch(/const propio = await ficha\(PROVEEDOR_PROPIO, supplierUserId\);/);
+    expect(setup).toMatch(/const ajeno = await ficha\(PROVEEDOR_AJENO, null\);/);
+    expect(setup).toMatch(/await liquidacion\(LIQUIDACION_PROPIA, propio\);/);
+    expect(setup).toMatch(/await liquidacion\(LIQUIDACION_AJENA, ajeno\);/);
+    expect(setup).toMatch(/await recurso\(propio, "vehicle"\)/);
+    expect(setup).toMatch(/await recurso\(ajeno, "guide"\)/);
+    // La salida se refresca a mañana en cada ejecución: con una fecha fija dejaría
+    // de ser «próxima» al día siguiente y el portal no la enseñaría.
+    expect(setup).toMatch(/const manana = new Date\(Date\.now\(\) \+ 24 \* 3_600_000\)\.toISOString\(\);/);
+  });
+
+  it("y la comprobación que impide apropiarse de una cuenta vive en UN solo sitio", () => {
+    /**
+     * Las tres cuentas derivadas repetían el mismo bloque de diez líneas, y ese
+     * bloque contiene `assertExclusivoDelE2E` — lo que impide reescribirle la
+     * contraseña a una persona de verdad. Cuatro copias son cuatro sitios donde
+     * olvidarla al añadir la quinta cuenta.
+     */
+    const setup = E2E("global-setup.ts");
+    expect((setup.match(/await assertExclusivoDelE2E\(/g) || []).length,
+      "la comprobación volvió a copiarse por cada cuenta").toBe(1);
+    expect(setup).toMatch(/async function ensureCuentaDelE2E\(/);
+  });
+});

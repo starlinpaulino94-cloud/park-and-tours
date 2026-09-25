@@ -144,16 +144,18 @@ describe("la cuenta del E2E", () => {
     expect(membresias().find((m) => m.organization_id === E2E_ORG)!.is_primary).toBe(true);
   });
 
-  it("y si no existen, crea LAS DOS: la de propietario y la de vendedor", async () => {
+  it("y si no existen, crea LAS CUATRO: propietario, vendedor, socio y proveedor", async () => {
     /**
-     * Son dos porque el aislamiento no se puede probar con la de propietario:
-     * ve todo por definición. Hace falta una cuenta de rango bajo con su ficha
-     * vinculada.
+     * Cuatro porque el aislamiento no se puede probar con la de propietario —ve
+     * todo por definición— y porque son TRES los actores acotados que las fases
+     * 1-8 construyeron: el vendedor de la casa, el tour center y el proveedor.
+     * Cada uno tiene su propia cadena de identidad y ninguna se ejercita con la
+     * cuenta de otro.
      *
-     * La del vendedor se DERIVA de la otra (`algo@x` → `algo+vendedor@x`) para
-     * que herede la misma garantía: si `E2E_EMAIL` es una dirección dedicada,
-     * esta también lo es, y la comprobación de «esta cuenta no es de nadie»
-     * corre sobre las dos.
+     * Las tres se DERIVAN de la de pruebas (`algo@x` → `algo+vendedor@x`) para que
+     * hereden su garantía: si `E2E_EMAIL` es una dirección dedicada, estas también
+     * lo son, y la comprobación de «esta cuenta no es de nadie» corre sobre las
+     * cuatro.
      */
     db.seed("auth_users", []);
     process.env.E2E_EMAIL = "e2e@e2e.invalid";
@@ -163,11 +165,60 @@ describe("la cuenta del E2E", () => {
     expect(creados.map((c) => c.email)).toEqual([
       "e2e@e2e.invalid",
       "e2e+vendedor@e2e.invalid",
+      "e2e+socio@e2e.invalid",
+      "e2e+proveedor@e2e.invalid",
     ]);
 
     const roles = membresias().map((m) => m.role).sort();
-    expect(roles).toEqual(["owner", "seller"]);
+    expect(roles).toEqual(["owner", "partner", "seller", "supplier"]);
     expect(membresias().every((m) => m.is_primary)).toBe(true);
+  });
+
+  it("LA DEL SOCIO va en la empresa DEL SOCIO, no en la del inquilino", async () => {
+    /**
+     * Es lo que hace que el enganche del token ponga `partner_id`: lo saca del
+     * `org_id` de la membresía cuando esa organización es de tipo `partner`. Con la
+     * membresía en el inquilino, el socio habría entrado como personal interno —con
+     * rango `partner` y sin acotar por nada—, que es el fallo más grave posible en
+     * esta prueba porque el E2E seguiría pasando.
+     */
+    db.seed("auth_users", []);
+    process.env.E2E_EMAIL = "e2e@e2e.invalid";
+
+    await globalSetup();
+
+    const socio = db.rows("organizations").find((o) => o.slug === "e2e-partner")!;
+    expect(socio.kind, "no es una organización de socio").toBe("partner");
+    expect(socio.tenant_org_id, "no cuelga del inquilino").toBe(E2E_ORG);
+
+    const suya = membresias().find((m) => m.role === "partner")!;
+    expect(suya.organization_id, "la membresía del socio no está en su empresa").toBe(socio._id);
+  });
+
+  it("y la del PROVEEDOR va en el inquilino, con su ficha apuntando a la cuenta", async () => {
+    /**
+     * Al contrario que el socio: el proveedor no es una organización, es una fila
+     * de `supplier` con `user_id`. El enganche la busca acotada a la empresa de la
+     * membresía, así que si la ficha no apunta a esta cuenta el token sale sin
+     * `supplier_id` y el portal no la deja entrar — y el E2E fallaría en el login,
+     * no en la afirmación, que es un diagnóstico muy peor.
+     */
+    db.seed("auth_users", []);
+    process.env.E2E_EMAIL = "e2e@e2e.invalid";
+
+    await globalSetup();
+
+    const proveedor = membresias().find((m) => m.role === "supplier")!;
+    expect(proveedor.organization_id, "la membresía del proveedor no está en el inquilino").toBe(E2E_ORG);
+
+    const fichas = db.rows("supplier");
+    const propia = fichas.find((f) => f.tax_id === "E2E-P1")!;
+    expect(propia.user_id, "la ficha no apunta a la cuenta del proveedor").toBe(proveedor.user_id);
+    expect(propia.status).toBe("active");
+    // Y la del vecino existe y NO está vinculada: sin un otro no hay aislamiento
+    // que probar.
+    const ajena = fichas.find((f) => f.tax_id === "E2E-P2")!;
+    expect(ajena.user_id ?? null).toBeNull();
   });
 
   it("la cuenta DERIVADA del vendedor pasa por la misma comprobación", async () => {

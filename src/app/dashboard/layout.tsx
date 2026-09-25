@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { getTenantContext, tenantCount, type TenantContext, esDeSocio } from "@/lib/tenant";
+import { getTenantContext, tenantCount, type TenantContext, esDeSocio, esDeProveedor } from "@/lib/tenant";
 import { countDecidableFor } from "@/lib/approvals";
 import { OPEN_TASK_STATUSES } from "@/lib/my-day";
 import { inboxFilter } from "@/lib/notify";
@@ -63,8 +63,25 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const ctx = await getTenantContext();
   if (!ctx) redirect("/login");
   if (!ctx.companyId) redirect("/onboarding");
-  // Los usuarios del portal nunca entran al ERP interno.
+  /**
+   * LOS ACTORES DE FUERA NUNCA ENTRAN AL ERP INTERNO.
+   *
+   * El socio estaba desviado desde la fase 4. El PROVEEDOR no: esta línea decía
+   * solo `esDeSocio`, y desde 0084 —que le dio sesión en la empresa— una cuenta de
+   * transportista que escribiera `/dashboard` cargaba el armazón interno entero,
+   * con su menú de finanzas, caja, comisiones y clientes.
+   *
+   * Los datos no salían: cada ruta y cada página de dentro lo rechazan una por
+   * una, y eso está probado. Pero el armazón le enseña el mapa completo de la
+   * operación de otra empresa, y el portal del proveedor nace con su guarda en el
+   * layout precisamente porque «el menú no es una barrera» — la norma vale en las
+   * dos direcciones.
+   *
+   * Se desvía a SU portal y no a `/login`: tiene sesión válida, lo que no tiene es
+   * sitio aquí.
+   */
   if (esDeSocio(ctx)) redirect("/portal");
+  if (esDeProveedor(ctx)) redirect("/proveedor");
   // La contraseña ya está, falta el código. No se cierra la sesión: obligar a
   // escribir la contraseña otra vez es lo que empuja a desactivar el segundo
   // factor. La API lo exige por su cuenta (`requireTenant`), así que esto no es

@@ -3471,3 +3471,79 @@ Y la tabla dice dos cosas más que no se preguntaban:
   sino código redundante: una rama que `instantAtWallTime` ya cubría (se borró) y
   un `.slice(0, 10)` que la comparación no necesita.
 - **Mutación: sesenta y uno, los sesenta y uno muertos.**
+
+### Ola 9.1 — el aislamiento de los tres actores, con un navegador de verdad
+- **EL PLAN SE ACABA EN LA FASE 8, Y LO QUE FALTABA NO ERA CÓDIGO NUEVO: ERA LA
+  PRUEBA DE QUE LO HECHO SE SOSTIENE.** Ocho fases de aislamiento multi-actor y,
+  hasta esta ola, **cinco pruebas de extremo a extremo en tres ficheros**, todas
+  del vendedor. Es T-001 del registro y el riesgo que el propio plan marca como
+  transversal.
+- **Lo que las 3380 pruebas unitarias NO comprueban.** Dicen que las reglas son
+  correctas y que las rutas las llaman. Ninguna ejercita la cadena que produce el
+  identificador —membresía → enganche del token → `auth-context` → la función de
+  ámbito— porque en todas ellas ese identificador sale de un `mock`. Si el
+  enganche dejara de acotar la ficha del proveedor a la empresa de la membresía, o
+  si `supplierSigueActivo` dejara de fallar cerrado, **las 3380 seguirían verdes**.
+- **UN HALLAZGO, Y ES DEL MISMO PATRÓN QUE 8.8.** El layout del panel decía
+  `if (esDeSocio(ctx)) redirect("/portal")` y nada más. Desde 0084 —que le dio
+  sesión al proveedor— una cuenta de transportista que escribiera `/dashboard`
+  **cargaba el armazón interno entero**, con su menú de finanzas, caja, comisiones
+  y clientes. Los datos no salían: cada ruta y cada página de dentro lo rechazan
+  una por una, y eso estaba probado. Pero el armazón le enseña el mapa completo de
+  la operación de otra empresa, y el portal del proveedor nace con guarda en el
+  layout precisamente porque «el menú no es una barrera» — la norma vale en las dos
+  direcciones. Ahora se desvía a su portal, y los dos specs lo comprueban
+  **tecleando la URL**, que es donde el menú no protege.
+- **Dos actores nuevos en el arranque, y su OTRO.** El aislamiento consiste en no
+  ver lo del vecino, así que hace falta un vecino: dos fichas de proveedor con dos
+  liquidaciones y dos servicios **sobre la misma salida**, y una venta de la
+  operadora que el socio no puede ver. Con una fila de cada cosa, los specs
+  pasarían con el filtro quitado.
+- **El socio va en la empresa DEL SOCIO; el proveedor, en el inquilino.** No es
+  simetría: el enganche pone `partner_id` desde el `org_id` de la membresía cuando
+  esa organización es de tipo socio, y `supplier_id` buscando `supplier.user_id`
+  acotado a la empresa de la membresía. Poner la membresía del socio en el
+  inquilino lo habría metido como **personal interno** con rango `partner` y sin
+  acotar por nada — y el E2E habría seguido pasando, que es el peor fallo posible
+  en una prueba de aislamiento.
+- **Las negativas se piden con un identificador QUE NO EXISTE, y eso prueba más.**
+  En el manifiesto y en el despacho la guarda corre antes de buscar la fila: con un
+  uuid de nadie la respuesta correcta sigue siendo 403 y no 404, así que el 403
+  demuestra que **no llega ni a mirar**. Y el uuid tiene que estar bien formado:
+  uno inválido daría 400 por otro motivo y la prueba pasaría sin comprobar nada.
+- **La afirmación central se hace sobre el cuerpo CRUDO.** El nombre, el teléfono
+  y la habitación del cliente sembrado no pueden aparecer en la respuesta de
+  `/api/proveedor/servicios`. Lo que importa es que el servidor no lo entregue, no
+  que la pantalla no lo pinte — y los tres literales se importan del arranque para
+  que no puedan divergir de lo sembrado: un spec que busca una cadena que nadie
+  sembró pasa siempre.
+- **Y lo negado se comprueba como NEGADO, no como lista vacía.** Una lista vacía
+  es indistinguible de «no hay nada»: el día que el filtro se rompiera, nadie lo
+  notaría.
+- **LA GUARDA QUE SOSTIENE UN ARRANQUE QUE NO SE PUEDE EJECUTAR AQUÍ.** Este
+  entorno no tiene Supabase, así que el sembrado se escribió sin poder correrlo, y
+  PostgREST anula el INSERT ENTERO por una sola columna que no exista. Se añadió
+  una guarda que reconstruye el esquema desde las migraciones y comprueba cada
+  columna que el arranque escribe —la misma maquinaria que protege al sembrador de
+  demostración—, **más una segunda que prohíbe `insert(variable)`**: un payload
+  pasado por variable quedaría sin comprobar en silencio, con la guarda en verde.
+  Se verificó que muerde rompiendo una columna a propósito.
+- **Y la comprobación que impide apropiarse de la cuenta de una persona vive en UN
+  solo sitio.** Las cuentas derivadas repetían el mismo bloque de diez líneas, que
+  es donde vive `assertExclusivoDelE2E`. Cuatro copias son cuatro sitios donde
+  olvidarla al añadir la quinta cuenta.
+- **Ocho guardas no mordieron a la primera, y las ocho eran la misma familia:
+  afirmaciones del spec que ninguna guarda unitaria cubría.** Dos repitieron el
+  defecto que ya ha morderme cinco veces en esta rama —la guarda encontraba su
+  texto en otro sitio del mismo fichero: el comentario de cabecera del spec
+  enumera las ocho puertas para explicar de dónde viene cada una, y las cuatro
+  constantes del arranque se declaran en el fichero que las siembra—. Una era una
+  `toContain` donde hacían falta dos coincidencias contadas. Ahora las guardas
+  comprueban **la línea que pide**, no la cadena que se menciona.
+- **Mutación: treinta y tres, los treinta y tres muertos.**
+- **LO QUE NO SE HA PODIDO EJECUTAR AQUÍ, y hay que decirlo:** este entorno no
+  tiene Supabase, así que los tres specs y el sembrado **no se han corrido ni una
+  vez**. Lo que sí está comprobado: los 16 tests se registran en Playwright, el
+  sembrado pasa contra el doble de Supabase en la prueba unitaria del arranque, y
+  cada columna que escribe existe en el esquema. La primera ejecución de verdad es
+  la del CI, que levanta su propia pila local.
