@@ -164,6 +164,34 @@ export const VISIBLE_AL_PROVEEDOR: Record<string, string[]> = {
    * nombre.
    */
   product: ["_id", "name", "duration_hours"],
+  /**
+   * SU DINERO (0089). Todo lo que hace falta para discutir un corte y nada
+   * más: quién lo aprobó y a quién se le asignó la disputa son nombres de
+   * empleados de la operadora, y no son asunto suyo. `commission_total`
+   * tampoco: eso es lo que la casa le paga a OTROS por vender el viaje.
+   */
+  settlement: [
+    "_id", "code", "period_from", "period_to", "currency", "status",
+    "base_total", "adjustments_total", "retention_isr", "retention_itbis",
+    "retention_total", "net_total", "pending_total", "paid_total",
+    "issued_at", "paid_at", "accepted_at",
+    "dispute_reason", "disputed_at",
+    "supplier_invoice_number", "supplier_ncf", "supplier_ncf_type", "supplier_invoice_at",
+    "supplier",
+  ],
+  /**
+   * Y la línea de lo que se le debe. Sin `product_cost` —de qué tarifa del
+   * catálogo salió es la contabilidad de costes de la operadora— y sin las
+   * notas internas, que es donde alguien escribe por qué se le rebajó algo.
+   */
+  booking_cost: [
+    "_id", "concept", "cost_type", "quantity", "unit_cost",
+    "amount", "confirmed_amount", "currency", "status",
+    "booking", "departure", "supplier", "settlement",
+  ],
+  // De la reserva, solo su referencia: es lo que permite decir «la del número
+  // tal». Ni el cliente, ni lo que pagó, ni por dónde entró.
+  booking: ["_id", "booking_number", "product"],
   // Su propia ficha, sin el saldo: lo que se le debe tiene su pantalla, con su
   // detalle y su forma de discutirlo.
   supplier: [

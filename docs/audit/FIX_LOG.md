@@ -3193,3 +3193,73 @@ Y la tabla dice dos cosas más que no se preguntaban:
   exige reconstruir las ventanas de esa salida, y es una ola propia. Hoy lo
   sigue detectando la mesa de despacho.
 - **Mutación: catorce, las catorce muertas.**
+
+### Fase 8.7 — el estado de cuenta del proveedor
+- **LA COSTURA YA ESTABA ANUNCIADA, Y POR ESO EL CAMBIO ES UNA LÍNEA.**
+  `settlement-access.ts` decía desde la fase 2: «el proveedor todavía no tiene
+  identidad en el sistema (llega en una fase posterior), así que hoy sus
+  liquidaciones solo las abre gerencia. Se declara igual para que el día que la
+  tenga no haya que volver a razonar esto». Desde 0084 la tiene. Añadir la rama
+  del proveedor a `assertSettlementBeneficiary` abrió **la pantalla, el PDF y la
+  disputa a la vez**, y ninguno se quedó atrás — que era exactamente el motivo
+  de que esa pregunta viviera en un solo sitio.
+- **Lo que sustituye.** Hoy el transportista se entera de su corte porque
+  alguien se lo dice por teléfono o le manda un PDF por WhatsApp. Si no está de
+  acuerdo, llama, y de esa llamada no queda nada. Si tiene que facturar, dicta
+  el número de comprobante y lo teclea otra persona.
+- **La conformidad es la otra mitad de la disputa.** `disputed` se podía poner
+  desde 0076; lo contrario —«esto está bien»— no. Y sin eso, el silencio de un
+  proveedor y su acuerdo se parecen demasiado: una liquidación aceptada se paga
+  sin volver a preguntar, y una que nadie contestó es una llamada pendiente.
+- **Aceptar no es aprobar, y son dos columnas.** `approved_at` es la operadora
+  diciendo «esto es lo que pago»; `accepted_at`, el proveedor diciendo «de
+  acuerdo». Confundirlas convierte una aprobación interna en un finiquito
+  firmado por quien no lo firmó.
+- **Y una liquidación PAGADA sí se puede aceptar**, igual que se puede disputar:
+  «me pagaste lo correcto» llega después del pago, y cerrarlo sería convertir el
+  pago en un finiquito unilateral. Lo que no se puede es aceptar una **en
+  disputa** — la conformidad taparía el desacuerdo sin resolverlo.
+- **EL NCF LO ESCRIBE QUIEN TIENE EL PAPEL DELANTE.** Un dígito de más en un
+  comprobante recibido es un 606 rechazado por la DGII semanas después, cuando ya
+  nadie se acuerda de qué factura era. `ncf.ts` valida la forma antes de
+  guardarlo, y **el tipo sale del propio número**: con dos campos —«tipo» y
+  «número»— un formulario admite que digan cosas distintas, y entonces el 606
+  sale con un tipo que no es el del comprobante.
+- **Y no se sobrescribe.** Un NCF es un documento fiscal emitido: corregirlo no
+  es editar un campo, es emitir una nota de crédito y otra factura. Si se
+  pudiera pisar, el 606 de la operadora diría un número y el papel del proveedor
+  otro — y el que se queda con el problema es quien declara.
+- **El mismo NCF del mismo proveedor dos veces no entra**, por índice único
+  parcial. Solo puede ser la misma factura contada dos veces, y eso se paga dos
+  veces. **Por proveedor y no global**: dos proveedores distintos sí pueden
+  emitir el mismo número, cada uno tiene su serie.
+- **LAS DOS POLÍTICAS SE ACUMULAN.** `settlement` ya filtraba por socio desde
+  0007. Reescribir la política con solo la condición del proveedor habría abierto
+  a cada tour center las liquidaciones de los demás — la clase de regresión que
+  no se ve hasta que alguien mira la pantalla de otro.
+- **Su dinero entró en su ámbito sin desnormalizar nada**, por primera vez en
+  toda la fase: `settlement` y `booking_cost` llevan `supplier_id` desde 0040.
+  **`payable` se queda fuera a propósito**: es el libro de la operadora —lo que
+  debe, a quién y cuándo vence— y el proveedor no tiene nada que hacer leyéndolo.
+- **La cabecera del estado de cuenta se recorta; las líneas ya estaban
+  mapeadas.** La fila de la liquidación viaja ENTERA desde la base, con quién la
+  aprobó, a quién se le asignó la disputa y `commission_total` —lo que la casa le
+  paga a OTROS por vender ese viaje— dentro. Pasarla por la lista blanca la deja
+  en lo que ese actor puede ver, y una columna que alguien añada mañana nace
+  fuera.
+- **Disputar NO se reimplementó.** La ruta del portal ofrece aceptar y facturar;
+  disputar sigue en `/api/settlements/:id/dispute`, que abre la misma
+  comprobación de beneficiario. Dos rutas para lo mismo son dos sitios donde vive
+  la regla, y el que se quede viejo es el que decide.
+- **Solo la factura avisa; la conformidad no.** Un aviso por cada conformidad
+  convierte la campana en ruido y a la semana nadie la abre. La factura sí: hay
+  algo que alguien tiene que hacer —registrar la compra para que el comprobante
+  llegue al 606— y sin aviso el NCF se queda en la liquidación.
+- **Tres guardas no mordieron a la primera, y las tres eran defectos de guarda:**
+  una `toMatch` donde hacían falta dos coincidencias contadas —el mutador quitó
+  el rango del GET y la guarda encontró el del POST—, un aviso cuyo contenido
+  nadie comprobaba, y **otra repetición de la lección de 8.3**: la prueba
+  comprobaba que no se colaran campos prohibidos, pero quien los excluía era el
+  MAPEO y no el recorte, así que pasaba idéntica con el recorte quitado. Ahora
+  hay guarda estructural de que el recorte va delante.
+- **Mutación: treinta y cinco, las treinta y cinco muertas.**

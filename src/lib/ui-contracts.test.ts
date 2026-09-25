@@ -3153,6 +3153,7 @@ describe("las notificaciones internas", () => {
     ["supplier_service_rejected", "src/lib/respuesta-proveedor.ts"],
     ["supplier_service_expired", "src/lib/respuesta-proveedor.ts"],
     ["supplier_service_tacit", "src/lib/respuesta-proveedor.ts"],
+    ["supplier_invoice_received", "src/lib/estado-cuenta-proveedor.ts"],
   ];
 
   it("las metas del vendedor IGNORAN el parámetro de la consulta", () => {
@@ -8780,5 +8781,223 @@ describe("el socio que integra por API", () => {
       if (!/writeRole:/.test(cuerpo)) sinRango.push(bloque[1]);
     }
     expect(sinRango, "recursos escribibles sin rango declarado").toEqual([]);
+  });
+
+  /* ════════════ Fase 8.7 · el estado de cuenta del proveedor */
+
+  const sql89 = () =>
+    read("supabase/migrations/0089_supplier_statement.sql").replace(/^\s*--.*$/gm, "");
+
+  it("EL PROVEEDOR ENTRA POR LA COSTURA QUE YA ESTABA ANUNCIADA", () => {
+    /**
+     * `assertSettlementBeneficiary` decía desde la fase 2: «el proveedor
+     * todavía no tiene identidad en el sistema; se declara igual para que el
+     * día que la tenga no haya que volver a razonar esto».
+     *
+     * Por eso el cambio es UNA LÍNEA y abre TRES caminos —la pantalla, el PDF y
+     * la disputa— sin que ninguno se quede atrás. Era exactamente el motivo de
+     * que esta pregunta viviera en un solo sitio.
+     */
+    const acceso = cuerpoDe("src/lib/settlement-access.ts");
+    expect(acceso).toMatch(/\(beneficiario\.kind === "supplier" && beneficiario\.id === ctx\.supplierId\)/);
+    // Y el tipo se sigue comprobando ANTES que el identificador: son uuid de
+    // tablas distintas, y comparar el de un proveedor con el de un vendedor no
+    // significa nada aunque coincidieran.
+    expect(acceso).toMatch(/beneficiario\.kind === "supplier" &&/);
+    expect(acceso, "el ámbito del proveedor se decide fuera de esta función")
+      .not.toMatch(/supplierScopeFor/);
+  });
+
+  it("LA CABECERA SE RECORTA, que es la fila que viaja entera", () => {
+    /**
+     * El mapeo de las LÍNEAS elige a mano lo que cada una enseña. La cabecera
+     * no: sale de la base tal cual, con quién la aprobó y a quién se le asignó
+     * la disputa dentro. Pasarla por la lista blanca del actor la deja en lo
+     * que ese actor puede ver, y una columna que alguien añada mañana nace
+     * fuera.
+     */
+    const servicio = cuerpoDe("src/lib/supplier-settlement-service.ts");
+    expect(servicio).toMatch(/const settlement = actor\s*\n?\s*\? projectRow\("settlement", actor, crudo\)/);
+    // Y la ruta le pasa el actor: sin eso, el recorte está escrito y no corre.
+    expect(cuerpoDe("src/app/api/settlements/[id]/statement/route.ts"))
+      .toMatch(/loadSupplierStatement\(ctx\.companyId, id, ctx\)/);
+  });
+
+  it("y la lista blanca le quita lo que no es suyo", () => {
+    const proy = cuerpoDe("src/lib/field-projection.ts");
+    const i = proy.indexOf("  settlement: [");
+    const lista = proy.slice(i, proy.indexOf("],", i));
+    expect(i, "la liquidación no está en la lista blanca del proveedor").toBeGreaterThan(-1);
+    for (const prohibido of ["approved_by", "confirmed_by", "dispute_assignee", "commission_total", "partner", "seller"]) {
+      expect(lista, `el proveedor vería ${prohibido}`).not.toContain(`"${prohibido}"`);
+    }
+    // Y lo que SÍ necesita para discutir el corte.
+    for (const suyo of ["net_total", "pending_total", "retention_total", "status", "accepted_at"]) {
+      expect(lista, `al proveedor le falta ${suyo}`).toContain(`"${suyo}"`);
+    }
+
+    const j = proy.indexOf("  booking_cost: [");
+    const linea = proy.slice(j, proy.indexOf("],", j));
+    expect(j, "la línea de coste no está en la lista blanca").toBeGreaterThan(-1);
+    // `product_cost` es la contabilidad de costes de la operadora; `notes`, el
+    // sitio donde alguien escribe por qué se le rebajó algo.
+    expect(linea).not.toContain('"product_cost"');
+    expect(linea).not.toContain('"notes"');
+  });
+
+  it("SU DINERO ENTRA EN SU ÁMBITO, y el libro de la operadora NO", () => {
+    /**
+     * `settlement` y `booking_cost` llevan `supplier_id` desde 0040, así que el
+     * ámbito sale por columna sin desnormalizar nada — la primera vez en toda
+     * la fase que no hizo falta.
+     *
+     * `payable` se queda fuera a propósito: es el libro de la operadora —lo que
+     * debe, a quién y cuándo vence— y el proveedor no tiene nada que hacer
+     * leyéndolo. Lo suyo es la liquidación, que es el documento con el que se
+     * discute.
+     */
+    const recursos = cuerpoDe("src/lib/resources.ts");
+    const i = recursos.indexOf("const SUPPLIER_OWNED_TABLES");
+    const lista = recursos.slice(i, recursos.indexOf("]);", i));
+    expect(lista).toContain('"settlement"');
+    expect(lista).toContain('"booking_cost"');
+    expect(lista, "el libro de cuentas por pagar no es suyo").not.toContain('"payable"');
+  });
+
+  it("LAS DOS POLÍTICAS SE ACUMULAN, no se sustituyen", () => {
+    /**
+     * `settlement` ya filtraba por socio desde 0007. Reescribir la política con
+     * solo la condición del proveedor habría abierto a cada tour center las
+     * liquidaciones de los demás — que es la clase de regresión que no se ve
+     * hasta que alguien mira la pantalla de otro.
+     */
+    const sql = sql89();
+    const i = sql.indexOf("create policy tenant_select on public.settlement");
+    const politica = sql.slice(i, sql.indexOf(";", i));
+    expect(i, "no se reescribe la política de liquidaciones").toBeGreaterThan(-1);
+    expect(politica).toMatch(/app\.can_read_partner\(partner_id\)/);
+    expect(politica).toMatch(/app\.can_read_supplier\(supplier_id\)/);
+    expect(sql).toMatch(/create policy tenant_select on public\.booking_cost[\s\S]{0,200}can_read_supplier\(supplier_id\)/);
+  });
+
+  it("ACEPTAR NO ES APROBAR, y son dos columnas", () => {
+    /**
+     * `approved_at` es la operadora diciendo «esto es lo que pago».
+     * `accepted_at` es el proveedor diciendo «de acuerdo». Confundirlas
+     * convierte una aprobación interna en un finiquito firmado por quien no lo
+     * firmó.
+     */
+    const sql = sql89();
+    expect(sql).toMatch(/add column if not exists accepted_at timestamptz/);
+    expect(sql).toMatch(/add column if not exists accepted_by uuid/);
+    const dominio = cuerpoDe("src/lib/conformidad-proveedor.ts");
+    // Una PAGADA se puede aceptar: «me pagaste lo correcto» llega después del
+    // pago, y cerrarlo sería convertir el pago en un finiquito unilateral.
+    const i = dominio.indexOf("export function vetoDeAceptacion");
+    const cuerpo = dominio.slice(i, dominio.indexOf("\n}", i));
+    expect(cuerpo, "una liquidación pagada deja de admitir conformidad").not.toContain('"paid"');
+    expect(cuerpo).toContain('estado === "disputed"');
+  });
+
+  it("EL MISMO NCF DOS VECES ES LA MISMA FACTURA DOS VECES", () => {
+    /**
+     * Y eso se paga dos veces. El índice es PARCIAL —casi todas las filas lo
+     * tienen nulo— y POR PROVEEDOR, porque dos proveedores distintos sí pueden
+     * emitir el mismo número: cada uno tiene su propia serie.
+     */
+    const sql = sql89();
+    expect(sql).toMatch(/create unique index if not exists settlement_supplier_ncf_uq\s*\n\s*on settlement \(organization_id, supplier_id, supplier_ncf\)\s*\n\s*where supplier_ncf is not null;/);
+  });
+
+  it("el NCF se valida ANTES de escribirlo, y el tipo sale del número", () => {
+    /**
+     * Un dígito de más es un 606 rechazado semanas después. Y con dos campos
+     * —«tipo» y «número»— un formulario admite que digan cosas distintas, y
+     * entonces el 606 sale con un tipo que no es el del comprobante.
+     */
+    const servicio = cuerpoDe("src/lib/estado-cuenta-proveedor.ts");
+    /**
+     * Y la lista del portal se recorta ANTES de mapear, como en 0086. El mapeo
+     * elige a mano, así que quitar el recorte no cambia nada HOY — y por eso la
+     * prueba de comportamiento no lo ve. Lo que protege el día que alguien
+     * añada un campo al mapeo es que el recorte esté delante.
+     */
+    expect(servicio, "la lista del portal se mapea sin recortar")
+      .toMatch(/return projectRows\("settlement", actor, crudas\)\.map\(/);
+    const valida = servicio.indexOf("validarNcf(entrada.ncf)");
+    const escribe = servicio.indexOf('supplier_ncf: validado.ncf');
+    expect(valida, "no se valida el NCF").toBeGreaterThan(-1);
+    expect(valida, "se escribe antes de validar").toBeLessThan(escribe);
+    expect(servicio).toMatch(/supplier_ncf_type: validado\.tipo,/);
+    expect(servicio, "el tipo se pide aparte y puede no coincidir con el número")
+      .not.toMatch(/entrada\.tipo/);
+  });
+
+  it("y las dos escrituras llevan su condición DENTRO de la sentencia", () => {
+    /**
+     * `accepted_at is null` y `supplier_ncf is null` van en el WHERE y no en un
+     * `if`: entre leer y escribir cabe otra petición, y dos toques del mismo
+     * botón no son dos conformidades ni dos facturas.
+     */
+    const servicio = cuerpoDe("src/lib/estado-cuenta-proveedor.ts");
+    expect(servicio).toMatch(/\.is\("accepted_at", null\)/);
+    expect(servicio).toMatch(/\.is\("supplier_ncf", null\)/);
+    // Y la conformidad no se cuela sobre una anulada o en disputa.
+    expect(servicio).toMatch(/\.neq\("status", "void"\)/);
+    expect(servicio).toMatch(/\.neq\("status", "disputed"\)/);
+  });
+
+  it("DISPUTAR NO SE REESCRIBE: ya existía desde 0076", () => {
+    /**
+     * La ruta del portal ofrece aceptar y facturar. Disputar sigue en
+     * `/api/settlements/:id/dispute`, que la abre la misma comprobación de
+     * beneficiario — escribir otra sería tener dos sitios donde vive la regla
+     * de cuándo se puede disputar, y el que se quede viejo es el que decide.
+     */
+    const ruta = cuerpoDe("src/app/api/proveedor/estado-de-cuenta/route.ts");
+    expect(ruta).toMatch(/const ACCIONES = new Set\(\["aceptar", "facturar"\]\);/);
+    expect(ruta, "la disputa se reimplementa en el portal").not.toMatch(/disputed|dispute_reason/);
+    // Y la pantalla llama a la ruta que ya existe.
+    expect(cuerpoDe("src/app/proveedor/estado-de-cuenta/page.tsx"))
+      .toMatch(/\/api\/settlements\/\$\{liq\._id\}\/dispute/);
+  });
+
+  it("la ruta se acota por la ficha, y el interno necesita rango de gerencia", () => {
+    /**
+     * Lo que se le paga a un proveedor es información de gerencia, no de
+     * despacho: el mismo rango que abre cualquier otra liquidación.
+     */
+    const ruta = cuerpoDe("src/app/api/proveedor/estado-de-cuenta/route.ts");
+    const i = ruta.indexOf("if (esDeProveedor(ctx)) {");
+    const rama = ruta.slice(i, ruta.indexOf("} else if (esInterno(ctx))", i));
+    expect(rama).toMatch(/supplierId = ctx\.supplierId \?\? null;/);
+    expect(rama, "el proveedor elige de quién es el estado de cuenta").not.toContain("supplier_id");
+    /**
+     * CONTADO, y son dos: la lectura y las dos escrituras. Con `toMatch`
+     * bastaba con que sobreviviera uno —el mutador quitó el del GET y la
+     * guarda encontró el del POST—, y entonces cualquier interno leería lo que
+     * la operadora le paga a cada proveedor.
+     */
+    expect(
+      (ruta.match(/requireAtLeast\(ctx, "manager"\)/g) || []).length,
+      "alguno de los dos caminos no exige rango de gerencia"
+    ).toBe(2);
+  });
+
+  it("la pantalla existe, está en el menú y NO decide los botones", () => {
+    /**
+     * `acciones` viene calculado del servidor. Si cada botón tuviera su
+     * condición escrita en el navegador, el día que cambie una regla habría que
+     * acordarse de cambiarla en dos sitios — y el que se quede viejo enseña un
+     * botón que el servidor rechaza.
+     */
+    expect(existe("src/app/proveedor/estado-de-cuenta/page.tsx")).toBe(true);
+    expect(PROVEEDOR_NAV.map((i) => i.href)).toContain("/proveedor/estado-de-cuenta");
+    const pantalla = cuerpoDe("src/app/proveedor/estado-de-cuenta/page.tsx");
+    expect(pantalla).toMatch(/liq\.acciones\.aceptar/);
+    expect(pantalla).toMatch(/liq\.acciones\.disputar/);
+    expect(pantalla).toMatch(/liq\.acciones\.facturar/);
+    expect(pantalla, "la pantalla decide por su cuenta cuándo se puede aceptar")
+      .not.toMatch(/liq\.status === "/);
   });
 });

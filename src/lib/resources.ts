@@ -1504,7 +1504,18 @@ const PARTNER_SHARED_TABLES = new Set([
  * El recorte de campos es lo que decide qué columnas de esas dos filas ve; esta
  * lista solo dice a qué filas llega.
  */
-const SUPPLIER_OWNED_TABLES = new Set(["departure_resource", "pickup_route"]);
+const SUPPLIER_OWNED_TABLES = new Set([
+  "departure_resource", "pickup_route",
+  // Y su dinero (0089). `settlement` lleva `supplier_id` desde 0040 y
+  // `booking_cost` también: el ámbito sale por columna sin desnormalizar nada,
+  // que es la primera vez en toda la fase que no hace falta.
+  //
+  // `payable` NO entra, y es deliberado: es el libro de la operadora —lo que
+  // debe, a quién y cuándo vence— y el proveedor no tiene nada que hacer
+  // leyéndolo. Lo suyo es la liquidación, que es el documento con el que se
+  // discute.
+  "settlement", "booking_cost",
+]);
 
 /**
  * Y lo que puede mirar sin ser suyo: el catálogo mínimo para entender el

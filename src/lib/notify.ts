@@ -386,6 +386,24 @@ export const NOTIFY_EVENTS = {
     link: () => "/dashboard/operaciones/despacho",
   },
 
+  /**
+   * EL PROVEEDOR REGISTRÓ SU FACTURA (0089).
+   *
+   * Este SÍ avisa, y la conformidad de al lado no: aquí hay algo que alguien
+   * tiene que hacer —registrar la compra para que el comprobante llegue al
+   * 606—, y sin aviso el NCF se queda en la liquidación y la declaración sale
+   * sin él. La audiencia es `admin` porque quien declara es administración, no
+   * el despacho.
+   */
+  supplier_invoice_received: {
+    type: "settlement",
+    audience: "admin",
+    title: (v) => `Factura de ${v.proveedor ?? "un proveedor"}`,
+    message: (v) =>
+      `NCF ${v.referencia ?? ""}. Regístrala como compra para que entre en el 606.`.trim(),
+    link: () => "/dashboard/proveedores/liquidaciones",
+  },
+
   /** Un comprobante fiscal anulado. Se justifica ante la DGII, no se esconde. */
   invoice_voided: {
     type: "alert",

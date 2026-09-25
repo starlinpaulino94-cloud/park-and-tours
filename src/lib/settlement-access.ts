@@ -48,12 +48,24 @@ export function beneficiaryOf(s: SettlementLike): { kind: BeneficiaryKind; id: s
 /**
  * Deja pasar a gerencia y al beneficiario; a nadie más.
  *
- * El proveedor todavía no tiene identidad en el sistema (llega en una fase
- * posterior), así que hoy sus liquidaciones solo las abre gerencia. Se declara
- * igual para que el día que la tenga no haya que volver a razonar esto.
+ * ────────────────────────────────────────────────────────────────────────────
+ * EL PROVEEDOR ENTRA POR LA COSTURA QUE YA ESTABA ANUNCIADA
+ *
+ * Esto decía, desde la fase 2: «el proveedor todavía no tiene identidad en el
+ * sistema (llega en una fase posterior), así que hoy sus liquidaciones solo las
+ * abre gerencia. Se declara igual para que el día que la tenga no haya que
+ * volver a razonar esto».
+ *
+ * Desde 0084 la tiene. Y por eso el cambio es UNA LÍNEA: la pantalla del
+ * estado de cuenta, el PDF y la disputa pasan los tres por aquí, así que se
+ * abren los tres a la vez y ninguno se queda atrás. Era exactamente el motivo
+ * de que esta pregunta viviera en un solo sitio.
  */
 export function assertSettlementBeneficiary(
-  ctx: Pick<TenantContext, "role" | "partnerId"> & { sellerId?: string | null },
+  ctx: Pick<TenantContext, "role" | "partnerId"> & {
+    sellerId?: string | null;
+    supplierId?: string | null;
+  },
   settlement: SettlementLike
 ): void {
   if (atLeast(ctx.role, "manager")) return;
@@ -79,7 +91,8 @@ export function assertSettlementBeneficiary(
    */
   const propio =
     (beneficiario.kind === "seller" && beneficiario.id === ctx.sellerId) ||
-    (beneficiario.kind === "partner" && beneficiario.id === ctx.partnerId);
+    (beneficiario.kind === "partner" && beneficiario.id === ctx.partnerId) ||
+    (beneficiario.kind === "supplier" && beneficiario.id === ctx.supplierId);
 
   if (!propio) throw new TenantError("Esta liquidación no es tuya", 403);
 }

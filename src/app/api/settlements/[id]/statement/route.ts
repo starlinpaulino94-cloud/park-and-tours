@@ -39,7 +39,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
      */
     const quien = beneficiaryOf(cabecera);
     if (quien?.kind === "seller") return ok(await loadSellerStatement(ctx.companyId, id));
-    return ok(await loadSupplierStatement(ctx.companyId, id));
+    /**
+     * Y la cabecera se recorta con la lista blanca del que mira: la fila viaja
+     * entera desde la base, con quién la aprobó y a quién se le asignó la
+     * disputa dentro.
+     */
+    return ok(await loadSupplierStatement(ctx.companyId, id, ctx));
   } catch (err) {
     return fail(err);
   }

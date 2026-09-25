@@ -7,6 +7,7 @@ import {
   type CostLine, type Retentions,
 } from "@/lib/supplier-settlement";
 import { newSettlementCode, newDocumentNumber } from "@/lib/codes";
+import { projectRow, type ProjectionCtx } from "@/lib/field-projection";
 import type { Booking, Settlement, Supplier } from "@/lib/types";
 import { refId } from "@/lib/types";
 
@@ -356,11 +357,29 @@ export interface StatementPayload {
  */
 export async function loadSupplierStatement(
   companyId: string,
-  settlementId: string
+  settlementId: string,
+  actor?: ProjectionCtx
 ): Promise<StatementPayload> {
-  const settlement = await tenantFindOne<Settlement & Record<string, unknown>>(
+  const crudo = await tenantFindOne<Settlement & Record<string, unknown>>(
     companyId, "settlement", settlementId, { supplier: true, partner: true, seller: true }
   );
+
+  /**
+   * LA CABECERA SE RECORTA, Y LAS LÍNEAS NO HACE FALTA.
+   *
+   * El mapeo de abajo elige a mano lo que cada línea enseña, así que una
+   * columna nueva en `booking_cost` no se cuela por ahí. La CABECERA, en
+   * cambio, viaja entera: es la fila tal cual sale de la base, con quién la
+   * aprobó y a quién se le asignó la disputa dentro. Pasarla por la lista
+   * blanca del actor (0085) la deja en lo que ese actor puede ver — y una
+   * columna que alguien añada mañana nace fuera.
+   *
+   * Sin actor no se recorta: quien llama desde dentro —la conciliación, el
+   * PDF de la operadora— necesita la fila completa.
+   */
+  const settlement = actor
+    ? projectRow("settlement", actor, crudo)
+    : crudo;
 
   const rows = await tenantQuery<Record<string, unknown> & { _id: string }>(
     companyId, "booking_cost", {

@@ -480,6 +480,19 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0089 — el estado de cuenta del proveedor",
+    // La conformidad es la otra mitad de la disputa: sin ella, el silencio de
+    // un proveedor y su acuerdo se parecen demasiado. Y el NCF lo escribe quien
+    // tiene el papel delante, no quien lo oye por teléfono.
+    columns: [
+      ["settlement", [
+        "accepted_at", "accepted_by",
+        "supplier_invoice_number", "supplier_ncf", "supplier_ncf_type",
+        "supplier_invoice_at", "supplier_invoice_by",
+      ]],
+    ],
+  },
+  {
     migration: "0088 — la hoja de ruta, acotada y con hora",
     // `loadRunSheet` devolvía nombres, habitaciones y teléfonos de cualquier
     // ruta a cualquiera con sesión. Acotarla exige saber de quién es cada

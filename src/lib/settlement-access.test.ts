@@ -65,6 +65,45 @@ describe("la guarda", () => {
     expect(() => assertSettlementBeneficiary(vendedor("v1"), { beneficiary_type: "supplier", supplier: "s1" })).toThrow();
   });
 
+  it("EL PROVEEDOR ABRE LA SUYA, que es la costura que estaba anunciada", () => {
+    /**
+     * Desde la fase 2 esta función decía: «el proveedor todavía no tiene
+     * identidad en el sistema; se declara igual para que el día que la tenga no
+     * haya que volver a razonar esto». Desde 0084 la tiene.
+     */
+    const proveedor = { role: "supplier" as const, partnerId: null, sellerId: null, supplierId: "s1" };
+    expect(() => assertSettlementBeneficiary(proveedor, { beneficiary_type: "supplier", supplier: "s1" }))
+      .not.toThrow();
+  });
+
+  it("y NO la del transportista de enfrente", () => {
+    const proveedor = { role: "supplier" as const, partnerId: null, sellerId: null, supplierId: "s1" };
+    expect(() => assertSettlementBeneficiary(proveedor, { beneficiary_type: "supplier", supplier: "s2" }))
+      .toThrow();
+  });
+
+  it("ni la de un vendedor o un socio, aunque el identificador coincidiera", () => {
+    /**
+     * El tipo manda sobre el identificador, y esto lo fija para el tercer
+     * actor: un uuid de proveedor comparado contra uno de vendedor no
+     * significa nada aunque fueran iguales.
+     */
+    const proveedor = { role: "supplier" as const, partnerId: null, sellerId: null, supplierId: "s1" };
+    expect(() => assertSettlementBeneficiary(proveedor, { beneficiary_type: "seller", seller: "s1" }))
+      .toThrow();
+    expect(() => assertSettlementBeneficiary(proveedor, { beneficiary_type: "partner", partner: "s1" }))
+      .toThrow();
+  });
+
+  it("y un proveedor SIN ficha no abre ninguna", () => {
+    // Los dos nulos: una cuenta de proveedor sin ficha vinculada y una
+    // liquidación cuyo identificador no llegó. `beneficiaryOf` cierra el
+    // segundo; este cierra el primero.
+    const sinFicha = { role: "supplier" as const, partnerId: null, sellerId: null, supplierId: null };
+    expect(() => assertSettlementBeneficiary(sinFicha, { beneficiary_type: "supplier", supplier: "s1" }))
+      .toThrow();
+  });
+
   it("un identificador NO se compara contra el de otra clase de beneficiario", () => {
     /**
      * Los uuid son de tablas distintas. Sin mirar el tipo, la comprobación se
