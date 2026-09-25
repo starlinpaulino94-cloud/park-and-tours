@@ -1188,3 +1188,105 @@ describe("la venta de un socio prepago", () => {
     expect(rpc).not.toHaveBeenCalled();
   });
 });
+
+/* ═════════════════════════════ la lista negra ═══════════════════════════ */
+
+describe("no se le vende a quien está en la lista negra", () => {
+  const vetado = (motivo: string | null = "Tres no-shows sin avisar en agosto") => {
+    db = fakeDb({
+      ...catalogo(),
+      customer: [
+        { _id: "cli-1", first_name: "Laura", last_name: "Gutiérrez", status: "active" },
+        { _id: "cli-veto", first_name: "Pedro", last_name: "Mora", status: "blacklist", blocked_reason: motivo },
+      ],
+    });
+  };
+
+  it("LA VENTA SE RECHAZA, y con el motivo delante", async () => {
+    /**
+     * `customer.status` admitía `blacklist` desde la primera migración y el
+     * formulario lo ofrecía en un desplegable con su etiqueta. Nadie lo leía:
+     * se marcaba a una persona y seguía comprando por las cuatro puertas.
+     *
+     * El motivo va en el mensaje porque quien vende tiene al cliente delante y
+     * decide en treinta segundos.
+     */
+    vetado();
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-veto",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow(/lista negra: Tres no-shows sin avisar/);
+  });
+
+  it("y se rechaza ANTES de escribir o de tocar la salida", async () => {
+    // Rechazar tarde obliga a compensar escrituras que no había que haber
+    // hecho, y deja tocados los contadores de una guagua que no vendió nada.
+    vetado();
+    const antes = db.row("departure", { _id: "sal-saona" })!;
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-veto",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow();
+
+    expect(db.rows("order")).toHaveLength(0);
+    expect(db.rows("booking")).toHaveLength(0);
+    const despues = db.row("departure", { _id: "sal-saona" })!;
+    expect(despues.pending_pax ?? 0).toBe(antes.pending_pax ?? 0);
+  });
+
+  it("el rechazo lleva su código, que es lo que traducen las puertas de fuera", async () => {
+    // Hacia fuera no viaja ni el motivo ni la palabra: la web y la API leen el
+    // código y contestan otra cosa.
+    vetado();
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-veto",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toMatchObject({ status: 409, code: "CUSTOMER_BLOCKED" });
+  });
+
+  it("sin motivo anotado se rechaza igual, y se dice lo que hay", async () => {
+    // Hay fichas de antes de que el motivo fuera obligatorio. El bloqueo vale;
+    // lo que no se hace es inventarse una explicación.
+    vetado(null);
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-veto",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow(/Este cliente está en la lista negra\.$/);
+  });
+
+  it("UNA FICHA INACTIVA SÍ COMPRA", async () => {
+    /**
+     * `inactive` es otra cosa: una ficha archivada, un duplicado que se retiró
+     * del listado. Bloquear ventas por eso convertiría una tarea de limpieza en
+     * un veto comercial sin que nadie lo decidiera.
+     */
+    db = fakeDb({
+      ...catalogo(),
+      customer: [{ _id: "cli-1", first_name: "Laura", status: "inactive" }],
+    });
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    });
+    expect(res.bookings).toHaveLength(1);
+  });
+
+  it("y un cliente normal, también", async () => {
+    vetado();
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    });
+    expect(res.bookings).toHaveLength(1);
+  });
+
+  it("una ficha que no aparece no la rechaza ESTA comprobación", async () => {
+    // Lo dirá la clave ajena al escribir, con su mensaje: dos comprobaciones
+    // diciendo lo mismo de dos maneras es peor que una.
+    vetado();
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-inventado",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).resolves.toBeTruthy();
+  });
+});

@@ -10234,3 +10234,91 @@ describe("el monedero se gasta con el cerrojo puesto (0091)", () => {
       .not.toMatch(/tipo: "consumption" \}, monedaDelMonedero\)/);
   });
 });
+
+describe("la lista negra del cliente dejó de ser una casilla", () => {
+  it("se comprueba en la PUERTA ÚNICA, no en una de las cuatro", () => {
+    /**
+     * El mostrador, la web, la API del socio y la OTA entran por
+     * `createOrderWithBookings`. Ponerlo en una dejaría tres abiertas, que es
+     * exactamente el error que se evitó con la coherencia salida↔producto.
+     */
+    const src = cuerpoDe("src/lib/booking-service.ts");
+    const at = src.indexOf("await assertClienteAtendible(companyId, input.customer_id);");
+    expect(at, "la comprobación desapareció de la puerta única").toBeGreaterThan(-1);
+    // Y antes de tocar el cupo: rechazar tarde deja tocados los contadores de
+    // una guagua que no vendió nada.
+    expect(src.indexOf("await assertCapacity(companyId, departureId, pax,")).toBeGreaterThan(at);
+    // En las puertas de fuera NO se repite: si alguien la quita de aquí, tiene
+    // que notarlo entero y no quedarse con tres cuartos de guarda.
+    expect(cuerpoDe("src/lib/public-booking-service.ts")).not.toMatch(/estaVetado|assertClienteAtendible/);
+  });
+
+  it("HACIA FUERA NO VIAJA NI EL MOTIVO NI LA PALABRA", () => {
+    /**
+     * El motor lanza con el motivo dentro porque quien vende lo necesita. Un
+     * desconocido que reserva por internet no tiene por qué saber que está en
+     * una lista, y decírselo por una respuesta HTTP es la peor manera: sin
+     * nadie delante que lo explique y con el texto listo para reenviarlo.
+     *
+     * Las dos puertas de fuera tienen que TRADUCIR el código, no reenviar el
+     * error. Sin esto, `fail(err)` devolvía el mensaje interno tal cual.
+     */
+    const web = cuerpoDe("src/app/api/public/[slug]/request/route.ts");
+    expect(web).toMatch(/\(err as \{ code\?: string \}\)\?\.code === CODIGO_VETADO/);
+    expect(web).toMatch(/mensajePublico\(page\.org\.phone\)/);
+
+    const api = cuerpoDe("src/app/api/v1/bookings/route.ts");
+    expect(api).toMatch(/\(err as \{ code\?: string \}\)\?\.code === CODIGO_VETADO/);
+    expect(api, "el motivo se reenvía al socio").not.toMatch(/lista negra/);
+
+    // Y el texto público no nombra la lista por ninguna de sus formas.
+    const puro = cuerpoDe("src/lib/lista-negra.ts");
+    const i = puro.indexOf("export function mensajePublico");
+    expect(puro.slice(i, i + 400)).not.toMatch(/lista negra|bloquead|blacklist/i);
+  });
+
+  it("bloquear pide MOTIVO y rango de gerencia", () => {
+    /**
+     * Sin motivo, la lista deja de servir en seis meses: el cajero ve
+     * «bloqueado» con la persona delante y o lo levanta —y no valía nada— o lo
+     * sostiene sin saber por qué.
+     *
+     * Y `manager` porque el rango de vender lo tiene también el vendedor de un
+     * tour center: sin esto, el empleado de una agencia podía vetarle un cliente
+     * a la empresa que le da el producto.
+     */
+    const ruta = cuerpoDe("src/app/api/customers/[id]/lista-negra/route.ts");
+    expect(ruta).toMatch(/requireAtLeast\(ctx, "manager"\)/);
+    expect(ruta).toMatch(/if \(bloquear && !motivoValido\(motivo\)\)/);
+    expect(ruta).toMatch(/assertSameOriginMutation\(req\)/);
+    expect(ruta).toMatch(/action: bloquear \? "customer_blacklisted" : "customer_unblacklisted"/);
+    expect(ruta, "el bloqueo de un cliente no es un evento rutinario").toMatch(/severity: "warning"/);
+  });
+
+  it("y el desplegable de la ficha dejó de ser una puerta", () => {
+    /**
+     * `status` sigue entre los campos editables —`active` ↔ `inactive` es
+     * trabajo normal de quien ordena el directorio— pero el paso POR la lista
+     * negra se cierra en los dos sentidos, y en el alta también: sin eso
+     * bastaba con crear la ficha ya bloqueada.
+     */
+    const put = cuerpoDe("src/app/api/erp/[resource]/[id]/route.ts");
+    const post = cuerpoDe("src/app/api/erp/[resource]/route.ts");
+    expect(put).toMatch(/const puerta = puertaEquivocada\(/);
+    expect(post).toMatch(/const puerta = puertaEquivocada\(def\.table, sellado, null\)/);
+    expect(put).toMatch(/if \(puerta\) throw new TenantError\(puerta, 409\)/);
+    expect(post).toMatch(/if \(puerta\) throw new TenantError\(puerta, 409\)/);
+  });
+
+  it("el motivo es obligatorio TAMBIÉN en la base", () => {
+    // La aplicación puede exigirlo hoy; el día que aparezca un segundo camino
+    // —o que alguien escriba por SQL— queda una ficha bloqueada que nadie sabe
+    // explicar. Y las que ya estaban marcadas reciben un motivo que dice la
+    // verdad, en vez de desbloquearlas para que entre el `check`.
+    const sql = read("supabase/migrations/0092_customer_blacklist.sql");
+    expect(sql).toMatch(/add constraint customer_blacklist_needs_reason/);
+    expect(sql).toMatch(/check \(status <> 'blacklist' or \(blocked_reason is not null and btrim\(blocked_reason\) <> ''\)\)/);
+    expect(sql, "el check no puede entrar si quedan fichas viejas sin motivo")
+      .toMatch(/update customer[\s\S]{0,400}?where status = 'blacklist'/);
+  });
+});

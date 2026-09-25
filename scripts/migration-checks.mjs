@@ -480,6 +480,21 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0092 — la lista negra del cliente",
+    // `customer.status` admitía `blacklist` desde la primera migración y nadie
+    // lo leía. El motivo va en la ficha y no solo en la bitácora porque el
+    // cajero decide con el cliente delante: sin el motivo, o levanta el bloqueo
+    // —y no valía nada— o lo sostiene sin saber por qué.
+    columns: [
+      ["customer", ["blocked_reason", "blocked_at", "blocked_by"]],
+    ],
+    // El `check` que hace obligatorio el motivo NO se comprueba aquí: este
+    // verificador habla con PostgREST, que acepta la columna y solo rechazaría
+    // el valor al escribirlo. Lo comprueba
+    // `supabase/editor/0092_parte_2_verificacion.sql`, que consulta
+    // `pg_constraint` y devuelve una fila legible.
+  },
+  {
     migration: "0090 — el manifiesto sale solo, y sale recortado",
     // El documento no se guarda: se compone al entregar. Sin decir en la fila
     // para quién se recorta, el despachador no sabría qué corte generar y

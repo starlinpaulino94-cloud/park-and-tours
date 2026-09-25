@@ -5,6 +5,7 @@ import { supabaseService } from "@/lib/supabase/service";
 import { subscriptionState } from "@/lib/plan";
 import { readPublicRequest, REQUEST_PROBLEM_MESSAGE } from "@/lib/public-booking";
 import { createPublicBooking, loadPublicPage } from "@/lib/public-booking-service";
+import { CODIGO_VETADO } from "@/lib/lista-negra";
 import { writeAudit } from "@/lib/audit";
 import { notify } from "@/lib/notify-service";
 import { mustWrite } from "@/lib/supabase/io";
@@ -105,9 +106,26 @@ export async function POST(req: NextRequest) {
      * y su propia pantalla de reservas. `caller.partnerId` llevaba ahí desde
      * que existe la tabla de llaves, y solo se usaba para la bitácora.
      */
-    const result = await createPublicBooking(
-      page, parsed.request, caller.company, {}, caller.partnerId
-    );
+    let result;
+    try {
+      result = await createPublicBooking(
+        page, parsed.request, caller.company, {}, caller.partnerId
+      );
+    } catch (err) {
+      // Igual que en la web: el socio que integra no es el cliente, pero su
+      // sistema guarda lo que le contestemos y se lo puede enseñar. Le decimos
+      // que no se puede y con quién hablar, no por qué.
+      if ((err as { code?: string })?.code === CODIGO_VETADO) {
+        return Response.json({
+          error: {
+            message: "Esta reserva no se puede registrar en línea. Contacta con la operadora.",
+            code: "unavailable",
+            status: 409,
+          },
+        }, { status: 409 });
+      }
+      throw err;
+    }
 
     // La clave queda pegada a la venta: es lo que hace que el reintento
     // devuelva esto mismo en vez de crear otra.

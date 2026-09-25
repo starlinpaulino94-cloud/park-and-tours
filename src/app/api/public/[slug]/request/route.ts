@@ -3,6 +3,7 @@ import { fail, readJson } from "@/lib/api-response";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { loadPublicPage, createPublicBooking } from "@/lib/public-booking-service";
 import { readPublicRequest, confirmationNote, REQUEST_PROBLEM_MESSAGE } from "@/lib/public-booking";
+import { CODIGO_VETADO, mensajePublico } from "@/lib/lista-negra";
 import { writeAudit } from "@/lib/audit";
 import { notify } from "@/lib/notify-service";
 import { flushOutboxAfterResponse } from "@/lib/messaging/flush";
@@ -89,10 +90,34 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
      * para buscar hechos ya escritos. Lo peor que puede hacer una cookie
      * inventada es no atribuir nada.
      */
-    const result = await createPublicBooking(page, request, company, {
-      visitorId: req.cookies.get(VISITOR_COOKIE)?.value ?? null,
-      referralSlug: req.cookies.get(REFERRAL_COOKIE)?.value ?? null,
-    });
+    let result;
+    try {
+      result = await createPublicBooking(page, request, company, {
+        visitorId: req.cookies.get(VISITOR_COOKIE)?.value ?? null,
+        referralSlug: req.cookies.get(REFERRAL_COOKIE)?.value ?? null,
+      });
+    } catch (err) {
+      /**
+       * EL CLIENTE VETADO NO SE ENTERA POR AQUÍ.
+       *
+       * El motor lanza con el motivo dentro, porque quien vende en el mostrador
+       * lo necesita. Hacia fuera no viaja ni el motivo ni la palabra: un
+       * desconocido que reserva por internet no tiene por qué saber que está en
+       * una lista, y decírselo por una respuesta HTTP es la peor manera —sin
+       * nadie delante que lo explique y con el texto listo para reenviarlo—.
+       *
+       * Se traduce al mismo mensaje que ya usa la página cuando el plan no
+       * admite reservas: la venta se salva por el teléfono, que es donde esa
+       * conversación se puede tener.
+       */
+      if ((err as { code?: string })?.code === CODIGO_VETADO) {
+        return NextResponse.json({
+          ok: false,
+          error: { message: mensajePublico(page.org.phone), code: "unavailable" },
+        }, { status: 409 });
+      }
+      throw err;
+    }
 
     await writeAudit({
       companyId: page.org.id,

@@ -32,6 +32,7 @@ import type {
   Booking, Channel, Currency, Departure, Order, Partner, Product, Seller,
 } from "@/lib/types";
 import { refId, isTerminalBookingStatus } from "@/lib/types";
+import { estaVetado, mensajeInterno, CODIGO_VETADO, type ClienteVetable } from "@/lib/lista-negra";
 
 /**
  * Booking service — the single write-path for sales.
@@ -377,6 +378,51 @@ async function assertSalidaDelProducto(companyId: string, input: CreateOrderInpu
   }
 }
 
+/**
+ * NO SE LE VENDE A QUIEN ESTÁ EN LA LISTA NEGRA.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LO QUE PASABA
+ *
+ * `customer.status` admite `blacklist` desde la primera migración y el
+ * formulario del directorio lo ofrece en un desplegable con su etiqueta. Nadie
+ * lo leía: se marcaba a una persona y seguía comprando por el mostrador, por la
+ * web, por la API del socio y por la OTA exactamente igual.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * DÓNDE VA
+ *
+ * Aquí, en la puerta única, por lo mismo que la coherencia salida↔producto: las
+ * cuatro puertas entran por este sitio, y ponerlo en una dejaría tres abiertas.
+ *
+ * Cuesta una lectura por clave primaria en cada venta, y es deliberado. Una
+ * lista negra que solo se comprueba «cuando se puede» es la casilla de antes con
+ * otro nombre.
+ *
+ * Y va ANTES de tocar cupos, crédito y plazas: rechazar tarde obliga a compensar
+ * escrituras que no había que haber hecho.
+ */
+async function assertClienteAtendible(companyId: string, customerId: string | null | undefined): Promise<void> {
+  if (!customerId) return;
+  const [cliente] = await tenantQuery<ClienteVetable & { _id?: string }>(companyId, "customer", {
+    _filter: { _id: customerId }, _limit: 1,
+  });
+  // Que la ficha no aparezca no lo decide esta comprobación: lo dirá la clave
+  // ajena al escribir, con su mensaje. Aquí lo desconocido se deja pasar.
+  if (!cliente || !estaVetado(cliente)) return;
+
+  throw Object.assign(new Error(mensajeInterno(cliente)), {
+    status: 409,
+    /**
+     * El código es lo que hace que la web y la API puedan traducir en vez de
+     * reenviar. Hacia fuera no viaja ni el motivo ni la palabra: un desconocido
+     * que reserva por internet no tiene por qué enterarse de que está en una
+     * lista, y decírselo por una respuesta HTTP es la peor manera de hacerlo.
+     */
+    code: CODIGO_VETADO,
+  });
+}
+
 /** La salida más próxima del pedido, que acota hasta cuándo se retiene la plaza. */
 async function firstDeparture(companyId: string, input: CreateOrderInput): Promise<string | null> {
   const ids = input.items
@@ -544,6 +590,10 @@ export async function createOrderWithBookings(
     const desajuste = desajusteDeAtribucion(fichaDelVendedor ?? null, input.partner_id ?? null);
     if (desajuste) throw Object.assign(new Error(desajuste), { status: 400 });
   }
+
+  // Y no se le vende a quien está en la lista negra. Antes que nada: es la
+  // única de estas comprobaciones que puede acabar con el cliente delante.
+  await assertClienteAtendible(companyId, input.customer_id);
 
   /**
    * Y la salida de cada línea tiene que ser de su producto.

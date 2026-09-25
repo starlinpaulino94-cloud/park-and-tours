@@ -4102,3 +4102,73 @@ cuenta: es que entre comprobar y descontar pasa toda la venta.
   y la venta sigue en pie sin descontar — o sea que el prepago deja de
   descontar hasta que la migración esté puesta. Va en la misma tanda que 0088,
   0089 y 0090.
+
+### Ola 9.9 — la lista negra del cliente: era una casilla (migración 0092)
+
+Lo que la ola 9.4 encontró de paso y dejó anotado. No es un arreglo: es que la
+función no estaba construida, y de la peor manera posible.
+
+- **`customer.status` ADMITE `blacklist` DESDE LA PRIMERA MIGRACIÓN**, y el
+  formulario del directorio lo ofrece en un desplegable con su etiqueta «Lista
+  negra». Lo que no existía en ninguna parte del sistema era alguien que lo
+  **leyera**: se marcaba a una persona y seguía comprando por el mostrador, por
+  la web, por la API del socio y por la OTA exactamente igual. De las casillas
+  que no hacen nada, esta es de las peores — quien la marca se queda convencido
+  de que hizo algo, y deja de vigilar.
+- **Se comprueba en la puerta única**, `createOrderWithBookings`, por lo mismo
+  que la coherencia salida↔producto de la ola 9.4: las cuatro puertas entran por
+  ahí y ponerlo en una dejaría tres abiertas. Cuesta una lectura por clave
+  primaria en cada venta y es deliberado: una lista negra que solo se comprueba
+  «cuando se puede» es la casilla de antes con otro nombre. Va **antes** de
+  tocar cupos, crédito y plazas.
+- **HACIA FUERA NO VIAJA NI EL MOTIVO NI LA PALABRA.** El motor lanza con el
+  motivo dentro porque quien vende tiene al cliente delante y decide en treinta
+  segundos. Pero un desconocido que reserva por internet no tiene por qué
+  enterarse de que está en una lista, y decírselo por una respuesta HTTP es
+  además la peor manera de hacerlo: sin nadie delante que lo explique y con el
+  texto listo para reenviarlo. La web y la API del socio **traducen** el código
+  —`CUSTOMER_BLOCKED`— al mismo mensaje que ya usa la página cuando el plan no
+  admite reservas: no se pudo completar en línea, y con quién hablar.
+- **QUÉ BLOQUEA Y QUÉ NO.** Bloquea **vender**: una reserva nueva a nombre de
+  esa ficha. No toca nada de lo que ya existe —sus reservas siguen en pie, se le
+  cobra lo que debe, se le cancela si hay que cancelar y viaja si ya pagó—. Una
+  lista negra que cancelara el pasado sería una forma de perder dinero y de
+  dejar gente tirada en un hotel. Y `inactive` **no** veta: es una ficha
+  archivada, y bloquear ventas por eso convertiría una tarea de limpieza en un
+  veto comercial que nadie decidió.
+- **EL MOTIVO ES OBLIGATORIO, Y VIVE EN LA FICHA.** Una lista negra sin motivo
+  deja de servir en seis meses: el cliente aparece en el mostrador, el cajero ve
+  «bloqueado» y o lo levanta —y el bloqueo no valía nada— o lo sostiene sin
+  saber por qué, que es peor. Por eso va en la ficha y no solo en la bitácora:
+  la bitácora sirve para reconstruir qué pasó, no para consultarla con un
+  cliente esperando. Y hay un `check` en la base, porque la aplicación puede
+  exigirlo hoy y el día que aparezca un segundo camino vuelve a quedar una ficha
+  bloqueada que nadie sabe explicar. Las fichas que ya estaban marcadas reciben
+  un motivo que dice la verdad —que no se anotó ninguno— en vez de
+  desbloquearlas para que el `check` entre.
+- **Y NO LO DECIDE QUIEN VENDE.** La puerta es
+  `PUT /api/customers/:id/lista-negra`, con rango de `manager`: el rango de
+  vender lo tiene también el vendedor de un tour center desde 5.1, así que sin
+  esto el empleado de una agencia podía vetarle un cliente a la empresa que le
+  da el producto. El desplegable de la ficha deja de ser una puerta en los dos
+  sentidos —y también al crear, porque nacer bloqueado también es bloquear—
+  mientras `active` ↔ `inactive` sigue siendo trabajo normal de quien ordena el
+  directorio.
+- **Al levantar el bloqueo, el motivo se borra.** Dejarlo dejaría una ficha
+  activa con un texto que dice por qué está bloqueada, y el siguiente que la
+  abra se queda sin saber si lo está o no. Lo que queda del episodio son los dos
+  movimientos de la bitácora, con sus dos motivos.
+- **Tres mutaciones sobrevivieron a la primera.** Dos eran comportamiento de la
+  ruta que ninguna prueba ejecutaba —qué se escribe al levantar el bloqueo y qué
+  pasa al bloquear a quien ya está bloqueado—, y se cerraron con una prueba de
+  ruta de verdad, con el precedente del ámbito del vendedor. La tercera fue más
+  interesante: la comprobación «si no viene el campo, no hay nada que mirar»
+  estaba **dos veces** —en `puertaEquivocada` y en `cambioDeVeto`, en el mismo
+  fichero y a tres funciones—. Eso no es defensa en profundidad, es una segunda
+  copia de la misma regla, y de esas la que se queda desactualizada es siempre
+  la que nadie mira. Se quitó la copia en vez de sujetarla con una guarda.
+- **Mutación: veintitrés, las veintitrés muertas.**
+- **Pendiente de ejecutar en la base:** `supabase/editor/0092_parte_1.sql` y
+  después `0092_parte_2_verificacion.sql` (cuatro filas, todas OK). Hasta que
+  estén, bloquear desde la ruta falla al escribir las tres columnas nuevas —el
+  rechazo de ventas sí funciona, porque solo lee `status`—.

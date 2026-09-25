@@ -244,6 +244,8 @@ export interface Customer extends BaseRecord {
   tags?: string[]; source?: string;
   total_spent?: number; bookings_count?: number;
   status?: "active" | "inactive" | "blacklist";
+  /** Por qué está en la lista negra, cuándo y quién (0092). */
+  blocked_reason?: string | null; blocked_at?: string | null; blocked_by?: string | null;
   preferences?: string; notes?: string;
   booking?: Booking[]; order?: Order[];
   _count?: Record<string, number>;

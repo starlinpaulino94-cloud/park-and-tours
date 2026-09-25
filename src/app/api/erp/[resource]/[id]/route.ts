@@ -12,6 +12,7 @@ import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { assertModule } from "@/lib/plan-service";
 import { assertPayloadAssignable } from "@/lib/hr-service";
 import { assertPayloadVehicleUsable } from "@/lib/flota-service";
+import { puertaEquivocada } from "@/lib/lista-negra";
 import { assertPayloadSinChoque } from "@/lib/choque-de-recurso";
 import { isSellerScoped } from "@/lib/seller-scope";
 import { assertRowInScope } from "@/lib/row-scope";
@@ -125,6 +126,24 @@ export async function PUT(req: NextRequest, { params }: Params) {
       if (bloqueados.length > 0) throw new TenantError(protectedFieldMessage(bloqueados), 403);
       await assertSellerUserLinkable(ctx.companyId, payload, id);
     }
+
+    /**
+     * LA LISTA NEGRA NO SE CAMBIA DESDE EL DESPLEGABLE.
+     *
+     * `status` está entre los campos editables del cliente y el formulario del
+     * directorio lo ofrece con su etiqueta «Lista negra». Por ahí se bloqueaba a
+     * una persona con un clic: sin motivo, sin que constara quién fue y con
+     * rango de vendedor —que también tiene el empleado de un tour center—.
+     *
+     * Se cierra aquí en vez de quitar `status` de los campos editables porque
+     * `active` ↔ `inactive` es trabajo normal de quien ordena el directorio. Lo
+     * que se cierra es el paso POR la lista negra, en los dos sentidos.
+     */
+    const puerta = puertaEquivocada(def.table, payload, await (async () => {
+      if (def.table !== "customer" || !("status" in payload)) return null;
+      return tenantFindOne<Record<string, unknown>>(ctx.companyId, def.table, id);
+    })());
+    if (puerta) throw new TenantError(puerta, 409);
 
     // 0051 — la misma guarda que al crear. Sin ella, bastaba con crear el turno
     // vacío y asignarle después la persona para saltarse el bloqueo entero.

@@ -61,6 +61,8 @@ export const ACCION: Record<string, string> = {
   record_deleted: "Registro eliminado",
   file_uploaded: "Archivo subido",
   company_updated: "Empresa actualizada",
+  customer_blacklisted: "Cliente en lista negra",
+  customer_unblacklisted: "Cliente fuera de la lista negra",
   workspace_switched: "Cambio de empresa",
   impersonation_started: "Suplantación iniciada",
   impersonation_stopped: "Suplantación finalizada",

@@ -16,6 +16,7 @@ import { protectedFieldChanges, protectedFieldMessage } from "@/lib/field-write-
 import { assertSellerUserLinkable } from "@/lib/seller-identity";
 import { assertPayloadAssignable } from "@/lib/hr-service";
 import { assertPayloadVehicleUsable } from "@/lib/flota-service";
+import { puertaEquivocada } from "@/lib/lista-negra";
 import { assertPayloadSinChoque } from "@/lib/choque-de-recurso";
 
 /** Generic tenant-scoped list endpoint: GET /api/erp/:resource */
@@ -150,6 +151,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ res
     // vencida se para AQUÍ. La pantalla puede pintarlo en rojo; lo que impide
     // que el guía suba al bote es esta línea, porque por aquí pasan el turno,
     // el recurso de la salida y la ruta de recogida.
+    // Y nacer bloqueado también es bloquear: sin esto bastaba con crear la
+    // ficha ya en la lista negra para saltarse la puerta entera.
+    const puerta = puertaEquivocada(def.table, sellado, null);
+    if (puerta) throw new TenantError(puerta, 409);
+
     await assertPayloadAssignable(ctx.companyId, def.table, sellado);
 
     /**
