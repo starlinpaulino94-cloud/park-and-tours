@@ -248,3 +248,100 @@ describe("la semana del equipo", () => {
     expect(luis.expiring).toBe(1);
   });
 });
+
+
+/**
+ * LA NÓMINA DE UNA EMPRESA GRANDE (ola 9.13).
+ *
+ * `generatePayrollRun` leía los marcajes con `_limit: 5000`. Un parque con
+ * trescientas personas y dos marcajes diarios llega a cinco mil en nueve días,
+ * y lo que quedaba fuera NO SE PAGABA: no daba error, no salía en la corrida y
+ * se quedaba con `payroll_run_id` nulo, así que volvería el mes siguiente… si
+ * alguien mira un período ya cerrado. Nadie lo mira.
+ *
+ * `releasePayrollRun` tenía el mismo tope, y ahí la cabecera de la propia
+ * función ya avisaba del desastre: un marcaje pegado a una corrida anulada «no
+ * se pagaría nunca», porque la siguiente solo mira los de `payroll_run_id`
+ * nulo. El tope hacía que eso ocurriera en silencio.
+ */
+describe("una corrida con más de cinco mil marcajes", () => {
+  const RUN = {
+    _id: "run-1", status: "draft", period_start: "2026-09-01", period_end: "2026-09-30",
+    period_type: "monthly",
+    sfs_employee_pct: 3.041, afp_employee_pct: 2.87,
+    sfs_employer_pct: 7.09, afp_employer_pct: 7.1, risk_employer_pct: 1.2,
+  };
+  const EMPLEADO = {
+    _id: "s1", full_name: "Ana", salary_type: "monthly", base_salary: 40_000,
+    applies_social_security: true, currency: "dop",
+  };
+
+  /** Marcajes de un día distinto cada uno, para que ninguno se descarte. */
+  function marcajes(cuantos: number) {
+    return Array.from({ length: cuantos }, (_, i) => {
+      const dia = String(1 + (i % 30)).padStart(2, "0");
+      return {
+        _id: `m-${String(i).padStart(5, "0")}`,
+        staff: `s${i % 300}`,
+        attendance_date: `2026-09-${dia}`,
+        clock_in: `2026-09-${dia}T08:00:00Z`,
+        clock_out: `2026-09-${dia}T17:00:00Z`,
+        break_min: 60, status: "present",
+      };
+    });
+  }
+
+  /**
+   * Un `tenantQuery` que respeta la VENTANA.
+   *
+   * Es lo que hace honesta esta prueba: devolviendo siempre las mismas filas,
+   * una lectura que no avanza su cursor habría salido en verde.
+   */
+  function porVentanas(filas: Record<string, unknown>[]) {
+    tenantFindOne.mockImplementation((_o: string, table: string) =>
+      Promise.resolve(table === "payroll_run" ? RUN : EMPLEADO)
+    );
+    tenantQuery.mockImplementation((_o: string, table: string, opts: Record<string, number>) => {
+      if (table !== "attendance") return Promise.resolve([]);
+      const salto = Number(opts?._offset ?? 0);
+      const limite = Number(opts?._limit ?? 50);
+      return Promise.resolve(filas.slice(salto, salto + limite));
+    });
+    tenantCreate.mockResolvedValue({ _id: "line-1" });
+    tenantUpdate.mockResolvedValue({});
+  }
+
+  it("reclama TODOS los marcajes del período, no los cinco mil primeros", async () => {
+    porVentanas(marcajes(5300));
+
+    await generatePayrollRun("org", "u1", "run-1");
+
+    const reclamados = tenantUpdate.mock.calls.filter((c) => c[1] === "attendance");
+    // Con el tope, trescientos marcajes se quedaban sin pagar y sin avisar.
+    expect(reclamados).toHaveLength(5300);
+    expect(new Set(reclamados.map((c) => c[2])).size).toBe(5300);
+  });
+
+  it("y anular la corrida los suelta TODOS: si no, esas horas no se pagan nunca", async () => {
+    const filas = marcajes(5300).map((m) => ({ ...m, payroll_run_id: "run-1" }));
+    tenantQuery.mockImplementation((_o: string, table: string, opts: Record<string, number>) => {
+      if (table !== "attendance") return Promise.resolve([]);
+      const salto = Number(opts?._offset ?? 0);
+      const limite = Number(opts?._limit ?? 50);
+      return Promise.resolve(filas.slice(salto, salto + limite));
+    });
+    tenantUpdate.mockResolvedValue({});
+
+    const sueltos = await releasePayrollRun("org", "run-1");
+
+    expect(sueltos).toBe(5300);
+    const liberados = tenantUpdate.mock.calls.filter((c) => c[1] === "attendance");
+    expect(liberados).toHaveLength(5300);
+    for (const l of liberados.slice(0, 5)) expect(l[3]).toEqual({ payroll_run_id: null });
+  });
+
+  it("si de verdad no se pueden leer, no se genera media nómina", async () => {
+    porVentanas(marcajes(10_600));
+    await expect(generatePayrollRun("org", "u1", "run-1")).rejects.toThrow(/no se pudo leer/i);
+  });
+});

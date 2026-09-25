@@ -13,6 +13,7 @@ import {
   type DispatchConflict, type PlannedRoute, type ResourceUse,
 } from "@/lib/dispatch";
 import { refId, BOOKING_TERMINAL_STATES } from "@/lib/types";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 /**
  * El despacho, fuera de la ruta HTTP.
@@ -87,10 +88,28 @@ export async function loadDispatch(
   const { start: from, end: to } = dayBounds(reference, timeZone);
   const day = dayOf(from.toISOString()) ?? new Date().toISOString().slice(0, 10);
 
-  // Las acreditaciones del equipo, para el mismo día: el despacho es donde se
-  // decide quién sale, y enseñar aquí la licencia vencida evita descubrirla en
-  // el muelle. La lista entera cabe de sobra en una consulta.
-  const certificaciones = await tenantQuery<CertificationLike>(ctx.companyId, "certification", { _limit: 2000 });
+  /**
+   * Las acreditaciones del equipo: el despacho es donde se decide quién sale, y
+   * enseñar aquí la licencia vencida evita descubrirla en el muelle.
+   *
+   * ──────────────────────────────────────────────────────────────────────────
+   * AQUÍ DECÍA «LA LISTA ENTERA CABE DE SOBRA EN UNA CONSULTA»
+   *
+   * Y leía con `_limit: 2000`. Era una suposición escrita y nunca comprobada:
+   * cuatrocientas personas con seis acreditaciones cada una ya no caben. Y lo
+   * que se queda fuera no es una fila de una lista — es la licencia vencida que
+   * esta pantalla existe para enseñar. La guarda no falla: **aprueba**, y el
+   * chofer sube a la guagua.
+   *
+   * Por eso se lee entero y se lanza si no se puede: un despacho que no carga
+   * se arregla recargando; un despacho que da por bueno a quien no puede
+   * conducir se arregla en el muelle, o no se arregla.
+   */
+  const certificaciones = await leerTodoElRecurso<CertificationLike>("certification", (limite, salto) =>
+    tenantQuery(ctx.companyId, "certification", {
+      _sort: { expires_at: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+    }));
   const certsPorPersona = new Map<string, CertificationLike[]>();
   for (const c of certificaciones) {
     const sid = refId(c.staff);

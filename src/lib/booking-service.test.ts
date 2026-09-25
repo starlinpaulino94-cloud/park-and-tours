@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fakeDb, type FakeDb } from "@/test/fake-tenant";
+import { fakeDb, paxTotalsDeLaBase, type FakeDb } from "@/test/fake-tenant";
 
 /**
  * EL CAMINO DEL DINERO.
@@ -58,13 +58,29 @@ vi.mock("@/lib/attribution-service", () => ({
  * esta capa decide —cuándo se llama, con qué importe y qué se hace con la
  * respuesta—, no la aritmética de la función.
  */
-const rpc = vi.fn(async () => ({
+const MONEDERO = {
   data: {
     movement_id: "mov-1", amount: 0, currency: "usd",
     balance_before: 1000, balance_after: 800, overdraft: false, already: false,
   },
   error: null,
-}));
+};
+
+/**
+ * Y el recuento de pasajeros también es una función de Postgres desde 0094.
+ *
+ * Esa NO se puede falsear con una respuesta fija: es la que decide si cabe la
+ * venta, así que una constante haría pasar en verde la prueba de que el cupo se
+ * respeta. Se reimplementa sobre la misma base en memoria
+ * (`paxTotalsDeLaBase`), que es lo que mantiene la guarda contra la sobreventa
+ * probada contra la suma de verdad.
+ */
+/** El reparto normal: el recuento de verdad, y el monedero con saldo de sobra. */
+const rpcNormal = async (nombre: string, args: Record<string, unknown>) => {
+  if (nombre === "departure_pax_totals") return paxTotalsDeLaBase(db)(args);
+  return MONEDERO;
+};
+const rpc = vi.fn(rpcNormal);
 vi.mock("@/lib/supabase/service", () => ({ supabaseService: () => ({ rpc }) }));
 
 import { createOrderWithBookings, syncOrderTotals } from "@/lib/booking-service";
@@ -120,6 +136,11 @@ function futuro(dias: number): string {
 beforeEach(() => {
   auditoria.mockReset();
   db = fakeDb(catalogo());
+  // El reparto se repone en cada prueba: la del descubierto lo cambia entero
+  // —por nombre y no con un `Once`— y sin esto se lo llevaría a las siguientes,
+  // que empezarían a vender con el monedero en rojo sin haberlo pedido.
+  rpc.mockReset();
+  rpc.mockImplementation(rpcNormal);
 });
 
 /* ══════════════════════════════════════════════ el total tiene que cuadrar ══ */
@@ -1090,6 +1111,16 @@ describe("la venta de un socio prepago", () => {
     });
   };
 
+  /**
+   * Solo las llamadas AL MONEDERO.
+   *
+   * Desde 0094 el mismo `rpc` sirve también el recuento de pasajeros, y eso pasa
+   * en CADA venta: contar llamadas a secas dejó de distinguir «descontó del
+   * monedero» de «contó los pasajeros». Se filtra por nombre, que es lo que la
+   * prueba quería decir desde el principio.
+   */
+  const alMonedero = () => rpc.mock.calls.filter((c) => c[0] === "spend_partner_wallet");
+
   it("SE DESCUENTA, y por el total de verdad", async () => {
     /**
      * Con la estimación se comprueba el saldo —para no armar la venta entera y
@@ -1104,9 +1135,8 @@ describe("la venta de un socio prepago", () => {
       items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
     } as never);
 
-    expect(rpc, "la venta al socio prepago no descontó nada").toHaveBeenCalledTimes(1);
-    const [fn, args] = rpc.mock.calls[0] as unknown as [string, { p_movement: { amount: number } }];
-    expect(fn).toBe("spend_partner_wallet");
+    expect(alMonedero(), "la venta al socio prepago no descontó nada").toHaveLength(1);
+    const [, args] = alMonedero()[0] as unknown as [string, { p_movement: { amount: number } }];
     expect(args.p_movement.amount).toBe(Number(res.order.total));
   });
 
@@ -1121,7 +1151,7 @@ describe("la venta de un socio prepago", () => {
     } as never)).rejects.toMatchObject({ status: 402 });
 
     expect(db.rows("order"), "se escribió la venta que no cabía").toHaveLength(0);
-    expect(rpc).not.toHaveBeenCalled();
+    expect(alMonedero()).toHaveLength(0);
   });
 
   it("UN DESCUBIERTO QUEDA EN LA BITÁCORA, con el número", async () => {
@@ -1133,12 +1163,24 @@ describe("la venta de un socio prepago", () => {
      */
     conSaldo(1000);
     rpc.mockClear();
-    rpc.mockResolvedValueOnce({
-      data: {
-        movement_id: "mov-2", amount: 200, currency: "usd",
-        balance_before: 100, balance_after: -100, overdraft: true, already: false,
-      },
-      error: null,
+    /**
+     * Solo la respuesta del MONEDERO se cambia; el recuento de pasajeros sigue
+     * siendo el de verdad, o esta venta no llegaría a existir.
+     *
+     * Y se cambia por nombre, no con un `Once`: desde 0094 la PRIMERA llamada al
+     * `rpc` de una venta es el recuento, así que un `Once` se lo habría comido y
+     * el monedero habría contestado lo de siempre —la prueba del descubierto
+     * habría pasado sin descubierto—.
+     */
+    rpc.mockImplementation(async (nombre, args) => {
+      if (nombre === "departure_pax_totals") return paxTotalsDeLaBase(db)(args);
+      return {
+        data: {
+          movement_id: "mov-2", amount: 200, currency: "usd",
+          balance_before: 100, balance_after: -100, overdraft: true, already: false,
+        },
+        error: null,
+      };
     });
     const gritos: string[] = [];
     const real = console.error;
@@ -1185,7 +1227,7 @@ describe("la venta de un socio prepago", () => {
       partner_id: "soc-1",
       items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
     } as never);
-    expect(rpc).not.toHaveBeenCalled();
+    expect(alMonedero()).toHaveLength(0);
   });
 });
 

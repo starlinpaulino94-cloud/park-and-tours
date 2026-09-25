@@ -21,6 +21,20 @@ import { CAMPOS_QUE_ASIGNA_EL_PROVEEDOR } from "@/lib/asignacion-proveedor";
 
 const ROOT = path.resolve(__dirname, "../..");
 const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
+
+/**
+ * El fichero SIN sus comentarios.
+ *
+ * Las guardas que prohíben un patrón tienen que mirar el código y no la
+ * documentación. Esta se escribió sin quitar los comentarios y saltó a la
+ * primera — contra los comentarios que explicaban el tope VIEJO, en los mismos
+ * ficheros donde acababa de quitarse. Una guarda que se queja de que expliques
+ * lo que arreglaste es una guarda que alguien desactiva.
+ */
+const readCodigo = (rel: string) =>
+  read(rel)
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
 const existe = (rel: string) => existsSync(path.join(ROOT, rel));
 /** El fichero sin comentarios: una guarda no puede darse por cumplida por lo
  *  que un comentario MENCIONA, solo por lo que el código HACE. Varios bloques
@@ -10427,7 +10441,7 @@ describe("barridos: ningún trabajo se queda corto en silencio", () => {
      * una cota real del dominio, no un barrido— y prohibirlos habría
      * convertido esta guarda en ruido que alguien desactiva.
      */
-    const topes = src.match(/\.limit\(\s*\d{4,}\s*\)/g) ?? [];
+    const topes = readCodigo(ruta).match(/\.limit\(\s*\d{4,}\s*\)/g) ?? [];
     expect(topes, `${ruta} todavía lee con un tope fijo: ${topes.join(", ")}`).toEqual([]);
   });
 
@@ -10518,7 +10532,7 @@ describe("sumas: ninguna cuenta se calcula sobre una lectura recortada", () => {
   ];
 
   it.each(SUMAS)("%s no suma sobre un tope fijo", (ruta) => {
-    const topes = read(ruta).match(/_limit:\s*\d{4,}/g) ?? [];
+    const topes = readCodigo(ruta).match(/_limit:\s*\d{4,}/g) ?? [];
     expect(topes, `${ruta} todavía suma sobre un tope fijo: ${topes.join(", ")}`).toEqual([]);
   });
 
@@ -10579,5 +10593,103 @@ describe("sumas: ninguna cuenta se calcula sobre una lectura recortada", () => {
     expect(doble).toMatch(/const salto = Number\(opts\._offset \?\? 0\);/);
     expect(doble).toMatch(/if \(salto > 0\) filas = filas\.slice\(salto\);/);
     expect(doble).toMatch(/for \(const \[campo, dir\] of claves\)/);
+  });
+});
+
+/**
+ * EL CUPO, LA SEGURIDAD Y LA NÓMINA (ola 9.13).
+ *
+ * Tercera entrega de la misma familia. Estos cuatro techos no recortaban una
+ * lista: rompían una decisión.
+ *
+ *  · `availability` sumaba hasta mil reservas para decidir si cabía la venta, así
+ *    que la única guarda contra la sobreventa APROBABA lo que no cabe;
+ *  · el despacho leía hasta dos mil acreditaciones para enseñar la licencia
+ *    vencida, con un comentario que decía «la lista entera cabe de sobra» y
+ *    nadie lo había comprobado;
+ *  · los cupos garantizados que no cabían no se liberaban nunca;
+ *  · y la nómina dejaba sin pagar los marcajes que se salían del tope.
+ */
+describe("cupo, seguridad y nómina: ningún techo decide por nadie", () => {
+  it("el recuento de pasajeros lo hace la base, no un `_limit`", () => {
+    const src = read("src/lib/availability.ts");
+    /**
+     * Y va por función de Postgres a propósito, no paginando: esto corre en CADA
+     * venta, y con una salida de cinco mil reservas paginar traería cinco mil
+     * filas por cada entrada vendida para sumar dos números.
+     */
+    expect(src).toContain('rpc("departure_pax_totals"');
+    expect(readCodigo("src/lib/availability.ts")).not.toMatch(/_limit:\s*\d{4,}/);
+    // El error no se traga: un recuento que no se pudo hacer no es cero, porque
+    // cero querría decir «caben todos».
+    expect(src).toMatch(/if \(error\) \{[\s\S]{0,200}throw new Error/);
+  });
+
+  it("las listas de estados viajan a la base, no se copian allí", () => {
+    /**
+     * Qué cuenta como confirmada lo decide `availability.ts`, que es donde está
+     * escrito y probado. Copiar las listas a la función habría dejado dos copias
+     * de la misma regla, y de dos copias la que se queda vieja es siempre la que
+     * nadie mira.
+     */
+    const src = read("src/lib/availability.ts");
+    expect(src).toMatch(/p_confirmed: CONFIRMED_STATUSES/);
+    expect(src).toMatch(/p_pending: PENDING_STATUSES/);
+
+    const sql = read("supabase/migrations/0094_departure_pax_totals.sql");
+    expect(sql).toMatch(/p_confirmed\s+text\[\]/);
+    // Y la función no escribe ninguna lista de estados suya.
+    expect(sql).not.toMatch(/'partially_paid'/);
+  });
+
+  it("la función del cupo es security definer y no la llama cualquiera", () => {
+    // Como invocador devolvería cero pasajeros sin fallar, y la aplicación
+    // entendería que la salida está vacía: la sobreventa, otra vez.
+    const sql = read("supabase/migrations/0094_departure_pax_totals.sql");
+    expect(sql).toMatch(/security definer/);
+    expect(sql).toMatch(/set search_path = public, app/);
+    expect(sql).toMatch(/revoke all on function public\.departure_pax_totals[\s\S]{0,80}from anon, public/);
+    expect(sql).toMatch(/grant execute on function public\.departure_pax_totals[\s\S]{0,80}to service_role/);
+  });
+
+  const SIN_TECHO = [
+    "src/lib/dispatch-service.ts",
+    "src/lib/allotment-service.ts",
+    "src/lib/hr-service.ts",
+  ];
+
+  it.each(SIN_TECHO)("%s no decide con un tope fijo", (ruta) => {
+    const topes = readCodigo(ruta).match(/_limit:\s*\d{4,}/g) ?? [];
+    expect(topes, `${ruta} todavía decide con un tope fijo: ${topes.join(", ")}`).toEqual([]);
+  });
+
+  it.each(SIN_TECHO)("%s lee por leerTodoElRecurso", (ruta) => {
+    expect(read(ruta)).toContain("leerTodoElRecurso");
+  });
+
+  it("el despacho ya no afirma que la lista entera cabe", () => {
+    /**
+     * El comentario estaba, la comprobación no. Es el peor tipo de suposición:
+     * la que queda escrita y por eso nadie la vuelve a mirar.
+     */
+    const src = read("src/lib/dispatch-service.ts");
+    // La frase vieja sigue citada a propósito, para que se entienda qué se
+    // arregló; lo que tiene que estar es la explicación de por qué era falsa.
+    expect(src).toMatch(/AQUÍ DECÍA «LA LISTA ENTERA CABE DE SOBRA EN UNA CONSULTA»/);
+    expect(src).toMatch(/una suposición escrita y nunca comprobada/);
+    expect(src).toMatch(/La guarda no falla: \*\*aprueba\*\*/);
+  });
+
+  it("el doble sabe contar pasajeros como la función de verdad", () => {
+    /**
+     * Si el recuento se falseara con una constante, la prueba de que el cupo se
+     * respeta saldría en verde con la guarda apagada — porque ese número ES la
+     * decisión. Se reimplementa sobre la misma base en memoria.
+     */
+    const doble = read("src/test/fake-tenant.ts");
+    expect(doble).toContain("export function paxTotalsDeLaBase");
+    // Y respeta las tres decisiones que importan de la función.
+    expect(doble).toMatch(/confirmadas\.includes\(estado\)/);
+    expect(doble).toMatch(/found: false/);
   });
 });

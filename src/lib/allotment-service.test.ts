@@ -152,3 +152,60 @@ describe("la liberación automática", () => {
     expect(tenantQuery.mock.calls[0][2]._filter).toEqual({ allotment_type: "guaranteed", status: "active" });
   });
 });
+
+/**
+ * UNA PLATAFORMA CON MÁS DE DOS MIL CUPOS (ola 9.13).
+ *
+ * `releaseExpiredAllotments` leía con `_limit: 2000`. Lo que quedaba fuera eran
+ * plazas garantizadas a un socio que ya no las va a usar y que nadie más puede
+ * vender — y como el orden no cambia entre pasadas, siempre las mismas: no se
+ * liberaban el lunes, ni el martes, ni nunca.
+ *
+ * La prueba cuenta PLAZAS, no filas: liberar 2 000 cupos de 7 plazas y liberar
+ * 2 400 dan el mismo tipo de respuesta y 2 800 plazas de diferencia.
+ */
+describe("liberar cupos por encima del tope viejo", () => {
+  const AHORA_ = new Date("2026-09-16T12:00:00Z");
+
+  /** `cuantos` cupos vencidos, cada uno con 7 plazas sin vender. */
+  const muchos = (cuantos: number) =>
+    Array.from({ length: cuantos }, (_, i) => ({
+      ...GARANTIZADO,
+      _id: `a-${String(i).padStart(5, "0")}`,
+      departure: { _id: `d-${i}`, departure_at: "2026-09-18T08:00:00Z" },
+    }));
+
+  /** Ventanas de verdad: sin esto, un bucle que no avanza saldría en verde. */
+  const porVentanas = (filas: Record<string, unknown>[]) => {
+    tenantQuery.mockImplementation((_o: string, tabla: string, opts: Record<string, number>) => {
+      if (tabla !== "allotment") return Promise.resolve([]);
+      const salto = Number(opts?._offset ?? 0);
+      const limite = Number(opts?._limit ?? 50);
+      return Promise.resolve(filas.slice(salto, salto + limite));
+    });
+  };
+
+  it("libera TODOS los vencidos, no los dos mil primeros", async () => {
+    porVentanas(muchos(2400));
+
+    const r = await releaseExpiredAllotments("org", AHORA_);
+
+    expect(r.reviewed).toBe(2400);
+    expect(r.released).toBe(2400);
+    // 2 400 × 7 = 16 800 plazas. Con el tope salían 14 000 y 2 800 se quedaban
+    // bloqueadas para siempre.
+    expect(r.seats).toBe(16_800);
+  });
+
+  it("y ninguno se libera dos veces al cambiar de página", async () => {
+    porVentanas(muchos(2400));
+    await releaseExpiredAllotments("org", AHORA_);
+    const tocados = tenantUpdate.mock.calls.filter((c) => c[1] === "allotment").map((c) => c[2]);
+    expect(new Set(tocados).size).toBe(tocados.length);
+  });
+
+  it("si de verdad no se pueden leer, no se libera media plataforma", async () => {
+    porVentanas(muchos(10_600));
+    await expect(releaseExpiredAllotments("org", AHORA_)).rejects.toThrow(/no se pudo leer/i);
+  });
+});

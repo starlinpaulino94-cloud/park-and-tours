@@ -1,6 +1,7 @@
 import "server-only";
 import { tenantQuery, tenantFindOne, tenantCreate, tenantUpdate, TenantError } from "@/lib/tenant";
 import { refId } from "@/lib/types";
+import { leerTodoElRecurso } from "@/lib/barrido";
 import {
   assignmentBlock, certificationState, conflictingShift, plannedHours,
   attendanceHours, hourlyRateFor, payrollLine, payrollTotals, monthsInPeriod,
@@ -214,14 +215,26 @@ export async function generatePayrollRun(
   const policy = policyFromRun(run as RunPolicyRow);
 
   // Marcajes del periodo que nadie ha pagado todavía.
-  const rows = await tenantQuery<AttendanceRow>(companyId, "attendance", {
-    _filter: {
-      attendance_date: { gte: start, lte: end },
-      payroll_run_id: null,
-    },
-    _sort: { attendance_date: "asc" },
-    _limit: 5000,
-  });
+  /**
+   * LOS MARCAJES DEL PERÍODO, TODOS.
+   *
+   * De aquí sale lo que se le paga a cada persona. Con el tope de cinco mil, los
+   * marcajes que quedaban fuera **no se pagaban**: no daban error, no salían en
+   * la corrida y seguían con `payroll_run_id` nulo, así que volverían el mes
+   * siguiente… si alguien mira un período que ya se cerró. Nadie lo mira.
+   *
+   * Un parque con trescientas personas y dos marcajes diarios llega a cinco mil
+   * en nueve días.
+   */
+  const rows = await leerTodoElRecurso<AttendanceRow>("attendance", (limite, salto) =>
+    tenantQuery(companyId, "attendance", {
+      _filter: {
+        attendance_date: { gte: start, lte: end },
+        payroll_run_id: null,
+      },
+      _sort: { attendance_date: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+    }));
 
   const porPersona = new Map<string, { entries: PayrollEntry[]; attendanceIds: string[] }>();
   for (const row of rows) {
@@ -313,10 +326,21 @@ export async function generatePayrollRun(
  * nunca.
  */
 export async function releasePayrollRun(companyId: string, runId: string): Promise<number> {
-  const rows = await tenantQuery<AttendanceRow>(companyId, "attendance", {
-    _filter: { payroll_run_id: runId },
-    _limit: 5000,
-  });
+  /**
+   * Y al deshacer una corrida, TODOS los suyos.
+   *
+   * La cabecera de esta función ya lo dice: un marcaje que se queda pegado a una
+   * corrida anulada «no se pagaría nunca», porque la siguiente corrida solo mira
+   * los que tienen `payroll_run_id` nulo. El tope de cinco mil hacía que ese
+   * desastre —el que la función existe para evitar— ocurriera en silencio en
+   * cuanto la corrida pasaba de cinco mil marcajes.
+   */
+  const rows = await leerTodoElRecurso<AttendanceRow>("attendance", (limite, salto) =>
+    tenantQuery(companyId, "attendance", {
+      _filter: { payroll_run_id: runId },
+      _sort: { attendance_date: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+    }));
   for (const row of rows) {
     const id = String(row._id || row.id || "");
     if (id) await tenantUpdate(companyId, "attendance", id, { payroll_run_id: null });
@@ -326,11 +350,14 @@ export async function releasePayrollRun(companyId: string, runId: string): Promi
 
 /** Las líneas ya guardadas de una corrida, en la forma que espera el dominio. */
 export async function linesOf(companyId: string, runId: string): Promise<PayrollLineDraft[]> {
-  const rows = await tenantQuery<Record<string, unknown>>(companyId, "payroll_line", {
-    _filter: { payroll_run_id: runId },
-    _sort: { staff_name: "asc" },
-    _limit: 2000,
-  });
+  // Las líneas de la corrida, enteras: el total de la nómina es su suma, y una
+  // línea que no se lee es una persona a la que no se le paga.
+  const rows = await leerTodoElRecurso<Record<string, unknown>>("payroll_line", (limite, salto) =>
+    tenantQuery(companyId, "payroll_line", {
+      _filter: { payroll_run_id: runId },
+      _sort: { staff_name: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+    }));
   return rows.map((r) => ({
     staffId: refId(r.staff) || null,
     staffName: String(r.staff_name || ""),
@@ -382,13 +409,23 @@ export async function teamWeek(companyId: string, anyDay: string): Promise<TeamW
   const end = endDate.toISOString().slice(0, 10);
   const today = new Date().toISOString().slice(0, 10);
 
+  // Los turnos de la semana y las acreditaciones, enteros: es la misma pantalla
+  // que decide quién trabaja, y un turno que no se lee es un hueco de cobertura
+  // que nadie ve. `staff` se queda con su tope de 300 a propósito: es una cota
+  // real —el personal activo de una operadora—, no un barrido.
   const [staff, shifts, certs] = await Promise.all([
     tenantQuery<StaffLike>(companyId, "staff", { _filter: { status: "active" }, _limit: 300 }),
-    tenantQuery<ShiftLike>(companyId, "shift", {
-      _filter: { shift_date: { gte: start, lte: end } },
-      _limit: 2000,
-    }),
-    tenantQuery<CertificationLike>(companyId, "certification", { _limit: 2000 }),
+    leerTodoElRecurso<ShiftLike>("shift", (limite, salto) =>
+      tenantQuery(companyId, "shift", {
+        _filter: { shift_date: { gte: start, lte: end } },
+        _sort: { shift_date: "asc", _id: "asc" },
+        _limit: limite, _offset: salto,
+      })),
+    leerTodoElRecurso<CertificationLike>("certification", (limite, salto) =>
+      tenantQuery(companyId, "certification", {
+        _sort: { expires_at: "asc", _id: "asc" },
+        _limit: limite, _offset: salto,
+      })),
   ]);
 
   const certsBy = new Map<string, CertificationLike[]>();

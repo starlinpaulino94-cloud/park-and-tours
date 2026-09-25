@@ -4481,3 +4481,99 @@ parte del hallazgo.
   llamativo es `superadmin/stats` con `.limit(5000)` sobre las reservas del mes,
   que es la cifra de negocio de la propia plataforma.
 - **No hay migración en esta ola** y no hay nada que ejecutar en la base.
+
+### Ola 9.13 — el cupo, la seguridad y la nómina (migración 0094)
+
+**Tercera entrega de la misma familia, y la que llega a lo que más importa.**
+Estos techos no recortaban una lista: **rompían una decisión**.
+
+**1. La sobreventa entraba por un `_limit: 1000`.** `recalculateDeparture` suma
+los pasajeros de una salida y `assertCapacity` decide con ese número si cabe una
+venta más. La cabecera del módulo dice de sí misma dos cosas: «the single guard
+against overselling» y «the counters can never silently drift out of sync with
+reality». Las dos eran falsas. Una salida de entrada general de un parque —dos
+mil entradas al día— pasa de mil reservas sin nada raro, y entonces la suma sale
+corta, `available_pax` sale alta, y **la guarda no falla: aprueba**. Los
+contadores escritos en la salida quedan por debajo de la realidad, así que el
+despacho, la previsión de ocupación y el semáforo de «casi llena» mienten los
+tres a la vez y **en la misma dirección**. Un error que va siempre hacia el mismo
+lado no se compensa: se acumula.
+
+- **Migración 0094**, y no paginar. Esto corre en CADA venta: con una salida de
+  cinco mil reservas, paginar traería cinco mil filas por cada entrada vendida
+  para sumar dos números —la operadora que más vende sería la que más lento
+  vende—. `public.departure_pax_totals` devuelve una fila con los dos totales,
+  exacta y sin tope.
+- **Las listas de estados viajan como argumento.** Qué cuenta como confirmada lo
+  sigue decidiendo `availability.ts`, que es donde está escrito y probado;
+  copiarlas a la base habría dejado dos copias de la misma regla. La función no
+  sabe qué es una reserva confirmada: suma lo que se le diga, y hay una prueba
+  SQL que se lo demuestra pasándole las listas al revés.
+- **Y de paso se fue una tercera copia**: `ACTIVE_STATUSES` era exactamente la
+  unión de las otras dos y servía de filtro de la consulta.
+- **Lo que NO cierra**, dicho en la propia migración para que nadie la lea como
+  «la sobreventa está resuelta»: la carrera de AUD-B01. La suma es exacta, no
+  atómica respecto de la venta. Cerrar eso pide apartar la plaza al autorizar,
+  la misma decisión de producto que quedó abierta en 0091 para el monedero.
+
+**2. El despacho daba por bueno al chofer con la licencia vencida.** La pantalla
+marca al personal cuya acreditación bloqueante ha caducado. Leía con
+`_limit: 2000` y encima de la consulta había esto escrito:
+
+> «La lista entera cabe de sobra en una consulta.»
+
+Una suposición escrita y nunca comprobada — y el peor tipo, porque queda ahí y
+nadie la vuelve a mirar. Cuatrocientas personas con seis acreditaciones cada una
+ya no caben. Lo que se quedaba fuera no era una fila de una lista: era la
+licencia vencida que la pantalla existe para enseñar. Otra vez la guarda no
+fallaba, aprobaba, y el chofer subía a la guagua.
+
+**3. La nómina dejaba horas sin pagar.** `generatePayrollRun` leía los marcajes
+con `_limit: 5000` —un parque de trescientas personas con dos marcajes diarios
+llega en nueve días—, y lo que quedaba fuera **no se pagaba**: sin error, sin
+salir en la corrida, con `payroll_run_id` nulo, o sea que volvería el mes
+siguiente si alguien mirase un período ya cerrado. Nadie lo mira. Y
+`releasePayrollRun` tenía el mismo tope, con la cabecera de la propia función
+avisando del desastre —un marcaje pegado a una corrida anulada «no se pagaría
+nunca»—: el techo hacía que ocurriera en silencio.
+
+**4. Y los cupos garantizados** que no cabían en los dos mil no se liberaban
+nunca: plazas apartadas para un socio que ya no las va a usar y que nadie más
+puede vender.
+
+- **Pruebas nuevas: 29.** Once de `availability` —que **no tenía fichero
+  propio**, siendo la única guarda contra la sobreventa—, cinco del despacho
+  (fichero nuevo), tres de la nómina, tres de los cupos, cuatro del recuento en
+  el doble y tres guardas de estructura, más la prueba SQL de la función contra
+  Postgres real con 1 500 reservas.
+- **Los dos dobles, otra vez parte del arreglo.** `fake-tenant` ganó
+  `paxTotalsDeLaBase` y `fake-supabase` ganó `rpc`. Y aquí había una trampa
+  concreta: el recuento **no se puede falsear con una constante**, porque ese
+  número ES la decisión — una respuesta fija haría pasar en verde la prueba de
+  que el cupo se respeta con la guarda apagada. Se reimplementa sobre la misma
+  base en memoria.
+- **Una guarda mía salió mal escrita y saltó a la primera**, contra los
+  comentarios que explicaban el tope viejo en los ficheros donde acababa de
+  quitarse. Prohibía un patrón mirando el fichero entero, comentarios incluidos.
+  Se arregló con `readCodigo`, que los quita: una guarda que se queja de que
+  expliques lo que arreglaste es una guarda que alguien desactiva.
+- **Mutación: 20 de 20.** Corriendo solo comportamiento, sin las guardas de
+  estructura, **19 de 20**: la única que depende de la guarda es `linesOf`, la
+  lectura de las líneas ya guardadas de una corrida.
+- **Dos mutaciones sobrevivieron a la primera**, y eran el mismo hueco por los
+  dos lados: nada ejercitaba el `found` de la función cuando la ficha de la
+  salida SÍ existe. Son dos comprobaciones distintas —la ficha se lee con las
+  ayudas de inquilino, el recuento acota por empresa por su cuenta— y cuando
+  discrepan no vale creerle a la ficha: cero pasajeros quiere decir «caben
+  todos».
+- **Lo que queda de la familia**, ya sin dinero ni seguridad de por medio:
+  `octo-service` (cuatro), `superadmin/stats` y `superadmin/companies` (cinco),
+  `voice-service`, `purchasing-service`, `inventory-valuation`,
+  `respuesta-proveedor` y los `_limit: 1000` de catálogo del portal y la API del
+  socio.
+- **Pendiente de ejecutar en la base:** `supabase/editor/0094_parte_1.sql` y
+  después `0094_parte_2_verificacion.sql` (cinco filas, todas OK). **Esta va
+  primero de todas**: hasta que esté, `assertCapacity` no puede contar los
+  pasajeros y **la aplicación no vende**. Es deliberado — la alternativa era
+  seguir vendiendo con un recuento corto, que es justo lo que causaba la
+  sobreventa.

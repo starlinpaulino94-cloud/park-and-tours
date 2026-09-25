@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fakeDb } from "@/test/fake-tenant";
+import { fakeDb, paxTotalsDeLaBase } from "@/test/fake-tenant";
 
 /**
  * EL DOBLE, PROBADO.
@@ -99,5 +99,67 @@ describe("_sort ordena por TODAS las claves", () => {
       vistas.push(...p.map((f) => String(f._id)));
     }
     expect(new Set(vistas).size).toBe(100);
+  });
+});
+
+
+/**
+ * EL RECUENTO DE PASAJEROS DEL DOBLE (0094).
+ *
+ * Este ayudante no es un adorno: reproduce la función que decide si cabe una
+ * venta. Si se desviara de ella, media docena de ficheros de prueba estarían
+ * comprobando la guarda contra la sobreventa con una suma distinta de la que
+ * corre en producción — y en verde.
+ */
+describe("paxTotalsDeLaBase", () => {
+  const ORG = "org-1";
+  const base = () => fakeDb({
+    departure: [{ _id: "sal-1", organization_id: ORG, capacity: 100 }],
+    booking: [
+      { _id: "b1", organization_id: ORG, departure: "sal-1", status: "paid", pax_total: 4 },
+      { _id: "b2", organization_id: ORG, departure: "sal-1", status: "pending", pax_total: 3 },
+      { _id: "b3", organization_id: ORG, departure: "sal-1", status: "cancelled", pax_total: 9 },
+    ],
+  });
+  const args = (salida: string, org = ORG) => ({
+    p_org: org, p_departure: salida,
+    p_confirmed: ["paid", "confirmed"], p_pending: ["pending"],
+  });
+
+  it("suma por las listas que le llegan, sin saber qué significan", () => {
+    const { data } = paxTotalsDeLaBase(base())(args("sal-1")) as {
+      data: { booked: number; pending: number };
+    };
+    expect(data.booked).toBe(4);
+    expect(data.pending).toBe(3);
+  });
+
+  it("lo que no está en ninguna de las dos listas no cuenta", () => {
+    const { data } = paxTotalsDeLaBase(base())(args("sal-1")) as {
+      data: { booked: number; pending: number };
+    };
+    // La cancelada de 9 plazas no ocupa asiento.
+    expect(data.booked + data.pending).toBe(7);
+  });
+
+  it("una salida que no existe devuelve found:false, NO ceros", () => {
+    /**
+     * Ceros querrían decir «la salida está vacía, caben todos» sobre algo que
+     * no está — y eso es una venta autorizada contra una salida inventada. Es
+     * la misma decisión que toma la función de verdad, y por eso se prueba
+     * aquí: si el doble perdonara este caso, la prueba de la aplicación que lo
+     * comprueba saldría en verde con el código roto.
+     */
+    const { data } = paxTotalsDeLaBase(base())(args("no-existe")) as {
+      data: { found: boolean };
+    };
+    expect(data.found).toBe(false);
+  });
+
+  it("la salida de otra empresa tampoco se encuentra", () => {
+    const { data } = paxTotalsDeLaBase(base())(args("sal-1", "org-2")) as {
+      data: { found: boolean };
+    };
+    expect(data.found).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fakeDb, type FakeDb } from "@/test/fake-tenant";
+import { fakeDb, type FakeDb, paxTotalsDeLaBase } from "@/test/fake-tenant";
 
 /**
  * DESHACER UNA VENTA.
@@ -25,6 +25,18 @@ vi.mock("@/lib/tenant", async (importOriginal) => {
   };
 });
 
+/**
+ * El recuento de pasajeros es una función de Postgres desde 0094, y aquí no hay
+ * Postgres. Se reimplementa sobre la misma base en memoria: falsearlo con una
+ * constante haría pasar en verde la prueba de que la plaza vuelve a la salida,
+ * porque ese número ES el cupo.
+ */
+vi.mock("@/lib/supabase/service", () => ({
+  supabaseService: () => ({
+    rpc: async (nombre: string, args: Record<string, unknown>) =>
+      nombre === "departure_pax_totals" ? paxTotalsDeLaBase(db)(args) : { data: null, error: null },
+  }),
+}));
 vi.mock("@/lib/audit", () => ({ writeAudit: vi.fn() }));
 vi.mock("@/lib/notify-service", () => ({ notify: vi.fn(), notifyRoles: vi.fn() }));
 vi.mock("@/lib/messaging/events", () => ({ notifyBookingCancelled: vi.fn() }));

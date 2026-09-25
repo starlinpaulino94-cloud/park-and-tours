@@ -29,7 +29,7 @@
  * están `supabase/tests/*.test.sql`.
  */
 
-import type { FakeDb } from "@/test/fake-tenant";
+import { paxTotalsDeLaBase, type FakeDb } from "@/test/fake-tenant";
 
 type Fila = Record<string, unknown>;
 
@@ -391,6 +391,17 @@ class Builder implements PromiseLike<Resultado> {
 export interface FakeSupabase {
   from(tabla: string): Builder;
   /**
+   * Las funciones de Postgres que la aplicación llama por RPC.
+   *
+   * Solo las que DECIDEN algo se reimplementan; el resto devuelve nulo, que es
+   * lo que quiere decir «esta prueba no va de eso». Hoy hay una:
+   * `departure_pax_totals` (0094), el recuento de pasajeros de una salida — y
+   * ésa NO se puede falsear con una constante, porque es justo el número que
+   * decide si cabe la venta: una respuesta fija haría pasar en verde la prueba
+   * de que el cupo se respeta con la guarda apagada.
+   */
+  rpc(nombre: string, args?: Record<string, unknown>): Promise<{ data: unknown; error: null }>;
+  /**
    * Hace que TODA escritura sobre esa tabla falle, para probar qué pasa cuando
    * la base dice no. Es la forma de comprobar que un servicio no se traga sus
    * errores.
@@ -425,6 +436,10 @@ export function fakeSupabase(db: FakeDb): FakeSupabase {
   const rotasLectura = new Map<string, { message: string; code?: string }>();
 
   return {
+    async rpc(nombre: string, args: Record<string, unknown> = {}) {
+      if (nombre === "departure_pax_totals") return paxTotalsDeLaBase(db)(args);
+      return { data: null, error: null };
+    },
     from(tabla: string) {
       const builder = new Builder(db, tabla);
       const roto = rotas.get(tabla);
