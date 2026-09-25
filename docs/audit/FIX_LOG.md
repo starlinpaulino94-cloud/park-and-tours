@@ -3946,3 +3946,88 @@ operaciones. Ninguno tenía pruebas propias.
 - **Mutación: veintiséis, las veintiséis muertas.**
 - **Quedan tres servicios sin ejecutar**, ~760 líneas: `analytics`, `import` y
   `seller-goals`.
+
+### Ola 9.7 — las metas, el importador y la analítica (y se cierra el inventario)
+
+`seller-goals-service.ts` (348 líneas), `import-service.ts` (189) y
+`analytics-service.ts` (221). Con estos tres **no queda ningún servicio del
+sistema sin pruebas propias**: el inventario que se abrió en la ola 9.2 con
+dieciocho servicios sin ejecutar llega a cero.
+
+- **UNA LIQUIDACIÓN PAGABA OTRA VEZ LOS BONOS DE LA ANTERIOR.**
+  `attachBonusesToSettlement` engancha los bonos aprobados del vendedor a la
+  liquidación y luego devolvía los totales de `bonusesOf(sellerId)` — que lee
+  los **doscientos bonos más recientes de esa persona**, de cualquier
+  liquidación y de cualquier fecha— y `bonusTotals` cuenta todo lo que esté
+  `approved` **o `settled`**. De ahí sale `bonus_total` y, sobre todo,
+  `pending_total`, que es **lo que se transfiere**. Así que la segunda
+  liquidación de un vendedor le pagaba de nuevo los bonos de la primera, la
+  tercera los de las dos, y así hacia arriba. Nadie lo ve, porque cada
+  liquidación por separado cuadra consigo misma. El comentario que había decía
+  que se leían después de enganchar «porque antes del update no contarían», y no
+  era verdad por partida doble: `approved` ya contaba, y lo que sobraba no era
+  lo de antes del update sino lo de **otras liquidaciones**. Ahora se leen por
+  `settlement`, que es la pregunta de verdad: qué paga ESTA.
+- **EL BONO DE UNA META SE PODÍA COBRAR A NOMBRE DE OTRO.** `awardGoalBonus`
+  armaba el alcance con el `sellerId` del **cuerpo de la petición** y tiraba el
+  `seller_type` de la meta, así que `goal.seller` no se comparaba con nadie en
+  ningún sitio: si el otro daba los números por su cuenta, se le otorgaba un
+  premio que no era suyo. Y la otra cara: una meta de **grupo** —«los hoteles»,
+  una sucursal— se juzgaba contra las cifras de **una sola persona**, de modo
+  que el tablero y el botón de otorgar decidían cosas distintas sobre la misma
+  meta. Es exactamente lo que el comentario de la liquidación advierte tres
+  funciones más abajo: dos sitios calculando el mismo total acaban discrepando.
+- **EL DÍA DEL RANGO DE UNA META ERA EL DEL SERVIDOR.** Salía cortado en UTC, así
+  que una venta de las 21:00 del 30 de septiembre en Santo Domingo —01:00 UTC del
+  1 de octubre— quedaba **fuera** de la meta de septiembre, y dentro entraban las
+  últimas cuatro horas del 31 de agosto. Aquí no es una imprecisión de informe:
+  de ese número depende si alguien cobra un bono. Tercera vez que aparece la
+  misma familia (9.2 el día, 9.6 el mes del cupo), y con el mismo ayudante
+  semiabierto que usan todos los listados — con el límite superior **estricto**,
+  porque con `lte` sobre un instante exclusivo una venta de medianoche contaría
+  en dos metas.
+- **EL CRUCE DE DUPLICADOS DEL IMPORTADOR SE QUEDABA CORTO.** La consulta pedía
+  `_limit: chunk.length` —tantas filas como valores se preguntan— dando por hecho
+  que cada valor casa con una. El propio comentario del servicio dice lo
+  contrario («con dos fichas del mismo correo, que no debería pasar pero
+  pasa»), y cuando pasa, las repetidas gastan cupo: los últimos valores del lote
+  se quedan sin respuesta, se toman por nuevos y el archivo los vuelve a crear.
+  O sea que una cartera con duplicados los **multiplica** en cada importación,
+  que es lo único que un importador no puede hacer.
+- **UN INFORME DE COHORTES RECORTADO PARECÍA COMPLETO.** El tope son cinco mil
+  filas y el resultado se presentaba sin más. Es el peor sesgo posible para lo
+  que mide: al quedarse con el **principio** del rango, las segundas compras de
+  esos mismos clientes son justo las que se caen, así que la retención sale baja
+  y parece un problema de negocio. Ahora lleva su bandera, como el embudo de la
+  red comercial. Y un informe vacío por una lectura rota deja de darse por
+  bueno: «esta operadora no tiene clientes que repitan» no es una conclusión que
+  se saque de un hipo de la base.
+- **Lo que NO se arregló, y está escrito como prueba:** el cruce de duplicados
+  del importador **no es insensible a mayúsculas**, aunque leyendo `keyOf`
+  —que pasa las dos partes a minúsculas— lo parezca. La consulta va con un `in`
+  exacto, así que una ficha guardada como `Laura@Example.com` no casa con
+  `laura@example.com`, se toma por nueva y el archivo la duplica. Y hay fichas
+  así: el motor público normaliza el correo, pero la captura a mano y el espejo
+  de MembeGo guardan lo que les den. No se arregla aquí porque un `in`
+  insensible a mayúsculas no se puede expresar en PostgREST y una consulta por
+  valor serían doscientas por lote: lo que lo arregla es normalizar la columna
+  en la base (`citext` o un índice funcional), o sea una migración. Queda una
+  prueba que afirma el comportamiento de HOY y dice en su cabecera que sobra el
+  día que se arregle.
+- **Dos guardas no mordieron a la primera.** Una era un hueco de las pruebas —la
+  zona de la empresa se probaba en `actualsFor` pero no en el camino del bono—.
+  La otra es **defensa en profundidad inalcanzable**: el corte temprano cuando
+  el alcance no cubre a nadie da lo mismo que dejar correr las consultas, porque
+  un `in` con lista vacía no casa con nada. Se queda igual, y va por estructura:
+  lo que la hace inerte es cómo trata PostgREST una lista vacía —un detalle de
+  la capa de consultas— y basta con que el traductor cambie para que un filtro
+  vacío pase a significar «sin filtro», o sea las cifras de toda la empresa
+  atribuidas a un tipo de vendedor sin gente.
+- **Mutación: veintidós, las veintidós muertas.**
+- **INVENTARIO CERRADO.** Los dieciocho servicios que la ola 9.2 encontró sin
+  pruebas propias —dieciséis de ellos sin ejecutarse nunca— están los dieciocho
+  cubiertos. En las seis olas (9.2 a 9.7) salieron **veintitrés fallos reales**,
+  y el reparto dice algo por sí solo: casi todos son de **fuente** —de dónde sale
+  el número— y no de **cuenta**. Sumar bien el conjunto equivocado da un total
+  que cuadra consigo mismo, y eso es lo que ninguna prueba de aritmética iba a
+  encontrar nunca.

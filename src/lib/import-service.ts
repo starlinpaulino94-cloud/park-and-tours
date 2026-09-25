@@ -45,9 +45,20 @@ export async function resolveExisting(
     const list = [...values];
     for (let i = 0; i < list.length; i += 200) {
       const chunk = list.slice(i, i + 200);
+      /**
+       * El tope no es `chunk.length`, y la diferencia importa.
+       *
+       * Se pedían tantas filas como valores se preguntan, dando por hecho que
+       * cada valor casa con UNA. El comentario de abajo dice lo contrario —«con
+       * dos fichas del mismo correo, que no debería pasar pero pasa»—, y cuando
+       * pasa, las repetidas gastan cupo: los últimos valores del lote se quedan
+       * sin respuesta, se toman por nuevos y el archivo los vuelve a crear. O
+       * sea que una cartera con duplicados los MULTIPLICA en cada importación,
+       * que es justo lo que un importador no puede hacer.
+       */
       const matches = await tenantQuery<Record<string, unknown>>(companyId, resource.table, {
         _filter: { [field]: { in: chunk } },
-        _limit: chunk.length,
+        _limit: chunk.length * 4,
       });
       for (const match of matches) {
         const value = match[field];

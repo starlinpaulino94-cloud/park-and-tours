@@ -10058,3 +10058,69 @@ describe("la defensa del medidor que ninguna prueba puede ver correr", () => {
     expect(cuerpo, "el medidor volvió a poder tumbar una subida").not.toMatch(/\} catch \(err\) \{\s*throw/);
   });
 });
+
+describe("el bono y la liquidación no se pagan dos veces ni a quien no toca", () => {
+  /**
+   * Las dos tienen prueba de comportamiento. Lo que fijan estas guardas es de
+   * DÓNDE sale cada número, porque los dos fallos eran de fuente y no de
+   * cuenta: sumar bien el conjunto equivocado da un total que cuadra consigo
+   * mismo y que nadie va a mirar dos veces.
+   */
+  it("el alcance con el que se juzga una meta sale de la meta", () => {
+    const src = cuerpoDe("src/lib/seller-goals-service.ts");
+    const at = src.indexOf("export async function awardGoalBonus");
+    expect(at).toBeGreaterThan(-1);
+    const cuerpo = src.slice(at, at + 2500);
+    expect(cuerpo).toMatch(/sellerId: refOf\(goal\.seller\)/);
+    expect(cuerpo).toMatch(/sellerTypeId: refOf\(goal\.seller_type\)/);
+    expect(cuerpo, "el alcance vuelve a venir del cuerpo de la petición")
+      .not.toMatch(/sellerId: input\.sellerId,\s*\n\s*productId/);
+    expect(cuerpo, "ya no se comprueba que el vendedor esté dentro")
+      .toMatch(/alcanzados !== null && !alcanzados\.includes\(input\.sellerId\)/);
+  });
+
+  it("y la liquidación suma los bonos DE ESA liquidación", () => {
+    // `bonusesOf` lee el historial entero del vendedor y `bonusTotals` cuenta
+    // `approved` Y `settled`: de ahí salía pagar otra vez lo de la liquidación
+    // anterior. Son dos preguntas distintas y por eso son dos funciones.
+    const src = cuerpoDe("src/lib/seller-goals-service.ts");
+    const at = src.indexOf("export async function attachBonusesToSettlement");
+    const cuerpo = src.slice(at, at + 1400);
+    expect(cuerpo).toMatch(/_filter: \{ seller: sellerId, settlement: settlementId \}/);
+    expect(cuerpo, "vuelve a sumar todos los bonos del vendedor")
+      .not.toMatch(/await bonusesOf\(/);
+  });
+});
+
+describe("los informes dicen cuándo están recortados", () => {
+  it("las cohortes traen su bandera, como el embudo", () => {
+    // Un número calculado sobre un trozo y presentado como completo es peor que
+    // no darlo: aquí el recorte se queda con el PRINCIPIO del rango, así que se
+    // caen justo las segundas compras y la retención parece un problema de
+    // negocio.
+    const src = cuerpoDe("src/lib/analytics-service.ts");
+    expect(src).toMatch(/truncated: rows\.length >= MAX_ROWS,/);
+    expect(cuerpoDe("src/lib/attribution-service.ts")).toMatch(/truncated: rows\.length >= MAX_FUNNEL_ROWS,/);
+  });
+});
+
+describe("la defensa de las metas que ninguna prueba puede ver correr", () => {
+  /**
+   * El corte temprano cuando el alcance no cubre a nadie es hoy inalcanzable:
+   * con la lista vacía, las dos consultas saldrían con `in("seller_id", [])` y
+   * no casarían con nada igualmente. El mutador lo quita y las cifras siguen
+   * dando cero.
+   *
+   * Se queda, y por dos motivos concretos. Lo que lo hace inerte es cómo trata
+   * PostgREST una lista vacía —un detalle de la capa de consultas, no una
+   * decisión de este módulo— y basta con que el traductor cambie para que un
+   * filtro vacío pase a significar «sin filtro», o sea las cifras de toda la
+   * empresa atribuidas a un tipo de vendedor sin gente. Y además ahorra las dos
+   * consultas, que es lo que hace que un tablero con veinte metas no sean
+   * cuarenta viajes a la base.
+   */
+  it("un alcance sin nadie corta antes de consultar", () => {
+    expect(cuerpoDe("src/lib/seller-goals-service.ts"))
+      .toMatch(/if \(sellers !== null && sellers\.length === 0\) \{/);
+  });
+});
