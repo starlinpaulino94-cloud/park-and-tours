@@ -3547,3 +3547,72 @@ Y la tabla dice dos cosas más que no se preguntaban:
   sembrado pasa contra el doble de Supabase en la prueba unitaria del arranque, y
   cada columna que escribe existe en el esquema. La primera ejecución de verdad es
   la del CI, que levanta su propia pila local.
+
+### Ola 9.2 — los servicios que mueven dinero y no los ejecutaba nadie (1 de 3 lotes)
+- **EL DATO ERA PEOR DE LO APUNTADO.** No son 19 servicios sin fichero de
+  pruebas: son **18**, y de esos **16 no los ejecuta ninguna prueba**, ni de
+  rebote. Solo `dispatch-service` y `seller-settlement-service` llegan a correr, y
+  parcialmente. Los demás aparecían «mencionados» en pruebas de otros módulos
+  porque estaban **mockeados**, que es lo contrario de estar probados. Unas 4.000
+  líneas. Este lote cubre los tres que mueven dinero o deciden si suena una
+  alarma; los otros trece van en lotes siguientes.
+- **TRES FALLOS REALES, uno por servicio.**
+
+- **1 · El cierre del día devolvía UN MES con cara de un día.** El comentario
+  decía «una fecha ilegible cae en hoy: `normalizarPeriodo` ya decide eso», y no
+  era verdad. `fecha || hoy` solo cae en hoy cuando la fecha viene **vacía**; una
+  cadena con contenido pero ilegible —`?date=hoy`, `?date=10/04/2026`, un dedazo—
+  es «truthy» y pasa de largo. `normalizarPeriodo`, al no entender ninguno de los
+  dos extremos, hace lo correcto **para un reporte**: devuelve el mes en curso. Y
+  la ruta pasa `?date=` tal cual, sin validar.
+  Resultado: `GET /api/reports/daily-close?date=hoy` devolvía un documento
+  titulado «cierre del 1 de abril» con **un mes** de ventas, cobros y cajas
+  dentro, cuadrando el efectivo de treinta días contra las sesiones de treinta
+  días. Con toda la pinta de un cierre bueno, y firmable. El mes no es un fallo de
+  `normalizarPeriodo`: es su respuesta correcta a «no me diste fechas». Lo que
+  estaba mal era preguntárselo así desde un cierre **diario**, y por eso la
+  comprobación vive ahora en el servicio.
+
+- **2 · La comprobación de salud declaraba muertos a los cinco crons cuando no
+  podía leer el diario.** `lastRuns` destructuraba solo `data` y tiraba `error`.
+  PostgREST no lanza: devuelve `{ data: null, error }`, así que la promesa se
+  resolvía tan tranquila —y el `.catch()` del llamante, puesto creyendo que
+  fallaría lanzando, no se ejecutaba nunca—. Un mapa vacío significa, para
+  `jobHealth`, **«nunca se ha ejecutado»**, en rojo, para todos los trabajos
+  esperados. O sea que un fallo al leer una tabla se convertía en cinco
+  diagnósticos inventados sobre cinco crons que probablemente estaban bien, y el
+  informe entero en `down`. Es el fallo que ese módulo dice en su cabecera que no
+  puede permitirse —leer cero filas y dar un veredicto— solo que al revés: en vez
+  de decir que todo va bien, acusa a todo el mundo. Ahora, si el diario no se
+  puede leer, sale **una** comprobación que dice eso: «no se sabe si los trabajos
+  corrieron». «No lo sé» y «no corrió» llevan a sitios distintos — la primera se
+  arregla mirando la base, la segunda despertando a alguien de madrugada.
+
+- **3 · Un cajón contado y VACÍO cuadraba.** El arqueo leía
+  `countTotal(...) || Number(stored.counted_total ?? 0)`, y ese `||` se come el
+  cero: un cajón que se contó y estaba vacío —el que se dejó sin fondo, o la
+  moneda secundaria en la que no había nada— da `countTotal = 0`, que es falso, y
+  caía al total guardado. El arqueo enseñaba un contado que el cajero **no**
+  contó, y calculaba la diferencia y el veredicto sobre él: con un `counted_total`
+  de 500 contra un esperado de 500, el papel firma «cuadra» sobre un cajón vacío.
+  Lo que decide es si **hay** desglose, no si su total es distinto de cero.
+- **Los tres se verificaron rompiendo el arreglo a propósito**: la prueba
+  correspondiente falla sin él. No son mejoras de estilo.
+- **Y una cosa que se encontró y NO se tocó:** `recordOrgSlice` está exportada y
+  **no la llama nadie**. Es la costura para apuntar lo que un trabajo hizo para una
+  empresa concreta; queda dicho aquí en vez de borrada, porque borrar una costura
+  declarada es una decisión del dueño del módulo y no de quien pasa a probarlo.
+- **Dos guardas no mordieron a la primera.** Una era un mutador inerte: quitar
+  `if (!id) return;` de `finishJobRun` no escribe nada —es un UPDATE con `id`
+  nulo, que no encuentra fila— así que no describe ningún comportamiento y se
+  retiró del lote. La otra sí era un hueco: la prueba de la huella comprobaba
+  «misma fuente + mismo mensaje = misma huella» y «otra fuente = otra huella»,
+  pero no **«misma fuente + OTRO mensaje = otra huella»**, que es la mitad que de
+  verdad importa: agrupando solo por fuente, los dos fallos distintos de un mismo
+  cron se apilarían en un incidente con el texto del primero, y el segundo se
+  vería como «esto ya lo sabemos».
+- **Mutación: treinta y uno, los treinta y uno muertos.**
+- **Quedan trece servicios sin ejecutar**, ~3.300 líneas: `analytics`,
+  `attribution`, `commission-adjust`, `gift-card`, `import`, `membego`,
+  `membego-redemption`, `monedero`, `plan`, `public-booking`, `quote`, `schedule` y
+  `seller-goals`. Y dos ejecutados a medias (`dispatch`, `seller-settlement`).

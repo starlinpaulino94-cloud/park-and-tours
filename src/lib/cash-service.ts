@@ -75,7 +75,22 @@ export async function loadCashClose(companyId: string, sessionId: string): Promi
       return { ...summary, counted: null, difference: null, verdict: null, breakdown: [] };
     }
     const breakdown = Array.isArray(stored.breakdown) ? (stored.breakdown as CountLine[]) : [];
-    const counted = countTotal(breakdown.length > 0 ? breakdown : null) || Number(stored.counted_total ?? 0);
+    /**
+     * EL DESGLOSE MANDA SI LO HAY, Y UN CONTEO DE CERO ES UN CONTEO.
+     *
+     * Esto era `countTotal(...) || Number(stored.counted_total ?? 0)`, y ese `||`
+     * se come el cero: un cajón contado y vacío —el que se dejó sin fondo, o la
+     * moneda secundaria en la que no había nada— da `countTotal = 0`, que es
+     * falso, y caía al total guardado.
+     *
+     * O sea que el arqueo enseñaba un contado que el cajero NO contó, y calculaba
+     * la diferencia y el veredicto sobre él: con un `counted_total` viejo de 500
+     * contra un esperado de 500, el papel firma «cuadra» sobre un cajón vacío.
+     *
+     * Lo que decide es si HAY desglose, no si su total es distinto de cero.
+     */
+    const delDesglose = breakdown.length > 0 ? countTotal(breakdown) : null;
+    const counted = delDesglose ?? Number(stored.counted_total ?? 0);
     const difference = differenceOf(summary.expected, counted);
     return { ...summary, counted, difference, verdict: classifyDifference(difference, tolerance), breakdown };
   });
