@@ -13,7 +13,7 @@ import {
   REDEEM_BLOCK_MESSAGE, REVERSAL_BLOCK_MESSAGE,
   defaultLine, discountFor, effectOf, idempotencyKeyFor, redeemBlocker,
   reversalBlocker, serviceLabel, shouldRestoreLine,
-  type EvaluateResult, type EvaluatedBenefit, type LineLike,
+  type BenefitType, type EvaluateResult, type EvaluatedBenefit, type LineLike,
 } from "@/lib/membego-benefits";
 
 /**
@@ -43,6 +43,14 @@ import {
  * se guarda es el RECIBO —qué se canjeó, cuánto rebajó, qué dijo MembeGo— para
  * poder cuadrar la caja, revertir y conciliar. Nada de eso decide si el cliente
  * tiene derecho: eso se pregunta, siempre, en el momento.
+ *
+ * Y «en el momento» quiere decir DESDE AQUÍ. Durante cinco olas el canje se hizo
+ * sobre el beneficio que mandaba el navegador en el cuerpo de la petición: su
+ * `eligible` y su `effect` incluidos. Eso no es preguntar en el momento, es
+ * creerle al cliente su copia de la respuesta — y con ella, dejarle poner el
+ * descuento. `redeemForOrder` vuelve a llamar a `evaluateBenefits` y cruza por
+ * identificador contra los beneficios de ESE cliente; de la petición solo
+ * sobrevive cuál.
  */
 
 export interface MembegoContext {
@@ -176,11 +184,36 @@ function productNameOf(row: BookingRow): string {
   return "Excursión";
 }
 
+/**
+ * QUÉ beneficio se quiere canjear. Y nada más que eso.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * ANTES ENTRABA EL BENEFICIO ENTERO, Y VENÍA DEL NAVEGADOR
+ *
+ * `RedeemInput.benefit` era un `EvaluatedBenefit` completo, tal como lo mandaba
+ * el cuerpo de la petición: con su `eligible` y con su `effect`. O sea que el
+ * cliente decidía **si tenía derecho** y **cuánto se le rebajaba**. Un `POST`
+ * con `effect: { kind: "FREE" }` sobre una promoción real de un 5 % dejaba la
+ * línea en cero, MembeGo consumía el 5 % que sí existe, y el recibo de aquí
+ * anotaba «FREE» con toda la cara de bueno.
+ *
+ * Y peor: `redeemMembership` solo manda el `membershipId`, sin el cliente. Con
+ * el beneficio viniendo de fuera, cualquier identificador de membresía de esa
+ * empresa valía sobre CUALQUIER venta — la membresía de un cliente pagando la
+ * excursión de otro.
+ *
+ * El tipo es la defensa, no un comentario: si aquí solo hay `id` y `type`, no
+ * hay cómo leer un `effect` de la peticion ni por descuido. El beneficio de
+ * verdad se vuelve a pedir a MembeGo dentro de `redeemForOrder`.
+ */
+export interface BeneficioPedido {
+  id: string;
+  type: BenefitType;
+}
+
 export interface RedeemInput {
   orderId: string;
-  benefit: EvaluatedBenefit;
-  /** Cuándo contestó MembeGo. Una evaluación vieja no sirve para canjear. */
-  evaluatedAt: string;
+  benefit: BeneficioPedido;
   /** La línea elegida; sin ella se usa la más cara. */
   bookingId?: string | null;
 }
@@ -194,6 +227,108 @@ export interface RedeemOutcome {
   bookingId: string;
   usesLeft: number | null;
   orderTotal: number;
+}
+
+/**
+ * EL BENEFICIO, TAL COMO MEMBEGO LO DESCRIBE AHORA MISMO.
+ *
+ * Se cruza por identificador Y por tipo contra los beneficios de ESTE cliente.
+ * Cruzar por identificador solo dejaría pasar una membresía pedida como
+ * promoción, y es el tipo el que decide a qué endpoint se llama.
+ *
+ * Devuelve `null` cuando el beneficio pedido no está entre los del cliente: eso
+ * cubre de una vez el que caducó, el que ya se gastó en otra sucursal y el que
+ * nunca fue suyo, y `redeemBlocker` lo cuenta como «elige el beneficio».
+ */
+async function beneficioVigente(
+  membegoCompanyId: string,
+  membegoClienteId: string,
+  pedido: BeneficioPedido
+): Promise<{ benefit: EvaluatedBenefit | null; evaluatedAt: string }> {
+  const evaluacion = await evaluateBenefits(membegoCompanyId, membegoClienteId);
+  const suyo = (evaluacion.benefits ?? []).find(
+    (b) => String(b.id) === String(pedido.id) && b.type === pedido.type
+  ) ?? null;
+  return { benefit: suyo, evaluatedAt: evaluacion.evaluatedAt };
+}
+
+/**
+ * La línea sobre la que se aplica: la pedida si SIRVE, y si no la más cara.
+ *
+ * Esto era `lines.find(...) ?? defaultLine(lines)`, y ese `find` a secas se
+ * salta el único invariante que `defaultLine` defiende: que la línea tenga
+ * importe. Una línea de cero —una cortesía, un infante solo, una que otra regla
+ * ya dejó en cero— entraba como elegida, `discountFor` devolvía cero sobre ella,
+ * y el canje seguía adelante: MembeGo gastaba el uso del cliente y la venta no
+ * bajaba ni un peso. El cliente paga lo mismo y tiene un uso menos.
+ *
+ * Que la pedida no valga no es motivo para rechazar el canje: hay una línea
+ * buena al lado y es la que cualquiera habría elegido a mano.
+ */
+function lineaElegida(lines: LineLike[], pedida?: string | null): LineLike | null {
+  if (pedida) {
+    const suya = lines.find((line) => line.id === pedida);
+    if (suya && Number(suya.total) > 0) return suya;
+  }
+  return defaultLine(lines);
+}
+
+/** Lo que MembeGo contesta al consumir, en la forma que el recibo necesita. */
+interface ConsumoRemoto {
+  remoteId: string;
+  usesLeft: number | null;
+  visitId: string | null;
+  ticket: string | null;
+  codigo: string | null;
+  unlimited: boolean;
+}
+
+async function consumirMembresia(
+  membegoCompanyId: string,
+  beneficio: EvaluatedBenefit,
+  servicio: string,
+  orderId: string,
+  idempotencyKey: string
+): Promise<ConsumoRemoto> {
+  const result = await redeemMembership({
+    membegoCompanyId,
+    membershipId: beneficio.id,
+    servicio,
+    notas: `Venta ${orderId}`,
+    idempotencyKey,
+  });
+  return {
+    remoteId: result.redemptionId,
+    // Ilimitada no son cero usos restantes: son «no aplica», y guardar cero
+    // haría que la ficha del cliente dijera que se le acabó.
+    usesLeft: result.unlimited ? null : result.usesLeft,
+    visitId: result.visitId,
+    ticket: result.ticketNumero,
+    codigo: result.codigo,
+    unlimited: result.unlimited,
+  };
+}
+
+async function consumirPromocion(
+  membegoCompanyId: string,
+  beneficio: EvaluatedBenefit,
+  servicio: string,
+  orderId: string,
+  idempotencyKey: string
+): Promise<ConsumoRemoto> {
+  const result = await redeemPromotion({
+    membegoCompanyId,
+    promotionId: beneficio.id,
+    servicio,
+    externalId: orderId,
+    idempotencyKey,
+  });
+  return {
+    remoteId: result.redemptionId,
+    usesLeft: result.usesLeft,
+    // Una promoción no deja visita ni ticket: son de la membresía.
+    visitId: null, ticket: null, codigo: null, unlimited: false,
+  };
 }
 
 /**
@@ -217,82 +352,146 @@ export async function redeemForOrder(
   const clienteId = order.customer_id ? await membegoClienteIdOf(companyId, order.customer_id) : null;
   const { rows, lines } = await linesOf(companyId, input.orderId);
 
-  // ¿Ya tiene un beneficio aplicado? Cada uso es UN servicio: dos beneficios
-  // sobre la misma venta consumirían dos usos por un solo servicio prestado.
-  const { data: previous } = await supabaseService()
+  /**
+   * ¿Ya tiene un beneficio aplicado? Cada uso es UN servicio: dos beneficios
+   * sobre la misma venta consumirían dos usos por un solo servicio prestado.
+   *
+   * Y el error de esta lectura se mira. Descartándolo, `previous` venía `null`,
+   * `alreadyRedeemed` salía `false` y la regla de «uno por venta» se apagaba
+   * sola justo cuando la base va mal: dos usos del cliente por un servicio, y
+   * ni un aviso. La regla no puede depender de que la consulta tenga suerte.
+   */
+  const { data: previous, error: errorDePrevios } = await supabaseService()
     .from("membego_redemption")
     .select("id")
     .eq("organization_id", companyId)
     .eq("order_id", input.orderId)
     .eq("status", "applied")
     .limit(1);
+  if (errorDePrevios) {
+    throw new TenantError(
+      "No se pudo comprobar si esta venta ya tiene un beneficio aplicado: no se canjea a ciegas.",
+      503
+    );
+  }
 
-  const block = redeemBlocker({
+  /**
+   * EL BENEFICIO SE LE VUELVE A PREGUNTAR A MEMBEGO, AQUÍ Y AHORA.
+   *
+   * La cabecera de este módulo dice que la elegibilidad no se guarda nunca y que
+   * se pregunta siempre en el momento. Canjear sobre el objeto que mandó el
+   * navegador no era preguntar en el momento: era creerle su copia. De la
+   * petición sobrevive el `id` —qué beneficio— y todo lo demás —si sirve, qué le
+   * hace a la factura, de quién es— sale de esta respuesta.
+   *
+   * Solo se pregunta cuando hay a quién preguntar. Sin configuración, sin enlace
+   * o sin cliente en MembeGo, el beneficio se queda en `null` y `redeemBlocker`
+   * dice la causa PRIMERA, que es la que el cajero puede arreglar o escalar.
+   */
+  const situacion = {
     configured: mb.configured,
     linked: mb.linked,
     membegoClienteId: clienteId,
-    benefit: input.benefit,
-    evaluatedAt: input.evaluatedAt,
     lines,
     alreadyRedeemed: (previous?.length ?? 0) > 0,
     orderStatus: order.status,
+  };
+
+  /**
+   * Primero lo que se sabe sin salir de aquí, y solo después se llama.
+   *
+   * `redeemBlocker` sin beneficio contesta exactamente las causas que no
+   * dependen de MembeGo —no configurado, no vinculado, cliente desconocido, ya
+   * canjeada, venta cerrada— y `no_benefit` es la marca de que llegó hasta él.
+   * Es una lista con un orden pensado y no se copia aquí: se le pregunta dos
+   * veces al mismo sitio.
+   *
+   * Sin esto, una venta ya canjeada gastaba una llamada a MembeGo para acabar
+   * contestando lo que ya se sabía — y si MembeGo estaba caído, contestaba «no
+   * hay conexión» en vez de «esta venta ya tiene un beneficio aplicado», que es
+   * lo que el cajero necesita leer para cobrar completo y seguir.
+   */
+  const antesDeLlamar = redeemBlocker({ ...situacion, benefit: null, evaluatedAt: "" });
+  if (antesDeLlamar && antesDeLlamar !== "no_benefit") {
+    throw new TenantError(
+      REDEEM_BLOCK_MESSAGE[antesDeLlamar],
+      antesDeLlamar === "already_redeemed" ? 409 : 400
+    );
+  }
+
+  const vigente = await beneficioVigente(mb.membegoCompanyId as string, clienteId as string, input.benefit);
+
+  const block = redeemBlocker({
+    ...situacion,
+    benefit: vigente.benefit,
+    evaluatedAt: vigente.evaluatedAt,
   });
   if (block) throw new TenantError(REDEEM_BLOCK_MESSAGE[block], block === "already_redeemed" ? 409 : 400);
 
-  const chosen = input.bookingId
-    ? lines.find((line) => line.id === input.bookingId) ?? defaultLine(lines)
-    : defaultLine(lines);
+  const beneficio = vigente.benefit as EvaluatedBenefit;
+  const chosen = lineaElegida(lines, input.bookingId);
   if (!chosen) throw new TenantError(REDEEM_BLOCK_MESSAGE.no_line, 400);
 
-  const effect = effectOf(input.benefit);
+  const effect = effectOf(beneficio);
   const discount = discountFor(effect, chosen.total);
-  const idempotencyKey = idempotencyKeyFor(input.orderId, input.benefit.id);
+  const idempotencyKey = idempotencyKeyFor(input.orderId, beneficio.id);
   const servicio = serviceLabel(chosen.label);
 
   // ── 1. Consumir en MembeGo. Si esto falla, la venta no se toca. ─────────
-  let remoteId = "";
-  let usesLeft: number | null = null;
+  let consumo: ConsumoRemoto;
   try {
-    if (input.benefit.type === "MEMBERSHIP") {
-      const result = await redeemMembership({
-        membegoCompanyId: mb.membegoCompanyId as string,
-        membershipId: input.benefit.id,
-        servicio,
-        notas: `Venta ${input.orderId}`,
-        idempotencyKey,
-      });
-      remoteId = result.redemptionId;
-      usesLeft = result.unlimited ? null : result.usesLeft;
-      await recordRedemption(companyId, ctx.userId, {
-        input, order, chosen, effect, discount, idempotencyKey, clienteId: clienteId as string,
-        membegoCompanyId: mb.membegoCompanyId, remoteId,
-        visitId: result.visitId, ticket: result.ticketNumero, codigo: result.codigo,
-        usesLeft, unlimited: result.unlimited,
-      });
-    } else {
-      const result = await redeemPromotion({
-        membegoCompanyId: mb.membegoCompanyId as string,
-        promotionId: input.benefit.id,
-        servicio,
-        externalId: input.orderId,
-        idempotencyKey,
-      });
-      remoteId = result.redemptionId;
-      usesLeft = result.usesLeft;
-      await recordRedemption(companyId, ctx.userId, {
-        input, order, chosen, effect, discount, idempotencyKey, clienteId: clienteId as string,
-        membegoCompanyId: mb.membegoCompanyId, remoteId,
-        visitId: null, ticket: null, codigo: null,
-        usesLeft, unlimited: false,
-      });
-    }
+    consumo = beneficio.type === "MEMBERSHIP"
+      ? await consumirMembresia(mb.membegoCompanyId as string, beneficio, servicio, input.orderId, idempotencyKey)
+      : await consumirPromocion(mb.membegoCompanyId as string, beneficio, servicio, input.orderId, idempotencyKey);
   } catch (err) {
     // El intento fallido también se guarda: sin él, un «no me aplicó el
     // descuento» no tiene dónde mirarse, y el motivo real de MembeGo se pierde.
     await recordFailure(companyId, ctx.userId, {
-      input, order, chosen, effect, idempotencyKey, clienteId, membegoCompanyId: mb.membegoCompanyId, err,
+      beneficio, order, chosen, effect, idempotencyKey, clienteId, membegoCompanyId: mb.membegoCompanyId, err,
     });
     throw err;
+  }
+  const { remoteId, usesLeft } = consumo;
+
+  /**
+   * EL USO YA SE GASTÓ. SI EL RECIBO NO SE PUEDE ESCRIBIR, NO SE MIENTE SOBRE ÉL.
+   *
+   * Esto estaba dentro del mismo `try` que la llamada a MembeGo, así que un fallo
+   * al escribir el recibo —la base caída, una columna que no cuadra— caía en el
+   * mismo `catch` y se anotaba como canje **fallido**. Y un canje fallido dice
+   * exactamente lo contrario de lo que había pasado: que no se consumió nada.
+   * Con esa fila delante, nadie va a ir a devolverle al cliente el uso que sí
+   * perdió, porque el registro asegura que no lo perdió.
+   *
+   * Ahora son dos pasos. Si el segundo falla, queda una fila de auditoría con el
+   * identificador del canje REMOTO —que es lo único con lo que se puede cuadrar
+   * o revertir a mano— y se lanza: sin recibo no se rebaja la venta, porque la
+   * regla de este módulo es que cada descuento tenga detrás un recibo.
+   */
+  try {
+    await recordRedemption(companyId, ctx.userId, {
+      beneficio, order, chosen, effect, discount, idempotencyKey,
+      clienteId: clienteId as string, membegoCompanyId: mb.membegoCompanyId, ...consumo,
+    });
+  } catch (err) {
+    await writeAudit({
+      companyId, userId: ctx.userId,
+      action: "membego_redemption_orphan",
+      entityType: "order", entityId: input.orderId,
+      severity: "warning",
+      description:
+        `MembeGo consumió el beneficio «${beneficio.nombre}» (canje ${remoteId}) y el recibo no se pudo guardar: ` +
+        "el cliente perdió el uso y la venta NO se rebajó. Hay que devolverlo desde el panel de MembeGo.",
+      metadata: {
+        benefit_id: beneficio.id, benefit_type: beneficio.type, redemption_id: remoteId,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+    throw new TenantError(
+      "MembeGo consumió el beneficio pero no se pudo guardar el recibo, así que la venta no se ha rebajado. " +
+      "Está anotado en la auditoría con el número de canje para devolverlo.",
+      500
+    );
   }
 
   // ── 2. Ahora sí: rebajar la línea y recalcular la venta. ────────────────
@@ -301,7 +500,7 @@ export async function redeemForOrder(
     await tenantUpdate(companyId, "booking", chosen.id, {
       discount_amount: round2(Number(row.discount_amount ?? 0) + discount),
       total_amount: round2(Math.max(0, Number(row.total_amount ?? 0) - discount)),
-      membego_benefit: input.benefit.nombre,
+      membego_benefit: beneficio.nombre,
       membego_discount: discount,
     });
     // El total de la venta se recalcula desde sus líneas: tocar la línea sin
@@ -313,9 +512,9 @@ export async function redeemForOrder(
     companyId, userId: ctx.userId,
     action: "membego_benefit_redeemed",
     entityType: "order", entityId: input.orderId,
-    description: `Beneficio MembeGo canjeado: ${input.benefit.nombre} · −${discount}`,
+    description: `Beneficio MembeGo canjeado: ${beneficio.nombre} · −${discount}`,
     metadata: {
-      benefit_id: input.benefit.id, benefit_type: input.benefit.type,
+      benefit_id: beneficio.id, benefit_type: beneficio.type,
       redemption_id: remoteId, discount, booking: chosen.id, uses_left: usesLeft,
     },
   });
@@ -323,7 +522,7 @@ export async function redeemForOrder(
   const refreshed = await loadOrderTotal(companyId, input.orderId);
   return {
     redemptionId: remoteId,
-    benefitName: input.benefit.nombre,
+    benefitName: beneficio.nombre,
     effectLabel: effect.label,
     discount,
     currency: String(order.currency || "usd"),
@@ -342,7 +541,7 @@ async function loadOrderTotal(companyId: string, orderId: string): Promise<numbe
 }
 
 interface RecordInput {
-  input: RedeemInput;
+  beneficio: EvaluatedBenefit;
   order: OrderRow;
   chosen: LineLike;
   effect: ReturnType<typeof effectOf>;
@@ -366,9 +565,9 @@ async function recordRedemption(companyId: string, userId: string, r: RecordInpu
     customer_id: r.order.customer_id,
     membego_cliente_id: r.clienteId,
     membego_company_id: r.membegoCompanyId,
-    benefit_type: r.input.benefit.type,
-    benefit_id: r.input.benefit.id,
-    benefit_name: r.input.benefit.nombre,
+    benefit_type: r.beneficio.type,
+    benefit_id: r.beneficio.id,
+    benefit_name: r.beneficio.nombre,
     redemption_id: r.remoteId,
     visit_id: r.visitId,
     ticket_numero: r.ticket,
@@ -392,7 +591,7 @@ async function recordFailure(
   companyId: string,
   userId: string,
   r: {
-    input: RedeemInput; order: OrderRow; chosen: LineLike; effect: ReturnType<typeof effectOf>;
+    beneficio: EvaluatedBenefit; order: OrderRow; chosen: LineLike; effect: ReturnType<typeof effectOf>;
     idempotencyKey: string; clienteId: string | null; membegoCompanyId: string | null; err: unknown;
   }
 ): Promise<void> {
@@ -407,9 +606,9 @@ async function recordFailure(
     customer_id: r.order.customer_id,
     membego_cliente_id: r.clienteId ?? "",
     membego_company_id: r.membegoCompanyId,
-    benefit_type: r.input.benefit.type,
-    benefit_id: r.input.benefit.id,
-    benefit_name: r.input.benefit.nombre,
+    benefit_type: r.beneficio.type,
+    benefit_id: r.beneficio.id,
+    benefit_name: r.beneficio.nombre,
     effect_kind: r.effect.kind,
     effect_label: r.effect.label,
     amount_discounted: 0,
@@ -439,14 +638,31 @@ export interface ReversalOutcome {
  * Se llama desde la cancelación de la reserva. Nunca lanza: una cancelación no
  * puede quedarse a medias porque MembeGo no conteste — la reserva tiene que
  * cancelarse igual y la incidencia queda anotada para resolverla.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * Y SE DEVUELVE LO DE LA RESERVA QUE SE CAE, NO LO DE LA VENTA ENTERA
+ *
+ * Esto barría todos los canjes aplicados de la orden. Quien lo llama es la
+ * cancelación de UNA reserva, así que en una venta de tres excursiones —una
+ * familia que se baja de la del jueves y hace las otras dos— la reversa se
+ * llevaba el beneficio aplicado a una línea que sigue viva: MembeGo le devolvía
+ * el uso al cliente, `restoreLine` le subía otra vez el importe a esa línea, y
+ * el total de la venta SUBÍA después de una cancelación. Si esa línea ya estaba
+ * pagada o ya se prestó, la operadora regaló el servicio y el uso volvió a la
+ * cuenta del cliente.
+ *
+ * Con `bookingId` se devuelve solo lo suyo. Los canjes sin reserva anotada —de
+ * antes de que la columna se llenara— se devuelven igual: no se puede saber de
+ * quién son, y dejar un beneficio sin devolver es peor que devolverlo de más.
  */
 export async function reverseForOrder(
   companyId: string,
   orderId: string,
   reason: string,
-  userId = ""
+  userId = "",
+  bookingId?: string | null
 ): Promise<ReversalOutcome[]> {
-  const { data } = await supabaseService()
+  const { data, error } = await supabaseService()
     .from("membego_redemption")
     .select("id,redemption_id,status,benefit_type,benefit_name,membego_company_id,booking_id,amount_discounted")
     .eq("organization_id", companyId)
@@ -454,7 +670,34 @@ export async function reverseForOrder(
     .eq("status", "applied")
     .limit(10);
 
-  const rows = data ?? [];
+  /**
+   * Una lectura que falla NO es «no había nada que devolver».
+   *
+   * Descartando el error, `data` venía `null`, esto devolvía una lista vacía y
+   * quien llama —que recorre la lista buscando avisos— no encontraba ninguno.
+   * La cancelación seguía tan contenta y el cliente se quedaba sin su uso, sin
+   * una línea en la auditoría ni en la consola. Aquí sí se dice, y se dice como
+   * lo que es: algo que hay que devolver a mano.
+   */
+  if (error) {
+    await writeAudit({
+      companyId, userId,
+      action: "membego_reversal_failed",
+      entityType: "order", entityId: orderId,
+      severity: "warning",
+      description: `No se pudo leer si esta venta tenía beneficios de MembeGo que devolver: ${error.message}`,
+      metadata: { booking: bookingId ?? null },
+    });
+    return [{
+      reversed: false, manual: true, restored: 0,
+      message: "No se pudo comprobar si había un beneficio de MembeGo que devolver: revísalo en su panel.",
+    }];
+  }
+
+  const todos = data ?? [];
+  const rows = bookingId
+    ? todos.filter((row) => !row.booking_id || String(row.booking_id) === String(bookingId))
+    : todos;
   const outcomes: ReversalOutcome[] = [];
 
   for (const row of rows) {

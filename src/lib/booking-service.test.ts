@@ -963,3 +963,95 @@ describe("lo que un tour center tiene autorizado vender", () => {
     expect(db.rows("sales_order")).toHaveLength(0);
   });
 });
+
+/* ═══════════════════════════ la salida es del producto que se vende ══ */
+
+describe("la salida tiene que ser de su producto", () => {
+  it("VENDER SAONA EN LA GUAGUA DEL BUGGY SE RECHAZA", async () => {
+    /**
+     * Nadie lo comprobaba, y es alcanzable desde fuera con datos publicados: el
+     * catálogo público da los identificadores de producto y `/availability` los
+     * de salida. Con el producto A y la salida de B, el pasajero ocupaba plaza
+     * en la guagua de B mientras el manifiesto de B lo listaba como cliente de
+     * A, y el precio salía de A con la fecha de B.
+     */
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-buggy", adults: 2 }],
+    })).rejects.toThrow(/no es de esa excursión/);
+  });
+
+  it("y se rechaza ANTES de tocar los contadores de la salida", async () => {
+    // `assertCapacity` recalcula y PERSISTE los contadores de la salida que se
+    // le diga: comprobar después habría dejado tocada la guagua equivocada.
+    const antes = db.row("departure", { _id: "sal-buggy" })!;
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-buggy", adults: 2 }],
+    })).rejects.toThrow();
+
+    const despues = db.row("departure", { _id: "sal-buggy" })!;
+    expect(despues.pending_pax ?? 0).toBe(antes.pending_pax ?? 0);
+    expect(despues.available_pax ?? null).toBe(antes.available_pax ?? null);
+    expect(db.rows("booking")).toHaveLength(0);
+  });
+
+  it("una línea buena y otra cruzada tumban la venta entera", async () => {
+    // No se escribe media venta: la que iba bien tampoco nace.
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [
+        { product_id: "prod-saona", departure_id: "sal-saona", adults: 2 },
+        { product_id: "prod-buggy", departure_id: "sal-saona", adults: 1 },
+      ],
+    })).rejects.toThrow(/no es de esa excursión/);
+    expect(db.rows("booking")).toHaveLength(0);
+    expect(db.rows("order")).toHaveLength(0);
+  });
+
+  it("cada producto con su salida pasa sin ruido", async () => {
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [
+        { product_id: "prod-saona", departure_id: "sal-saona", adults: 2 },
+        { product_id: "prod-buggy", departure_id: "sal-buggy", adults: 1 },
+      ],
+    });
+    expect(res.bookings).toHaveLength(2);
+  });
+
+  it("una salida SIN producto declarado se deja pasar", async () => {
+    // Las hay de antes de que la columna fuera obligatoria, y lo desconocido se
+    // queda como está: rechazarlas rompería ventas que hoy funcionan.
+    db = fakeDb({
+      ...catalogo(),
+      departure: [
+        { _id: "sal-vieja", departure_at: futuro(3), capacity: 30,
+          booked_pax: 0, pending_pax: 0, cutoff_hours: 0, status: "available" },
+      ],
+    });
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-vieja", adults: 1 }],
+    });
+    expect(res.bookings).toHaveLength(1);
+  });
+
+  it("una venta sin salida sigue siendo una venta", async () => {
+    // La reserva a fecha abierta no tiene salida que cuadrar.
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", adults: 2 }],
+    });
+    expect(res.bookings).toHaveLength(1);
+  });
+
+  it("una salida que no existe la sigue rechazando el cupo, con su mensaje", async () => {
+    // Dos comprobaciones diciendo lo mismo de dos maneras es peor que una:
+    // `assertCapacity` ya lo hacía y sigue siendo la que contesta.
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-inventada", adults: 1 }],
+    })).rejects.toThrow(/Salida no encontrada/);
+  });
+});

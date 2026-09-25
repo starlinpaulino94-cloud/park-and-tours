@@ -245,9 +245,12 @@ export async function cancelBookingFully(
   const ordenDeLaReserva = refId(booking.order);
   if (ordenDeLaReserva) {
     try {
+      // Con el identificador de ESTA reserva: la orden puede llevar tres
+      // excursiones y solo se cae una. Sin él, cancelar la del jueves devolvía
+      // el beneficio aplicado a la del sábado, que sigue en pie.
       const devoluciones = await reverseForOrder(
         ctx.companyId, ordenDeLaReserva,
-        options.reason || "Reserva cancelada", ctx.userId
+        options.reason || "Reserva cancelada", ctx.userId, id
       );
       for (const devolucion of devoluciones) {
         if (!devolucion.reversed) console.warn(`[cancel] beneficio MembeGo: ${devolucion.message}`);

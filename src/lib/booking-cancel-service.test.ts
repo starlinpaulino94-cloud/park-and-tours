@@ -31,7 +31,10 @@ vi.mock("@/lib/messaging/events", () => ({ notifyBookingCancelled: vi.fn() }));
 // El libro diario y MembeGo hablan con sistemas que aquí no existen y que, por
 // diseño, no pueden tumbar una cancelación.
 vi.mock("@/lib/ledger-events", () => ({ postPayment: vi.fn(), postSale: vi.fn() }));
-vi.mock("@/lib/membego-redemption-service", () => ({ reverseForOrder: vi.fn(async () => []) }));
+const beneficioDevuelto = vi.fn(async () => []);
+vi.mock("@/lib/membego-redemption-service", () => ({
+  reverseForOrder: (...a: unknown[]) => beneficioDevuelto(...(a as [])),
+}));
 
 import { cancelBookingFully, TERMINAL_STATES } from "@/lib/booking-cancel-service";
 
@@ -318,5 +321,24 @@ describe("una cancelación no deja saldo, cobre lo que cobre", () => {
     expect(Number(viva.paid_amount), "la reserva viva no ha pagado nada").toBe(0);
     expect(Number(viva.balance_amount)).toBe(200);
     expect(Number(db.row("order", { _id: "ord-1" })!.balance)).toBe(200);
+  });
+});
+
+describe("el beneficio de MembeGo que llevaba esta reserva", () => {
+  it("se devuelve nombrando LA RESERVA, no solo la venta", async () => {
+    /**
+     * Una orden puede llevar tres excursiones y caerse una sola. Sin el
+     * identificador de la reserva, `reverseForOrder` barría todos los canjes de
+     * la venta: el uso volvía al cliente, la línea que sigue viva recuperaba su
+     * importe, y el total SUBÍA después de una cancelación.
+     */
+    const b = vendida();
+    beneficioDevuelto.mockClear();
+    await cancelBookingFully(ctx, b as never, { reason: "El cliente no viaja" });
+    expect(beneficioDevuelto).toHaveBeenCalledTimes(1);
+    const args = beneficioDevuelto.mock.calls[0] as unknown[];
+    expect(args[0]).toBe(ORG);
+    expect(args[1], "la venta").toBe("ord-1");
+    expect(args[4], "la reserva que se cae no viajó").toBe("res-1");
   });
 });

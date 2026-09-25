@@ -4252,7 +4252,10 @@ describe("canje de beneficios MembeGo: que el descuento lo respalde alguien", ()
     const cliente = sinComentarios("src/lib/membego-platform.ts");
     expect(cliente).toMatch(/"Idempotency-Key": options\.idempotencyKey/);
     const servicio = sinComentarios("src/lib/membego-redemption-service.ts");
-    expect(servicio).toMatch(/idempotencyKeyFor\(input\.orderId, input\.benefit\.id\)/);
+    // La clave sale del beneficio que MEMBEGO confirmó, no del que mandó el
+    // navegador: es el mismo identificador —se cruzan por él— y además deja
+    // dicho de dónde viene todo lo demás del beneficio.
+    expect(servicio).toMatch(/idempotencyKeyFor\(input\.orderId, beneficio\.id\)/);
   });
 
   it("se piden los dos permisos al emitir el token", () => {
@@ -9728,5 +9731,154 @@ describe("las defensas del monedero que ninguna prueba puede ver correr", () => 
      */
     expect(cuerpoDe("src/lib/gift-card-service.ts"))
       .toMatch(/\.\.\.\(input\.orderId \? \{ order: input\.orderId \} : \{\}\),/);
+  });
+});
+
+describe("el beneficio de MembeGo lo decide MembeGo, no el cuerpo de la petición", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * LA REGLA QUE ESTAS GUARDAS SOSTIENEN
+   *
+   * `RedeemInput.benefit` era el `EvaluatedBenefit` entero que mandaba el
+   * navegador: con su `eligible` y con su `effect` dentro. O sea que el cliente
+   * decidía si tenía derecho y cuánto se le rebajaba. Las pruebas de
+   * comportamiento ya comprueban el resultado; estas fijan la FORMA, que es lo
+   * que impide que vuelva: si mañana alguien ensancha el tipo o deja de
+   * reevaluar, el efecto del cuerpo vuelve a mandar y ninguna prueba de
+   * resultado lo notaría hasta que alguien mire la caja.
+   */
+  it("el tipo de entrada solo admite CUÁL, nunca CUÁNTO", () => {
+    const src = cuerpoDe("src/lib/membego-redemption-service.ts");
+    const at = src.indexOf("export interface BeneficioPedido {");
+    expect(at, "el tipo estrecho de entrada desapareció").toBeGreaterThan(-1);
+    const cuerpo = src.slice(at, src.indexOf("}", at));
+    expect(cuerpo).toMatch(/id: string;/);
+    expect(cuerpo).toMatch(/type: BenefitType;/);
+    expect(cuerpo, "por ahí vuelve a entrar el descuento del cliente").not.toMatch(/effect|eligible|nombre|usesLeft/);
+    expect(src).toMatch(/benefit: BeneficioPedido;/);
+  });
+
+  it("y la ruta lo recorta antes de llamar al servicio", () => {
+    // La pantalla manda el beneficio entero porque lo tiene en la mano; lo que
+    // no puede es pasar de largo.
+    const src = cuerpoDe("src/app/api/membego/redeem/route.ts");
+    expect(src).toMatch(/benefit: \{ id: String\(body\.benefit\.id\), type: body\.benefit\.type \}/);
+    expect(src, "el beneficio del cuerpo viaja entero otra vez").not.toMatch(/benefit: body\.benefit,/);
+  });
+
+  it("el beneficio con el que se canjea sale de una llamada a MembeGo", () => {
+    const src = cuerpoDe("src/lib/membego-redemption-service.ts");
+    expect(src).toMatch(/const vigente = await beneficioVigente\(/);
+    expect(src).toMatch(/const beneficio = vigente\.benefit as EvaluatedBenefit;/);
+    // Y el efecto y la llamada remota salen de ÉL, no de la petición.
+    expect(src).toMatch(/const effect = effectOf\(beneficio\);/);
+    expect(src).toMatch(/beneficio\.type === "MEMBERSHIP"/);
+  });
+
+  it("y se cruza por identificador Y por tipo contra los de ESE cliente", () => {
+    /**
+     * Por identificador solo dejaría pasar una membresía pedida como promoción,
+     * y es el tipo el que decide a qué endpoint de MembeGo se llama. Y contra
+     * los de ese cliente porque `redeemMembership` manda el identificador de la
+     * membresía SIN el cliente: sin este cruce, la membresía de uno pagaba la
+     * excursión de otro.
+     */
+    const src = cuerpoDe("src/lib/membego-redemption-service.ts");
+    expect(src).toMatch(/String\(b\.id\) === String\(pedido\.id\) && b\.type === pedido\.type/);
+    expect(src).toMatch(/await evaluateBenefits\(membegoCompanyId, membegoClienteId\)/);
+  });
+
+  it("el recibo se escribe FUERA del try de la llamada remota", () => {
+    /**
+     * Estando dentro, un fallo de base al guardar el recibo caía en el mismo
+     * `catch` y se anotaba como canje FALLIDO — una fila diciendo que el cliente
+     * no perdió el uso, cuando sí lo perdió. Es un orden, no un valor: ninguna
+     * prueba de resultado ve la diferencia si alguien vuelve a juntarlos.
+     */
+    const src = cuerpoDe("src/lib/membego-redemption-service.ts");
+    const remota = src.indexOf("consumo = beneficio.type === \"MEMBERSHIP\"");
+    const fallo = src.indexOf("await recordFailure(companyId, ctx.userId, {");
+    const recibo = src.indexOf("await recordRedemption(companyId, ctx.userId, {");
+    expect(remota).toBeGreaterThan(-1);
+    expect(fallo, "el intento fallido ya no se anota junto a la llamada").toBeGreaterThan(remota);
+    expect(recibo, "el recibo volvió dentro del try de la llamada remota").toBeGreaterThan(fallo);
+    /**
+     * Y la fila de «fallido» se escribe en UN solo sitio.
+     *
+     * Sin esto la guarda se contentaba con el primero: añadir un segundo
+     * `recordFailure` en el catch del recibo —que es exactamente el fallo de
+     * antes, una fila diciendo que el cliente no perdió el uso— la dejaba pasar,
+     * porque el primero seguía estando donde tenía que estar. Y ninguna prueba
+     * de comportamiento lo ve: en el escenario del recibo roto, esa segunda
+     * escritura va a la MISMA tabla rota y no llega a escribir nada.
+     */
+    expect(src.split("await recordFailure(").length - 1,
+      "hay más de un sitio que anota el canje como fallido").toBe(1);
+  });
+});
+
+describe("las lecturas del motor público que no pueden mentir por omisión", () => {
+  /**
+   * Las tres tienen su prueba de comportamiento con el doble de la base rota.
+   * Esta guarda existe para lo que aquella no ve: que el `error` se siga
+   * DESTRUCTURANDO. Quitar `error` del destructuring no rompe ninguna prueba que
+   * no lo provoque a propósito, y devuelve exactamente el fallo de antes.
+   */
+  it("las cuatro miran el error que PostgREST devuelve en vez de lanzar", () => {
+    const src = cuerpoDe("src/lib/public-booking-service.ts");
+    expect(src, "la empresa").toMatch(/const \{ data, error \} = await supabaseService\(\)\s*\.from\("organizations"\)/);
+    expect(src, "el catálogo").toMatch(/const \{ data: rows, error: errorDelCatalogo \}/);
+    expect(src, "las salidas").toMatch(/const \{ data, error \} = await supabaseService\(\)\s*\.from\("departure"\)/);
+    expect(src, "la ficha del cliente").toMatch(/if \(error\) throw new Error\(`No se pudo buscar la ficha del cliente/);
+  });
+
+  it("y la que YA existía sigue sin lanzar, que es lo contrario y es correcto", () => {
+    /**
+     * Guardar la petición original va DESPUÉS de crear la reserva. Contestar
+     * error ahí haría que el cliente volviera a reservar y pagara dos veces por
+     * no haber podido guardar una copia del formulario. `tryWrite` es la
+     * diferencia, y no es un descuido de las otras.
+     */
+    const src = cuerpoDe("src/lib/public-booking-service.ts");
+    expect(src).toMatch(/await tryWrite\("guardar la petición original de la reserva"/);
+  });
+});
+
+describe("la salida de una reserva es del producto que se vende", () => {
+  it("se comprueba antes de que el cupo toque los contadores", () => {
+    /**
+     * `assertCapacity` recalcula y PERSISTE los contadores de la salida que se le
+     * diga. Comprobar después dejaría tocada la guagua equivocada antes de
+     * rechazar, y eso una prueba de resultado sobre la venta rechazada no lo ve
+     * —la venta no nace igual—.
+     */
+    const src = cuerpoDe("src/lib/booking-service.ts");
+    const coherencia = src.indexOf("await assertSalidaDelProducto(companyId, input);");
+    const cupo = src.indexOf("await assertCapacity(companyId, departureId, pax,");
+    expect(coherencia, "la comprobación desapareció").toBeGreaterThan(-1);
+    expect(cupo).toBeGreaterThan(coherencia);
+  });
+
+  it("y vive en la puerta única, no en la ruta pública", () => {
+    // El punto de venta, el portal del socio y la API entran por el mismo sitio
+    // y tenían el mismo hueco: arreglarlo en el motor público habría dejado tres
+    // de cuatro puertas abiertas.
+    expect(cuerpoDe("src/lib/public-booking-service.ts"))
+      .not.toMatch(/assertSalidaDelProducto/);
+  });
+});
+
+describe("la reversa de MembeGo es de la reserva que se cae", () => {
+  it("la cancelación pasa el identificador de SU reserva", () => {
+    /**
+     * Sin él, cancelar una excursión de una venta de tres devolvía el beneficio
+     * aplicado a otra que sigue viva: el uso volvía al cliente, la línea viva
+     * subía de precio, y el total de la venta subía después de una cancelación.
+     */
+    const src = cuerpoDe("src/lib/booking-cancel-service.ts");
+    const at = src.indexOf("await reverseForOrder(");
+    expect(at).toBeGreaterThan(-1);
+    const llamada = src.slice(at, src.indexOf(");", at));
+    expect(llamada, "la reversa volvió a ser de la venta entera").toMatch(/ctx\.userId, id/);
   });
 });

@@ -309,6 +309,74 @@ async function estimateOrderTotal(
   return round2(total);
 }
 
+/**
+ * LA SALIDA TIENE QUE SER DEL PRODUCTO QUE SE VENDE.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LO QUE PASABA
+ *
+ * Nadie lo comprobaba. La salida se cargaba por su identificador, acotada a la
+ * empresa —eso sí— y se usaba para el precio, para el cupo y para la reserva,
+ * sin mirar ni una vez si esa salida es del producto de la línea.
+ *
+ * Y es alcanzable desde fuera con datos PUBLICADOS: el catálogo público da los
+ * identificadores de producto, `/availability?product=` da los de salida, y una
+ * petición con el producto A y la salida de B pasa las dos validaciones que hay
+ * —el producto está publicado, la salida existe y tiene plaza—. El resultado es
+ * un pasajero apuntado en la guagua de B ocupando plaza de B, mientras el
+ * manifiesto de B lo lista como cliente de A; el precio sale del producto A con
+ * la fecha de B; y la salida de A no sabe que vendió nada.
+ *
+ * Dentro pasa lo mismo con menos malicia: un selector de salidas que quedó con
+ * la lista del producto anterior manda exactamente ese par.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * DÓNDE VA
+ *
+ * Aquí, en la puerta única, y no en la ruta pública: el punto de venta, el
+ * portal del socio y la API entran por el mismo sitio y tienen el mismo hueco.
+ * Arreglarlo en el motor público habría dejado tres de cuatro puertas abiertas.
+ *
+ * Una salida SIN producto no se rechaza: las hay de antes de que la columna
+ * fuera obligatoria, y lo desconocido se queda como está. Y una salida que no
+ * aparece tampoco se rechaza aquí —`assertCapacity` ya lo hace, y con su
+ * mensaje— para no tener dos comprobaciones diciendo lo mismo de dos maneras.
+ */
+async function assertSalidaDelProducto(companyId: string, input: CreateOrderInput): Promise<void> {
+  const pares = (input.items ?? [])
+    .filter((item) => typeof item.departure_id === "string" && item.departure_id !== "")
+    .map((item) => ({
+      departureId: String(item.departure_id),
+      productId: String(item.product_id || ""),
+    }));
+  if (pares.length === 0) return;
+
+  const ids = [...new Set(pares.map((par) => par.departureId))];
+  const salidas = await tenantQuery<Departure>(companyId, "departure", {
+    _filter: { _id: { in: ids } }, _limit: 200,
+  });
+  const productoDeLaSalida = new Map<string, string | null>();
+  for (const salida of salidas) {
+    productoDeLaSalida.set(String(salida._id), refId(salida.product) ?? null);
+  }
+
+  for (const par of pares) {
+    const suyo = productoDeLaSalida.get(par.departureId);
+    // `undefined` es «no apareció»: lo cuenta `assertCapacity`. `null` es «no
+    // tiene producto declarado», y eso se deja pasar.
+    if (suyo === undefined || suyo === null) continue;
+    if (par.productId && suyo !== par.productId) {
+      throw Object.assign(
+        new Error(
+          "La salida elegida no es de esa excursión: no se puede reservar una excursión " +
+          "en la salida de otra. Vuelve a elegir la fecha."
+        ),
+        { status: 400 }
+      );
+    }
+  }
+}
+
 /** La salida más próxima del pedido, que acota hasta cuándo se retiene la plaza. */
 async function firstDeparture(companyId: string, input: CreateOrderInput): Promise<string | null> {
   const ids = input.items
@@ -476,6 +544,15 @@ export async function createOrderWithBookings(
     const desajuste = desajusteDeAtribucion(fichaDelVendedor ?? null, input.partner_id ?? null);
     if (desajuste) throw Object.assign(new Error(desajuste), { status: 400 });
   }
+
+  /**
+   * Y la salida de cada línea tiene que ser de su producto.
+   *
+   * Va ANTES del cupo a propósito: `assertCapacity` apunta y persiste los
+   * contadores de la salida que se le diga, así que comprobar después habría
+   * dejado los contadores de la guagua equivocada tocados antes del rechazo.
+   */
+  await assertSalidaDelProducto(companyId, input);
 
   // ---- validate capacity before writing anything --------------------------
   // AUD-B01: aggregate requested pax PER DEPARTURE across all items. Previously

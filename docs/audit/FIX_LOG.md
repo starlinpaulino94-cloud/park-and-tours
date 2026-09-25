@@ -3675,3 +3675,110 @@ Y la tabla dice dos cosas más que no se preguntaban:
 - **Quedan diez servicios sin ejecutar**, ~2.900 líneas: `analytics`,
   `attribution`, `import`, `membego`, `membego-redemption`, `plan`,
   `public-booking`, `quote`, `schedule` y `seller-goals`.
+
+### Ola 9.4 — las dos puertas por las que entra una venta desde fuera (3 de 3 lotes)
+
+`public-booking-service.ts` (387 líneas) y `membego-redemption-service.ts` (596),
+los dos caminos por los que entra dinero desde fuera de la empresa: un
+desconocido en internet y una integración de fidelización. Ninguno de los dos se
+había ejecutado nunca en una prueba.
+
+- **EL DESCUENTO DE MEMBEGO LO PONÍA EL NAVEGADOR.** `POST /api/membego/redeem`
+  recibe el beneficio en el cuerpo, y lo pasaba **entero** al servicio: su
+  `eligible` y su `effect` incluidos. O sea que quien llamaba decidía si el
+  cliente tenía derecho y **cuánto se le rebajaba**. Un `POST` con
+  `effect: { kind: "FREE" }` sobre una promoción real del 5 % dejaba la línea en
+  cero: MembeGo consumía el 5 % que sí existe, la venta bajaba el 100 %, y el
+  recibo de aquí anotaba «FREE» con toda la cara de bueno. Lo pide `requireAtLeast(ctx, "seller")`,
+  y desde 5.1 «seller» incluye a los vendedores de un tour center.
+  Y había una segunda mitad: `redeemMembership` manda a MembeGo el
+  `membershipId` **sin el cliente**, así que con el beneficio viniendo de fuera,
+  cualquier identificador de membresía de esa empresa valía sobre **cualquier**
+  venta — la membresía de uno pagando la excursión de otro.
+  El arreglo es que `redeemForOrder` vuelva a llamar a `evaluateBenefits` y cruce
+  por identificador **y tipo** contra los beneficios de **ese** cliente; de la
+  petición solo sobrevive cuál. Y no es un comentario: `RedeemInput.benefit` pasó
+  a ser `{ id, type }`, así que no hay forma de leer un `effect` de la petición ni
+  por descuido. La cabecera del módulo ya decía que la elegibilidad se pregunta
+  «siempre, en el momento» — canjear sobre la copia del navegador no era
+  preguntar en el momento, era creerle.
+- **UNA EXCURSIÓN SE PODÍA RESERVAR EN LA GUAGUA DE OTRA.** Nadie comprobaba que
+  `departure_id` fuera del `product_id` de la línea. La salida se cargaba por su
+  identificador —acotada a la empresa, eso sí— y se usaba para el precio, el cupo
+  y la reserva sin mirar de qué producto es. Se llega desde fuera con datos
+  **publicados**: el catálogo público da los identificadores de producto,
+  `/availability?product=` los de salida, y una petición con el producto A y la
+  salida de B pasa las dos validaciones que había. El pasajero acaba ocupando
+  plaza en la guagua de B mientras el manifiesto de B lo lista como cliente de A,
+  el precio sale de A con la fecha de B, y la salida de A no sabe que vendió
+  nada. Dentro pasa lo mismo con menos malicia: un selector que quedó con la
+  lista del producto anterior manda ese par exacto.
+  Va en `createOrderWithBookings`, la puerta única, y **antes** del cupo:
+  `assertCapacity` recalcula y persiste los contadores de la salida que se le
+  diga, así que comprobar después habría dejado tocada la guagua equivocada antes
+  de rechazar. Arreglarlo en el motor público habría dejado tres de cuatro
+  puertas abiertas —el punto de venta, el portal del socio y la API entran por el
+  mismo sitio—.
+- **CANCELAR UNA RESERVA DEVOLVÍA EL BENEFICIO DE OTRA.** `reverseForOrder` barría
+  todos los canjes aplicados de la **venta**, y quien la llama es la cancelación
+  de **una reserva**. En una orden de tres excursiones —una familia que se baja de
+  la del jueves y hace las otras dos— la reversa se llevaba el beneficio aplicado
+  a una línea que sigue viva: MembeGo le devolvía el uso al cliente,
+  `restoreLine` le subía el importe a esa línea, y el total de la venta **subía**
+  después de una cancelación. Si esa línea ya estaba pagada o ya se prestó, la
+  operadora regaló el servicio y el uso volvió a la cuenta del cliente. Ahora
+  viaja el identificador de la reserva. Los canjes **sin** reserva anotada se
+  devuelven igual: no se puede saber de quién son, y dejar un beneficio sin
+  devolver es peor que devolverlo de más.
+- **UN CANJE CONSUMIDO SIN RECIBO SE ANOTABA COMO FALLIDO**, que dice exactamente
+  lo contrario de lo que pasó. La escritura del recibo estaba dentro del mismo
+  `try` que la llamada a MembeGo, así que un fallo de base al guardarlo caía en
+  el mismo `catch` y dejaba una fila `status: "failed"` — una fila asegurando que
+  el cliente **no** perdió el uso, cuando sí lo perdió. Con eso delante nadie va a
+  ir a devolvérselo. Son dos pasos ahora: si el segundo falla, queda una
+  auditoría `membego_redemption_orphan` con el identificador del canje **remoto**,
+  que es lo único con lo que se puede cuadrar o revertir a mano.
+- **Cuatro lecturas que se tragaban su error.** PostgREST no lanza: resuelve
+  `{ data: null, error }`, y descartar el `error` convierte «no se pudo leer» en
+  «no hay». Aquí valía cuatro cosas distintas:
+  la empresa → la página pública de una operadora viva contestaba **404** por un
+  hipo de la base, que es la respuesta más cara de todas —el cliente que hizo
+  clic en el anuncio cree que cerraron, y el 404 es lo que se queda en los
+  índices—; el catálogo → la página se dibujaba entera, con su logo y su
+  teléfono, y **sin nada que comprar**, y la caché de la ruta lo servía otro medio
+  minuto; las salidas → «no hay fechas disponibles» sobre una excursión que sale
+  todos los días; y la ficha del cliente → **la única que cuesta dinero**: caía de
+  largo hasta el `insert`, creaba una ficha duplicada y la marcaba como
+  `created`, que es justo lo que distingue «cliente captado» de «cliente que
+  vuelve». Un repetidor contado como captación le apunta al conserje del hotel una
+  captación que no hizo, y las captaciones se pagan.
+  La quinta lectura de ese fichero **no** se tocó, y es lo contrario a propósito:
+  guardar la petición original va después de crear la reserva, y contestar error
+  ahí haría que el cliente volviera a reservar y pagara dos veces por no haber
+  podido guardar una copia del formulario. `tryWrite` es la diferencia.
+- **Y dos más pequeñas del mismo canje:** la regla de «un beneficio por venta» se
+  apagaba sola cuando la lectura de canjes previos fallaba (dos usos del cliente
+  por un servicio, sin un aviso); y la línea elegida por el cajero entraba con un
+  `find` a secas, saltándose el único invariante que `defaultLine` defiende —que
+  tenga importe—, así que con una línea de cortesía elegida el uso se gastaba y la
+  venta no bajaba ni un peso.
+- **Lo que NO se tocó, y es una decisión:** `customer.status` admite `blacklist`
+  desde que existe la tabla y **nadie lo lee, en ninguna parte del sistema**. El
+  motor público reutiliza la ficha por correo o teléfono sin mirarlo, pero eso no
+  es un fallo de este servicio: es una función que no está construida, y
+  construirla es su propia ola —hay que decidir qué hace el mostrador cuando el
+  cliente está delante—. Queda dicho.
+- **Una guarda no mordió a la primera**, y por una razón que merece quedar
+  escrita: la que fija que el recibo se escribe **fuera** del `try` de la llamada
+  remota miraba el primer `recordFailure` del fichero. Añadir un **segundo** en el
+  `catch` del recibo —que es exactamente el fallo de antes— la dejaba pasar,
+  porque el primero seguía donde tenía que estar. Y ninguna prueba de
+  comportamiento lo ve: en el escenario del recibo roto, esa segunda escritura va
+  a la **misma tabla rota** y no llega a escribir nada. La guarda pasó a exigir
+  que haya **un solo sitio** que anote un canje como fallido.
+- **Mutación: veinticuatro, las veinticuatro muertas.**
+- **Quedan ocho servicios sin ejecutar**, ~2.300 líneas: `analytics`,
+  `attribution`, `import`, `membego`, `plan`, `quote`, `schedule` y
+  `seller-goals`. Más `membego-service.ts` (550 líneas, el enlace y los
+  webhooks), que entró en el inventario como parte de MembeGo pero es un servicio
+  aparte y sigue sin pruebas propias.

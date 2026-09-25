@@ -101,6 +101,7 @@ export const ACCION: Record<string, string> = {
   drafts_reconciled: "Borradores conciliados",
   invoice_ncf_burned: "NCF quemado sin emitir",
   membego_benefit_redeemed: "Beneficio de MembeGo canjeado",
+  membego_redemption_orphan: "Beneficio de MembeGo consumido sin recibo",
   membego_reversal_failed: "Reverso de MembeGo fallido",
   membego_reversal_manual: "Reverso de MembeGo manual",
   membego_unlinked: "MembeGo desvinculado",
