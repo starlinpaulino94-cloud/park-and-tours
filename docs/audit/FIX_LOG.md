@@ -4387,3 +4387,97 @@ caros que hay porque se descubre en producción.
   medido, y se apunta aquí para no repetirlo: los índices de las seis tablas
   calientes están bien y las ayudas de inquilino son `stable`.
 - **No hay migración en esta ola** y no hay nada que ejecutar en la base.
+
+### Ola 9.12 — los techos sobre el dinero y sobre lo que se declara
+
+**La misma familia de la ola anterior, ahora donde duele.** Los barridos de
+9.11 TRATABAN filas: quedarse corto y avisar es lo correcto, porque diecinueve
+mil filas tratadas son diecinueve mil cosas hechas bien. Estos once topes
+SUMAN. El resultado es un número —lo que el cajero tiene que tener en el cajón,
+lo que se declara a Hacienda, lo que se le paga al proveedor— y una lista a
+medias no es un resultado parcial: es un número equivocado presentado como el
+bueno. **Nadie reintenta lo que no sabe que falta.**
+
+**1. El arqueo de caja.** `recalcCashSession` calculaba `expected_cash` —el
+dinero que se le exige al cajero al cerrar— leyendo mil movimientos y mil
+cobros. En un kiosco de parque cada venta deja su movimiento, así que mil se
+pasan en un día bueno. Pasado el tope, el número guardado era MENOR que el real
+y al cerrar aparecía un **sobrante**; si lo truncado eran los retiros, un
+**faltante**. En los dos casos el sistema acusa a una persona con un número
+calculado a medias y guardado como bueno. Y `loadCashClose` —lo que se enseña—
+tenía el mismo tope por separado, así que pantalla y sesión podían dar cifras
+distintas sin que nada lo explicara.
+
+**2. La declaración a la DGII.** `load607`, `load606` y `load608` leían tres mil
+filas, **ordenadas por fecha ascendente**. Una operadora que emita más de tres
+mil facturas al mes —cien al día, normal vendiendo entradas— presentaba un 607
+al que le faltaban los ÚLTIMOS DÍAS del mes. No por azar: el orden es
+ascendente, así que el recorte siempre caía en el final del período. Y el peor
+de los tres era el desglose por forma de pago (`_limit: 2000`): una factura
+cuyos cobros quedaran fuera no daba error ni faltaba del archivo — salía
+declarada como **venta a crédito**. El 607 cuadraba en importe total y mentía
+justo en la columna que la DGII cruza contra los bancos.
+
+**3. Las liquidaciones.** Seis topes sobre lo que se paga: los candidatos del
+proveedor, su estado de cuenta, el pendiente por proveedor, el estado de cuenta
+del vendedor, la generación de la liquidación y la conciliación. Aquí no se
+perdían filas —siguen reclamables y entran en la siguiente— pero el PAPEL decía
+cubrir un período y cubría una parte. Un transportista que cuadra su mes contra
+ese papel encuentra una diferencia que la operadora no sabe explicar. Dos casos
+sí eran pérdida de verdad: `pay` dejaba las comisiones que no cabían en
+`settled` **para siempre** (pagadas de verdad, sin marcar, y la generación solo
+mira `pending` y `approved`, así que no vuelven nunca), y `confirm` comparaba la
+factura del proveedor contra un devengo corto e **inventaba una disputa** contra
+quien había facturado bien.
+
+**La solución: `leerTodoElRecurso`, que LANZA.** Es la diferencia deliberada con
+`barridoVigilado` de 9.11. Allí el truncamiento es un incidente y el trabajo
+sigue. Aquí no sale número: un arqueo que no se puede cuadrar se arregla
+mirándolo; un arqueo mal cuadrado se arregla despidiendo a alguien. El techo es
+más bajo —diez mil frente a veinte mil— porque aquí no hay nada que trocear.
+
+- **Todas las lecturas paginan con orden TOTAL**: la clave que importa más el
+  desempate por `_id`. Sin desempate, dos páginas consecutivas pueden repetir
+  una fila y saltarse otra —varias facturas comparten `issued_at` al segundo—, y
+  en una suma eso no se ve: sale un importe que no cuadra con nada. En la
+  declaración serían un NCF declarado dos veces y otro sin declarar; en la
+  liquidación, un servicio pagado dos veces.
+- **Y no se rinde por caber EXACTAMENTE en el techo.** La primera versión sí, y
+  lo cazó su propia prueba: con mil filas y páginas de quinientas, la última
+  página está llena y no se distingue de «hay más». Ahora pregunta por una sola
+  fila más antes de fallar. Un error que salta sin hacer falta acaba siempre
+  igual: alguien sube el número sin mirar por qué saltaba.
+
+**El doble de inquilino perdonaba, otra vez, el error que se estaba probando.**
+`fake-tenant` ignoraba `_offset` —así que una lectura de la página 2 recibía
+otra vez la página 1, y la prueba de un bucle que no avanza habría salido en
+verde— y se quedaba con la PRIMERA clave de `_sort`, tirando el desempate. Los
+dos arreglados, y ahora el doble tiene su propio fichero de pruebas
+(`src/test/fake-tenant.test.ts`, 6 casos): un doble sin pruebas es una segunda
+implementación sin pruebas, y cuando se desvía no falla — pone en verde justo lo
+que tenía que ponerse rojo. Es la segunda ola seguida en la que el doble es
+parte del hallazgo.
+
+- **Pruebas nuevas: 47.** Ocho del módulo, cinco del arqueo, cinco de la DGII,
+  cuatro del proveedor, ocho del vendedor (fichero nuevo: `loadSellerStatement`
+  **no tenía ninguna prueba**, y es la nómina de una persona), seis del doble y
+  once guardas de estructura. Todas suman dinero en vez de contar filas: un
+  estado de cuenta con mil líneas de mil trescientas y uno con las mil
+  trescientas dan el mismo tipo de respuesta y distinto importe.
+- **Mutación: 25 de 25 muertas.** Pero con una salvedad que conviene tener
+  escrita: **corriendo SOLO las pruebas de comportamiento, sin las guardas de
+  estructura, mueren 19 de 25**. Las seis que dependen de la guarda son la
+  generación de la liquidación, el cierre de comisiones y de servicios en `pay`,
+  la conciliación en `confirm` —tres rutas que no tienen ninguna prueba de
+  comportamiento, ni de esto ni de nada— y dos de orden que el doble **no puede**
+  reproducir: `Array.prototype.sort` es estable en V8, así que quitar el
+  desempate no hace que dos páginas se solapen en el doble aunque sí lo haga en
+  Postgres. Esas dos quedan sostenidas por la guarda a sabiendas.
+- **Lo que quedó fuera a propósito.** Hay más topes de cuatro cifras en el
+  código —`octo-service`, `hr-service`, `dispatch-service`, `voice-service`,
+  `purchasing-service`, `availability`, `allotment-service`,
+  `inventory-valuation`, `superadmin/stats` y `superadmin/companies`—. No son
+  dinero que sale ni declaración que se presenta, así que van en otra ola; el más
+  llamativo es `superadmin/stats` con `.limit(5000)` sobre las reservas del mes,
+  que es la cifra de negocio de la propia plataforma.
+- **No hay migración en esta ola** y no hay nada que ejecutar en la base.

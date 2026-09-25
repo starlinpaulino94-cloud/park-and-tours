@@ -42,6 +42,7 @@ vi.mock("@/lib/notify-service", () => ({ notify: vi.fn(), notifyRoles: vi.fn() }
 
 import {
   generateSupplierSettlement, cancelBookingCosts, pendingBySupplier,
+  loadSupplierStatement,
 } from "@/lib/supplier-settlement-service";
 
 const ORG = "org-1";
@@ -216,5 +217,88 @@ describe("dos liquidaciones a la vez", () => {
     expect(deCoste("cost-1").settlement, "el primero se lo quedó quien llegó antes").toBe("liq-de-otro");
     expect(r.claimed, "esta liquidación solo cuenta lo que SÍ se llevó").toBe(1);
     expect(r.services).toBe(800);
+  });
+});
+
+
+/**
+ * UN PROVEEDOR CON MÁS DE MIL SERVICIOS (ola 9.12).
+ *
+ * Estas tres lecturas tenían tope fijo —1 000, 1 000 y 2 000— y de ellas sale
+ * dinero que se paga. No se perdían servicios: seguían reclamables. Lo que se
+ * rompía es que el PAPEL decía cubrir un período y cubría una parte, sin nada
+ * que lo advirtiera. Un transportista que cuadra su mes contra ese papel
+ * encuentra una diferencia que la operadora no sabe explicar, y la conversación
+ * del viernes siguiente es sobre confianza, no sobre software.
+ *
+ * Por eso estas pruebas suman importes, no cuentan filas.
+ */
+describe("un proveedor con más servicios que el tope viejo", () => {
+  /** 1 300 servicios de 100 para el mismo proveedor: ciento treinta mil. */
+  function muchos(cuantos: number, extra: Record<string, unknown> = {}) {
+    return Array.from({ length: cuantos }, (_, i) =>
+      devengo(`masivo-${String(i).padStart(5, "0")}`, { amount: 100, ...extra }));
+  }
+
+  it("la liquidación reclama TODOS sus servicios y su total es el total", async () => {
+    db = operacion({ booking_cost: muchos(1300) });
+
+    const r = await generateSupplierSettlement(ORG, { supplierId: "prov-bus", from: DESDE, to: HASTA });
+
+    // Con el tope de mil, esto pagaba 100 000 y dejaba 30 000 fuera del papel.
+    expect(r.claimed).toBe(1300);
+    expect(r.services).toBe(130_000);
+  });
+
+  it("y ninguno se reclama dos veces al cambiar de página", async () => {
+    /**
+     * Es el riesgo propio de paginar: sin orden total, dos páginas pueden
+     * solaparse. Aquí se vería como un servicio reclamado dos veces —o sea
+     * pagado dos veces—, que es exactamente lo que el enlace del devengo
+     * existe para impedir.
+     */
+    db = operacion({ booking_cost: muchos(1300) });
+
+    const r = await generateSupplierSettlement(ORG, { supplierId: "prov-bus", from: DESDE, to: HASTA });
+    const reclamados = costes().filter((c) => c.status === "settled");
+
+    expect(reclamados).toHaveLength(1300);
+    expect(new Set(reclamados.map((c) => c._id)).size).toBe(1300);
+    expect(r.services).toBe(reclamados.reduce((t, c) => t + Number(c.amount), 0));
+  });
+
+  it("el estado de cuenta enseña las líneas enteras: es el papel contra el que se factura", async () => {
+    db = operacion({
+      booking_cost: muchos(1300, { settlement: "liq-1", status: "settled" }),
+      settlement: [{
+        _id: "liq-1", organization_id: ORG, beneficiary_type: "supplier", supplier: "prov-bus",
+        currency: "usd", status: "pending", services_total: 130_000,
+      }],
+    });
+
+    const estado = await loadSupplierStatement(ORG, "liq-1");
+
+    expect(estado.lines).toHaveLength(1300);
+    expect(estado.lines.reduce((t, l) => t + Number(l.amount ?? 0), 0)).toBe(130_000);
+  });
+
+  it("el pendiente por proveedor no se deja a ninguno fuera de la lista", async () => {
+    /**
+     * Esta es la pantalla desde la que se decide a quién se le paga. Con el tope
+     * de dos mil, un proveedor entero desaparecía de la lista —siempre el mismo,
+     * porque el orden no cambia— y nadie lo echaba en falta hasta que llamaba.
+     */
+    db = operacion({
+      booking_cost: [
+        ...muchos(2100),
+        devengo("del-otro", { supplier: "prov-otro", amount: 500 }),
+      ],
+    });
+
+    const pendiente = await pendingBySupplier(ORG);
+    const porProveedor = new Map(pendiente.map((p) => [p.supplierId, p]));
+
+    expect(porProveedor.get("prov-otro")?.services).toBe(500);
+    expect(porProveedor.get("prov-bus")?.services).toBe(210_000);
   });
 });

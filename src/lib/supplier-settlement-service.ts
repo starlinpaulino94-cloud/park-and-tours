@@ -1,4 +1,5 @@
 import "server-only";
+import { leerTodoElRecurso } from "@/lib/barrido";
 import { tenantCreate, tenantFindOne, tenantQuery, tenantUpdate } from "@/lib/tenant";
 import { supabaseServer } from "@/lib/supabase/server";
 import { loadCostTariffs } from "@/lib/pricing";
@@ -201,15 +202,24 @@ export async function generateSupplierSettlement(
 ): Promise<GenerateResult> {
   const supplier = await tenantFindOne<Supplier>(companyId, "supplier", input.supplierId);
 
-  const candidates = await tenantQuery<Record<string, unknown> & { _id: string }>(
-    companyId, "booking_cost", {
+  /**
+   * LO QUE SE LE PAGA AL PROVEEDOR SE LEE ENTERO.
+   *
+   * Con el tope de mil, un proveedor con más servicios pendientes recibía una
+   * liquidación por los mil primeros y el resto se quedaba fuera. No se
+   * perdían —siguen reclamables y entran en la siguiente—, pero el documento
+   * que se le manda dice que cubre un período y cubre parte de él, sin que nada
+   * lo advierta. Un proveedor que cuadra su mes contra ese papel encuentra una
+   * diferencia que la operadora no sabe explicar.
+   */
+  const candidates = await leerTodoElRecurso<Record<string, unknown> & { _id: string }>(
+    "booking_cost", (limite, salto) => tenantQuery(companyId, "booking_cost", {
       _filter: { supplier: input.supplierId, status: { in: [...CLAIMABLE] } },
-      _limit: 1000,
-      _sort: { createdAt: "asc" },
+      _sort: { createdAt: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
       booking: true,
       departure: true,
-    }
-  );
+    }));
 
   // El filtro por fecha de salida se hace aquí y no en la consulta porque la
   // fecha vive en la salida, no en el devengo, y un servicio sin salida
@@ -381,12 +391,16 @@ export async function loadSupplierStatement(
     ? projectRow("settlement", actor, crudo)
     : crudo;
 
-  const rows = await tenantQuery<Record<string, unknown> & { _id: string }>(
-    companyId, "booking_cost", {
-      _filter: { settlement: settlementId }, _limit: 1000, _sort: { createdAt: "asc" },
+  // El estado de cuenta se lee entero: es el papel contra el que el proveedor
+  // factura, y un total corto aquí es una factura corta que después no cuadra
+  // con el gasto registrado.
+  const rows = await leerTodoElRecurso<Record<string, unknown> & { _id: string }>(
+    "booking_cost", (limite, salto) => tenantQuery(companyId, "booking_cost", {
+      _filter: { settlement: settlementId },
+      _sort: { createdAt: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
       booking: { product: true }, departure: true,
-    }
-  );
+    }));
 
   const lines: StatementLine[] = rows.map((row) => {
     const check = reconcile(row as { amount?: number; confirmed_amount?: number | null });
@@ -454,13 +468,17 @@ export interface PendingSupplier {
 }
 
 export async function pendingBySupplier(companyId: string): Promise<PendingSupplier[]> {
-  const rows = await tenantQuery<Record<string, unknown>>(companyId, "booking_cost", {
-    _filter: { status: { in: [...CLAIMABLE] } },
-    _limit: 2000,
-    _sort: { createdAt: "asc" },
-    supplier: true,
-    departure: true,
-  });
+  // El pendiente por proveedor es la pantalla desde la que se decide a quién
+  // se le paga: si se trunca, un proveedor entero desaparece de la lista y
+  // nadie lo echa en falta hasta que llama.
+  const rows = await leerTodoElRecurso<Record<string, unknown>>("booking_cost", (limite, salto) =>
+    tenantQuery(companyId, "booking_cost", {
+      _filter: { status: { in: [...CLAIMABLE] } },
+      _sort: { createdAt: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+      supplier: true,
+      departure: true,
+    }));
 
   const groups = new Map<string, PendingSupplier>();
   for (const row of rows) {

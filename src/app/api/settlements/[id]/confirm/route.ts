@@ -9,6 +9,7 @@ import { notify } from "@/lib/notify-service";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import type { Settlement } from "@/lib/types";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 /**
  * POST /api/settlements/:id/confirm — la factura del proveedor entra al sistema.
@@ -65,9 +66,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       );
     }
 
-    const rows = await tenantQuery<{ _id: string; amount?: number; status?: string }>(
-      ctx.companyId, "booking_cost", { _filter: { settlement: id }, _limit: 1000 }
-    );
+    /**
+     * LA CONCILIACIÓN NECESITA LAS LÍNEAS ENTERAS.
+     *
+     * Aquí se compara lo que el proveedor factura contra lo devengado. Con el
+     * tope de mil, el total devengado salía corto y la comparación INVENTABA
+     * una discrepancia: el sistema abría una disputa por una diferencia que no
+     * existía, contra un proveedor que había facturado bien.
+     */
+    const rows = await leerTodoElRecurso<{ _id: string; amount?: number; status?: string }>(
+      "booking_cost", (limite, salto) => tenantQuery(ctx.companyId, "booking_cost", {
+        _filter: { settlement: id },
+        _sort: { created_at: "asc", _id: "asc" },
+        _limit: limite, _offset: salto,
+      }));
     if (rows.length === 0) {
       throw Object.assign(new Error("Esta liquidación no tiene servicios"), { status: 409 });
     }

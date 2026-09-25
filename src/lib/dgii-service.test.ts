@@ -208,3 +208,133 @@ describe("el 608 — lo anulado", () => {
     expect(r.rows[0].columns?.[2]).toBe("09");
   });
 });
+
+/**
+ * UNA DECLARACIÓN SE MANDA ENTERA O NO SE MANDA (ola 9.12).
+ *
+ * `load607`, `load606` y `load608` leían tres mil filas como mucho, ordenadas
+ * por fecha ASCENDENTE. Una operadora que emita más de tres mil facturas al mes
+ * —cien al día, normal en un parque que vende entradas— presentaba un 607 al que
+ * le faltaban los ÚLTIMOS DÍAS del mes. Y no por azar: el orden es ascendente,
+ * así que el recorte siempre caía en el final del período.
+ *
+ * Eso no es una pantalla incompleta. Es declarar de menos con un archivo que
+ * parece correcto, y el descuadre aparece meses después en un cruce que ya no se
+ * puede explicar.
+ */
+describe("el 607 de un mes con más de tres mil facturas", () => {
+  /** Un mes de facturas repartidas del día 1 al 30, la última la más reciente. */
+  function mesLargo(cuantas: number) {
+    return Array.from({ length: cuantas }, (_, i) => {
+      const dia = String(1 + Math.floor((i * 30) / cuantas)).padStart(2, "0");
+      return factura(`fac-${String(i).padStart(5, "0")}`, `2026-09-${dia}T14:00:00.000Z`, {
+        ncf: `B0100000${String(i).padStart(4, "0")}`,
+      });
+    });
+  }
+
+  it("declara TODAS las facturas del mes, no las tres mil primeras", async () => {
+    db.seed("invoice", mesLargo(3400));
+    const r = await dgiiReport(ctx, "607", "2026-09");
+    expect(r.rows).toHaveLength(3400);
+  });
+
+  it("y las que se quedaban fuera eran las del FINAL del mes", async () => {
+    /**
+     * Ésta es la prueba que importa. Con el tope de tres mil y el orden
+     * ascendente, lo que faltaba en el archivo eran siempre los últimos días —y
+     * un 607 sin los últimos días del mes es exactamente el error que menos se
+     * nota y más cuesta.
+     */
+    db.seed("invoice", mesLargo(3400));
+    const r = await dgiiReport(ctx, "607", "2026-09");
+
+    const dias = r.rows.map((fila) => String(fila.date ?? "").slice(0, 10));
+    expect(dias).toContain("2026-09-30");
+    // Y el último NCF de la serie, que es el que cerraba el mes.
+    expect(r.rows.map((f) => f.reference)).toContain("B01000003399");
+  });
+
+  it("si de verdad no se puede leer el mes entero, lanza en vez de declarar de menos", async () => {
+    // Por encima del techo de una suma. Vale más una declaración que no sale
+    // que una que sale corta: la primera se arregla, la segunda se descubre en
+    // una fiscalización.
+    db.seed("invoice", mesLargo(10_600));
+    await expect(dgiiReport(ctx, "607", "2026-09")).rejects.toThrow(/no se pudo leer/i);
+  });
+
+  it("el 606 también: el ITBIS que no se declara es dinero que la empresa no deduce", async () => {
+    db.seed("expense", Array.from({ length: 3400 }, (_, i) => ({
+      _id: `g-${String(i).padStart(5, "0")}`, organization_id: ORG,
+      expense_date: `2026-09-${String(1 + Math.floor((i * 30) / 3400)).padStart(2, "0")}`,
+      status: "approved", amount: 118, itbis_amount: 18,
+      ncf: `B1100000${String(i).padStart(4, "0")}`,
+      supplier_rnc: "131234567", goods_service_type: "09",
+      payment_method: "01", concept: "Transporte",
+    })));
+    const r = await dgiiReport(ctx, "606", "2026-09");
+    expect(r.rows).toHaveLength(3400);
+  });
+
+  it("y el 608: un NCF anulado sin declarar sigue contando como venta", async () => {
+    db.seed("invoice", Array.from({ length: 3400 }, (_, i) =>
+      factura(`anu-${String(i).padStart(5, "0")}`, `2026-09-${String(1 + Math.floor((i * 30) / 3400)).padStart(2, "0")}T14:00:00.000Z`, {
+        status: "voided", ncf: `B0100009${String(i).padStart(4, "0")}`, void_reason_code: "01",
+      })));
+    const r = await dgiiReport(ctx, "608", "2026-09");
+    expect(r.rows).toHaveLength(3400);
+  });
+});
+
+describe("el desempate y el desglose, que se rompen en silencio", () => {
+  it("varias facturas del MISMO instante se declaran todas, una sola vez cada una", async () => {
+    /**
+     * Es el fallo propio de paginar sin orden total. Mil trescientas facturas
+     * con el mismo `issued_at` al segundo —un lote de entradas vendidas de
+     * golpe— no tienen orden entre sí, así que sin el desempate por identidad
+     * dos páginas consecutivas pueden repetir una y saltarse otra.
+     *
+     * En una declaración eso son dos cosas a la vez: un NCF declarado dos veces
+     * y otro sin declarar. El total puede incluso parecer correcto.
+     */
+    const mismoInstante = "2026-09-15T14:00:00.000Z";
+    db.seed("invoice", Array.from({ length: 1300 }, (_, i) =>
+      factura(`fac-${String(i).padStart(5, "0")}`, mismoInstante, {
+        ncf: `B0100001${String(i).padStart(4, "0")}`,
+      })));
+
+    const r = await dgiiReport(ctx, "607", "2026-09");
+
+    expect(r.rows).toHaveLength(1300);
+    expect(new Set(r.rows.map((f) => f.reference)).size).toBe(1300);
+  });
+
+  it("el desglose por forma de pago se lee entero: si no, la venta se declara A CRÉDITO", async () => {
+    /**
+     * Este tope era el más traicionero de los tres. Una factura cuyos cobros
+     * quedaran fuera de las dos mil filas no daba error ni faltaba del archivo:
+     * salía declarada como venta a crédito. Así que el 607 cuadraba en importe
+     * total y mentía justo en la columna que la DGII cruza contra los bancos.
+     *
+     * Aquí hay 2 100 cobros repartidos entre dos ventas, y la factura de la
+     * segunda es la que se quedaba sin desglose.
+     */
+    db.seed("order", [{ _id: "ord-2", organization_id: ORG, order_number: "ORD-2", currency: "dop" }]);
+    db.seed("payment", Array.from({ length: 2100 }, (_, i) => ({
+      _id: `p-${String(i).padStart(5, "0")}`, organization_id: ORG,
+      order: i < 2050 ? "ord-1" : "ord-2",
+      status: "completed", payment_type: "payment", method: "cash", amount: 1,
+    })));
+    db.seed("invoice", [
+      factura("fac-1", "2026-09-10T14:00:00.000Z", { ncf: "B0100000001" }),
+      factura("fac-2", "2026-09-11T14:00:00.000Z", { ncf: "B0100000002", order: "ord-2" }),
+    ]);
+
+    const r = await dgiiReport(ctx, "607", "2026-09");
+
+    // Las dos facturas salen con columnas —o sea, sin problemas de formato—, y
+    // es el desglose lo que las hace declarables.
+    expect(r.rows).toHaveLength(2);
+    expect(r.rows.every((f) => f.columns !== null)).toBe(true);
+  });
+});

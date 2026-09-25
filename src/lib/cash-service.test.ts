@@ -29,10 +29,15 @@ vi.mock("@/lib/tenant", async (importOriginal) => {
     ...actual,
     tenantQuery: (...a: [string, string, Record<string, unknown>?]) => db.tenantQuery(...a),
     tenantFindOne: (...a: [string, string, string, Record<string, unknown>?]) => db.tenantFindOne(...a),
+    // `recalcCashSession` ESCRIBE el esperado en la sesión: sin falsear la
+    // escritura, la prueba que compara lo pintado con lo guardado se iría a
+    // buscar un Supabase que no existe.
+    tenantUpdate: (...a: [string, string, string, Record<string, unknown>]) => db.tenantUpdate(...a),
   };
 });
 
 import { loadCashClose } from "@/lib/cash-service";
+import { recalcCashSession } from "@/lib/cash";
 
 const SESION = "cs-1";
 
@@ -220,5 +225,118 @@ describe("las monedas", () => {
     const arqueo = await loadCashClose("c1", SESION);
     expect(arqueo.currencies.map((c) => c.currency).sort()).toEqual(["dop", "usd"]);
     expect(arqueo.currencies.find((c) => c.currency === "dop")!.cash_sales).toBe(6000);
+  });
+});
+
+/**
+ * EL ARQUEO DE UN DÍA DE VERDAD (ola 9.12).
+ *
+ * `recalcCashSession` y `loadCashClose` leían mil movimientos y mil cobros y de
+ * ahí salía `expected_cash`: el dinero que se le exige al cajero al cerrar. En
+ * un kiosco de parque cada venta deja su movimiento de caja, así que mil se
+ * pasan en un día bueno — y pasado el tope el número era MENOR que el real, así
+ * que al cerrar aparecía un sobrante. Si lo truncado eran los retiros,
+ * aparecía un faltante.
+ *
+ * En los dos casos el sistema acusa a una persona con un número calculado a
+ * medias y guardado como bueno. Estas pruebas cuentan el dinero, no las filas.
+ */
+describe("el arqueo de un turno con más de mil filas", () => {
+  it("el efectivo esperado suma TODAS las ventas del turno, no las mil primeras", async () => {
+    // 1 400 ventas en efectivo de 10: catorce mil pesos en el cajón.
+    db.seed("cash_movement", Array.from({ length: 1400 }, (_, i) => ({
+      _id: `m${String(i).padStart(5, "0")}`,
+      ...usd({ movement_type: "sale", amount: 10, movement_at: `2026-04-10T08:${String(i % 60).padStart(2, "0")}:00Z` }),
+    })));
+
+    const arqueo = await loadCashClose("c1", SESION);
+
+    // Con el tope de mil esto daba 10 000, y el cajero cerraba con 4 000 de
+    // sobrante que no existían.
+    expect(arqueo.currencies[0].cash_sales).toBe(14_000);
+    expect(arqueo.currencies[0].expected).toBe(14_000);
+    expect(arqueo.movements).toHaveLength(1400);
+  });
+
+  it("y los cobros que NO dejan efectivo también se leen enteros", async () => {
+    /**
+     * Un cobro con tarjeta abre movimiento en el turno pero no deja dinero en
+     * el cajón, así que `expected` lo RESTA. Truncar esta lectura dejaba el
+     * esperado más alto de lo que toca: al cajero se le pedía en efectivo un
+     * dinero que había entrado por el datáfono, o sea un faltante inventado.
+     */
+    db.seed("cash_movement", [
+      { _id: "m-venta", ...usd({ movement_type: "sale", amount: 12_000, movement_at: "2026-04-10T08:00:00Z" }) },
+    ]);
+    db.seed("payment", Array.from({ length: 1200 }, (_, i) => ({
+      _id: `p${String(i).padStart(5, "0")}`,
+      ...usd({ method: "card", amount: 10, status: "completed" }),
+    })));
+
+    const arqueo = await loadCashClose("c1", SESION);
+
+    expect(arqueo.card.expected).toBe(12_000);
+    // Doce mil vendidos, doce mil por tarjeta: en el cajón no queda nada.
+    expect(arqueo.currencies[0].expected).toBe(0);
+  });
+
+  it("el esperado que se GUARDA descuenta todos los cobros que no dejan efectivo", async () => {
+    /**
+     * `recalcCashSession` escribe `expected_cash` en la sesión: es el número
+     * contra el que se cuenta el cajón. Truncar la lectura de cobros lo dejaba
+     * MÁS ALTO de lo que toca —cada cobro con tarjeta lo resta—, así que al
+     * cajero se le pedía en efectivo un dinero que había entrado por el
+     * datáfono. Un faltante inventado por una consulta.
+     */
+    db.seed("cash_movement", [
+      { _id: "m-venta", ...usd({ movement_type: "sale", amount: 13_000, movement_at: "2026-04-10T08:00:00Z" }) },
+    ]);
+    db.seed("payment", Array.from({ length: 1300 }, (_, i) => ({
+      _id: `p${String(i).padStart(5, "0")}`,
+      ...usd({ method: "card", amount: 10, status: "completed" }),
+    })));
+
+    const [principal] = await recalcCashSession("c1", SESION);
+
+    // Trece mil vendidos, trece mil por tarjeta: en el cajón, cero. Con el tope
+    // de mil habrían salido 3 000 de faltante.
+    expect(principal.card).toBe(13_000);
+    expect(principal.expected).toBe(0);
+    const [sesion] = db.rows("cash_session").filter((x) => x._id === SESION);
+    expect(sesion.expected_cash).toBe(0);
+    expect(sesion.card_total).toBe(13_000);
+  });
+
+  it("lo que se ENSEÑA y lo que se GUARDA salen de la misma lectura entera", async () => {
+    /**
+     * `loadCashClose` pinta y `recalcCashSession` escribe. Si una se truncara y
+     * la otra no, el cajero vería un total y la sesión guardaría otro; y el que
+     * manda es el guardado, así que el descuadre aparecería sin explicación
+     * posible.
+     */
+    db.seed("cash_movement", Array.from({ length: 1400 }, (_, i) => ({
+      _id: `m${String(i).padStart(5, "0")}`,
+      ...usd({ movement_type: "sale", amount: 10, movement_at: "2026-04-10T08:00:00Z" }),
+    })));
+
+    const pintado = await loadCashClose("c1", SESION);
+    const guardado = await recalcCashSession("c1", SESION);
+
+    expect(guardado[0].expected).toBe(pintado.currencies[0].expected);
+    expect(guardado[0].expected).toBe(14_000);
+  });
+
+  it("si de verdad no se puede leer todo, NO se escribe un arqueo a medias", async () => {
+    // Por encima del techo de una suma. Un arqueo que no se puede cuadrar se
+    // arregla mirándolo; un arqueo mal cuadrado se arregla despidiendo a
+    // alguien, así que aquí se lanza y no se escribe nada.
+    db.seed("cash_movement", Array.from({ length: 10_600 }, (_, i) => ({
+      _id: `m${String(i).padStart(6, "0")}`,
+      ...usd({ movement_type: "sale", amount: 1, movement_at: "2026-04-10T08:00:00Z" }),
+    })));
+
+    await expect(recalcCashSession("c1", SESION)).rejects.toThrow(/no se pudo leer/i);
+    const [sesion] = db.rows("cash_session").filter((s) => s._id === SESION);
+    expect(sesion.expected_cash).toBeUndefined();
   });
 });

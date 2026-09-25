@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { barrer, ventana, atascado, avisoDeTope, PAGINA, TOPE } from "@/lib/barrido";
+import {
+  barrer, ventana, atascado, avisoDeTope, PAGINA, TOPE,
+  leerTodoElRecurso, SumaIncompletaError, TOPE_INQUILINO,
+} from "@/lib/barrido";
 
 /**
  * Lo que prueba este fichero es el fallo que causó la ola: un trabajo que lee
@@ -190,5 +193,77 @@ describe("los números por defecto", () => {
     // Los de antes iban de 1 000 a 3 000. El nuevo tiene que ser un número que
     // una operadora sana no toque nunca, para que tocarlo signifique algo.
     expect(TOPE).toBeGreaterThanOrEqual(20_000);
+  });
+});
+
+describe("leerTodoElRecurso · lo que se va a SUMAR", () => {
+  /** Una tabla que se lee por ventanas, como `tenantQuery` con `_limit`/`_offset`. */
+  const ventanas = (n: number) => {
+    const filas = Array.from({ length: n }, (_, i) => ({ id: i, importe: 1 }));
+    return async (limite: number, salto: number) => filas.slice(salto, salto + limite);
+  };
+
+  it("devuelve TODAS las filas, no la primera página", async () => {
+    const filas = await leerTodoElRecurso("prueba", ventanas(2300), { pagina: 500 });
+    expect(filas).toHaveLength(2300);
+    // Y el total es el total: es lo único que importa de una lectura que se suma.
+    expect(filas.reduce((s, f) => s + f.importe, 0)).toBe(2300);
+  });
+
+  it("no repite ni se salta filas al cambiar de página", async () => {
+    const filas = await leerTodoElRecurso("prueba", ventanas(1750), { pagina: 500 });
+    expect(new Set(filas.map((f) => f.id)).size).toBe(1750);
+    expect(filas.map((f) => f.id)).toEqual([...Array(1750).keys()]);
+  });
+
+  it("una tabla vacía son cero filas y una sola lectura", async () => {
+    let lecturas = 0;
+    const filas = await leerTodoElRecurso("prueba", async (limite, salto) => {
+      lecturas++;
+      return ventanas(0)(limite, salto);
+    });
+    expect(filas).toEqual([]);
+    expect(lecturas).toBe(1);
+  });
+
+  it("LANZA en vez de devolver una suma a medias", async () => {
+    /**
+     * Es la diferencia con los barridos de plataforma, y es deliberada. Allí
+     * quedarse corto y avisar es lo correcto: diecinueve mil filas tratadas son
+     * diecinueve mil cosas hechas bien. Aquí el resultado es UN NÚMERO —lo que
+     * el cajero tiene que tener en el cajón, lo que se declara a Hacienda, lo
+     * que se le paga al proveedor—, así que una lista a medias no es un
+     * resultado parcial: es un número equivocado presentado como el bueno, y
+     * nadie reintenta lo que no sabe que falta.
+     */
+    await expect(leerTodoElRecurso("payment", ventanas(50_000), { pagina: 500 }))
+      .rejects.toThrow(SumaIncompletaError);
+  });
+
+  it("el error dice qué recurso y cuántas filas llevaba", async () => {
+    let err: unknown;
+    try {
+      await leerTodoElRecurso("payment", ventanas(50_000), { pagina: 500, tope: 1000 });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(SumaIncompletaError);
+    const suma = err as SumaIncompletaError;
+    expect(suma.recurso).toBe("payment");
+    expect(suma.leidas).toBeGreaterThanOrEqual(1000);
+    // Y es un 500, no un 400: el que llamó no hizo nada mal.
+    expect(suma.status).toBe(500);
+  });
+
+  it("el techo de una suma es más bajo que el de un barrido que trata", () => {
+    // A propósito: aquí no hay nada que trocear, o se lee todo o el total está
+    // mal. Diez mil filas en un solo arqueo o una sola declaración ya merecen
+    // que alguien las mire.
+    expect(TOPE_INQUILINO).toBeLessThan(TOPE);
+  });
+
+  it("justo en el tope NO lanza: lanzar por caber exactamente sería un falso positivo", async () => {
+    const filas = await leerTodoElRecurso("prueba", ventanas(1000), { pagina: 500, tope: 1000 });
+    expect(filas).toHaveLength(1000);
   });
 });

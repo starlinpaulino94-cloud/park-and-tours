@@ -10494,3 +10494,90 @@ describe("barridos: ningún trabajo se queda corto en silencio", () => {
     expect(src).toMatch(/export function atascado/);
   });
 });
+
+/**
+ * LOS TECHOS SOBRE EL DINERO Y SOBRE LO QUE SE DECLARA (ola 9.12).
+ *
+ * Los barridos de la ola anterior TRATAN filas: quedarse corto y avisar es lo
+ * correcto, porque diecinueve mil filas tratadas son diecinueve mil cosas hechas
+ * bien. Éstos SUMAN: el resultado es un número —lo que el cajero tiene que tener
+ * en el cajón, lo que se declara a Hacienda, lo que se le paga al proveedor— y
+ * una lista a medias no es un resultado parcial, es un número equivocado
+ * presentado como el bueno. Nadie reintenta lo que no sabe que falta.
+ */
+describe("sumas: ninguna cuenta se calcula sobre una lectura recortada", () => {
+  const SUMAS = [
+    "src/lib/cash.ts",
+    "src/lib/cash-service.ts",
+    "src/lib/dgii-service.ts",
+    "src/lib/supplier-settlement-service.ts",
+    "src/lib/seller-settlement-service.ts",
+    "src/app/api/settlements/generate/route.ts",
+    "src/app/api/settlements/[id]/pay/route.ts",
+    "src/app/api/settlements/[id]/confirm/route.ts",
+  ];
+
+  it.each(SUMAS)("%s no suma sobre un tope fijo", (ruta) => {
+    const topes = read(ruta).match(/_limit:\s*\d{4,}/g) ?? [];
+    expect(topes, `${ruta} todavía suma sobre un tope fijo: ${topes.join(", ")}`).toEqual([]);
+  });
+
+  it.each(SUMAS)("%s lee por leerTodoElRecurso", (ruta) => {
+    expect(read(ruta)).toContain("leerTodoElRecurso");
+  });
+
+  it.each(SUMAS)("%s pagina con orden total", (ruta) => {
+    const src = read(ruta);
+    /**
+     * `_offset` sin `_sort` es una lectura cuyo orden decide el plan de
+     * ejecución, y entonces dos páginas pueden repetir una fila y saltarse
+     * otra. En una SUMA eso no se ve: sale un importe que no cuadra con nada y
+     * que nadie sabe explicar. Y `_sort` por una sola columna no basta cuando
+     * empata —varias facturas con el mismo `issued_at` al segundo—: hace falta
+     * el desempate por identidad.
+     */
+    for (const trozo of src.split("_offset:").slice(0, -1)) {
+      const cola = trozo.slice(-500);
+      expect(cola, `una lectura paginada de ${ruta} no declara orden`).toMatch(/_sort:/);
+      expect(cola, `una lectura paginada de ${ruta} no desempata por identidad`)
+        .toMatch(/_sort:\s*\{[^}]*_id:\s*"asc"/);
+    }
+  });
+
+  it("una suma incompleta LANZA, no avisa", () => {
+    /**
+     * Es la diferencia deliberada con `barridoVigilado`. Allí el truncamiento es
+     * un incidente y el trabajo sigue; aquí es un error y no sale número. Un
+     * arqueo que no se puede cuadrar se arregla mirándolo; un arqueo mal
+     * cuadrado se arregla despidiendo a alguien.
+     */
+    const src = read("src/lib/barrido.ts");
+    expect(src).toContain("export class SumaIncompletaError");
+    expect(src).toContain("export async function leerTodoElRecurso");
+    const cuerpo = src.slice(src.indexOf("export async function leerTodoElRecurso"));
+    expect(cuerpo).toMatch(/throw new SumaIncompletaError/);
+    // Y no se rinde por caber EXACTAMENTE en el techo: pregunta por una fila
+    // más antes. Un error que salta sin hacer falta acaba siempre igual, con
+    // alguien subiendo el número sin mirar por qué saltaba.
+    expect(cuerpo).toMatch(/const sobra = await leer\(1, todas\.length\);/);
+  });
+
+  it("el techo de una suma es más bajo que el de un barrido que trata", () => {
+    const src = read("src/lib/barrido.ts");
+    expect(src).toMatch(/export const TOPE = 20_000;/);
+    expect(src).toMatch(/export const TOPE_INQUILINO = 10_000;/);
+  });
+
+  it("el doble de inquilino respeta _offset y ordena por TODAS las claves", () => {
+    /**
+     * Sin lo primero, una lectura que pidiera la página 2 recibiría otra vez la
+     * página 1 y la prueba de un barrido que no avanza saldría en verde. Sin lo
+     * segundo, el desempate se tira y la prueba de una paginación sin orden
+     * total también. Un doble que perdona el fallo que se prueba no prueba nada.
+     */
+    const doble = read("src/test/fake-tenant.ts");
+    expect(doble).toMatch(/const salto = Number\(opts\._offset \?\? 0\);/);
+    expect(doble).toMatch(/if \(salto > 0\) filas = filas\.slice\(salto\);/);
+    expect(doble).toMatch(/for \(const \[campo, dir\] of claves\)/);
+  });
+});

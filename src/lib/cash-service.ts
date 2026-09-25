@@ -1,4 +1,5 @@
 import "server-only";
+import { leerTodoElRecurso } from "@/lib/barrido";
 import { tenantFindOne, tenantQuery } from "@/lib/tenant";
 import {
   summarizeCash, countTotal, differenceOf, classifyDifference,
@@ -40,13 +41,23 @@ export async function loadCashClose(companyId: string, sessionId: string): Promi
     { cash_register: true, branch: true, user: true, partner: true, seller: true }
   );
 
+  // El arqueo que se ENSEÑA tiene que dar el mismo número que el que se
+  // GUARDA (`recalcCashSession`). Si esta lectura se truncara y la otra no,
+  // el cajero vería un total y la sesión tendría otro — y el que manda es el
+  // guardado, así que el descuadre aparecería sin explicación posible.
   const [movements, payments, counts] = await Promise.all([
-    tenantQuery<Record<string, unknown>>(companyId, "cash_movement", {
-      _filter: { cash_session: sessionId }, _limit: 1000, _sort: { movement_at: "asc" }, user: true,
-    }),
-    tenantQuery<{ method?: string; amount?: number; payment_type?: string; currency?: string }>(
-      companyId, "payment", { _filter: { cash_session: sessionId, status: "completed" }, _limit: 1000 }
-    ),
+    leerTodoElRecurso<Record<string, unknown>>("cash_movement", (limite, salto) =>
+      tenantQuery(companyId, "cash_movement", {
+        _filter: { cash_session: sessionId },
+        _sort: { movement_at: "asc", _id: "asc" },
+        _limit: limite, _offset: salto, user: true,
+      })),
+    leerTodoElRecurso<{ method?: string; amount?: number; payment_type?: string; currency?: string }>(
+      "payment", (limite, salto) => tenantQuery(companyId, "payment", {
+        _filter: { cash_session: sessionId, status: "completed" },
+        _sort: { created_at: "asc", _id: "asc" },
+        _limit: limite, _offset: salto,
+      })),
     tenantQuery<Record<string, unknown>>(companyId, "cash_count", {
       _filter: { cash_session: sessionId, kind: "close" }, _limit: 20,
     }),

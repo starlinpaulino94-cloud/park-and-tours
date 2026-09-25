@@ -120,16 +120,42 @@ export function fakeDb(inicial: Record<string, Fila[]> = {}): FakeDb {
       Object.entries(filtro).every(([campo, cond]) => cumple(fila, campo, cond))
     );
 
+    /**
+     * ORDENAR POR TODAS LAS CLAVES DE `_sort`, NO SOLO POR LA PRIMERA.
+     *
+     * `applyQuery` recorre el objeto entero y encadena un `.order()` por cada
+     * clave, así que `{ issued_at: "asc", _id: "asc" }` ordena por las dos. Este
+     * doble se quedaba con la primera y tiraba el desempate — y el desempate es
+     * justo lo que hace que dos páginas consecutivas no se solapen. Sin él, la
+     * prueba de una lectura paginada sin orden total habría salido en verde.
+     */
     const orden = opts._sort as Record<string, "asc" | "desc"> | undefined;
     if (orden) {
-      const [campo, dir] = Object.entries(orden)[0] ?? [];
-      if (campo) {
+      const claves = Object.entries(orden);
+      if (claves.length > 0) {
         filas = [...filas].sort((a, b) => {
-          const x = String(a[campo] ?? ""), y = String(b[campo] ?? "");
-          return dir === "desc" ? y.localeCompare(x) : x.localeCompare(y);
+          for (const [campo, dir] of claves) {
+            const x = String(a[campo] ?? ""), y = String(b[campo] ?? "");
+            const c = x.localeCompare(y);
+            if (c !== 0) return dir === "desc" ? -c : c;
+          }
+          return 0;
         });
       }
     }
+
+    /**
+     * `_offset` ES UNA VENTANA, NO UN ADORNO.
+     *
+     * `applyQuery` lo traduce a `.range(offset, offset + limit - 1)`, así que en
+     * la base de verdad salta filas. Aquí se ignoraba: una lectura que pidiera
+     * la página 2 recibía otra vez la página 1, y con eso un barrido que NO
+     * avanza su cursor —el fallo exacto que se está probando— habría pasado sus
+     * propias pruebas. Un doble que perdona el fallo que se prueba no prueba
+     * nada, y ese error se descubre en producción.
+     */
+    const salto = Number(opts._offset ?? 0);
+    if (salto > 0) filas = filas.slice(salto);
 
     const limite = Number(opts._limit ?? 0);
     if (limite > 0) filas = filas.slice(0, limite);

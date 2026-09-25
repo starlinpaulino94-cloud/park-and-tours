@@ -166,3 +166,89 @@ export async function barrer<T>(opciones: OpcionesDeBarrido<T>): Promise<Resumen
     if (vistas >= tope) return { vistas, vueltas, truncado: true, atascado: false };
   }
 }
+
+/**
+ * ────────────────────────────────────────────────────────────────────────────
+ * BARRER UN RECURSO DE INQUILINO
+ *
+ * Los barridos de la ola anterior eran de plataforma y hablaban con PostgREST a
+ * pelo. Estos son de UNA empresa y van por `tenantQuery`, que lee `_limit` y
+ * `_offset` y los traduce a la misma ventana.
+ *
+ * Y son de otra familia: no barren para TRATAR filas, barren para SUMAR. Un
+ * arqueo de caja, una declaración a la DGII y una liquidación no se quedan
+ * «cortos»: dan un número equivocado y lo presentan como el bueno. Nadie
+ * reintenta lo que no sabe que falta.
+ *
+ * Por eso aquí el truncamiento no es un aviso: es un ERROR. La función
+ * `leerTodoElRecurso` lanza en vez de devolver una lista a medias, porque una
+ * suma incompleta que se escribe en la caja o se manda a Hacienda hace más daño
+ * que una pantalla que no carga.
+ */
+
+/** Cuántas filas se piden por vuelta cuando se barre un recurso de inquilino. */
+export const PAGINA_INQUILINO = 500;
+
+/**
+ * El tope de una lectura que se va a SUMAR.
+ *
+ * Más bajo que `TOPE` porque aquí no hay nada que trocear: el resultado es un
+ * total, así que o se leen todas las filas o el total está mal. Diez mil filas
+ * en un solo arqueo, una sola declaración mensual o una sola liquidación es ya
+ * un número que merece que alguien lo mire.
+ */
+export const TOPE_INQUILINO = 10_000;
+
+/** Lo que se lanza cuando una suma no se pudo hacer entera. */
+export class SumaIncompletaError extends Error {
+  readonly status = 500;
+  readonly code = "SUMA_INCOMPLETA";
+  constructor(readonly recurso: string, readonly leidas: number) {
+    super(
+      `No se pudo leer «${recurso}» completo: se pasó de ${TOPE_INQUILINO} filas (${leidas} leídas). `
+      + "El total que saldría de aquí estaría corto, y un total corto presentado como bueno "
+      + "es peor que no dar ninguno."
+    );
+    this.name = "SumaIncompletaError";
+  }
+}
+
+/**
+ * Lee TODAS las filas de un recurso, paginando, o lanza.
+ *
+ * `leer` recibe la ventana ya calculada y devuelve esa página. El orden lo pone
+ * quien llama, y tiene que ser TOTAL —la clave que importa más el desempate por
+ * identidad—: sin desempate, dos páginas consecutivas pueden repetir una fila y
+ * saltarse otra, y en una suma eso se traduce en un importe que no cuadra con
+ * nada y que nadie sabe explicar.
+ */
+export async function leerTodoElRecurso<T>(
+  recurso: string,
+  leer: (limite: number, salto: number) => Promise<T[]>,
+  opciones: { pagina?: number; tope?: number } = {}
+): Promise<T[]> {
+  const pagina = opciones.pagina ?? PAGINA_INQUILINO;
+  const tope = opciones.tope ?? TOPE_INQUILINO;
+  const todas: T[] = [];
+
+  for (;;) {
+    const lote = await leer(pagina, todas.length);
+    todas.push(...lote);
+    // Una página corta significa que no había más: es el final normal.
+    if (lote.length < pagina) return todas;
+
+    if (todas.length >= tope) {
+      /**
+       * Se ha llegado al techo con la última página LLENA, así que puede haber
+       * más o puede que los datos cupieran exactamente. Se pregunta por una
+       * sola fila más antes de rendirse: rendirse porque el total encaja justo
+       * en el techo sería un falso positivo, y un error que salta cuando no
+       * hacía falta acaba siempre igual —alguien sube el número sin mirar por
+       * qué saltaba—.
+       */
+      const sobra = await leer(1, todas.length);
+      if (sobra.length === 0) return todas;
+      throw new SumaIncompletaError(recurso, todas.length);
+    }
+  }
+}
