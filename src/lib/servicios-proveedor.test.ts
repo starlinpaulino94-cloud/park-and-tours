@@ -60,6 +60,8 @@ function base() {
       },
     ],
     zone: [{ _id: "z-1", name: "Bávaro", code: "BAV" }],
+    vehicle: [{ _id: "v-1", name: "Coaster", plate: "A123456", capacity: 30, supplier: PROV }],
+    staff: [{ _id: "st-1", full_name: "Pedro Chofer", staff_type: "driver", supplier: PROV }],
   });
 }
 
@@ -195,5 +197,95 @@ describe("los servicios de un proveedor", () => {
   it("sin servicios, una lista vacía y no un error", async () => {
     db = fakeDb({});
     expect(await serviciosDeProveedor(ORG, PROV, "proximos", AHORA)).toEqual([]);
+  });
+});
+
+describe("su flota, en la misma lista", () => {
+  /**
+   * Desde 8.9 el transportista decide qué guagua manda y quién la conduce. Para
+   * poder cambiarlo tiene que ver lo que hay puesto — y para eso la lista lo
+   * trae, con la matrícula y el nombre, y dice si todavía se puede tocar.
+   */
+
+  it("dice qué campos se asignan en cada tabla, que no son los mismos", async () => {
+    const proximos = await serviciosDeProveedor(ORG, PROV, "proximos", AHORA);
+    const recurso = proximos.find((s) => s._id === "dr-1")!;
+    const ruta = proximos.find((s) => s._id === "pr-1")!;
+    expect(recurso.asignado.map((a) => a.campo)).toEqual(["vehicle", "staff"]);
+    expect(ruta.asignado.map((a) => a.campo)).toEqual(["vehicle", "driver", "guide"]);
+  });
+
+  it("y de cada uno, si apunta a un vehículo o a una persona", async () => {
+    // Es lo que decide qué desplegable se le enseña: sus guaguas o su gente.
+    const proximos = await serviciosDeProveedor(ORG, PROV, "proximos", AHORA);
+    const ruta = proximos.find((s) => s._id === "pr-1")!;
+    expect(ruta.asignado.map((a) => `${a.campo}:${a.clase}`))
+      .toEqual(["vehicle:vehicle", "driver:staff", "guide:staff"]);
+  });
+
+  it("TRAE LA MATRÍCULA Y EL NOMBRE, no un identificador", async () => {
+    /**
+     * Sin la expansión, la pantalla recibiría un uuid y el transportista vería
+     * «asignado: 3f8c…» en vez de «Coaster (A123456)» — que es lo único que le
+     * permite saber si está bien puesto.
+     */
+    db.seed("departure_resource", [{
+      _id: "dr-con-flota", supplier: PROV, departure: "d-manana",
+      service_date: "2026-07-16T07:00:00.000Z", resource_role: "vehicle", status: "confirmed",
+      acceptance: "accepted", vehicle: "v-1", staff: "st-1",
+    }]);
+    const proximos = await serviciosDeProveedor(ORG, PROV, "proximos", AHORA);
+    const s = proximos.find((x) => x._id === "dr-con-flota")!;
+    expect(s.asignado.find((a) => a.campo === "vehicle")).toMatchObject({
+      _id: "v-1", etiqueta: "Coaster (A123456)",
+    });
+    expect(s.asignado.find((a) => a.campo === "staff")).toMatchObject({
+      _id: "st-1", etiqueta: "Pedro Chofer",
+    });
+  });
+
+  it("lo que no tiene nada puesto lo dice con null, no con una cadena vacía", async () => {
+    // «sin asignar» lo escribe la pantalla; el servidor dice que no hay nada.
+    const proximos = await serviciosDeProveedor(ORG, PROV, "proximos", AHORA);
+    const recurso = proximos.find((s) => s._id === "dr-1")!;
+    for (const a of recurso.asignado) {
+      expect(a._id, a.campo).toBeNull();
+      expect(a.etiqueta, a.campo).toBeNull();
+    }
+  });
+
+  it("EL SERVIDOR DICE SI SE PUEDE ASIGNAR, y por qué no", async () => {
+    /**
+     * Igual que las acciones de la liquidación en 8.7: con la condición escrita
+     * en el navegador, el día que cambie la regla habría que acordarse de
+     * cambiarla en dos sitios — y el que se quede viejo enseña un desplegable que
+     * el servidor rechaza.
+     */
+    db.seed("departure_resource", [
+      { _id: "dr-rechazado", supplier: PROV, departure: "d-manana",
+        service_date: "2026-07-16T07:00:00.000Z", status: "planned", acceptance: "rejected" },
+      { _id: "dr-cancelado", supplier: PROV, departure: "d-manana",
+        service_date: "2026-07-16T07:00:00.000Z", status: "cancelled", acceptance: "accepted" },
+    ]);
+    const proximos = await serviciosDeProveedor(ORG, PROV, "proximos", AHORA);
+
+    const vivo = proximos.find((s) => s._id === "pr-1")!;
+    expect(vivo.puede_asignar).toBe(true);
+    expect(vivo.motivo_para_no_asignar).toBeNull();
+
+    const rechazado = proximos.find((s) => s._id === "dr-rechazado")!;
+    expect(rechazado.puede_asignar).toBe(false);
+    expect(rechazado.motivo_para_no_asignar).toContain("Rechazaste");
+
+    const cancelado = proximos.find((s) => s._id === "dr-cancelado")!;
+    expect(cancelado.puede_asignar).toBe(false);
+    expect(cancelado.motivo_para_no_asignar).toContain("cancelado");
+  });
+
+  it("y lo que ya pasó no se asigna, con su motivo", async () => {
+    const pasados = await serviciosDeProveedor(ORG, PROV, "pasados", AHORA);
+    const viejo = pasados.find((s) => s._id === "dr-viejo")!;
+    expect(viejo.puede_asignar).toBe(false);
+    expect(viejo.motivo_para_no_asignar).toContain("pasó");
   });
 });

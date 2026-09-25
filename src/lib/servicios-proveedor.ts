@@ -1,7 +1,11 @@
 import "server-only";
 import { tenantQuery } from "@/lib/tenant";
 import { projectRows } from "@/lib/field-projection";
+import { vehicleLabel } from "@/lib/dispatch";
 import type { EstadoDeAceptacion } from "@/lib/aceptacion-proveedor";
+import {
+  vetoDeAsignacion, CAMPOS_QUE_ASIGNA_EL_PROVEEDOR, CAMPOS_DE_PERSONAL, TABLA_DEL_TIPO,
+} from "@/lib/asignacion-proveedor";
 
 /**
  * LOS SERVICIOS DE UN PROVEEDOR.
@@ -43,6 +47,23 @@ export interface ServicioDeProveedor {
   acceptance: EstadoDeAceptacion;
   acceptance_deadline: string | null;
   confirmation_number: string | null;
+  /**
+   * Lo que él mismo ha puesto: su guagua y su gente (8.9).
+   *
+   * Va como lista de campos y no como tres propiedades sueltas porque los campos
+   * NO son los mismos en las dos tablas —un recurso tiene `staff`, una ruta tiene
+   * `driver` y `guide`— y la pantalla tiene que pintar los que haya sin saber de
+   * antemano cuáles son.
+   */
+  asignado: { campo: string; _id: string | null; etiqueta: string | null; clase: "vehicle" | "staff" }[];
+  /**
+   * Y si todavía puede tocarlo. Lo decide el SERVIDOR, igual que las acciones de
+   * la liquidación en 8.7: con la condición escrita en el navegador, el día que
+   * cambie la regla habría que acordarse de cambiarla en dos sitios — y el que se
+   * quede viejo enseña un formulario que el servidor rechaza.
+   */
+  puede_asignar: boolean;
+  motivo_para_no_asignar: string | null;
 }
 
 const LIMITE = 200;
@@ -77,6 +98,39 @@ function respuesta(fila: Record<string, unknown>): {
   };
 }
 
+/**
+ * Lo asignado, leído de la propia fila.
+ *
+ * `etiqueta` sale del objeto expandido, que llega ya recortado por la lista
+ * blanca del proveedor: de un vehículo, su nombre y su matrícula; de una persona,
+ * su nombre. Ni la tarifa diaria ni la cédula, que es lo que esas dos tablas
+ * llevan al lado.
+ */
+function asignacionDe(
+  tipo: "recurso" | "ruta",
+  fila: Record<string, unknown>
+): ServicioDeProveedor["asignado"] {
+  const tabla = TABLA_DEL_TIPO[tipo];
+  const dePersonal = new Set(CAMPOS_DE_PERSONAL[tabla] ?? []);
+  return (CAMPOS_QUE_ASIGNA_EL_PROVEEDOR[tabla] ?? []).map((campo) => {
+    const valor = fila[campo];
+    const objeto = valor && typeof valor === "object" && !Array.isArray(valor)
+      ? (valor as Record<string, unknown>) : null;
+    const clase = dePersonal.has(campo) ? ("staff" as const) : ("vehicle" as const);
+    const etiqueta = objeto
+      ? clase === "vehicle"
+        ? vehicleLabel(objeto as never)
+        : String(objeto.full_name || "").trim() || null
+      : null;
+    return {
+      campo,
+      _id: objeto ? String(objeto._id ?? objeto.id ?? "") || null : (typeof valor === "string" ? valor : null),
+      etiqueta,
+      clase,
+    };
+  });
+}
+
 function fechaDe(fila: Record<string, unknown>): string | null {
   const v = fila.service_date;
   return typeof v === "string" ? v : null;
@@ -97,6 +151,7 @@ export async function serviciosDeProveedor(
   ahora: Date = new Date()
 ): Promise<ServicioDeProveedor[]> {
   const corte = ahora.toISOString();
+  const hoy = corte.slice(0, 10);
   const rango = ventana === "proximos" ? { gte: corte } : { lt: corte };
   // Lo que viene, en orden; lo que pasó, del revés. Es como se mira cada cosa:
   // lo próximo por lo que toca antes, lo pasado por lo más reciente.
@@ -108,6 +163,9 @@ export async function serviciosDeProveedor(
       _sort: { service_date: orden },
       _limit: LIMITE,
       departure: { product: true },
+      // Lo que él mismo asignó (8.9): llega expandido para poder enseñar la
+      // matrícula y el nombre, y recortado por la lista blanca del proveedor.
+      vehicle: true, staff: true,
     }),
     tenantQuery<Record<string, unknown>>(companyId, "pickup_route", {
       _filter: { supplier: supplierId, service_date: rango },
@@ -115,6 +173,7 @@ export async function serviciosDeProveedor(
       _limit: LIMITE,
       departure: { product: true },
       zone: true,
+      vehicle: true, driver: true, guide: true,
     }),
   ]);
 
@@ -134,6 +193,21 @@ export async function serviciosDeProveedor(
   const recursos = projectRows("departure_resource", actor, recursosCrudos);
   const rutas = projectRows("pickup_route", actor, rutasCrudas);
 
+  /**
+   * El bloque de asignación, igual para las dos tablas.
+   *
+   * Escrito una vez: el veto es la misma pregunta —«¿puede todavía tocarlo?»— y
+   * dos copias son dos sitios donde acordarse del siguiente motivo.
+   */
+  const asignacion = (tipo: "recurso" | "ruta", fila: Record<string, unknown>) => {
+    const veto = vetoDeAsignacion(fila as never, hoy);
+    return {
+      asignado: asignacionDe(tipo, fila),
+      puede_asignar: !veto,
+      motivo_para_no_asignar: veto?.mensaje ?? null,
+    };
+  };
+
   const deRecurso = (fila: Record<string, unknown>): ServicioDeProveedor => {
     const salida = (fila.departure ?? {}) as Record<string, unknown>;
     return {
@@ -146,6 +220,7 @@ export async function serviciosDeProveedor(
       pax: typeof fila.pax_assigned === "number" ? fila.pax_assigned : null,
       status: typeof fila.status === "string" ? fila.status : null,
       ...respuesta(fila),
+      ...asignacion("recurso", fila),
     };
   };
 
@@ -161,6 +236,7 @@ export async function serviciosDeProveedor(
       pax: typeof fila.pax_total === "number" ? fila.pax_total : null,
       status: typeof fila.status === "string" ? fila.status : null,
       ...respuesta(fila),
+      ...asignacion("ruta", fila),
     };
   };
 

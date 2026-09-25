@@ -3375,3 +3375,99 @@ Y la tabla dice dos cosas más que no se preguntaban:
   cambio no rompe nada visible. Y una era un error del mutador: el fichero
   equivocado.
 - **Mutación: setenta, las setenta muertas.**
+
+### Fase 8.9 — la flota del proveedor: la asigna él, validada contra papeles y choques
+- **LA REGLA EXISTÍA Y NO PARABA NADA — POR TERCERA VEZ.** `resourceConflicts`
+  está escrito y probado desde la ola 5… para **pintar en rojo** la mesa de
+  despacho del día que alguien esté mirando. Nunca impidió una escritura: asignar
+  la misma guagua a dos salidas que se pisan por la pantalla genérica de recursos,
+  desde el móvil o por la API funcionaba sin una queja. Es la misma historia que
+  el seguro vencido (8.6) y la certificación del guía (0051), y se cierra en el
+  mismo sitio: **en la escritura**, que es por donde pasa todo el mundo.
+- **Y PEOR: LA MESA TAMPOCO LO VEÍA cuando una de las dos era una ruta de
+  recogida.** Construía sus usos leyendo solo `departure_resource`, así que la
+  guagua puesta en la recogida de la excursión de las seis y como vehículo de la
+  salida de las siete **no aparecía como choque en ninguna pantalla** — y es el
+  choque más fácil de cometer, porque son dos formularios distintos. La extracción
+  vive ahora en el dominio (`usesOfDeparture`) y la usan las dos: la que pinta y
+  la que impide.
+- **Lo que NO bloquea es la mitad del diseño.** Dos servicios el mismo día que no
+  se pisan son la operación normal; el mismo recurso dos veces en la MISMA salida
+  es una fila duplicada, no un problema de agenda —la guagua de la recogida y la
+  del tour son la misma guagua—; la fila que se edita no choca consigo misma; y un
+  choque que ya estaba ahí entre otras dos salidas no bloquea, porque para
+  arreglarlo hay que poder escribir. Una comprobación que bloquea de más se acaba
+  quitando, y entonces no queda ninguna.
+- **La ventana de una ruta de recogida acaba cuando arranca la salida.**
+  `pickup_route` no tiene `end_time` y nunca lo tuvo. Alargarla hasta el final de
+  la excursión habría sido «más prudente» y es justo lo que no se puede hacer: si
+  la misma guagua hace además el tour, eso es una fila de `departure_resource` de
+  esa salida, cuya ventana ya lo cubre. Con ocupación inventada, el traslado de
+  vuelta de las cuatro sale marcado como choque todos los días.
+- **Se lee por `service_date` con un día a cada lado.** Una excursión que sale a
+  las 22:00 y dura cuatro horas ocupa la guagua en dos fechas, y un choque a las
+  00:30 es un choque igual.
+- **EL TRANSPORTISTA ASIGNA SU PROPIA FLOTA, y es su primera escritura sobre la
+  operación.** La operadora encarga «una guagua de 30 plazas para la Saona del
+  jueves»; cuál manda y quién la conduce lo sabe él. Antes lo decía por WhatsApp y
+  alguien lo teclaba — y cuando no lo teclaba, el manifiesto salía con «sin
+  asignar» y la hoja de ruta sin chofer.
+- **Y el rango no responde a ninguna de las tres preguntas que eso abre.** ¿Es
+  suya la fila? Lo decide `supplier_id`. ¿Es suya la guagua? **Se lee la ficha y
+  se compara su `supplier_id`**, porque el desplegable lo pinta el navegador y
+  cualquiera puede mandar otro identificador — sin eso, un transportista podía
+  asignar la guagua de la competencia a su propio servicio, y quien lo
+  descubriría es el chofer de la competencia el día del viaje. ¿Puede todavía? Un
+  servicio que rechazó, que se le venció o que ya pasó, no.
+- **Un guía PRESTADO por el transportista no es el guía de la casa.** Hace el
+  mismo trabajo y no es quien cobra. Es la misma distinción que decide el corte
+  del manifiesto en 8.8, y por eso vive en un solo sitio.
+- **El día se compara por FECHA, no contra el reloj.** El servicio de hoy a las
+  seis se sigue pudiendo asignar a las siete: el chofer ya salió, y apuntar quién
+  fue es exactamente lo que hace falta para que la hoja de ruta y la liquidación
+  digan la verdad. Comparar contra el instante habría cerrado la puerta en el peor
+  momento — cuando hay que corregir un cambio de última hora.
+- **Escribe por lista blanca, y no están `pax_assigned` ni `status`.** Cuánta
+  gente lleva el servicio lo decide quien vende; en qué estado está, la operación.
+  Con el primero cobraría por treinta pasajeros de un servicio de doce; con el
+  segundo marcaría como completado algo que no prestó.
+- **Y `null` es «quítalo» mientras ausente es «no lo toques».** Sin esa
+  distinción, no podría retirar la guagua que se le acaba de averiar: la
+  asignación vieja seguiría ahí con el despacho creyendo que sale.
+- **Las dos comprobaciones de la casa se REUSAN.** Los papeles del vehículo (8.6)
+  y el choque de agenda son las mismas funciones que corren cuando escribe la
+  operadora. Una copia «para el portal» sería la versión floja de la misma regla,
+  y la floja es la que se queda sin actualizar.
+- **Su flota entra en su ámbito por columna** (`vehicle.supplier_id` y
+  `staff.supplier_id` existen desde 0009) **y con su lista blanca**: sin la tarifa
+  diaria del vehículo, sin sus notas internas y sin la cédula de su gente. Leerla
+  no le abre la escritura: esas dos tablas siguen exigiendo rango de operación.
+- **UNA GUARDA QUE NO VEÍA UN TERCIO DE LO QUE DEBÍA COMPROBAR.** La que exige
+  que toda acción de la bitácora tenga su texto en castellano leía solo la primera
+  cadena de cada `writeAudit`, dentro de una ventana de 600 caracteres, y sin
+  admitir puntos en el nombre. Consecuencias reales: **la acción del manifiesto que
+  esta misma rama añadió en 8.8 se colaba** —su llamada pasa de 600 caracteres—, y
+  con ella **treinta acciones más**, todas las decididas con un ternario («entrada
+  o salida», «aprobada o rechazada», «aceptado o rechazado por el proveedor») y
+  todas las escritas con puntos. Salían en el papel con su nombre técnico. La
+  guarda recorre ahora la llamada contando llaves, lee la expresión completa
+  —esté en una línea o en cuatro— y descarta lo que está a la derecha de una
+  comparación, que es la condición y no la acción.
+- **Lo que esa guarda SIGUE sin ver, y está medido:** cinco sitios componen la
+  acción en tiempo de ejecución (`quote_${decision}`, `commissions_${status}`,
+  `payroll_${…}`, `period_${…}`) o la reciben por parámetro
+  (`gift-card-service`). Son unas cuarenta acciones más, ninguna traducida.
+  Enumerarlas exige escribir las cuarenta etiquetas y es trabajo aparte: queda
+  apuntado, no hecho.
+- **Doce guardas no mordieron a la primera, y nueve eran huecos de prueba de
+  verdad:** los cinco campos nuevos de la lista de servicios del portal —lo
+  asignado, si se puede asignar y por qué no— no los comprobaba nada; la ventana
+  que cruza la medianoche tampoco; ni que `vehicle` y `staff` estuvieran de verdad
+  en el ámbito del proveedor. Dos eran guardas que pasaban por el motivo
+  equivocado: la de «una tabla que no despacha no se comprueba» usaba una fila sin
+  salida, así que salía vacía de todos modos y pasaba con la lista de tablas
+  abierta de par en par; y la de «una cuenta sin ficha no asigna» miraba solo el
+  403, que también contesta la comprobación de más abajo. Y tres no eran defectos
+  sino código redundante: una rama que `instantAtWallTime` ya cubría (se borró) y
+  un `.slice(0, 10)` que la comparación no necesita.
+- **Mutación: sesenta y uno, los sesenta y uno muertos.**

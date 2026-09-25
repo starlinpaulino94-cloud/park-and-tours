@@ -1515,6 +1515,21 @@ const SUPPLIER_OWNED_TABLES = new Set([
   // leyéndolo. Lo suyo es la liquidación, que es el documento con el que se
   // discute.
   "settlement", "booking_cost",
+  /**
+   * Y SU FLOTA (8.9). `vehicle.supplier_id` y `staff.supplier_id` existen desde
+   * 0009: el ámbito sale por columna, como el dinero.
+   *
+   * Hace falta porque desde esta ola el proveedor ASIGNA su propia flota al
+   * servicio que le encargan, y para elegir tiene que poder listar lo que tiene.
+   * Lo que ve es lo SUYO: sus guaguas y su gente, nunca las de la operadora ni
+   * las del transportista de enfrente.
+   *
+   * Esto NO le abre la escritura: `vehicle` y `staff` exigen rango de operación
+   * para escribir, y el proveedor está por debajo del vendedor en el escalafón.
+   * Lo único que escribe es la asignación, por su propia ruta y con sus propias
+   * comprobaciones (`/api/proveedor/asignacion`).
+   */
+  "vehicle", "staff",
 ]);
 
 /**

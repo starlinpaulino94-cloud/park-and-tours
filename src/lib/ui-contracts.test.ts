@@ -3,6 +3,11 @@ import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import path from "node:path";
 import { PORTAL_NAV, PROVEEDOR_NAV } from "@/lib/nav";
 import { rankOf } from "@/lib/roles";
+import { VISIBLE_AL_PROVEEDOR } from "@/lib/field-projection";
+import { RESOURCES } from "@/lib/resources";
+import { NOTIFY_EVENTS } from "@/lib/notify";
+import { CONFLICT_FIELDS } from "@/lib/choque-de-recurso";
+import { CAMPOS_QUE_ASIGNA_EL_PROVEEDOR } from "@/lib/asignacion-proveedor";
 
 /**
  * Contratos de código fuente.
@@ -3159,6 +3164,12 @@ describe("las notificaciones internas", () => {
     ["supplier_service_expired", "src/lib/respuesta-proveedor.ts"],
     ["supplier_service_tacit", "src/lib/respuesta-proveedor.ts"],
     ["supplier_invoice_received", "src/lib/estado-cuenta-proveedor.ts"],
+    /**
+     * Y el de la flota (8.9): lo que decide el transportista llega al despacho
+     * sin una llamada de teléfono. Sin aviso, la asignación existe en la base y
+     * nadie la mira hasta que sale el manifiesto.
+     */
+    ["supplier_fleet_assigned", "src/lib/asignacion-proveedor-service.ts"],
   ];
 
   it("las metas del vendedor IGNORAN el parámetro de la consulta", () => {
@@ -8007,6 +8018,14 @@ describe("el socio que integra por API", () => {
       // El eje de la respuesta (0087). Entra con nombre y apellido, como todo
       // lo demás: la lista es exacta para que un campo nuevo obligue a decidir.
       "acceptance", "acceptance_deadline", "confirmation_number",
+      /**
+       * Y su flota (8.9): qué guagua y qué gente puso él, y si todavía puede
+       * cambiarlo. `asignado` lleva DENTRO el nombre y la matrícula del vehículo
+       * y el nombre de su propia gente — que es lo suyo—, nunca nada del
+       * pasajero: eso lo garantiza la lista blanca de `vehicle` y `staff` en el
+       * servidor, no esta lista.
+       */
+      "asignado", "puede_asignar", "motivo_para_no_asignar",
     ].sort());
     // Y el tipo que pinta es el que la ruta devuelve: si un día divergen, el
     // recorte del servidor deja de ser lo que limita a la pantalla.
@@ -9233,5 +9252,185 @@ describe("el manifiesto sale solo, y no sale entero", () => {
      */
     expect(pantalla).toMatch(/if \(envio\.veto\) \{/);
     expect(pantalla).toMatch(/if \(envio\.encolados === 0\) \{/);
+  });
+});
+
+/* ========================================================================== */
+/*  Fase 8.9 — la flota del proveedor, validada contra papeles y conflictos    */
+/* ========================================================================== */
+
+describe("la misma guagua no puede estar en dos sitios a la vez", () => {
+  it("LA COMPROBACIÓN VA EN LA ESCRITURA, en el crear Y en el editar", () => {
+    /**
+     * `resourceConflicts` existía desde la ola 5 para pintar en rojo la mesa de
+     * despacho; nunca impidió una escritura. Sin la del editar bastaba con crear
+     * el recurso vacío y asignarle la guagua un segundo después — la lección que
+     * dejó 0051 y que 8.6 repitió.
+     */
+    expect(cuerpoDe("src/app/api/erp/[resource]/route.ts"))
+      .toMatch(/await assertPayloadSinChoque\(ctx\.company, ctx\.companyId, def\.table, sellado\);/);
+    expect(cuerpoDe("src/app/api/erp/[resource]/[id]/route.ts"))
+      .toMatch(/await assertPayloadSinChoque\(ctx\.company, ctx\.companyId, def\.table, payload, id\);/);
+  });
+
+  it("y corre DESPUÉS de los papeles del vehículo, no antes", () => {
+    /**
+     * «El seguro está vencido» es un problema de esa guagua; «choca con otra
+     * salida» es un problema de la agenda. Contestar primero el choque de una
+     * guagua que además no puede salir mandaría a mover el día entero para nada.
+     */
+    for (const ruta of ["src/app/api/erp/[resource]/route.ts", "src/app/api/erp/[resource]/[id]/route.ts"]) {
+      const cuerpo = cuerpoDe(ruta);
+      expect(cuerpo.indexOf("assertPayloadVehicleUsable"), ruta)
+        .toBeLessThan(cuerpo.indexOf("assertPayloadSinChoque"));
+    }
+  });
+
+  it("LAS DOS TABLAS DE DESPACHO CUENTAN, y la mesa tampoco las miraba", () => {
+    /**
+     * La mesa construía sus usos leyendo solo `departure_resource`: la guagua
+     * puesta en la recogida de una salida y como vehículo de otra que se pisa no
+     * aparecía en ninguna pantalla. Ahora la extracción vive en el dominio y la
+     * usan las dos —la que pinta y la que impide—, porque con dos copias bastaba
+     * con que una olvidara una tabla.
+     */
+    const dominio = cuerpoDe("src/lib/dispatch.ts");
+    expect(dominio).toMatch(/for \(const ruta of comoFilas\(departure\.pickup_route\)\)/);
+    expect(dominio).toMatch(/añadir\("staff", ruta\.driver, window, nombreDePersona\)/);
+    expect(dominio).toMatch(/añadir\("staff", ruta\.guide, window, nombreDePersona\)/);
+
+    // Y la mesa tira de ella en vez de armar los usos a mano.
+    const mesa = cuerpoDe("src/lib/dispatch-service.ts");
+    expect(mesa).toMatch(/usos\.push\(\.\.\.usesOfDeparture\(d as never, timeZone\)\)/);
+    expect(mesa, "la mesa vuelve a armar sus usos a mano").not.toMatch(/usos\.push\(\{/);
+
+    expect(CONFLICT_FIELDS.departure_resource.staff).toEqual(["staff"]);
+    expect(CONFLICT_FIELDS.pickup_route.staff).toEqual(["driver", "guide"]);
+  });
+
+  it("y lo que NO bloquea está escrito, porque es la mitad del diseño", () => {
+    /**
+     * Tres cosas, y las tres tienen su línea:
+     *  · la misma salida no choca consigo misma —la recogida y el tour son el
+     *    mismo servicio—;
+     *  · la fila que se edita no choca con su propia asignación;
+     *  · una asignación cancelada no ocupa nada.
+     *
+     * Una comprobación que bloquea de más se acaba quitando, y entonces no queda
+     * ninguna.
+     */
+    const servicio = cuerpoDe("src/lib/choque-de-recurso.ts");
+    expect(servicio).toMatch(/if \(String\(suSalida\._id \?\? suSalida\.id \?\? ""\) === departureId\) return;/);
+    expect(servicio).toMatch(/if \(recordId && otraTabla === table && String\(otra\._id \?\? ""\) === recordId\) return;/);
+    expect((servicio.match(/assignmentIsLive\(/g) || []).length,
+      "falta comprobar que la asignación está viva en uno de los dos lados").toBe(2);
+  });
+
+  it("y la fila resultante hereda lo que el payload no manda", () => {
+    // Una edición que solo cambia el vehículo no trae ni la salida ni las horas,
+    // y sin ellas no se puede calcular ninguna ventana.
+    expect(cuerpoDe("src/lib/choque-de-recurso.ts"))
+      .toMatch(/return \{ \.\.\.actual, \.\.\.payload \};/);
+  });
+});
+
+describe("el proveedor asigna su propia flota", () => {
+  it("solo el proveedor, y solo en lo suyo", () => {
+    /**
+     * Igual que la respuesta de 0087: aquí NO entra el personal interno ni con
+     * rango. La operadora ya puede asignar por la pantalla genérica —con las
+     * mismas comprobaciones—, y añadirle esta puerta crearía un segundo camino
+     * que mantener al día.
+     */
+    const ruta = cuerpoDe("src/app/api/proveedor/asignacion/route.ts");
+    expect((ruta.match(/if \(!esDeProveedor\(ctx\) \|\| !ctx\.supplierId\)/g) || []).length,
+      "uno de los dos métodos no comprueba la ficha del proveedor").toBe(2);
+    expect(ruta).toMatch(/assertSameOriginMutation\(req\)/);
+    expect(ruta, "el proveedor sale del cuerpo de la petición").not.toMatch(/body\?\.supplier/);
+  });
+
+  it("DE QUIÉN ES LA FILA LO DECIDE supplier_id, no el rango", () => {
+    const servicio = cuerpoDe("src/lib/asignacion-proveedor-service.ts");
+    expect(servicio).toMatch(/if \(refId\(fila\.supplier\) !== supplierId\) \{[\s\S]{0,200}?403/);
+  });
+
+  it("Y DE QUIÉN ES LA GUAGUA SE LEE DE LA FICHA, no del desplegable", () => {
+    /**
+     * El desplegable lo pinta el navegador y cualquiera puede mandar otro
+     * identificador. Sin leer la ficha y comparar su `supplier_id`, un
+     * transportista podía asignar la guagua de la competencia a su propio
+     * servicio — y quien lo descubriría es el chofer de la competencia, el día
+     * del viaje.
+     */
+    const servicio = cuerpoDe("src/lib/asignacion-proveedor-service.ts");
+    expect(servicio).toMatch(/if \(refId\(ficha\.supplier\) !== supplierId\)/);
+    expect(servicio).toMatch(/await assertEsDeSuFlota\(/);
+  });
+
+  it("y las dos comprobaciones de la casa se REUSAN, no se reescriben", () => {
+    // Una copia «para el portal» sería la versión floja de la misma regla, y la
+    // floja es la que se queda sin actualizar.
+    const servicio = cuerpoDe("src/lib/asignacion-proveedor-service.ts");
+    expect(servicio).toMatch(/await assertPayloadVehicleUsable\(ctx\.companyId, tabla, payload, entrada\.id\);/);
+    expect(servicio).toMatch(/await assertPayloadSinChoque\(ctx\.company \?\? null, ctx\.companyId, tabla, payload, entrada\.id\);/);
+    expect(servicio, "el portal reimplementa el bloqueo del vehículo")
+      .not.toMatch(/insurance_expiry|inspection_expiry/);
+  });
+
+  it("escribe por lista blanca: lo que no está declarado no se le abre", () => {
+    /**
+     * `pax_assigned` lo decide quien vende y `status` la operación. Si el
+     * transportista pudiera escribir el primero, cobraría por treinta pasajeros
+     * de un servicio de doce; con el segundo, marcaría como completado algo que no
+     * prestó.
+     */
+    expect(CAMPOS_QUE_ASIGNA_EL_PROVEEDOR.departure_resource).toEqual(["vehicle", "staff"]);
+    expect(CAMPOS_QUE_ASIGNA_EL_PROVEEDOR.pickup_route).toEqual(["vehicle", "driver", "guide"]);
+    const puro = cuerpoDe("src/lib/asignacion-proveedor.ts");
+    expect(puro).toMatch(/for \(const campo of permitidos\)/);
+    expect(puro, "el payload se construye borrando en vez de eligiendo").not.toMatch(/delete /);
+  });
+
+  it("su flota llega acotada Y recortada", () => {
+    /**
+     * El filtro decide qué filas; el recorte, qué columnas. `vehicle` y `staff`
+     * llevan la tarifa diaria y el documento de identidad al lado del nombre.
+     */
+    const servicio = cuerpoDe("src/lib/asignacion-proveedor-service.ts");
+    expect(servicio).toMatch(/_filter: \{ supplier: supplierId, status: "active" \}/);
+    expect(servicio).toMatch(/projectRows\("vehicle", actor, vehiculos\)/);
+    expect(servicio).toMatch(/projectRows\("staff", actor, personal\)/);
+    for (const prohibido of ["daily_rate", "document_id", "notes"]) {
+      expect(VISIBLE_AL_PROVEEDOR.vehicle, `vehicle/${prohibido}`).not.toContain(prohibido);
+      expect(VISIBLE_AL_PROVEEDOR.staff, `staff/${prohibido}`).not.toContain(prohibido);
+    }
+  });
+
+  it("y leer su flota NO le abre la escritura de vehículos ni de personal", () => {
+    /**
+     * Entran en su ámbito para poder ELEGIR. Escribir esas tablas sigue exigiendo
+     * rango de operación, y el proveedor está por debajo del vendedor en el
+     * escalafón: lo único que escribe es la asignación, por su propia ruta.
+     */
+    expect(RESOURCES.vehicle.writeRole).toBe("operations");
+    expect(RESOURCES.staff.writeRole).toBe("operations");
+  });
+
+  it("la pantalla no decide cuándo se puede asignar", () => {
+    // `puede_asignar` viene del servidor, como las acciones de la liquidación en
+    // 8.7: con la condición en el navegador, el día que cambie la regla habría que
+    // acordarse de cambiarla en dos sitios.
+    const pantalla = cuerpoDe("src/app/proveedor/servicios/page.tsx");
+    expect(pantalla).toMatch(/if \(!s\.puede_asignar\)/);
+    expect(pantalla).toMatch(/\/api\/proveedor\/asignacion/);
+    expect(pantalla, "la pantalla decide por su cuenta cuándo se puede asignar")
+      .not.toMatch(/s\.acceptance === "rejected"|s\.status === "cancelled"/);
+  });
+
+  it("y la operadora se entera por un aviso de operación, no de administración", () => {
+    // Esto no es dinero: es quién sale mañana. El enlace va a la mesa de
+    // despacho, que es donde alguien puede mirar si encaja con el resto del día.
+    expect(NOTIFY_EVENTS.supplier_fleet_assigned.audience).toBe("operations");
+    expect(NOTIFY_EVENTS.supplier_fleet_assigned.link()).toBe("/dashboard/operaciones/despacho");
   });
 });

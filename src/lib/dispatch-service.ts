@@ -8,8 +8,8 @@ import { writeAudit } from "@/lib/audit";
 import { companyTimeZone, dayBounds, wallTimeOf } from "@/lib/time";
 import { assignmentBlock, certificationsToRenew, dayOf, type CertificationLike } from "@/lib/hr";
 import {
-  buildRoutes, departureWindow, resourceWindow, resourceConflicts, assignmentIsLive,
-  vehicleBlock, vehicleWarnings, vehicleLabel,
+  buildRoutes, departureWindow, resourceConflicts, assignmentIsLive, usesOfDeparture,
+  vehicleBlock, vehicleWarnings,
   type DispatchConflict, type PlannedRoute, type ResourceUse,
 } from "@/lib/dispatch";
 import { refId, BOOKING_TERMINAL_STATES } from "@/lib/types";
@@ -112,6 +112,15 @@ export async function loadDispatch(
     pickup_route: { _limit: 40, vehicle: true, driver: true, guide: true, zone: true },
   });
 
+  /**
+   * Los usos salen del DOMINIO, en una sola llamada por salida.
+   *
+   * Antes se construían aquí a mano leyendo solo `departure_resource`: las rutas
+   * de recogida —que llevan vehículo, conductor y guía— no entraban, así que la
+   * misma guagua puesta en la recogida de las seis y como vehículo de la salida
+   * de las siete no salía marcada en ninguna pantalla. Y es el choque más fácil
+   * de cometer, porque son dos formularios distintos.
+   */
   const usos: ResourceUse[] = [];
 
   const items: DispatchItem[] = departures.map((d) => {
@@ -127,12 +136,10 @@ export async function loadDispatch(
       }
     }
 
-    const ventana = departureWindow(d as never);
     const productName = (d.product && typeof d.product === "object"
       ? String((d.product as { name?: string }).name ?? "Salida")
       : "Salida");
     const horaLocal = d.departure_at ? wallTimeOf(new Date(String(d.departure_at)), timeZone) : null;
-    const etiqueta = `${productName}${horaLocal ? ` ${horaLocal}` : ""}`;
 
     const resources = asArray(d.departure_resource);
 
@@ -140,20 +147,10 @@ export async function loadDispatch(
     const staff: DispatchStaff[] = [];
 
     for (const r of resources) {
-      const vivo = assignmentIsLive(r as never);
-
       if (r.vehicle && typeof r.vehicle === "object") {
         const v = r.vehicle as Record<string, unknown>;
         const bloqueo = vehicleBlock(v as never, day);
         vehicles.push({ ...v, blocked_reason: bloqueo?.reason ?? null, warnings: vehicleWarnings(v as never, day) });
-        const vid = String(v._id ?? "");
-        if (vid && vivo && ventana) {
-          usos.push({
-            kind: "vehicle", resourceId: vid, resourceName: vehicleLabel(v as never),
-            departureId, departureLabel: etiqueta,
-            window: resourceWindow(r as never, ventana, timeZone),
-          });
-        }
       }
 
       if (r.staff && typeof r.staff === "object") {
@@ -168,15 +165,10 @@ export async function loadDispatch(
           certification_note: bloqueo?.reason ?? null,
           certifications_to_renew: certificationsToRenew(misCerts, day).length,
         });
-        if (sid && vivo && ventana) {
-          usos.push({
-            kind: "staff", resourceId: sid, resourceName: String(s.full_name || "Personal"),
-            departureId, departureLabel: etiqueta,
-            window: resourceWindow(r as never, ventana, timeZone),
-          });
-        }
       }
     }
+
+    usos.push(...usesOfDeparture(d as never, timeZone));
 
     const guides = staff.filter((s) => s.role === "guide" || s.staff_type === "guide");
     const vehicleCapacity = vehicles.reduce((s, v) => s + (Number(v.capacity) || 0), 0);

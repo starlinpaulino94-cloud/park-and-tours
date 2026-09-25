@@ -12,6 +12,7 @@ import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { assertModule } from "@/lib/plan-service";
 import { assertPayloadAssignable } from "@/lib/hr-service";
 import { assertPayloadVehicleUsable } from "@/lib/flota-service";
+import { assertPayloadSinChoque } from "@/lib/choque-de-recurso";
 import { isSellerScoped } from "@/lib/seller-scope";
 import { assertRowInScope } from "@/lib/row-scope";
 import { protectedFieldChanges, protectedFieldMessage, hasProtectedFields } from "@/lib/field-write-role";
@@ -134,6 +135,17 @@ export async function PUT(req: NextRequest, { params }: Params) {
     // el id porque una edición que solo cambia el vehículo no trae la salida, y
     // sin salida no se sabe contra qué día comprobar los papeles.
     await assertPayloadVehicleUsable(ctx.companyId, def.table, payload, id);
+
+    /**
+     * Y LA MISMA GUAGUA NO PUEDE ESTAR EN DOS SITIOS A LA VEZ.
+     *
+     * `resourceConflicts` existía desde la ola 5 para pintar en rojo la mesa de
+     * despacho; nunca impidió una escritura. Bloquea solo el solape REAL de dos
+     * salidas distintas: dos servicios el mismo día que no se pisan son la
+     * operación normal, y el mismo recurso dos veces en la misma salida es una
+     * fila duplicada, no un problema de agenda.
+     */
+    await assertPayloadSinChoque(ctx.company, ctx.companyId, def.table, payload, id);
 
     const updated = await tenantUpdate(ctx.companyId, def.table, id, payload);
 

@@ -28,6 +28,14 @@ interface Servicio {
   acceptance: EstadoDeAceptacion;
   acceptance_deadline: string | null;
   confirmation_number: string | null;
+  asignado: { campo: string; _id: string | null; etiqueta: string | null; clase: "vehicle" | "staff" }[];
+  puede_asignar: boolean;
+  motivo_para_no_asignar: string | null;
+}
+
+interface Flota {
+  vehicles: { _id: string; etiqueta: string; capacity: number | null }[];
+  staff: { _id: string; nombre: string; tipo: string | null }[];
 }
 
 const VENTANAS = [
@@ -79,6 +87,9 @@ export default function ProveedorServiciosPage() {
   const [cargando, setCargando] = useState(true);
   /** El servicio que se está contestando, para no dejar pulsar dos veces. */
   const [contestando, setContestando] = useState<string | null>(null);
+  /** Su flota, para los desplegables. Se pide una vez y no por fila. */
+  const [flota, setFlota] = useState<Flota>({ vehicles: [], staff: [] });
+  const [asignando, setAsignando] = useState<string | null>(null);
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -129,7 +140,45 @@ export default function ProveedorServiciosPage() {
     void cargar();
   }, [cargar]);
 
+  /**
+   * Asignar su flota.
+   *
+   * Un `select` por campo y guardado al cambiar, sin botón: es un móvil a las
+   * seis de la mañana y un formulario con «guardar» es un paso más donde
+   * perderlo. El servidor decide si vale —papeles del vehículo y choque de
+   * agenda—, así que un fallo se cuenta y se recarga; no se pinta como hecho.
+   */
+  const asignar = useCallback(async (s: Servicio, campo: string, valor: string) => {
+    setAsignando(`${s._id}:${campo}`);
+    const res = await api.post("/api/proveedor/asignacion", {
+      tipo: s.tipo,
+      id: s._id,
+      // Cadena vacía = «quítalo». El servidor lo traduce a nulo; mandar
+      // `undefined` sería «no lo toques» y no habría forma de retirar la guagua
+      // que se acaba de averiar.
+      [campo]: valor,
+    });
+    setAsignando(null);
+    if (!res.ok) {
+      toast.error(res.error?.message || "No se pudo asignar");
+    } else {
+      toast.success(valor ? "Asignado" : "Retirado");
+    }
+    // Se recarga en los dos casos: si falló, porque lo más común es que la fila
+    // ya no esté como esta pantalla cree.
+    void cargar();
+  }, [cargar]);
+
   useEffect(() => { void cargar(); }, [cargar]);
+
+  useEffect(() => {
+    void (async () => {
+      const res = await api.get<Flota>("/api/proveedor/asignacion");
+      // Sin flota cargada el desplegable sale vacío y se dice; no se rompe la
+      // pantalla, que sigue sirviendo para aceptar y para ver qué toca.
+      if (res.ok && res.data) setFlota(res.data);
+    })();
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -218,6 +267,62 @@ export default function ProveedorServiciosPage() {
               const e = ESTADO[s.status || ""];
               return <Badge variant="outline" className={e?.tono}>{e?.texto || s.status || "—"}</Badge>;
             } },
+            /**
+             * TU FLOTA — la primera escritura que hace un proveedor sobre la
+             * operación (8.9).
+             *
+             * La operadora encarga «una guagua de 30 plazas»; cuál manda y quién
+             * la conduce lo sabe él. Antes lo decía por WhatsApp y alguien lo
+             * teclaba; cuando no lo teclaba, el manifiesto salía con «sin
+             * asignar» y la hoja de ruta sin chofer.
+             *
+             * `puede_asignar` viene del SERVIDOR. Con la condición escrita aquí,
+             * el día que cambie la regla habría que acordarse de cambiarla en dos
+             * sitios — y el que se quede viejo enseña un desplegable que el
+             * servidor rechaza.
+             */
+            { key: "asignado", header: "Tu flota", render: (s: Servicio) => (
+              <div className="flex flex-col gap-1.5">
+                {s.asignado.map((a) => {
+                  const opciones = a.clase === "vehicle"
+                    ? flota.vehicles.map((v) => ({ value: v._id, label: v.etiqueta }))
+                    : flota.staff.map((p) => ({ value: p._id, label: p.nombre }));
+                  if (!s.puede_asignar) {
+                    return (
+                      <span key={a.campo} className="text-sm">
+                        {PAPEL[a.campo] ?? a.campo}: {a.etiqueta || <span className="text-muted-foreground">sin asignar</span>}
+                      </span>
+                    );
+                  }
+                  return (
+                    <label key={a.campo} className="flex flex-col gap-0.5">
+                      <span className="text-xs text-muted-foreground">{PAPEL[a.campo] ?? a.campo}</span>
+                      <select
+                        className="min-h-9 rounded-md border border-border bg-card px-2 text-sm"
+                        value={a._id ?? ""}
+                        disabled={asignando === `${s._id}:${a.campo}`}
+                        onChange={(e) => void asignar(s, a.campo, e.target.value)}
+                      >
+                        <option value="">Sin asignar</option>
+                        {/* La que ya está puesta, aunque no esté en la lista: un
+                            vehículo dado de baja después de asignarlo seguiría
+                            siendo lo que hay, y sin esta opción el desplegable
+                            diría «sin asignar» de algo que sí está. */}
+                        {a._id && !opciones.some((o) => o.value === a._id) ? (
+                          <option value={a._id}>{a.etiqueta || a._id}</option>
+                        ) : null}
+                        {opciones.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  );
+                })}
+                {s.motivo_para_no_asignar ? (
+                  <span className="text-xs text-muted-foreground">{s.motivo_para_no_asignar}</span>
+                ) : null}
+              </div>
+            ) },
             /**
              * TU RESPUESTA — el eje del proveedor, separado del de la casa.
              *

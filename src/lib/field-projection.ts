@@ -155,6 +155,23 @@ export const VISIBLE_AL_PROVEEDOR: Record<string, string[]> = {
   departure: ["_id", "product", "departure_at", "departure_time", "meeting_point", "status", "capacity"],
   zone: ["_id", "name", "code"],
   /**
+   * SU FLOTA (8.9), para poder elegir qué manda.
+   *
+   * Sin `daily_rate` ni `notes`: la tarifa diaria de una guagua es lo que la
+   * operadora paga por ella cuando es suya, y las notas son donde el despacho
+   * escribe «esta pierde aceite». Estas filas llegan aquí acotadas a las del
+   * proveedor, pero la lista blanca se declara igual — el día que un vehículo de
+   * la operadora aparezca expandido en una ruta suya, llega recortado.
+   */
+  vehicle: ["_id", "name", "plate", "vehicle_type", "capacity", "status",
+            "insurance_expiry", "inspection_expiry", "supplier"],
+  /**
+   * Y su gente. Sin `document_id`, `email`, `daily_rate` ni `photo_url`: para
+   * asignar a alguien hace falta su nombre y qué hace, no su cédula.
+   */
+  staff: ["_id", "full_name", "staff_type", "languages", "phone", "status",
+          "license_expiry", "supplier"],
+  /**
    * Del producto, su nombre y cuánto dura. NADA de precios, ni el coste, ni la
    * descripción comercial: el proveedor necesita saber a qué servicio va, no
    * por cuánto se vendió.

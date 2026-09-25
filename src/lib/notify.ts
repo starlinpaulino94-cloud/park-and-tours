@@ -404,6 +404,25 @@ export const NOTIFY_EVENTS = {
     link: () => "/dashboard/proveedores/liquidaciones",
   },
 
+  /**
+   * EL TRANSPORTISTA DIJO QUÉ GUAGUA Y QUIÉN LA CONDUCE.
+   *
+   * Es el punto del portal: que lo que decide el proveedor llegue al despacho sin
+   * una llamada de teléfono. La audiencia es `operations` y no `admin` —esto no
+   * es dinero, es quién sale mañana— y el enlace va a la mesa de despacho, que es
+   * donde alguien puede mirar si encaja con el resto del día.
+   *
+   * Sin aviso, la asignación existe en la base y nadie la mira hasta que sale el
+   * manifiesto — que es demasiado tarde para cambiarla.
+   */
+  supplier_fleet_assigned: {
+    type: "operation",
+    audience: "operations",
+    title: (v) => `Flota asignada para el ${v.referencia ?? "servicio"}`,
+    message: (v) => `El proveedor asignó ${v.detalle ?? "su flota"}.`,
+    link: () => "/dashboard/operaciones/despacho",
+  },
+
   /** Un comprobante fiscal anulado. Se justifica ante la DGII, no se esconde. */
   invoice_voided: {
     type: "alert",

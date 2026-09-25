@@ -126,18 +126,94 @@ export const ACCION: Record<string, string> = {
   quote_option_removed: "Opción de cotización eliminada",
   quote_option_selected: "Opción de cotización elegida",
   quote_revised: "Cotización revisada",
+  /**
+   * Las tres decisiones de una cotización. Salían en el papel con su nombre
+   * técnico porque la acción se compone en tiempo de ejecución
+   * (`quote_${decision}`) y la guarda que comprueba las traducciones no sabía
+   * leerla — así que nunca comprobó estas tres.
+   */
+  quote_accepted: "Cotización aceptada por el cliente",
+  quote_rejected: "Cotización rechazada",
+  quote_negotiating: "Cotización en negociación",
   seller_bonus_awarded: "Bono otorgado",
   settlement_disputed: "Liquidación disputada por su beneficiario",
   settlement_paid: "Liquidación pagada",
   shifts_published: "Turnos publicados",
+  // Escrita con puntos, que es por lo que la guarda de traducciones no la veía.
+  "dispatch.routes.build": "Rutas de recogida armadas",
   statements_exported: "Estados de cuenta exportados",
   supplier_settlement_generated: "Liquidación a proveedor generada",
+  // El manifiesto que sale hacia quien opera la salida (8.8). Se apunta también
+  // cuando NO sale, con el motivo, porque «se mandó» y «se intentó y la salida ya
+  // había pasado» son respuestas distintas a «¿por qué el chofer no lo tenía?».
+  manifest_dispatched: "Manifiesto enviado al equipo que opera la salida",
+  // Y lo que el transportista decide por su cuenta (8.9): qué guagua manda y
+  // quién la conduce. Es la primera escritura de un proveedor sobre la
+  // operación, así que tiene que leerse en el papel con nombre y apellido.
+  supplier_fleet_assigned: "Flota asignada por el proveedor",
   task_completed: "Tarea completada",
   team_member_created: "Miembro del equipo creado",
   team_member_invited: "Miembro del equipo invitado",
   seller_account_linked: "Cuenta de acceso vinculada a un vendedor",
   seller_link_created: "Enlace de venta creado",
   team_member_updated: "Miembro del equipo editado",
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * LAS TREINTA QUE SALÍAN EN EL PAPEL CON SU NOMBRE TÉCNICO.
+   *
+   * No era que nadie las hubiera escrito: era que la guarda que comprueba las
+   * traducciones NO LAS VEÍA. Leía solo la primera cadena de cada `writeAudit`,
+   * en una ventana de 600 caracteres, y sin admitir puntos en el nombre. Así que
+   * toda acción decidida con un ternario —«entrada o salida», «aprobada o
+   * rechazada»— se colaba, y también todas las escritas con puntos.
+   *
+   * Corregida la guarda (`src/lib/bitacora.test.ts`), aparecieron estas treinta.
+   * Se traducen aquí en bloque porque el problema era uno solo.
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  // Acceso y visitantes.
+  access_ticket_redeemed: "Entrada canjeada",
+  access_ticket_redeemed_forced: "Entrada canjeada forzando el bloqueo",
+  // Aprobaciones.
+  approval_approved: "Solicitud aprobada",
+  approval_rejected: "Solicitud rechazada",
+  // Fichaje del personal.
+  attendance_clock_in: "Entrada fichada",
+  attendance_clock_out: "Salida fichada",
+  // Importación de datos.
+  data_imported: "Datos importados",
+  // La integración con MembeGo.
+  membego_reactivated: "Acceso de MembeGo reactivado",
+  membego_suspended: "Acceso de MembeGo suspendido",
+  // El segundo factor de una cuenta.
+  mfa_enabled: "Segundo factor activado",
+  mfa_disabled: "Segundo factor desactivado",
+  // El saldo prepago del tour center.
+  partner_wallet_movement: "Movimiento del saldo prepago del socio",
+  // El embarque, que lo marca el chofer desde su hoja de ruta.
+  "pickup.picked_up": "Pasajero recogido",
+  "pickup.no_show": "Pasajero no se presentó",
+  // Cotizaciones.
+  quote_sent: "Cotización enviada",
+  quote_resent: "Cotización reenviada",
+  quote_converted: "Cotización convertida en venta",
+  // La conformidad del proveedor y su factura.
+  "settlement.accepted": "Liquidación aceptada por su beneficiario",
+  "settlement.supplier_invoice": "Factura del proveedor registrada",
+  supplier_settlement_confirmed: "Factura del proveedor conforme con lo devengado",
+  supplier_settlement_disputed: "Factura del proveedor con diferencia en disputa",
+  // El enlace de un solo uso, y cada vez que se abre.
+  "supplier.link.issued": "Enlace de respuesta emitido al proveedor",
+  "supplier.link.open": "Enlace de respuesta abierto",
+  "supplier.runsheet.open": "Hoja de ruta abierta por el proveedor",
+  // Lo que el proveedor contesta, y lo que pasa si no contesta.
+  "supplier.service.accepted": "Servicio aceptado por el proveedor",
+  "supplier.service.rejected": "Servicio rechazado por el proveedor",
+  "supplier.service.tacit": "Servicio aceptado tácitamente al vencer el plazo",
+  "supplier.service.expired": "Plazo de respuesta del proveedor vencido",
+  // La lista de espera.
+  "waitlist.join": "Apuntado en la lista de espera",
+  "waitlist.offer": "Plaza ofrecida desde la lista de espera",
   year_closed: "Cierre de año",
 };
 
