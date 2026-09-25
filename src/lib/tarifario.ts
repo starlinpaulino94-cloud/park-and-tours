@@ -3,6 +3,7 @@ import { tenantQuery } from "@/lib/tenant";
 import { resolvePrice } from "@/lib/pricing";
 import { autorizadosDe, type AutorizacionSocio } from "@/lib/catalogo-socio";
 import type { Product, ProductModality } from "@/lib/types";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 /**
  * EL TARIFARIO NETO DE UN TOUR CENTER.
@@ -53,9 +54,24 @@ export async function tarifarioDeSocio(
   partnerId: string,
   fecha: string
 ): Promise<LineaTarifario[]> {
-  const autorizaciones = await tenantQuery<Record<string, unknown>>(companyId, "partner_product", {
-    _filter: { partner: partnerId, status: "active" }, _limit: 1000,
-  });
+  /**
+   * EL TARIFARIO, ENTERO.
+   *
+   * Este es el documento contra el que el socio pone precio a lo que vende y
+   * contra el que después reclama. Un producto que falte aquí no es una línea
+   * menos en una tabla: es un producto que el socio cree no tener y deja de
+   * vender, o que vende al precio equivocado porque lo buscó en otra parte.
+   *
+   * Y la fase 6.3 puso una prueba de que el tarifario descargable COINCIDE con
+   * lo que devuelve la API. Con dos topes iguales, coincidían los dos en estar
+   * cortados.
+   */
+  const autorizaciones = await leerTodoElRecurso<Record<string, unknown>>("partner_product", (limite, salto) =>
+    tenantQuery(companyId, "partner_product", {
+    _filter: { partner: partnerId, status: "active" },
+    _sort: { created_at: "asc", _id: "asc" },
+    _limit: limite, _offset: salto,
+    }));
   const autorizados = [...autorizadosDe(autorizaciones as AutorizacionSocio[])];
   // Igual que el catálogo: sin nada autorizado no se consulta, en vez de fiarlo
   // a que `in: []` signifique «ninguno» en el traductor de turno.

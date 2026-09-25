@@ -13,6 +13,7 @@ import {
 } from "@/lib/voice";
 import { refId, type Company } from "@/lib/types";
 import { writeAudit } from "@/lib/audit";
+import { recorteDe, TOPE_INFORME, type Recorte } from "@/lib/barrido";
 
 /**
  * LA VOZ DEL CLIENTE, CONECTADA CON LA OPERACIÓN.
@@ -626,6 +627,20 @@ export interface VoicePanel {
   /** Los que hay que llamar: detractores con su caso abierto. */
   detractors: VoicePanelRow[];
   latest: VoicePanelRow[];
+  /**
+   * Si el panel está CORTADO.
+   *
+   * Un NPS es una conclusión de negocio: «a la gente le gusta menos que antes»
+   * se decide mirando este número, y si se calcula sobre parte de las encuestas
+   * el que se mueve es el número, no la gente. Un informe que se recorta en
+   * silencio no da un dato incompleto — da un dato falso con aspecto de bueno.
+   *
+   * Aquí NO se lanza, a diferencia de un arqueo o una declaración: la operadora
+   * más grande es justo la que más necesita el panel, y dejarla sin pantalla
+   * sería cambiar un problema por otro mayor. Se recorta, se dice, y quien lo
+   * pinta avisa.
+   */
+  recorte: Recorte;
 }
 
 /**
@@ -637,10 +652,12 @@ export interface VoicePanel {
  */
 export async function loadVoice(companyId: string, days = 90): Promise<VoicePanel> {
   const desde = new Date(Date.now() - days * 86_400_000).toISOString();
+  // Las más recientes primero: si hay que recortar, lo que se pierde es lo más
+  // viejo del período, que es el orden correcto para un panel — pero se dice.
   const rows = await tenantQuery<Record<string, unknown>>(companyId, "guest_survey", {
     _filter: { created_at: { gte: desde } },
-    _limit: 2000,
-    _sort: { created_at: "desc" },
+    _limit: TOPE_INFORME,
+    _sort: { created_at: "desc", _id: "desc" },
   });
 
   const productIds = [...new Set(rows.map((r) => refId(r.product)).filter(Boolean) as string[])];
@@ -707,5 +724,6 @@ export async function loadVoice(companyId: string, days = 90): Promise<VoicePane
       .map(vista)
       .sort((a, b) => String(b.answeredAt ?? "").localeCompare(String(a.answeredAt ?? ""))),
     latest: contestadas.slice(0, 50).map(vista),
+    recorte: recorteDe(rows.length),
   };
 }

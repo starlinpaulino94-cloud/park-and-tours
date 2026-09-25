@@ -4577,3 +4577,88 @@ puede vender.
   pasajeros y **la aplicación no vende**. Es deliberado — la alternativa era
   seguir vendiendo con un recuento corto, que es justo lo que causaba la
   sobreventa.
+
+### Ola 9.14 — el inventario de techos, cerrado: y son TRES formas, no una
+
+**Cuarta y última entrega.** Lo que queda escrito de esta serie no es «no uses
+números grandes». Es que **hay tres formas de leer mucho, y elegir la equivocada
+es un fallo por sí sola**:
+
+| | Qué es | Qué hace al quedarse corto |
+|---|---|---|
+| **Barrido** (9.11) | Un trabajo que TRATA filas | Se queda corto, **levanta un incidente** y sigue |
+| **Lectura completa** (9.12–9.13) | Un número que alguien usa | **Lanza**: o se lee todo o el número está mal |
+| **Informe** (9.14) | Una pantalla de análisis | **Se recorta y lo dice** |
+
+Y confundirlas tiene consecuencias concretas: un informe tratado como suma deja
+sin pantalla a la operadora más grande —la que más lo necesita—; una suma tratada
+como informe da un número falso con aspecto de bueno; y un trabajo tratado como
+cualquiera de los dos deja de hacer su trabajo.
+
+**El hallazgo de esta ola falla al revés que todos los anteriores.** La venta de
+un socio comprueba que los productos del carrito estén en su contrato, y leía las
+autorizaciones con `_limit: 1000` para armar el conjunto de lo permitido. Con más
+de mil productos firmados, el que se vende puede caer más allá de la fila mil — y
+entonces la venta se **RECHAZA con un 403 por un producto que el socio sí tiene**.
+No aprueba de más: niega. Igual de silencioso, igual de determinista, y encima
+**irreproducible desde el mostrador**, porque el producto con el que prueba quien
+atiende la queja está entre los primeros mil.
+
+**Y el arreglo no fue paginar.** La pregunta nunca fue «qué tiene autorizado este
+socio» —eso es el catálogo y vive en otras pantallas— sino «están ESTOS productos
+en su contrato». Filtrando por los del carrito no hay tope que importe, se leen
+como mucho tantas filas como artículos lleve la venta, y la consulta sale **más
+barata que la de antes**. Cuando un techo estorba, a veces la respuesta es
+cambiar la pregunta.
+
+**Lo demás que decidía algo y se leía corto:**
+
+- **El catálogo del socio y su tarifario** (cuatro sitios). Son los documentos
+  contra los que vende y después reclama. Y la fase 6.3 puso una prueba de que
+  el tarifario descargable **coincide** con lo que devuelve la API: con dos topes
+  iguales, coincidían los dos en estar cortados.
+- **Generar salidas.** La lectura de las existentes arma el conjunto que evita
+  duplicar. Un producto con varios pases al día —una atracción cada hora son más
+  de cuatro mil al año— dejaba fuera parte de lo existente y el generador **creaba
+  duplicados**: dos salidas a la misma hora, el cupo partido y la mitad de los
+  pasajeros en la que nadie mira.
+- **Los productos con salidas de OCTO.** Aquí el comentario ya estaba escrito:
+  «vacío significa *este producto no se vende por fecha*, y con eso `reserve` deja
+  pasar una reserva sin salida, sin cupo comprobado y sin manifiesto». Estaba
+  puesto para el caso del ERROR — y el tope producía el mismo estado por otra
+  puerta.
+- **Los horarios de OCTO y la lista del mostrador.** Una hora que se cae de la
+  lista es una hora que no se puede vender, sin nada en pantalla que lo diga: el
+  cajero simplemente no la ve y le dice al cliente que no hay.
+- **La recepción de una orden de compra**, que decide si está recibida; **la
+  valoración del almacén**, que es un total contra el que se cierra un ejercicio;
+  **las ventas y comisiones de los vendedores de un socio**, de las que cuelga lo
+  que se les paga; y **los plazos vencidos de proveedor**, donde el tope caía
+  sobre las filas pero lo que se sacaba eran empresas —el mismo fallo de la
+  cobranza en 9.11—.
+
+**Y cinco informes que ahora dicen si están cortados**: el panel de la voz del
+cliente (un NPS sobre parte de las encuestas mueve el número, no a la gente), las
+dos consolas de plataforma (`gmv_month` salía más bajo de lo real y nadie
+contrasta esa cifra contra otra cosa), el MRR por plan y el informe de canales de
+OCTO — donde el recorte no daba una tabla incompleta sino una **comparación
+invertida**, porque al que más vende es al primero al que se le caen filas.
+
+- **La guarda que cierra la familia recorre el árbol entero** (`src/app/api` y
+  `src/lib`) y prohíbe los topes de cuatro cifras escritos a mano, que fue la
+  forma de todos los fallos de 9.11 a 9.14. Los de dos y tres cifras se dejan en
+  paz a propósito —los 300 empleados activos, las 60 cuotas de una venta: cotas
+  reales del dominio— porque prohibirlas convertiría la guarda en ruido.
+- **Dos sitios que había decidido dejar como páginas no sobrevivieron a mi propia
+  guarda**, y estuvo bien: al mirarlos otra vez, los dos decidían qué se puede
+  vender. Cerrar el inventario de verdad era mejor que tallarles una excepción.
+- **Una mutación sobrevivió, y enseñó algo:** la ruta del informe de canales podía
+  sustituir el recorte por `{ truncado: false }` y todo seguía en verde, porque mi
+  guarda solo comprobaba que la palabra apareciera. **Tener el campo no basta**:
+  un informe que siempre dice que está completo es el tope de antes con una
+  propiedad más, y quien lo lee deja de mirar un aviso que nunca salta. La guarda
+  ahora exige que el valor se CALCULE —de `recorteDe` o del servicio— y no se
+  afirme.
+- **Mutación: 21 de 21.**
+- **Sin migración**, así que la lista de SQL pendiente no cambia. **`0094` sigue
+  siendo la primera**: hasta que esté, la aplicación no vende.

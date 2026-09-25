@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   barrer, ventana, atascado, avisoDeTope, PAGINA, TOPE,
   leerTodoElRecurso, SumaIncompletaError, TOPE_INQUILINO,
+  recorteDe, TOPE_INFORME,
 } from "@/lib/barrido";
 
 /**
@@ -265,5 +266,37 @@ describe("leerTodoElRecurso · lo que se va a SUMAR", () => {
   it("justo en el tope NO lanza: lanzar por caber exactamente sería un falso positivo", async () => {
     const filas = await leerTodoElRecurso("prueba", ventanas(1000), { pagina: 500, tope: 1000 });
     expect(filas).toHaveLength(1000);
+  });
+});
+
+describe("recorteDe · el informe que dice que está cortado", () => {
+  it("por debajo del tope no está cortado", () => {
+    expect(recorteDe(120, 5000)).toEqual({ truncado: false, tope: 5000, leidas: 120 });
+  });
+
+  it("justo EN el tope se declara cortado, aunque quizá no falte nada", () => {
+    /**
+     * No hay forma de distinguir «devolvió exactamente el tope» de «se quedó a
+     * medias» sin una lectura más, y en un informe esa lectura no vale la pena.
+     * Decir «puede que falte» cuando quizá no falta es el error correcto; el
+     * otro es afirmar un número que no se tiene.
+     */
+    expect(recorteDe(5000, 5000).truncado).toBe(true);
+  });
+
+  it("lleva el tope dentro, para que la pantalla lo pueda decir", () => {
+    // «Faltan datos» sin decir desde dónde no le sirve a nadie.
+    expect(recorteDe(9999, 5000).tope).toBe(5000);
+  });
+
+  it("el tope de un informe es mayor que el de una suma... no: es MENOR, y a propósito", () => {
+    /**
+     * Un informe mira más historia que un arqueo, pero se rinde antes porque
+     * rendirse aquí no cuesta nada —se pinta lo que hay y se avisa— mientras
+     * que en una suma rendirse significa dar un número falso. Los tres números
+     * dicen para qué es cada lectura, y por eso se prueban juntos.
+     */
+    expect(TOPE_INFORME).toBeLessThan(TOPE_INQUILINO);
+    expect(TOPE_INQUILINO).toBeLessThan(TOPE);
   });
 });

@@ -6,6 +6,7 @@ import { autorizadosDe, type AutorizacionSocio } from "@/lib/catalogo-socio";
 import { allotmentsOf } from "@/lib/allotment-service";
 import { pickAllotment, allotmentState } from "@/lib/allotments";
 import { cupoVisible } from "@/lib/cupo-socio";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 /**
  * GET /api/v1/availability?product=<id> — las fechas con plaza.
@@ -45,10 +46,15 @@ export async function GET(req: NextRequest) {
     }
 
     if (caller.partnerId) {
+      // Entero: si el producto consultado cae más allá del tope, la respuesta
+      // dice «no disponible» sobre algo que el socio tiene bajo contrato.
       const autorizados = autorizadosDe(
-        await tenantQuery<Record<string, unknown>>(caller.companyId, "partner_product", {
-          _filter: { partner: caller.partnerId, status: "active" }, _limit: 1000,
-        }) as AutorizacionSocio[]
+        await leerTodoElRecurso<Record<string, unknown>>("partner_product", (limite, salto) =>
+          tenantQuery(caller.companyId, "partner_product", {
+          _filter: { partner: caller.partnerId, status: "active" },
+          _sort: { created_at: "asc", _id: "asc" },
+          _limit: limite, _offset: salto,
+          })) as AutorizacionSocio[]
       );
       // El mismo 403 que daría su reserva, y aquí, que es donde todavía puede
       // hacer algo con él.

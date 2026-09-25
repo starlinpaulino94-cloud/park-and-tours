@@ -23,7 +23,10 @@ export async function GET(req: NextRequest) {
     ]);
 
     return ok({
-      channels,
+      channels: channels.rows,
+      // Si el informe está cortado, quien lo lee tiene que saberlo: al canal que
+      // más vende es al primero al que se le empiezan a caer filas.
+      recorte: channels.recorte,
       bookings,
       capabilities: SUPPORTED_CAPABILITIES,
       endpoint: "/api/octo/v1",

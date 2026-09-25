@@ -922,6 +922,60 @@ describe("lo que un tour center tiene autorizado vender", () => {
     })).rejects.toThrow(/no tienes autorizada la venta/i);
   });
 
+  it("un socio con miles de productos firmados PUEDE vender el que está al final", async () => {
+    /**
+     * EL FALLO CONTRARIO AL DE LAS OTRAS LECTURAS DE ESTA SERIE.
+     *
+     * La comprobación leía las autorizaciones del socio con `_limit: 1000` y
+     * armaba el conjunto de lo permitido a partir de eso. Con más de mil
+     * productos bajo contrato, el que se vende puede caer más allá de la fila
+     * mil — y entonces la venta se RECHAZA con un 403 por un producto que el
+     * socio sí tiene firmado.
+     *
+     * No aprueba de más: niega. Pero es igual de silencioso, igual de
+     * determinista, y además irreproducible desde el mostrador: el producto con
+     * el que prueba quien atiende la queja está entre los primeros mil.
+     *
+     * La respuesta no fue paginar, fue cambiar la pregunta: ya no se lee «qué
+     * tiene autorizado este socio» sino «están ESTOS productos en su contrato».
+     */
+    const muchas = Array.from({ length: 1500 }, (_, i) => ({
+      _id: `aut-${String(i).padStart(5, "0")}`,
+      partner: "soc-1",
+      product: `prod-relleno-${i}`,
+      status: "active",
+    }));
+    db = fakeDb(catalogo({
+      partner: [{ _id: "soc-1", name: "Caribe", credit_limit: 0, credit_days: 0 }],
+      // El de verdad, EL ÚLTIMO: justo donde el tope viejo lo dejaba fuera.
+      partner_product: [...muchas, { _id: "aut-saona", partner: "soc-1", product: "prod-saona", status: "active" }],
+    }));
+
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1", partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    });
+    expect(res.bookings).toHaveLength(1);
+  });
+
+  it("y sigue negando lo que de verdad no está firmado, por muchas que tenga", async () => {
+    // El arreglo no puede convertirse en «déjalo pasar»: la pregunta cambió, la
+    // respuesta a un producto ajeno no.
+    const muchas = Array.from({ length: 1500 }, (_, i) => ({
+      _id: `aut-${String(i).padStart(5, "0")}`,
+      partner: "soc-1", product: `prod-relleno-${i}`, status: "active",
+    }));
+    db = fakeDb(catalogo({
+      partner: [{ _id: "soc-1", name: "Caribe", credit_limit: 0, credit_days: 0 }],
+      partner_product: [...muchas, { _id: "aut-saona", partner: "soc-1", product: "prod-saona", status: "active" }],
+    }));
+
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1", partner_id: "soc-1",
+      items: [{ product_id: "prod-buggy", departure_id: "sal-buggy", adults: 2 }],
+    })).rejects.toThrow(/no tienes autorizada la venta/i);
+  });
+
   it("y el mensaje dice QUÉ producto, por su nombre", async () => {
     // Un 403 con uuids dentro obliga a quien integra a cruzarlos a mano contra
     // su catálogo para entender qué le están negando.

@@ -6,6 +6,7 @@ import { ok, fail, resolvePeriod } from "@/lib/api-response";
 import { projectRows } from "@/lib/field-projection";
 import { refId } from "@/lib/types";
 import type { Commission, Order, Seller } from "@/lib/types";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 /**
  * EL EQUIPO DE VENTAS DEL TOUR CENTER, CON LO QUE HA VENDIDO CADA UNO.
@@ -77,18 +78,25 @@ export async function GET(req: NextRequest) {
      */
     const [ordenes, comisiones] = ids.length
       ? await Promise.all([
-          tenantQuery<Order>(ctx.companyId, "order", {
-            _filter: { seller: { in: ids }, createdAt: { gte: from, lte: to } },
-            _limit: 1000, _sort: { createdAt: "desc" },
-          }),
-          tenantQuery<Commission>(ctx.companyId, "commission", {
-            _filter: {
-              seller: { in: ids }, beneficiary_type: "seller",
-              status: { ne: "cancelled" },
-              generated_at: { gte: from, lte: to },
-            },
-            _limit: 1000,
-          }),
+          // Enteras las dos: de aquí salen los TOTALES por vendedor —cuánto
+          // vendió y cuánto devengó— y de eso cuelga lo que se le paga. Un
+          // total corto no es una tabla incompleta: es una liquidación corta.
+          leerTodoElRecurso<Order>("order", (limite, salto) =>
+            tenantQuery(ctx.companyId, "order", {
+              _filter: { seller: { in: ids }, createdAt: { gte: from, lte: to } },
+              _sort: { createdAt: "desc", _id: "desc" },
+              _limit: limite, _offset: salto,
+            })),
+          leerTodoElRecurso<Commission>("commission", (limite, salto) =>
+            tenantQuery(ctx.companyId, "commission", {
+              _filter: {
+                seller: { in: ids }, beneficiary_type: "seller",
+                status: { ne: "cancelled" },
+                generated_at: { gte: from, lte: to },
+              },
+              _sort: { generated_at: "asc", _id: "asc" },
+              _limit: limite, _offset: salto,
+            })),
         ])
       : [[], []];
 

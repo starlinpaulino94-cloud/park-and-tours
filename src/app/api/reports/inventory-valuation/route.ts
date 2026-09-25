@@ -3,6 +3,7 @@ import { requireTenant, requireAtLeast, tenantQuery } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { refId } from "@/lib/types";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 /**
  * GET /api/reports/inventory-valuation — las existencias valoradas al costo.
@@ -57,12 +58,20 @@ export async function GET(req: NextRequest) {
     requireAtLeast(ctx, "manager");
 
     const warehouseFilter = req.nextUrl.searchParams.get("warehouse");
-    const levels = await tenantQuery<LevelRow>(ctx.companyId, "stock_level", {
-      _filter: warehouseFilter ? { warehouse: warehouseFilter } : {},
-      warehouse: true,
-      inventory_item: true,
-      _limit: 2000,
-    });
+    /**
+     * Lo que vale el almacén es un TOTAL, y un total corto presentado como el
+     * bueno es peor que no darlo: se compara contra la contabilidad, se cierra
+     * un ejercicio con él y la diferencia aparece cuando ya no se puede
+     * explicar. Por eso se lee entero y se lanza si no se puede.
+     */
+    const levels = await leerTodoElRecurso<LevelRow>("stock_level", (limite, salto) =>
+      tenantQuery(ctx.companyId, "stock_level", {
+        _filter: warehouseFilter ? { warehouse: warehouseFilter } : {},
+        warehouse: true,
+        inventory_item: true,
+        _sort: { created_at: "asc", _id: "asc" },
+        _limit: limite, _offset: salto,
+      }));
 
     const porAlmacen = new Map<string, { name: string; items: number; units: number; value: number }>();
     const items: {

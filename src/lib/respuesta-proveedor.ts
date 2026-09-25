@@ -5,6 +5,7 @@ import { writeAudit } from "@/lib/audit";
 import { notify } from "@/lib/notify-service";
 import { newSupplierConfirmation } from "@/lib/codes";
 import { hashDeEnlace, nuevoEnlaceDeRespuesta, urlDeRespuesta } from "@/lib/enlace-proveedor";
+import { barridoVigilado } from "@/lib/system-health-service";
 import {
   alVencer, haVencido, plazoDeRespuesta, puedeResponder,
   type EstadoDeAceptacion,
@@ -605,16 +606,32 @@ export async function barrerVencimientos(
  * llamar. Preguntarlo es mucho más barato que llamar a todas.
  */
 export async function empresasConPlazosVencidos(ahora: Date = new Date()): Promise<string[]> {
+  /**
+   * RECORRIDO, y entero.
+   *
+   * El tope de dos mil caía sobre las FILAS pero lo que se saca de ellas son
+   * EMPRESAS: bastaba con que una operadora grande llenara la página para que a
+   * otra no se le atendiera ningún plazo vencido — y siempre la misma, porque el
+   * orden del montón no cambia entre pasadas. Es el mismo fallo que tenía la
+   * liberación de retenciones de la cobranza (ola 9.11).
+   */
   const empresas = new Set<string>();
   for (const tipo of TIPOS) {
-    const filas = await mustRead<{ organization_id: string }[]>(
-      "buscar empresas con plazos vencidos",
-      supabaseService().from(tipo).select("organization_id")
-        .eq("acceptance", "pending")
-        .lte("acceptance_deadline", ahora.toISOString())
-        .limit(2000)
-    ) ?? [];
-    for (const fila of filas) empresas.add(fila.organization_id);
+    await barridoVigilado<{ id: string; organization_id: string }>({
+      etiqueta: `proveedor:plazos:${tipo}`,
+      modo: "recorrido",
+      idDe: (fila) => fila.id,
+      leer: async (desde, hasta) => await mustRead<{ id: string; organization_id: string }[]>(
+        "buscar empresas con plazos vencidos",
+        supabaseService().from(tipo).select("id, organization_id")
+          .eq("acceptance", "pending")
+          .lte("acceptance_deadline", ahora.toISOString())
+          .order("acceptance_deadline", { ascending: true })
+          .order("id", { ascending: true })
+          .range(desde, hasta)
+      ) ?? [],
+      tratar: async (filas) => { for (const f of filas) empresas.add(f.organization_id); },
+    });
   }
   return [...empresas];
 }

@@ -31,6 +31,20 @@ const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
  * ficheros donde acababa de quitarse. Una guarda que se queja de que expliques
  * lo que arreglaste es una guarda que alguien desactiva.
  */
+/** Todos los .ts/.tsx bajo una carpeta, en rutas relativas a la raíz. */
+function ficherosTs(raiz: string): string[] {
+  const out: string[] = [];
+  const recorrer = (dir: string) => {
+    for (const entrada of readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+      const rel = `${dir}/${entrada.name}`;
+      if (entrada.isDirectory()) recorrer(rel);
+      else if (/\.tsx?$/.test(entrada.name)) out.push(rel);
+    }
+  };
+  recorrer(raiz);
+  return out;
+}
+
 const readCodigo = (rel: string) =>
   read(rel)
     .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -10691,5 +10705,122 @@ describe("cupo, seguridad y nómina: ningún techo decide por nadie", () => {
     // Y respeta las tres decisiones que importan de la función.
     expect(doble).toMatch(/confirmadas\.includes\(estado\)/);
     expect(doble).toMatch(/found: false/);
+  });
+});
+
+/**
+ * EL INVENTARIO DE TECHOS, CERRADO (ola 9.14).
+ *
+ * Cuarta y última entrega. Lo que queda escrito aquí no es «no uses números
+ * grandes», es que **hay tres formas de leer mucho y elegir la equivocada es un
+ * fallo por sí sola**:
+ *
+ *  · **Barrido** — un trabajo que TRATA filas. Se queda corto, avisa y sigue.
+ *  · **Lectura completa** — un número que alguien usa. O todo, o lanza.
+ *  · **Informe** — una pantalla de análisis. Se recorta Y SE DICE.
+ *
+ * Un informe tratado como suma deja sin pantalla a la operadora más grande. Una
+ * suma tratada como informe da un número falso con aspecto de bueno. Y un
+ * trabajo tratado como cualquiera de los dos deja de hacer su trabajo.
+ */
+describe("techos: el inventario está cerrado", () => {
+  /** Todo lo que puede leer mucho, fuera de los tres ficheros de infraestructura. */
+  const FUENTES = [
+    "src/app/api",
+    "src/lib",
+  ];
+
+  it("no queda ni un tope de cuatro cifras escrito a mano", () => {
+    /**
+     * Es la guarda que cierra la familia entera. Cuatro cifras a mano fue la
+     * forma de TODOS los fallos de las olas 9.11 a 9.14: 1 000, 2 000, 3 000 y
+     * 5 000. Los topes de dos o tres cifras se dejan en paz a propósito —una
+     * cota real del dominio, como los 300 empleados activos o las 60 cuotas de
+     * una venta— porque prohibirlos convertiría esto en ruido que alguien
+     * desactiva.
+     *
+     * Las constantes con nombre (`TOPE_INFORME`, `PAGINA`) están permitidas: son
+     * justamente lo que se quería a cambio.
+     */
+    const malos: string[] = [];
+    for (const raiz of FUENTES) {
+      for (const rel of ficherosTs(raiz)) {
+        if (rel.includes(".test.")) continue;
+        if (rel.endsWith("src/lib/barrido.ts")) continue;
+        const encontrados = readCodigo(rel).match(/(_limit:\s*|\.limit\(\s*)\d{4,}/g) ?? [];
+        for (const m of encontrados) malos.push(`${rel}: ${m}`);
+      }
+    }
+    expect(malos, `quedan topes escritos a mano:\n${malos.join("\n")}`).toEqual([]);
+  });
+
+  it("las tres formas están escritas, con nombre y con su motivo", () => {
+    const src = read("src/lib/barrido.ts");
+    expect(src).toContain("export async function barrer");
+    expect(src).toContain("export async function leerTodoElRecurso");
+    expect(src).toContain("export function recorteDe");
+    // Y los tres topes dicen para qué es cada lectura por su tamaño relativo.
+    expect(src).toMatch(/export const TOPE = 20_000;/);
+    expect(src).toMatch(/export const TOPE_INQUILINO = 10_000;/);
+    expect(src).toMatch(/export const TOPE_INFORME = 5_000;/);
+  });
+
+  const INFORMES: [string, string][] = [
+    ["src/lib/voice-service.ts", "recorte"],
+    ["src/app/api/superadmin/stats/route.ts", "recorte"],
+    ["src/app/api/superadmin/companies/route.ts", "recorte"],
+    ["src/app/api/superadmin/plans/route.ts", "recorte"],
+    ["src/app/api/octo/channels/route.ts", "recorte"],
+  ];
+
+  it.each(INFORMES)("%s dice si está cortado", (ruta, campo) => {
+    /**
+     * Un informe recortado en silencio no da un dato incompleto: da un dato
+     * FALSO con aspecto de bueno. Un NPS, una facturación mensual o el ranking
+     * de canales calculados sobre parte de los datos se leen como conclusiones
+     * de negocio, y nadie los contrasta contra otra cosa.
+     */
+    expect(read(ruta)).toContain(campo);
+  });
+
+  it.each(INFORMES)("%s calcula el recorte, no lo afirma", (ruta) => {
+    /**
+     * Tener el campo no basta. Un informe que devuelva siempre
+     * `truncado: false` es exactamente el tope de antes con una propiedad más
+     * —y esta guarda existe porque una mutación lo hizo y sobrevivió—: quien lo
+     * lee ve un aviso que nunca salta y deja de mirarlo.
+     *
+     * Así que el valor tiene que venir de `recorteDe` o de lo que devolvió el
+     * servicio, nunca de un objeto escrito a mano.
+     */
+    const src = readCodigo(ruta);
+    expect(src, `${ruta} afirma el recorte en vez de calcularlo`)
+      .not.toMatch(/truncado:\s*(true|false)/);
+    expect(src, `${ruta} no calcula el recorte`).toMatch(/recorteDe\(|\.recorte\b/);
+  });
+
+  it("la venta pregunta por los productos del carrito, no por el contrato entero", () => {
+    /**
+     * Aquí el techo NEGABA en vez de aprobar: un socio con más de mil productos
+     * firmados recibía un 403 por uno que sí tenía. Y el arreglo no fue paginar
+     * —la pregunta nunca fue «qué tiene autorizado»— sino filtrar por lo que se
+     * está vendiendo, que además hace la consulta más barata que la de antes.
+     */
+    const src = read("src/lib/booking-service.ts");
+    expect(src).toMatch(/_filter: \{ partner: input\.partner_id, status: "active", product: \{ in: pedidos \} \}/);
+  });
+
+  it("el catálogo del socio y su tarifario se leen enteros", () => {
+    // Los dos son documentos contra los que el socio vende y después reclama.
+    // Y la fase 6.3 prueba que coinciden: con dos topes iguales, coincidían los
+    // dos en estar cortados.
+    for (const ruta of [
+      "src/lib/tarifario.ts",
+      "src/app/api/v1/products/route.ts",
+      "src/app/api/v1/availability/route.ts",
+      "src/app/api/portal/catalog/route.ts",
+    ]) {
+      expect(read(ruta), `${ruta} no lee el contrato entero`).toContain("leerTodoElRecurso");
+    }
   });
 });

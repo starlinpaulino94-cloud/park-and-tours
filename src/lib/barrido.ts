@@ -252,3 +252,53 @@ export async function leerTodoElRecurso<T>(
     }
   }
 }
+
+/**
+ * ────────────────────────────────────────────────────────────────────────────
+ * Y LA TERCERA FORMA: UN INFORME QUE DICE QUE ESTÁ CORTADO
+ *
+ * Hay tres maneras de leer mucho, y elegir la equivocada es un fallo por sí
+ * sola:
+ *
+ *  · **Barrido** (`barridoVigilado`). Un trabajo que TRATA filas. Quedarse corto
+ *    y avisar está bien: diecinueve mil filas tratadas son diecinueve mil cosas
+ *    hechas. Levanta un incidente y sigue.
+ *
+ *  · **Lectura completa** (`leerTodoElRecurso`). Un número que alguien usa: lo
+ *    que hay en el cajón, lo que se declara, lo que se paga, si cabe la venta.
+ *    O se lee todo o el número está mal, así que LANZA.
+ *
+ *  · **Informe** (esto). Una pantalla de análisis sobre meses de historia. Aquí
+ *    lanzar sería peor que recortar: la operadora más grande —la que más
+ *    necesita el informe— se quedaría sin pantalla. Y recortar en silencio
+ *    también, porque una tasa de repetición o un NPS calculados sobre parte de
+ *    los datos se leen como una conclusión de negocio.
+ *
+ *    Así que se recorta Y SE DICE, y quien pinta avisa. Es lo que ya hacía el
+ *    informe de cohortes desde la ola 9.7 (`CohortReport.truncated`); esto solo
+ *    le pone nombre para que las tres formas sean tres cosas con nombre y no una
+ *    costumbre.
+ */
+
+/** Cuántas filas mira un informe antes de declararse cortado. */
+export const TOPE_INFORME = 5_000;
+
+export interface Recorte {
+  /** Verdadero cuando se llegó al tope y faltan datos en el informe. */
+  truncado: boolean;
+  /** El tope que se aplicó, para que la pantalla lo pueda decir. */
+  tope: number;
+  leidas: number;
+}
+
+/**
+ * Describe si un informe salió cortado.
+ *
+ * No hay ambigüedad en el borde: se compara con `>=` porque una lectura que
+ * devuelve exactamente el tope no puede distinguirse de una que se quedó a
+ * medias. Decir «puede que falte» cuando quizá no falta es el error correcto;
+ * el otro es afirmar un número que no se tiene.
+ */
+export function recorteDe(leidas: number, tope: number = TOPE_INFORME): Recorte {
+  return { truncado: leidas >= tope, tope, leidas };
+}

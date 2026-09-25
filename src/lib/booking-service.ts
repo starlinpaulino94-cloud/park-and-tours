@@ -554,9 +554,33 @@ export async function createOrderWithBookings(
    * y solo cuesta una consulta cuando la venta es de un socio.
    */
   if (input.partner_id) {
-    const autorizaciones = await tenantQuery<Record<string, unknown>>(companyId, "partner_product", {
-      _filter: { partner: input.partner_id, status: "active" }, _limit: 1000,
-    });
+    /**
+     * SE PREGUNTA POR LOS PRODUCTOS DEL CARRITO, NO POR EL CONTRATO ENTERO.
+     *
+     * Esto leía las autorizaciones del socio con `_limit: 1000` y armaba el
+     * conjunto de lo permitido a partir de ahí. Con más de mil productos bajo
+     * contrato, el que se vende puede caer más allá de la fila mil — y entonces
+     * la comprobación dice «no autorizado» y devuelve un 403 por un producto que
+     * el socio SÍ tiene firmado.
+     *
+     * Es el fallo contrario al de las otras lecturas de esta serie: aquí se
+     * niega en vez de aprobar. Pero es igual de silencioso y de determinista, y
+     * además irreproducible desde el mostrador: el producto de prueba de quien
+     * atiende la queja está entre los primeros mil.
+     *
+     * Y la respuesta no es paginar. La pregunta nunca fue «qué tiene autorizado
+     * este socio» —eso es el catálogo, y vive en otras pantallas— sino «están
+     * ESTOS productos en su contrato». Filtrando por los del carrito no hay tope
+     * que importe: se leen como mucho tantas filas como artículos lleve la
+     * venta, y la consulta además es más barata que la de antes.
+     */
+    const pedidos = [...new Set((input.items ?? []).map((i) => i.product_id).filter(Boolean))];
+    const autorizaciones = pedidos.length === 0 ? [] : await tenantQuery<Record<string, unknown>>(
+      companyId, "partner_product", {
+        _filter: { partner: input.partner_id, status: "active", product: { in: pedidos } },
+        _limit: Math.max(1, pedidos.length),
+      }
+    );
     const fuera = noAutorizados(
       (input.items ?? []).map((i) => i.product_id),
       autorizadosDe(autorizaciones as AutorizacionSocio[])
