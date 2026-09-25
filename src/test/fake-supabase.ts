@@ -168,6 +168,27 @@ class Builder implements PromiseLike<Resultado> {
     }
     throw new Error(`fake-supabase: not(${col}, "${op}", …) no está soportado; añádelo si la aplicación lo usa`);
   }
+  /**
+   * `ilike`: comparación insensible a mayúsculas CON comodines.
+   *
+   * Se implementan los comodines a propósito y no como una igualdad relajada:
+   * `%` y `_` son lo que hace que `ilike` sobre una cadena que viene de una URL
+   * no sea una comparación sino un patrón, y una prueba que los ignorara
+   * escondería justo esa clase de fuga.
+   */
+  ilike(col: string, patron: string) {
+    const escapado = String(patron)
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      .replace(/%/g, ".*")
+      .replace(/_/g, ".");
+    const re = new RegExp(`^${escapado}$`, "i");
+    this.filtros.push((f) => {
+      const v = valorDe(f, col);
+      return v !== null && v !== undefined && re.test(String(v));
+    });
+    return this;
+  }
+
   is(col: string, value: unknown) {
     this.filtros.push((f) => {
       const v = valorDe(f, col);
@@ -228,8 +249,15 @@ class Builder implements PromiseLike<Resultado> {
         const rows = Array.isArray(this.payload) ? this.payload : [this.payload as Fila];
         const creadas: Fila[] = [];
         for (const row of rows) {
+          // `created_at` lo pone la base con `default now()`, y hay servicios
+          // que FILTRAN por él —la deduplicación de visitas del embudo, sin ir
+          // más lejos—. Sin sello, esas filas no pasan su propio `gte` y la
+          // prueba diría que la deduplicación no funciona.
+          const conSello = row.created_at === undefined
+            ? { ...row, created_at: new Date().toISOString() }
+            : row;
           creadas.push(await this.db.tenantCreate(
-            String(row.organization_id ?? ""), this.tabla, conAmbasFormas(row)));
+            String(row.organization_id ?? ""), this.tabla, conAmbasFormas(conSello)));
         }
         return this.envolver(creadas);
       }

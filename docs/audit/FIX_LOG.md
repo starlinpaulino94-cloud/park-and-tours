@@ -3782,3 +3782,90 @@ había ejecutado nunca en una prueba.
   `seller-goals`. Más `membego-service.ts` (550 líneas, el enlace y los
   webhooks), que entró en el inventario como parte de MembeGo pero es un servicio
   aparte y sigue sin pruebas propias.
+
+### Ola 9.5 — cuánto se cobra, cuándo, y quién se lleva la comisión
+
+`quote-service.ts` (172 líneas), `schedule-service.ts` (293) y
+`attribution-service.ts` (378): el precio que se promete, el calendario con el
+que se cobra y el vendedor al que se le paga. Ninguno tenía pruebas propias.
+
+- **EL HISTÓRICO A MEDIAS DECIDÍA QUIÉN COBRA.** `resolveOrderAttribution` lanza
+  dos consultas —por ficha del cliente y por cookie del navegador— y las
+  recogía con `for (const { data } of results)`, o sea descartando el `error`
+  de las dos. Un fallo en cualquiera salía de aquí como «ese cliente no tiene
+  histórico», y eso tiene dos caras y las dos cuestan dinero: devolver `null`
+  es declarar la venta **directa** —el propio docblock dice que eso «es la
+  verdad», y con una lectura rota no lo es: es el conserje que trajo al cliente
+  quedándose sin comisión, en silencio—; y con política de **último toque**,
+  resolver sobre la mitad de los hechos puede coronar a **otro** vendedor, así
+  que no se pierde una comisión, se le paga a quien no la hizo. Si falla una, no
+  se resuelve con la otra.
+- **`recordPurchaseOnce` SE APAGABA SOLA CUANDO LA BASE IBA MAL.** La lectura que
+  comprueba si esa venta ya está en el embudo descartaba su error, así que caía
+  de largo hasta escribir. Y su propio comentario explica por qué importa:
+  `syncOrderTotals` corre con **cada** pago, cada abono y cada cancelación de
+  línea, de modo que una venta cobrada en tres plazos dejaba tres compras y el
+  vendedor que cobra a plazos parecía el triple de bueno. Ahora falla cerrado.
+  **La deduplicación de visitas hace lo contrario, y también es correcto**: un
+  paso de embudo que falta es un hueco en un informe; una compra de más es un
+  número equivocado con cara de bueno. La asimetría está fijada por una guarda,
+  porque es justo lo que alguien ordenado «armonizaría».
+- **EL SLUG DEL QR ERA UN PATRÓN.** `resolveLinkBySlug` compara con `ilike` —que
+  es lo correcto: el código va impreso bajo un QR y quien lo teclea puede
+  escribirlo en minúsculas— pero `ilike` interpreta `%` y `_`, y la cadena venía
+  de la URL sin tocar. Con `/e/%` el patrón casa con **todos** los enlaces
+  activos de la base, y con `_` se tantean de uno en uno; cuando casa
+  exactamente uno, quien lo probó se lleva la atribución de ese vendedor sin
+  haber tenido nunca su QR delante. `slugify` solo produce `[A-Z0-9]`, así que
+  exigir eso no rechaza ningún enlace que exista.
+- **UN TOTAL DE COTIZACIÓN ESCRITO SOBRE UN DESGLOSE LEÍDO A MEDIAS.**
+  `loadQuoteBundle` lee con tope (200 líneas, 20 alternativas) y
+  `recalculateQuote` **guarda** lo que suma. Con el desglose recortado, la
+  cabecera se quedaba con la suma de las primeras doscientas líneas —escrita, no
+  calculada al vuelo— y la propuesta salía en PDF con un precio que su propio
+  desglose contradice, con cara de buena; y de ahí sale la orden al convertir.
+  Es exactamente lo que el módulo existe para impedir: su cabecera dice que los
+  totales son «una proyección de las líneas», y una proyección de la mitad de
+  las líneas no es un total. Ahora se lanza en vez de guardar, y el total
+  anterior se queda como estaba.
+- **CAMBIAR LA ALTERNATIVA ESCOGIDA DE UNA PROPUESTA ACEPTADA.** La ruta decía
+  `if (!selecting && DECIDED_STATUSES.has(...))`: bloqueaba **desmarcar** y
+  dejaba pasar **marcar**, al revés de lo que hace falta. La cabecera toma el
+  total de la alternativa escogida, así que marcar otra sobre una cotización
+  aceptada le cambia el precio a un documento con el que la empresa ya se
+  comprometió, `convert` arma la orden con la nueva, y el rastro que queda es un
+  `quote_option_selected` igual a los demás. No hay camino legítimo que lo
+  necesite: `decide` ya exige que la alternativa esté marcada **antes** de
+  aceptar.
+- **EL SALDO DE UNA CUOTA NO SE DERIVABA.** La cabecera de `schedule-service`
+  dice que lo imputado se deriva y no se acumula, pero la comparación de «esta
+  fila no ha cambiado» miraba lo imputado y el estado, y no el saldo. Una cuota
+  cuyo importe se corrige a mano —el gerente baja la última de 700 a 500— sale
+  con el mismo `paid_amount` y el mismo estado, así que se quedaba con el
+  `balance` del importe viejo: el plan seguía pidiendo doscientos que ya nadie
+  debe, y el saldo es lo que el cliente ve en su cuota.
+- **Y un plan nuevo reutilizaba los números de uno muerto.** Cuando todas las
+  cuotas anteriores están perdonadas o anuladas, `ensureSchedule` no encontraba
+  ninguna viva y volvía a numerar desde 1: la venta acababa con dos cuotas «1» y
+  dos «2» —una muerta y otra viva— y el recibo que dice «abono de la cuota 2 de
+  3» deja de poder señalar una sola. `setSchedule` ya lo hacía bien; esto es lo
+  mismo por el otro camino.
+- **El doble de la base aprendió dos cosas que hacían falta de verdad:** `ilike`
+  **con** sus comodines —una prueba que los ignorara escondería justo la fuga
+  que hay que buscar— y el sello de `created_at` al insertar, porque la columna
+  lo tiene por `default now()` y hay servicios que **filtran** por él; sin sello,
+  esas filas no pasan su propio `gte` y la prueba diría que la deduplicación de
+  visitas no funciona.
+- **Dos guardas no mordieron a la primera, y las dos por motivos ya conocidos.**
+  El filtro de cuotas muertas y el acotado del cobro a cero son **defensa en
+  profundidad inalcanzable**: `allocate` se salta las muertas por su cuenta,
+  `statusFor` conserva su estado y `collectionStatus` las vuelve a filtrar, así
+  que el mutador las quita y nada cambia. Se quedan porque lo que las hace
+  inertes es el contrato de **otro** módulo, y se fijan por estructura. Y al
+  escribir esa guarda apareció otra vez la familia de siempre —**la guarda
+  encuentra su texto en otro sitio del mismo fichero**—: el filtro está en dos
+  funciones (`refreshAllocation` reparte, `scheduleRefFor` etiqueta) y un
+  `toMatch` a secas dejaba pasar que se quitara de una. La guarda cuenta dos.
+- **Mutación: veintiuna, las veintiuna muertas.**
+- **Quedan cinco servicios sin ejecutar**, ~1.500 líneas: `analytics`, `import`,
+  `membego` (el enlace y los webhooks, 550), `plan` y `seller-goals`.

@@ -9882,3 +9882,118 @@ describe("la reversa de MembeGo es de la reserva que se cae", () => {
     expect(llamada, "la reversa volvió a ser de la venta entera").toMatch(/ctx\.userId, id/);
   });
 });
+
+describe("la alternativa escogida no se cambia sobre una propuesta cerrada", () => {
+  /**
+   * Es una ruta, y no hay prueba de comportamiento que la ejecute: la guarda
+   * fija la condición, que es donde estaba el fallo. Decía
+   * `if (!selecting && DECIDED)`, o sea que bloqueaba DESMARCAR y dejaba pasar
+   * MARCAR — justo al revés—. La cabecera toma el total de la alternativa
+   * escogida, así que marcar otra sobre una cotización ACEPTADA le cambia el
+   * precio a un documento con el que la empresa ya se comprometió, y `convert`
+   * arma la orden con la nueva.
+   */
+  it("cualquier cambio de la elección se bloquea, no solo desmarcar", () => {
+    const src = cuerpoDe("src/app/api/quotes/[id]/options/[optionId]/route.ts");
+    expect(src).toMatch(
+      /if \(body\.is_selected !== undefined && DECIDED_STATUSES\.has\(quote\.status \|\| ""\)\)/
+    );
+    expect(src, "vuelve a dejar pasar el marcado sobre una propuesta cerrada")
+      .not.toMatch(/if \(!selecting && DECIDED_STATUSES/);
+  });
+
+  it("y `decide` sigue exigiendo que esté marcada ANTES de aceptar", () => {
+    // Es lo que hace que bloquear el cambio de después no rompa ningún camino
+    // legítimo: la elección va primero, la aceptación después.
+    const src = cuerpoDe("src/app/api/quotes/[id]/decide/route.ts");
+    expect(src).toMatch(/decision === "accepted" && options\.length > 0 && !options\.some\(\(o\) => o\.is_selected\)/);
+  });
+});
+
+describe("el tope con el que se lee el desglose es el mismo con el que se compara", () => {
+  /**
+   * El fallo que esto impide no es un valor sino una divergencia: quien suba el
+   * `_limit` de la consulta y deje el número de la comparación —o al revés—
+   * vuelve a dejar un total escrito sobre un desglose recortado, y ninguna
+   * prueba de comportamiento lo ve porque las dos mitades siguen siendo
+   * coherentes CONSIGO MISMAS.
+   */
+  it("las dos mitades usan la constante, no un número suelto", () => {
+    const src = cuerpoDe("src/lib/quote-service.ts");
+    expect(src).toMatch(/_limit: TOPE_DE_LINEAS,/);
+    expect(src).toMatch(/_limit: TOPE_DE_OPCIONES,/);
+    expect(src).toMatch(/lines\.length >= TOPE_DE_LINEAS \|\| options\.length >= TOPE_DE_OPCIONES/);
+  });
+});
+
+describe("el embudo falla cerrado donde cuenta y abierto donde no", () => {
+  /**
+   * Las dos lecturas tienen su prueba con la base rota. Lo que esta guarda fija
+   * es la ASIMETRÍA, que es lo que alguien ordenado «armonizaría» sin darse
+   * cuenta de que son casos opuestos: una compra de más desvía un número que
+   * luego se paga; una visita de más no desvía ninguno, porque el embudo cuenta
+   * personas y no filas.
+   */
+  it("la compra no se apunta si no se pudo comprobar", () => {
+    const src = cuerpoDe("src/lib/attribution-service.ts");
+    const at = src.indexOf('.eq("stage", "purchase")');
+    expect(at).toBeGreaterThan(-1);
+    const despues = src.slice(at, at + 400);
+    expect(despues, "la comprobación de compra vuelve a caer de largo").toMatch(/if \(error\) \{[\s\S]*?return;/);
+  });
+
+  it("y la visita sí se apunta, que es lo contrario y es correcto", () => {
+    const src = cuerpoDe("src/lib/attribution-service.ts");
+    const at = src.indexOf("const { data: already, error: errorDeVisitas } = await recent;");
+    expect(at, "la deduplicación dejó de mirar su error").toBeGreaterThan(-1);
+    const despues = src.slice(at, at + 300);
+    expect(despues, "la visita también pasó a fallar cerrada").not.toMatch(/if \(errorDeVisitas\) return/);
+  });
+
+  it("y el histórico incompleto no decide quién cobra", () => {
+    // Resolver sobre la mitad de los hechos no es «no hay histórico»: con
+    // último toque puede ganar OTRO vendedor, y entonces no se pierde una
+    // comisión, se le paga a quien no la hizo.
+    const src = cuerpoDe("src/lib/attribution-service.ts");
+    const rota = src.indexOf("const rota = results.find((r) => r.error);");
+    const bucle = src.indexOf("for (const { data } of results) {");
+    expect(rota, "la comprobación de lectura rota desapareció").toBeGreaterThan(-1);
+    expect(bucle, "se recorren los resultados antes de mirar si alguno falló").toBeGreaterThan(rota);
+  });
+});
+
+describe("las defensas del calendario de cobro que ninguna prueba puede ver correr", () => {
+  /**
+   * Dos líneas que hoy son inalcanzables porque `collections.ts` rechaza antes
+   * lo mismo: `allocate` se salta las cuotas muertas y acota el importe a cero
+   * por abajo, `statusFor` conserva el estado de una cuota perdonada y
+   * `collectionStatus` las vuelve a filtrar. El mutador las quita y nada
+   * cambia.
+   *
+   * Y no se pueden quitar, porque lo que las hace inertes es el contrato de
+   * OTRO módulo: el día que `allocate` se reescriba para repartir un abono y
+   * ese filtro se mueva, son lo único que impide que una cuota perdonada vuelva
+   * a pedir dinero y que un reembolso se impute como si fuera un cobro. Se
+   * fijan por estructura, que es lo honesto: la guarda dice que la línea existe
+   * y por qué, no que se ejecute.
+   */
+  it("las cuotas muertas se filtran EN LOS DOS sitios que las leen", () => {
+    /**
+     * Dos, y contados: `refreshAllocation` reparte el dinero y `scheduleRefFor`
+     * etiqueta el recibo, y las dos tienen que partir de la misma lista. Con un
+     * `toMatch` a secas la guarda encontraba su texto en el OTRO sitio y dejaba
+     * pasar que se quitara de uno — que es exactamente como se cuela este fallo.
+     */
+    const marca = 'const live = rows.filter((row) => !DEAD.has(row.status || ""));';
+    const veces = cuerpoDe("src/lib/schedule-service.ts").split(marca).length - 1;
+    expect(veces, "alguno de los dos dejó de filtrar las cuotas muertas").toBe(2);
+  });
+
+  it("y lo cobrado nunca entra en negativo", () => {
+    // Un `paid_total` negativo —un reembolso que dejó la orden por debajo de
+    // cero— imputaría cantidades negativas sobre las cuotas, y el cliente
+    // acabaría con un plan que dice que debe menos que nada.
+    expect(cuerpoDe("src/lib/schedule-service.ts"))
+      .toMatch(/const paid = Math\.max\(round2\(order\.paid_total \?\? 0\), 0\);/);
+  });
+});

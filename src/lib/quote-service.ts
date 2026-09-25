@@ -78,6 +78,16 @@ export interface QuoteBundle {
  * detrás» y solo lo usa el recálculo, que corre DESPUÉS de una escritura ya
  * autorizada.
  */
+/**
+ * Los topes de lectura, con nombre porque hay que poder compararse con ellos.
+ *
+ * Un documento de veinte alternativas o doscientas líneas no existe; lo que sí
+ * puede existir es un error que las genere, y entonces importa MUCHÍSIMO que
+ * nadie escriba un total calculado sobre un trozo.
+ */
+const TOPE_DE_OPCIONES = 20;
+const TOPE_DE_LINEAS = 200;
+
 export async function loadQuoteBundle(
   companyId: string,
   quoteId: string,
@@ -87,10 +97,10 @@ export async function loadQuoteBundle(
   if (ctx) assertSellerOwnsRow("quote", ctx, quote as unknown as Record<string, unknown>, "Esta cotización");
   const [options, lines] = await Promise.all([
     tenantQuery<QuoteOptionRow>(companyId, "quote_option", {
-      _filter: { quote: quoteId }, _limit: 20, _sort: { sort_order: "asc" },
+      _filter: { quote: quoteId }, _limit: TOPE_DE_OPCIONES, _sort: { sort_order: "asc" },
     }),
     tenantQuery<QuoteLineRow>(companyId, "quote_line", {
-      _filter: { quote: quoteId }, _limit: 200, _sort: { sort_order: "asc" },
+      _filter: { quote: quoteId }, _limit: TOPE_DE_LINEAS, _sort: { sort_order: "asc" },
     }),
   ]);
   return { quote, options, lines };
@@ -117,6 +127,34 @@ export interface RecalculatedQuote {
  */
 export async function recalculateQuote(companyId: string, quoteId: string): Promise<RecalculatedQuote> {
   const { quote, options, lines } = await loadQuoteBundle(companyId, quoteId, null);
+
+  /**
+   * UN TOTAL NO SE ESCRIBE SOBRE UN DESGLOSE RECORTADO.
+   *
+   * `loadQuoteBundle` lee con tope, y esta función **guarda** lo que suma. Con
+   * el desglose recortado por el tope, la cabecera se quedaba con la suma de
+   * las primeras doscientas líneas —escrita, no calculada al vuelo— y la
+   * propuesta salía en PDF con un precio que su propio desglose contradice, con
+   * cara de buena. Y de ahí sale la orden al convertir.
+   *
+   * Es justo lo que este módulo existe para impedir: su cabecera dice que los
+   * totales son una proyección de las líneas. Una proyección de la mitad de las
+   * líneas no es un total; es un número.
+   *
+   * Se lanza en vez de guardar. Quien lo vea tiene un documento roto y hay que
+   * mirarlo, no redondearlo.
+   */
+  if (lines.length >= TOPE_DE_LINEAS || options.length >= TOPE_DE_OPCIONES) {
+    throw Object.assign(
+      new Error(
+        `La cotización ${quote.code || quoteId} tiene más desglose del que se puede sumar de una vez ` +
+        `(${lines.length} líneas, ${options.length} alternativas). No se guarda un total calculado a medias: ` +
+        "divídela antes de seguir."
+      ),
+      { status: 409 }
+    );
+  }
+
   const taxPercent = quote.tax_percent;
 
   const breakdown = optionBreakdown(options, lines, taxPercent);

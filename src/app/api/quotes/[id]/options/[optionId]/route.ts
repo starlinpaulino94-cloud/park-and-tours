@@ -31,9 +31,31 @@ export async function PUT(
     const option = options.find((o) => o._id === optionId);
     if (!option) throw Object.assign(new Error("Esa alternativa no pertenece a esta cotización"), { status: 404 });
 
+    /**
+     * CAMBIAR LO QUE ESCOGIÓ EL CLIENTE ES CAMBIAR EL PRECIO.
+     *
+     * Esto decía `if (!selecting && DECIDED)`, o sea que sobre una propuesta ya
+     * decidida bloqueaba DESMARCAR y dejaba pasar MARCAR — al revés de lo que
+     * hace falta. La cabecera toma el total de la alternativa escogida, así que
+     * marcar otra sobre una cotización ACEPTADA le cambia el total a un
+     * documento con el que la empresa ya se comprometió, y `convert` arma la
+     * orden con la nueva. El rastro que queda es un `quote_option_selected`
+     * igual a los demás.
+     *
+     * Y no hay ningún camino legítimo que lo necesite: `decide` exige que la
+     * alternativa esté marcada ANTES de aceptar («marca cuál escogió el cliente
+     * antes de aceptarla»). Para cambiarla después está la revisión, que es lo
+     * que el cliente vuelve a recibir.
+     */
     const selecting = body.is_selected === true;
-    if (!selecting && DECIDED_STATUSES.has(quote.status || "")) {
-      throw Object.assign(new Error("Esta cotización ya está cerrada"), { status: 409 });
+    if (body.is_selected !== undefined && DECIDED_STATUSES.has(quote.status || "")) {
+      throw Object.assign(
+        new Error(
+          "Esta cotización ya está cerrada: cambiar la alternativa escogida le cambiaría el precio. " +
+          "Abre una revisión."
+        ),
+        { status: 409 }
+      );
     }
 
     const patch: Record<string, unknown> = {};
