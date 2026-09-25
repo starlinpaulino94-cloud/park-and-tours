@@ -89,10 +89,34 @@ begin
     raise exception 'el enganche no puso el rol: %', claims;
   end if;
 
-  -- 0046 añadió la sucursal, y es lo que aquella migración vino a hacer: tiene
-  -- que seguir viajando después de restaurar los atributos.
+  -- ── LOS CINCO ATRIBUTOS, NOMBRADOS DE UNO EN UNO ─────────────────────────
+  --
+  -- Este objeto se ha reescrito seis veces (0002, 0020, 0046, 0063, 0068,
+  -- 0084) y CADA reescritura parte de la anterior de memoria. 0084 lo hizo
+  -- desde la versión de 0063 y perdió dos cosas de golpe —la empresa activa y
+  -- la sucursal— sin que nada se rompiera de forma visible.
+  --
+  -- Por eso la lista está aquí entera y por nombre, y no como «trae varios
+  -- atributos»: lo que no se nombra es exactamente lo que la séptima
+  -- reescritura va a perder.
   if not (claims ? 'branch_id') then
+    -- 0046. Sin él, `ctx.branchId` es nulo para todo el mundo.
     raise exception 'el enganche dejó de enviar branch_id: %', claims;
+  end if;
+
+  if not (claims ? 'partner_id') then
+    -- 0072. Es lo que acota a un usuario de tour center a lo suyo: sin él, la
+    -- aplicación no sabe que quien entra es de un socio.
+    raise exception 'el enganche dejó de enviar partner_id: %', claims;
+  end if;
+
+  if not (claims ? 'supplier_id') then
+    -- 0084. Lo mismo para el proveedor y su portal.
+    raise exception 'el enganche dejó de enviar supplier_id: %', claims;
+  end if;
+
+  if not (claims ? 'status') then
+    raise exception 'el enganche dejó de enviar status: %', claims;
   end if;
 
   raise notice 'ejecución del enganche como supabase_auth_admin: TODAS LAS ASERCIONES PASARON';

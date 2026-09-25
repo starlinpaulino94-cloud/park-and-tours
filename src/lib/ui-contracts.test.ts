@@ -10322,3 +10322,75 @@ describe("la lista negra del cliente dejó de ser una casilla", () => {
       .toMatch(/update customer[\s\S]{0,400}?where status = 'blacklist'/);
   });
 });
+
+describe("el simulacro de restauración prueba algo (DR-001)", () => {
+  const DRILL = "scripts/restore-drill.sh";
+
+  it("DESTRUYE la base antes de restaurarla", () => {
+    /**
+     * Es el paso que convierte esto en un simulacro y no en una comprobación de
+     * que `pg_dump` sabe escribir ficheros. Sin destruir, todo lo demás pasaría
+     * aunque la restauración no hiciera absolutamente nada — y el CI seguiría
+     * verde diciendo que sabemos volver de una copia.
+     */
+    const src = read(DRILL);
+    const iVuelca = src.indexOf("pg_dump");
+    const iDestruye = src.indexOf("dropdb");
+    const iRestaura = src.indexOf("pg_restore");
+    expect(iVuelca, "no vuelca").toBeGreaterThan(-1);
+    expect(iDestruye, "NO DESTRUYE: el simulacro no probaría nada").toBeGreaterThan(iVuelca);
+    expect(iRestaura, "restaura antes de destruir").toBeGreaterThan(iDestruye);
+    // Y lo comprueba en vez de confiar: si la base no quedó vacía, se para.
+    expect(src).toMatch(/la base no quedó vacía: el simulacro no probaría nada/);
+  });
+
+  it("y comprueba con el MISMO script que se pega tras una restauración real", () => {
+    // Dos comprobaciones distintas —una para el CI y otra para el día malo— es
+    // tener una probada y otra sin probar, y la sin probar es justo la que se
+    // usa cuando importa.
+    expect(read(DRILL)).toMatch(/supabase\/verify\/restauracion\.sql/);
+  });
+
+  it("LA COMPROBACIÓN TIENE QUE SABER FALLAR", () => {
+    /**
+     * Lo más importante del simulacro. Una verificación que siempre dice OK es
+     * exactamente igual de útil que no tenerla, y no hay forma de distinguirlas
+     * mirándola: hay que romper la base a propósito y ver si se entera.
+     *
+     * Y se exige QUÉ fila lo caza. Sin eso, una rotura que trepa por las
+     * dependencias y hace saltar otra comprobación cualquiera dejaría la de
+     * verdad sin probar — que es como se acaba con diez comprobaciones de las
+     * que solo funcionan tres.
+     */
+    const src = read(DRILL);
+    const controles = src.split("\ncaza ").length - 1;
+    expect(controles, "se quedó sin controles negativos").toBeGreaterThanOrEqual(4);
+    expect(src).toMatch(/caza\(\) \{ # <fila esperada>/);
+    expect(src).toMatch(/grep -E "\^\$1 ·"/);
+    expect(src, "un control dejó de decir qué fila lo tiene que cazar")
+      .not.toMatch(/\ncaza "/);
+  });
+
+  it("el manual dice lo que NO está en la copia", () => {
+    /**
+     * Las tres cosas que hacen falta y no viajan en un volcado de la base. La
+     * primera es la que arruina las restauraciones: sin el enganche del token
+     * registrado, todo funciona y todo está vacío.
+     */
+    const manual = read("docs/runbooks/RESTAURACION.md");
+    expect(manual).toMatch(/enganche del token, REGISTRADO/);
+    expect(manual).toMatch(/Storage/);
+    expect(manual).toMatch(/variables de entorno/i);
+    // Y el registro de simulacros reales, que es lo que dice si DR-001 está
+    // cerrado de verdad o solo reducido.
+    expect(manual).toMatch(/Registro de simulacros/);
+  });
+
+  it("y la comprobación avisa de lo que ella misma no puede ver", () => {
+    // Una comprobación que se calla sus límites deja a quien la lee creyendo
+    // que cubre más de lo que cubre, y eso es peor que no cubrirlo.
+    const sql = read("supabase/verify/restauracion.sql");
+    expect(sql).toMatch(/LO QUE ESTE SCRIPT NO PUEDE VER/);
+    expect(sql).toMatch(/ENGANCHE DEL TOKEN REGISTRADO/);
+  });
+});

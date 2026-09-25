@@ -144,6 +144,24 @@ jobs:
       - name: Pruebas de base de datos
         run: bash scripts/db-test.sh
 
+      # ══════════════════════════════════════════════════════════════════════
+      # SIMULACRO DE RESTAURACIÓN (DR-001)
+      #
+      # «Supabase hace copias; que se pueda volver de una no lo ha verificado
+      # nadie.» La parte cara no es si el volcado se restaura —eso casi siempre
+      # funciona— sino si lo que queda DESPUÉS sirve: aquí una base restaurada a
+      # medias no da un solo error, devuelve cero filas a todo el mundo.
+      #
+      # El simulacro vuelca, DESTRUYE, restaura y comprueba con el mismo script
+      # que se pega en el editor tras una restauración de verdad. Y después
+      # rompe la base cuatro veces a propósito para verificar que la
+      # comprobación sabe fallar: una verificación que no puede fallar no
+      # verifica nada, y así es como un plan de recuperación se pudre sin que
+      # nadie lo note.
+      # ══════════════════════════════════════════════════════════════════════
+      - name: Simulacro de restauración
+        run: bash scripts/restore-drill.sh
+
       - name: Guard — service role key never in client bundle
         run: |
           if grep -rn "SUPABASE_SERVICE_ROLE_KEY" src/ 2>/dev/null | grep -v "server-only\|process.env" | grep -iE "NEXT_PUBLIC|client"; then

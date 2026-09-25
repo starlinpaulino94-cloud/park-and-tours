@@ -4172,3 +4172,92 @@ función no estaba construida, y de la peor manera posible.
   después `0092_parte_2_verificacion.sql` (cuatro filas, todas OK). Hasta que
   estén, bloquear desde la ruta falla al escribir las tres columnas nuevas —el
   rechazo de ventas sí funciona, porque solo lee `status`—.
+
+### Ola 9.10 — DR-001: el simulacro de restauración, y lo que encontró por el camino (migración 0093)
+
+**El hallazgo no estaba en el plan.** Para escribir el simulacro hacía falta una
+base poblada, y para eso corrí `scripts/db-test.sh` — que llevaba varias olas sin
+correr, porque venía verificando con `vitest` y `vitest` no habla con Postgres.
+Volvió con **tres pruebas SQL en rojo**, y dos de ellas eran una regresión mía:
+
+- `auth_hook.test.sql` — «el enganche dejó de enviar branch_id».
+- `active_workspace.test.sql` — «con la B elegida, el token debería llevar la B».
+- `supplier_acceptance.test.sql` — `null value in column "kind" of relation
+  "organizations"`.
+
+**0084 reescribió `app.custom_access_token_hook` partiendo de la versión de 0063
+y perdió por el camino dos cosas**: el selector de empresa activa que había
+puesto 0068 y el `branch_id` que había puesto 0046. Las dos eran mías, de esta
+misma serie de olas, y llevaban semanas fuera del token. En la práctica: quien
+tenía varias empresas volvía siempre a la primaria por mucho que eligiera otra, y
+el `branch_id` que acota a una sucursal no viajaba, así que todo lo que depende de
+él se comportaba como si nadie tuviera sucursal asignada.
+
+- **Migración 0093** reescribe el enganche **con las cinco reclamaciones juntas y
+  nombradas**: `org_id`, `app_role`, `status`, `partner_id`, `supplier_id`, más
+  `branch_id`, más la consulta a `user_active_workspace` con respaldo en la
+  membresía primaria. Lleva su propia autocomprobación (`do $$` que revienta si
+  el objeto no queda `security definer` o sin `search_path` fijado), porque un
+  enganche que existe pero corre como invocador no falla: devuelve un token sin
+  reclamaciones y la aplicación entera se comporta como si nadie tuviera empresa.
+- **La prueba SQL ahora nombra las cinco, una por una.** Este objeto se ha
+  reescrito **seis veces** (0002, 0020, 0046, 0063, 0068, 0084) y cada reescritura
+  parte de la anterior de memoria. Una aserción que dijera «trae varios atributos»
+  habría pasado en verde las dos veces que se perdió algo. Lo que no se nombra es
+  exactamente lo que la séptima reescritura va a perder.
+- `supplier_acceptance.test.sql` **nunca había corrido**, ni una vez, desde que la
+  escribí en 0087: su primer `insert` no nombraba `kind` —`not null` sin valor por
+  defecto desde 0002— así que el bloque entero reventaba antes de la primera
+  aserción. Al repararlo salieron dos cosas más que el fichero daba por ciertas:
+  `departure.product_id` es `not null` desde 0004, y `app.fill_supplier_from_resource`
+  (0085) **pisa siempre** `supplier_id` con el que salga del vehículo o del chofer,
+  así que asignar el proveedor a mano no asignaba nada. Lo que se asigna es la
+  guagua.
+
+**Y luego, DR-001.** El plan de recuperación existía en papel y no se había
+probado nunca.
+
+- `supabase/verify/restauracion.sql` — once filas `comprueba | resultado | por_qué`
+  que se pasan a una base recién restaurada. No cuentan tablas: comprueban que el
+  enganche está y es `security definer` con `search_path` fijado, que las cuatro
+  ayudas de inquilino existen, que ninguna tabla se quedó sin RLS, que ninguna
+  tabla tiene 1–3 de las cuatro políticas de inquilino —media política es peor que
+  ninguna—, que la mayoría de las tablas con RLS conserva las cuatro, y que no hay
+  membresías sin cuenta en `auth.users`.
+- **El script dice en su cabecera lo que NO puede ver**: que el enganche esté
+  **registrado** en la configuración de Auth del proyecto (eso vive en Supabase, no
+  en la base), los bytes de Storage, y las variables de entorno. Una verificación
+  que se calla sus límites es peor que no tenerla, porque sale verde el día que más
+  falta hace que grite.
+- `scripts/restore-drill.sh` — seis pasos: poblar, `pg_dump -Fc`, **`dropdb` y
+  `createdb`** (con la comprobación de que la base quedó de verdad vacía), `pg_restore`,
+  pasar la verificación exigiendo cero `REVISAR` y que los recuentos cuadren, y
+  entonces **cuatro controles negativos**: romper la base a propósito cuatro veces
+  y exigir que la verificación lo cace **por la fila concreta que debía cazarlo**.
+  Una verificación que no puede fallar no verifica nada; un simulacro que no
+  destruye no es un simulacro, es una copia.
+- Los cuatro sabotajes: pasar el enganche a `security invoker`, apagar la RLS de
+  `booking`, renombrar `app.current_partner_id()` y borrar `auth.users` con los
+  disparadores desactivados. Corre en CI, detrás de las pruebas de base de datos.
+- `docs/runbooks/RESTAURACION.md` — el procedimiento de treinta minutos contra un
+  proyecto **nuevo**, las tres cosas que la copia no trae, y una tabla «Registro de
+  simulacros» **vacía**, que es la parte honesta del documento.
+
+- **Lo que quedó comprobado la primera vez que corrió**: la fila 6 marcaba rotas
+  cuatro tablas —`api_key`, `membego_sso_jti`, `stripe_event`,
+  `supplier_response_token`—. No estaban rotas: son deliberadamente RLS encendida
+  **sin ninguna política**, o sea solo para el rol de servicio. La comprobación
+  estaba mal, no la base. Se partió en `6a` (ninguna tabla con 1–3 de las cuatro) y
+  `6b` (la mayoría conserva las cuatro), las dos sin envejecer.
+- **Mutación: diecisiete, las diecisiete muertas.** La última en caer fue «el
+  enganche pierde `partner_id`»: ninguna prueba SQL nombraba esa reclamación, que
+  es exactamente el agujero por el que se fueron las otras dos.
+- **DR-001 queda REDUCIDO, NO CERRADO.** El procedimiento y la verificación ahora
+  se prueban en cada CI contra una base real. El simulacro de treinta minutos
+  contra un proyecto de Supabase de verdad **sigue sin haberse hecho ni una vez**, y
+  el runbook lo dice con la tabla de registro en blanco.
+- **Pendiente de ejecutar en la base:** `supabase/editor/0093_parte_1.sql` y después
+  `0093_parte_2_verificacion.sql` (cinco filas, todas OK). Y luego **cerrar sesión y
+  volver a entrar**: el token que ya tienes en el navegador sigue siendo válido
+  durante su vida entera y sigue sin `branch_id` ni empresa activa; el enganche solo
+  se ejecuta al emitir uno nuevo.
