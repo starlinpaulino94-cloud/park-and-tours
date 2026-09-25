@@ -51,6 +51,22 @@ vi.mock("@/lib/attribution-service", () => ({
   recordPurchaseOnce: vi.fn(),
 }));
 
+/**
+ * El monedero prepago se descuenta por una función de Postgres desde 0091, y
+ * aquí no hay Postgres. Se falsea el RPC y nada más: `assertSaldo` y
+ * `gastarDelMonedero` corren de verdad, así que lo que se comprueba es lo que
+ * esta capa decide —cuándo se llama, con qué importe y qué se hace con la
+ * respuesta—, no la aritmética de la función.
+ */
+const rpc = vi.fn(async () => ({
+  data: {
+    movement_id: "mov-1", amount: 0, currency: "usd",
+    balance_before: 1000, balance_after: 800, overdraft: false, already: false,
+  },
+  error: null,
+}));
+vi.mock("@/lib/supabase/service", () => ({ supabaseService: () => ({ rpc }) }));
+
 import { createOrderWithBookings, syncOrderTotals } from "@/lib/booking-service";
 
 const ORG = "org-1";
@@ -1053,5 +1069,122 @@ describe("la salida tiene que ser de su producto", () => {
       customer_id: "cli-1",
       items: [{ product_id: "prod-saona", departure_id: "sal-inventada", adults: 1 }],
     })).rejects.toThrow(/Salida no encontrada/);
+  });
+});
+
+
+/* ═══════════════════════ la venta al socio prepago ══════════════════════ */
+
+describe("la venta de un socio prepago", () => {
+  const conSaldo = (saldo: number) => {
+    db = fakeDb({
+      ...catalogo(),
+      partner: [{
+        _id: "soc-1", name: "Caribe Tours", payment_mode: "prepaid",
+        currency: "usd", pricing_model: "commission",
+      }],
+      partner_wallet_movement: [{
+        _id: "mov-0", partner: "soc-1", movement_type: "topup",
+        amount: saldo, currency: "usd",
+      }],
+    });
+  };
+
+  it("SE DESCUENTA, y por el total de verdad", async () => {
+    /**
+     * Con la estimación se comprueba el saldo —para no armar la venta entera y
+     * descubrir al final que no cabía— pero cobrar por ella dejaría el saldo
+     * distinto de lo que el socio ve en su factura.
+     */
+    conSaldo(1000);
+    rpc.mockClear();
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    } as never);
+
+    expect(rpc, "la venta al socio prepago no descontó nada").toHaveBeenCalledTimes(1);
+    const [fn, args] = rpc.mock.calls[0] as unknown as [string, { p_movement: { amount: number } }];
+    expect(fn).toBe("spend_partner_wallet");
+    expect(args.p_movement.amount).toBe(Number(res.order.total));
+  });
+
+  it("y un saldo corto rechaza la venta ANTES de escribir nada", async () => {
+    // 402 y no 403: no le faltan permisos, le falta dinero.
+    conSaldo(10);
+    rpc.mockClear();
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    } as never)).rejects.toMatchObject({ status: 402 });
+
+    expect(db.rows("order"), "se escribió la venta que no cabía").toHaveLength(0);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("UN DESCUBIERTO QUEDA EN LA BITÁCORA, con el número", async () => {
+    /**
+     * Pasa cuando dos ventas se AUTORIZARON a la vez: la función de 0091 pone
+     * los consumos en fila pero no puede deshacer una venta que ya existe, así
+     * que apunta el consumo y avisa. Sin esta línea, el descubierto solo se ve
+     * sumando el libro a mano.
+     */
+    conSaldo(1000);
+    rpc.mockClear();
+    rpc.mockResolvedValueOnce({
+      data: {
+        movement_id: "mov-2", amount: 200, currency: "usd",
+        balance_before: 100, balance_after: -100, overdraft: true, already: false,
+      },
+      error: null,
+    });
+    const gritos: string[] = [];
+    const real = console.error;
+    console.error = (...a: unknown[]) => { gritos.push(a.join(" ")); };
+    try {
+      await createOrderWithBookings(ctx, {
+        customer_id: "cli-1",
+        partner_id: "soc-1",
+        items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+      } as never);
+    } finally {
+      console.error = real;
+    }
+
+    const acciones = auditoria.mock.calls.map((c) => (c[0] as { action: string }).action);
+    expect(acciones, "el descubierto no llegó a la bitácora").toContain("partner_wallet_overdraft");
+    const linea = auditoria.mock.calls
+      .map((c) => c[0] as { action: string; metadata?: Record<string, unknown> })
+      .find((a) => a.action === "partner_wallet_overdraft");
+    expect(linea?.metadata?.balance_after).toBe(-100);
+    expect(gritos.join(" ")).toMatch(/DESCUBIERTO/);
+  });
+
+  it("y un saldo que aguanta no ensucia la bitácora", async () => {
+    conSaldo(1000);
+    auditoria.mockReset();
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    } as never);
+    const acciones = auditoria.mock.calls.map((c) => (c[0] as { action: string }).action);
+    expect(acciones).not.toContain("partner_wallet_overdraft");
+  });
+
+  it("un socio a crédito no toca el monedero", async () => {
+    db = fakeDb({
+      ...catalogo(),
+      partner: [{ _id: "soc-1", name: "Caribe Tours", payment_mode: "credit", currency: "usd" }],
+    });
+    rpc.mockClear();
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    } as never);
+    expect(rpc).not.toHaveBeenCalled();
   });
 });

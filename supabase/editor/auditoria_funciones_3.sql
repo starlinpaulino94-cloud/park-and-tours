@@ -20,7 +20,8 @@ with o(mig,tipo,nom,propio) as (values
   ('0088','fn','app.fill_pickup_from_route',true),
   ('0088','fn','app.sync_pickup_from_route',true),
   ('0088','trg','pickup_supplier',true),
-  ('0088','trg','pickup_route_sync_pickups',true)
+  ('0088','trg','pickup_route_sync_pickups',true),
+  ('0091','fn','public.spend_partner_wallet',true)
 )
 select o.mig as migracion,
        case when o.tipo = 'fn' then 'funcion ' else 'disparador ' end || o.nom as objeto,

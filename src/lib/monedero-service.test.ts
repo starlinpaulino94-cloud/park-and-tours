@@ -20,6 +20,19 @@ import { fakeDb, type FakeDb } from "@/test/fake-tenant";
 
 let db: FakeDb;
 
+/**
+ * El consumo ya no es un `insert`: desde 0091 va por `spend_partner_wallet`,
+ * que suma el saldo dentro de su propia transacción y detrás de un cerrojo.
+ *
+ * Lo que esta prueba NO puede demostrar es la atomicidad: la función vive en
+ * Postgres y aquí no hay Postgres. Eso lo sujetan las guardas que leen la
+ * migración y la verificación que se corre contra la base de verdad. Lo que sí
+ * se comprueba es todo lo que decide ESTE lado: qué se le manda, qué se hace
+ * con lo que contesta, y que un fallo no tumbe la venta.
+ */
+const rpc = vi.fn();
+vi.mock("@/lib/supabase/service", () => ({ supabaseService: () => ({ rpc }) }));
+
 vi.mock("@/lib/tenant", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/tenant")>();
   return {
@@ -30,7 +43,7 @@ vi.mock("@/lib/tenant", async (importOriginal) => {
 });
 
 import {
-  saldoDeSocio, assertSaldo, apuntarMovimiento, descontarVenta,
+  saldoDeSocio, assertSaldo, apuntarMovimiento, descontarVenta, gastarDelMonedero,
   devolverAlMonedero, monedaDelMonederoDe, movimientosDe,
 } from "@/lib/monedero-service";
 
@@ -41,6 +54,14 @@ const mov = (over: Record<string, unknown>) => ({
 });
 
 beforeEach(() => {
+  rpc.mockReset();
+  rpc.mockResolvedValue({
+    data: {
+      movement_id: "mov-1", amount: 120, currency: "usd",
+      balance_before: 500, balance_after: 380, overdraft: false, already: false,
+    },
+    error: null,
+  });
   db = fakeDb();
   db.seed("partner", [
     { _id: SOCIO, name: "Tour Center", currency: "usd", payment_mode: "prepaid" },
@@ -237,6 +258,7 @@ describe("descontar y devolver, que NO pueden tumbar la operación", () => {
      * no poder escribir una fila de saldo sería cambiar un descuadre —visible en el
      * listado al día siguiente— por una reserva perdida con el turista delante.
      */
+    rpc.mockResolvedValueOnce({ data: null, error: { message: "el monedero está en USD" } });
     const aviso = vi.spyOn(console, "error").mockImplementation(() => {});
     const r = await descontarVenta("c1", {
       partnerId: SOCIO, tipo: "consumption", importe: 100, moneda: "dop",
@@ -246,13 +268,90 @@ describe("descontar y devolver, que NO pueden tumbar la operación", () => {
     aviso.mockRestore();
   });
 
-  it("y uno que va bien apunta el consumo con su orden", async () => {
+  it("y uno que va bien manda la venta ENTERA a la función con cerrojo", async () => {
+    /**
+     * Ya no es un `insert` desde aquí. Entre que `assertSaldo` autoriza y esto
+     * descuenta pasa toda la venta: dos ventas a la vez del mismo socio leían el
+     * mismo saldo y las dos pasaban. La suma tiene que hacerse donde se escribe.
+     */
+    const r = await descontarVenta("c1", {
+      partnerId: SOCIO, tipo: "consumption", importe: 120, moneda: "usd",
+      orderId: "ord-1", bookingId: "bk-1", userId: "usr-1",
+    }, "usd");
+
+    expect(rpc).toHaveBeenCalledWith("spend_partner_wallet", {
+      p_org: "c1",
+      p_partner: SOCIO,
+      p_movement: expect.objectContaining({
+        amount: 120, currency: "usd", order_id: "ord-1", booking_id: "bk-1", created_by: "usr-1",
+      }),
+    });
+    expect(r).toMatchObject({ _id: "mov-1", movement_type: "consumption", amount: 120 });
+  });
+
+  it("LA MONEDA QUE VIAJA ES LA DEL MONEDERO, no la de la venta", async () => {
+    // El argumento existe justamente para eso: comparar el movimiento consigo
+    // mismo es la comprobación que no puede fallar nunca.
     await descontarVenta("c1", {
+      partnerId: SOCIO, tipo: "consumption", importe: 120, moneda: "dop",
+    }, "usd");
+    const enviado = rpc.mock.calls[0][1] as { p_movement: { currency: string } };
+    expect(enviado.p_movement.currency).toBe("usd");
+  });
+
+  it("UN DESCUBIERTO SE GRITA en vez de quedarse mudo", async () => {
+    /**
+     * El consumo se apunta igual —el servicio ya se prestó, y un libro que se
+     * niega a anotar dinero gastado es un libro que miente— pero alguien tiene
+     * que ir a cobrar la diferencia, y para eso hay que enterarse.
+     */
+    rpc.mockResolvedValueOnce({
+      data: {
+        movement_id: "mov-2", amount: 200, currency: "usd",
+        balance_before: 100, balance_after: -100, overdraft: true, already: false,
+      },
+      error: null,
+    });
+    const gritos: string[] = [];
+    const real = console.error;
+    console.error = (...a: unknown[]) => { gritos.push(a.join(" ")); };
+    let hecho;
+    try {
+      hecho = await gastarDelMonedero("c1", {
+        partnerId: SOCIO, tipo: "consumption", importe: 200, moneda: "usd",
+      }, "usd");
+    } finally {
+      console.error = real;
+    }
+    expect(hecho?.descubierto).toBe(true);
+    expect(hecho?.saldoDespues).toBe(-100);
+    expect(gritos.join(" ")).toMatch(/DESCUBIERTO/);
+  });
+
+  it("y un saldo que aguanta no grita nada", async () => {
+    const gritos: string[] = [];
+    const real = console.error;
+    console.error = (...a: unknown[]) => { gritos.push(a.join(" ")); };
+    try {
+      await gastarDelMonedero("c1", { partnerId: SOCIO, tipo: "consumption", importe: 120, moneda: "usd" }, "usd");
+    } finally {
+      console.error = real;
+    }
+    expect(gritos).toEqual([]);
+  });
+
+  it("un reintento de la misma venta se reconoce, no se descuenta otra vez", async () => {
+    // Antes lo paraba el índice único lanzando un error que esta función se
+    // tragaba: quedaba como «no se pudo descontar», que es otra cosa.
+    rpc.mockResolvedValueOnce({
+      data: { movement_id: "mov-1", amount: 120, currency: "usd", already: true },
+      error: null,
+    });
+    const hecho = await gastarDelMonedero("c1", {
       partnerId: SOCIO, tipo: "consumption", importe: 120, moneda: "usd", orderId: "ord-1",
     }, "usd");
-    expect(db.rows("partner_wallet_movement")[0]).toMatchObject({
-      movement_type: "consumption", amount: 120, order_id: "ord-1",
-    });
+    expect(hecho?.yaEstaba).toBe(true);
+    expect(hecho?.movementId).toBe("mov-1");
   });
 
   it("una devolución de CERO no ensucia el listado", async () => {

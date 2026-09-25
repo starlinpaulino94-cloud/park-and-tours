@@ -7015,7 +7015,10 @@ describe("el socio que integra por API", () => {
     const servicio = cuerpoDe("src/lib/booking-service.ts");
     const iCheck = servicio.indexOf("await assertSaldo(");
     const iOrden = servicio.indexOf("tenantCreate<Order>");
-    const iCobro = servicio.indexOf("await descontarVenta(");
+    // `gastarDelMonedero` desde 0091: el descuento dejó de ser un `insert` desde
+    // aquí y pasa por la función que suma el saldo con el cerrojo puesto. El
+    // ORDEN es el mismo y es lo que esta guarda sujeta.
+    const iCobro = servicio.indexOf("await gastarDelMonedero(");
     expect(iCheck, "no se comprueba el saldo").toBeGreaterThan(-1);
     expect(iCheck, "el saldo se comprueba después de escribir la orden").toBeLessThan(iOrden);
     expect(iCobro, "no se descuenta la venta").toBeGreaterThan(iOrden);
@@ -10122,5 +10125,112 @@ describe("la defensa de las metas que ninguna prueba puede ver correr", () => {
   it("un alcance sin nadie corta antes de consultar", () => {
     expect(cuerpoDe("src/lib/seller-goals-service.ts"))
       .toMatch(/if \(sellers !== null && sellers\.length === 0\) \{/);
+  });
+});
+
+describe("el monedero se gasta con el cerrojo puesto (0091)", () => {
+  const MIG = "supabase/migrations/0091_wallet_spend.sql";
+  const sinComentarios = () => read(MIG).replace(/^\s*--.*$/gm, "");
+
+  it("EL CERROJO ESTÁ ANTES DE SUMAR, y es lo único que cierra la carrera", () => {
+    /**
+     * Sin `for update` sobre el socio, la función compila, corre y vuelve a
+     * tener exactamente la carrera que vino a cerrar: dos consumos del mismo
+     * monedero sumando cada uno un saldo que el otro está a punto de invalidar.
+     *
+     * Y tiene que ir ANTES de la suma, no después: bloquear al final es no
+     * bloquear nada, porque para entonces los dos ya leyeron.
+     */
+    const sql = sinComentarios();
+    const i = sql.indexOf("create or replace function public.spend_partner_wallet");
+    expect(i, "no existe la función").toBeGreaterThan(-1);
+    const cuerpo = sql.slice(i);
+
+    const iCerrojo = cuerpo.indexOf("for update");
+    const iSuma = cuerpo.indexOf("into v_antes");
+    const iEscribe = cuerpo.indexOf("insert into partner_wallet_movement");
+    expect(iCerrojo, "desapareció el cerrojo sobre el socio").toBeGreaterThan(-1);
+    expect(iSuma, "el saldo se suma después de bloquear").toBeGreaterThan(iCerrojo);
+    expect(iEscribe, "se escribe después de sumar").toBeGreaterThan(iSuma);
+    // Y el cerrojo es sobre el SOCIO: lo que hay que serializar es «los gastos
+    // de este monedero», no los de toda la empresa.
+    expect(cuerpo.slice(Math.max(0, iCerrojo - 220), iCerrojo)).toMatch(/from organizations o/);
+  });
+
+  it("el saldo se suma con el signo del tipo y SOLO de su moneda", () => {
+    /**
+     * Los mismos signos que `monedero-socio.ts`, y en valor absoluto por lo
+     * mismo que el `check` de 0080. Sumar todas las monedas fue el fallo de la
+     * ola 9.3: una fila en pesos sumaba 30.000 a un saldo de dólares, y aquí
+     * volvería por la puerta de atrás.
+     */
+    const cuerpo = sinComentarios();
+    expect(cuerpo).toMatch(/when 'topup'\s+then abs\(m\.amount\)/);
+    expect(cuerpo).toMatch(/when 'refund'\s+then abs\(m\.amount\)/);
+    expect(cuerpo).toMatch(/when 'consumption' then -abs\(m\.amount\)/);
+    expect(cuerpo).toMatch(/when 'adjustment'\s+then -abs\(m\.amount\)/);
+    // Un tipo desconocido no suma ni resta, igual que en el módulo puro.
+    expect(cuerpo).toMatch(/else 0/);
+    expect(cuerpo, "el saldo volvió a sumar todas las monedas")
+      .toMatch(/lower\(coalesce\(m\.currency, ''\)\) = v_moneda/);
+  });
+
+  it("y la moneda se comprueba en la BASE, no solo en la aplicación", () => {
+    // 0080 ya lo dice: «el día que alguien inserte por SQL la aplicación no
+    // está delante».
+    const cuerpo = sinComentarios();
+    expect(cuerpo).toMatch(/if v_moneda = '' then/);
+    expect(cuerpo).toMatch(/if v_currency <> '' and v_currency <> v_moneda then/);
+  });
+
+  it("una venta descuenta UNA vez, y como respuesta en vez de como error", () => {
+    // Antes lo paraba el índice único lanzando un error que `descontarVenta` se
+    // tragaba: quedaba como «no se pudo descontar», que es otra cosa.
+    const cuerpo = sinComentarios();
+    expect(cuerpo).toMatch(/and m\.movement_type = 'consumption'/);
+    expect(cuerpo).toMatch(/'already', true/);
+  });
+
+  it("el descubierto se devuelve en vez de quedarse mudo", () => {
+    /**
+     * El consumo se apunta igual: el servicio ya se prestó, y un libro que se
+     * niega a anotar dinero gastado es un libro que miente. Lo que no puede
+     * pasar —y es lo que pasaba— es que no lo sepa nadie.
+     */
+    const cuerpo = sinComentarios();
+    expect(cuerpo).toMatch(/'overdraft', v_despues < 0/);
+    expect(cuerpo).toMatch(/'balance_before', v_antes/);
+    expect(cuerpo).toMatch(/'balance_after', v_despues/);
+
+    const servicio = cuerpoDe("src/lib/monedero-service.ts");
+    expect(servicio, "el descubierto vuelve a ser mudo").toMatch(/if \(hecho\.descubierto\) \{/);
+    const venta = cuerpoDe("src/lib/booking-service.ts");
+    expect(venta, "el descubierto no llega a la bitácora")
+      .toMatch(/action: "partner_wallet_overdraft"/);
+  });
+
+  it("falla CERRADA y no la llama cualquiera", () => {
+    /**
+     * Es `security definer`: se salta la RLS, así que el ámbito se comprueba a
+     * mano. Y `anon` es cualquiera en internet, `authenticated` cualquier
+     * usuario con sesión: los dos podrían gastarle el monedero a un socio.
+     */
+    const cuerpo = sinComentarios();
+    expect(cuerpo).toMatch(/security definer set search_path = public, app/);
+    expect(cuerpo).toMatch(/app\.current_org_id\(\) <> p_org/);
+    expect(cuerpo).toMatch(/errcode = 'insufficient_privilege'/);
+    expect(cuerpo).toMatch(/revoke execute on function public\.spend_partner_wallet[\s\S]{0,120}from anon, public, authenticated;/);
+    expect(cuerpo).toMatch(/grant execute on function public\.spend_partner_wallet[\s\S]{0,80}to service_role;/);
+  });
+
+  it("y la aplicación la llama con UN objeto, no con argumentos sueltos", () => {
+    // Por lo mismo que la retención de comisión: con varios `uuid` seguidos,
+    // intercambiar dos compila, se ejecuta y descuenta la venta de otro sin que
+    // nada se queje.
+    const servicio = cuerpoDe("src/lib/monedero-service.ts");
+    expect(servicio).toMatch(/\.rpc\("spend_partner_wallet", \{/);
+    expect(servicio).toMatch(/p_movement: \{/);
+    expect(servicio, "el consumo volvió a escribirse con un insert desde aquí")
+      .not.toMatch(/tipo: "consumption" \}, monedaDelMonedero\)/);
   });
 });

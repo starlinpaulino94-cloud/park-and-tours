@@ -20,7 +20,7 @@ import { creditCheck, holdUntil } from "@/lib/collections";
 import { esPrepago } from "@/lib/monedero-socio";
 import { modoDeCobro, elVendedorRetiene, type ModoDeCobro } from "@/lib/modo-de-cobro";
 import { retenerComision, turnoAbiertoDe } from "@/lib/comision-retenida";
-import { assertSaldo, descontarVenta, monedaDelMonederoDe } from "@/lib/monedero-service";
+import { assertSaldo, gastarDelMonedero, monedaDelMonederoDe } from "@/lib/monedero-service";
 import { accrueBookingCosts, cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { reserveForSale, stockableOffers } from "@/lib/stock-commitment-service";
 import { assertAllotment, consumeAllotment } from "@/lib/allotment-service";
@@ -1296,9 +1296,15 @@ export async function createOrderWithBookings(
    * Y una orden descuenta UNA vez: lo hace cumplir un índice único de 0080, no
    * una comprobación de aquí, porque dos instancias a la vez le ganan siempre a
    * una comprobación en la aplicación.
+   *
+   * Desde 0091 el descuento va por una función de base que suma el saldo dentro
+   * de la misma transacción y detrás de un cerrojo sobre el socio: el saldo con
+   * el que se descuenta no puede estar viejo. Y si aun así queda en descubierto
+   * —porque dos ventas se AUTORIZARON a la vez, que eso sigue pudiendo pasar—
+   * se anota en la bitácora con el número, para que alguien lo cobre.
    */
   if (input.partner_id && prepago) {
-    await descontarVenta(
+    const consumo = await gastarDelMonedero(
       companyId,
       {
         partnerId: input.partner_id,
@@ -1316,6 +1322,24 @@ export async function createOrderWithBookings(
        */
       (await monedaDelMonederoDe(companyId, input.partner_id)) ?? currency
     );
+
+    if (consumo?.descubierto) {
+      await writeAudit({
+        companyId, userId: ctx.userId,
+        action: "partner_wallet_overdraft",
+        entityType: "partner", entityId: input.partner_id,
+        severity: "warning",
+        description:
+          `El monedero del socio quedó en ${consumo.saldoDespues} ${consumo.moneda.toUpperCase()} ` +
+          `tras la venta ${order.order_number} de ${consumo.importe}: hay que cobrarle la diferencia.`,
+        metadata: {
+          order: order._id,
+          amount: consumo.importe,
+          balance_before: consumo.saldoAntes,
+          balance_after: consumo.saldoDespues,
+        },
+      });
+    }
   }
 
   console.log(`[booking-service] orden ${order.order_number} creada · ${bookings.length} reservas · total ${totals.total} ${currency}`);

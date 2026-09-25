@@ -4031,3 +4031,74 @@ dieciocho servicios sin ejecutar llega a cero.
   el número— y no de **cuenta**. Sumar bien el conjunto equivocado da un total
   que cuadra consigo mismo, y eso es lo que ninguna prueba de aritmética iba a
   encontrar nunca.
+
+### Ola 9.8 — el monedero se gasta con el cerrojo puesto (migración 0091)
+
+La carrera que la ola 9.3 dejó anotada como «su propia ola». No es un fallo de
+cuenta: es que entre comprobar y descontar pasa toda la venta.
+
+- **LA CARRERA, EN CUATRO LÍNEAS.** Una venta a un socio prepago hace dos cosas
+  y entre ellas pasa tiempo: `assertSaldo` lee el saldo y autoriza al empezar, y
+  `descontarVenta` apunta el consumo cuando la venta ya existe. Con dos ventas a
+  la vez del mismo socio, las dos leen el **mismo** saldo —ninguna ve el consumo
+  de la otra, que todavía no existe— y las dos pasan. Con 100 de saldo y dos
+  ventas de 80, el socio acaba en −60: la operadora prestó 160 de servicio
+  contra un depósito de 100. No hace falta mala fe ni concurrencia rara, solo
+  dos mostradores del mismo tour center vendiendo un sábado.
+- **QUÉ CIERRA `spend_partner_wallet`, Y QUÉ NO.** Es importante decirlo entero
+  porque es fácil vender esto como más de lo que es.
+  **Cierra** que el saldo con el que se descuenta sea **viejo**: la suma se hace
+  dentro de la misma transacción que escribe y detrás de un `for update` sobre
+  el socio, así que dos consumos del mismo monedero se ponen en fila y el
+  segundo ve el primero ya escrito. Hasta ahora el saldo se calculaba en
+  JavaScript sobre un `select` que había terminado hacía rato.
+  **No cierra** que dos ventas se **autoricen** a la vez en el primer paso. Eso
+  solo se arregla RESERVANDO el importe al autorizar, y este sistema decidió lo
+  contrario a propósito: «descontar antes y que la saga se compensara dejaría al
+  socio pagando una reserva que no llegó a nacer». Cambiar esa decisión es una
+  decisión de producto, no una corrección, y no se toma desde una ola de
+  arreglos.
+- **LO QUE SÍ CAMBIA DEL TODO ES QUE EL DESCUBIERTO DEJA DE SER MUDO.** Antes el
+  consumo se apuntaba sin mirar y nadie se enteraba hasta que alguien sumaba el
+  libro. Ahora la función devuelve el saldo de antes, el de después y si quedó
+  en negativo; el servicio lo grita en la consola y la venta lo deja en la
+  bitácora como `partner_wallet_overdraft`, con el importe y los dos saldos.
+  El consumo **se apunta igual**, y eso también es una decisión: el servicio ya
+  se prestó y ese dinero se gastó, así que un libro que se niega a anotarlo es
+  un libro que miente. Es la misma preferencia que el módulo ya tenía escrita —
+  un descuadre visible antes que una reserva perdida con el turista delante.
+- **Y dos cosas que sí impide por completo:** gastar en una moneda que no es la
+  del monedero —la comprobación vivía solo en la aplicación, y 0080 ya explica
+  por qué eso no basta: «el día que alguien inserte por SQL la aplicación no
+  está delante»— y descontar dos veces la misma venta, que antes lo paraba el
+  índice único **lanzando un error que `descontarVenta` se tragaba**; o sea que
+  un reintento correcto quedaba registrado como «no se pudo descontar», que es
+  otra cosa. Ahora es una respuesta: «esta orden ya descontó, aquí tienes el
+  movimiento».
+- **El saldo se suma en SQL con los mismos signos que `monedero-socio.ts`**, en
+  valor absoluto (por lo mismo que el `check` de 0080) y **solo de su moneda**
+  — sumar todas fue el fallo de la ola 9.3 y aquí habría vuelto por la puerta de
+  atrás. Un tipo de movimiento desconocido no suma ni resta, igual que en el
+  módulo puro: contarlo a ciegas el día que alguien añada uno sería inventarse
+  dinero.
+- **Tres guardas preexistentes saltaron, las tres con razón:** la copia para el
+  editor tiene que decir **exactamente** lo mismo que la migración (así que se
+  genera desde ella y no se reescribe a mano), la auditoría de migraciones que
+  se pega en el editor se había quedado atrás (`node
+  scripts/build-auditoria-migraciones.mjs`), y la guarda del orden
+  «comprobar antes / descontar después» seguía buscando `descontarVenta`.
+- **Tres mutaciones sobrevivieron a la primera, y las tres eran huecos de
+  prueba, no defensa inerte.** Dos guardas estructurales pasaban con el bloque
+  **desactivado** —el texto seguía ahí— y una tercera tenía el ancla mal. La
+  venta a un socio prepago no se ejecutaba en ninguna prueba: ahora tiene cinco
+  —que se descuenta por el total de verdad, que un saldo corto la rechaza con
+  402 sin escribir nada, que el descubierto llega a la bitácora con su número,
+  que un saldo que aguanta no la ensucia, y que un socio a crédito no toca el
+  monedero—.
+- **Mutación: veinticuatro, las veinticuatro muertas.**
+- **Pendiente de ejecutar en la base:** `supabase/editor/0091_parte_1.sql` y
+  después `0091_parte_2_verificacion.sql` (cinco filas, todas tienen que decir
+  OK). Hasta que la función exista, `gastarDelMonedero` falla, se traga el error
+  y la venta sigue en pie sin descontar — o sea que el prepago deja de
+  descontar hasta que la migración esté puesta. Va en la misma tanda que 0088,
+  0089 y 0090.

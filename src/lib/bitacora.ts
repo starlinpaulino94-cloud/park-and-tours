@@ -112,6 +112,7 @@ export const ACCION: Record<string, string> = {
   octo_booking_reserved: "Reserva de OTA retenida",
   payment_schedule_set: "Calendario de pagos fijado",
   partner_terms_accepted: "Condiciones comerciales aceptadas por el socio",
+  partner_wallet_overdraft: "Monedero del socio en descubierto",
   payroll_exported: "Nómina exportada",
   payroll_generated: "Nómina generada",
   plan_created: "Plan creado",
