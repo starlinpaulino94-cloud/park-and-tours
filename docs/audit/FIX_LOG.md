@@ -3869,3 +3869,80 @@ que se cobra y el vendedor al que se le paga. Ninguno tenía pruebas propias.
 - **Mutación: veintiuna, las veintiuna muertas.**
 - **Quedan cinco servicios sin ejecutar**, ~1.500 líneas: `analytics`, `import`,
   `membego` (el enlace y los webhooks, 550), `plan` y `seller-goals`.
+
+### Ola 9.6 — la integración que escribe sin sesión, y el techo que decide si se puede escribir
+
+`membego-service.ts` (550 líneas) y `plan-service.ts` (223). El primero es el
+único módulo del sistema donde **todo** entra sin sesión —el SSO llega ANTES de
+que exista una y el webhook lo firma una máquina—, así que lo que delimita es el
+código y nada más. El segundo decide si una empresa puede seguir registrando
+operaciones. Ninguno tenía pruebas propias.
+
+- **UN CORREO CORRIENTE ERA UN COMODÍN.** El espejo de MembeGo busca la ficha
+  local con `ilike("email", cliente.email)` —insensible a mayúsculas, que es lo
+  que hace falta— pero `ilike` es un **patrón**, y el valor venía del payload del
+  webhook sin tocar. En SQL, `_` casa con cualquier carácter. Y esto no hay que
+  forzarlo con un payload raro: **los correos con guion bajo son de todos los
+  días**. `juan_perez@gmail.com` casa también con `juanXperez@gmail.com`, así
+  que o casaban dos fichas —`maybeSingle` devuelve error, el error se
+  descartaba, y el evento seguía hasta **crear una ficha duplicada** del cliente
+  que ya compraba aquí, justo lo que la cabecera del módulo promete que no
+  pasa— o casaba **la equivocada**, y entonces las visitas, las compras y la
+  membresía de un cliente de MembeGo quedaban apuntadas a **otra persona**. Con
+  un `%` en el payload, el patrón casa con cualquier cliente de la empresa.
+  El escape es el mismo modismo que ya usaba el buscador de empresas del
+  superadmin. `*` no se escapa: PostgREST lo convierte en `%` **antes** de que
+  SQL lo vea, así que una contrabarra no lo salva — un correo con `*` no es un
+  correo y se deja sin buscar por correo, en vez de buscar con un comodín.
+- **Y las dos búsquedas de ficha se tragaban su error**, con la misma
+  consecuencia: caer de largo hasta el `insert` y duplicar. Ahora lanzan, y eso
+  es exactamente lo que el diseño del webhook quiere: el sobre queda marcado
+  como `failed` con su payload íntegro, que es reparable; la ficha doble no se
+  repara sola y nadie la ve hasta que el cliente pregunta por su historial.
+- **EL MEDIDOR DE ALMACENAMIENTO SE BORRABA CON UNA LECTURA FALLIDA.**
+  `addStorageUsage` lee el acumulado y escribe `current + mb`. Descartando el
+  error de la lectura, `current` salía 0 y se escribía `0 + mb`: una empresa con
+  900 MB medidos quedaba en 5 por **una** lectura fallida, y a partir de ahí el
+  techo de almacenamiento no vuelve a saltar nunca. Eso no es «cobrar de menos»
+  —que es el lado del error que este módulo elige a propósito— es borrar el
+  medidor. Sin poder leer, no se escribe.
+- **EL MES DEL CUPO ERA EL DEL SERVIDOR, NO EL DE LA EMPRESA.** `monthStart()`
+  corta en UTC y el proceso corre en UTC. Una reserva de las 21:00 del 31 de
+  agosto en Santo Domingo son las 01:00 UTC del 1 de septiembre: cortando en
+  UTC, las ventas de las últimas horas del mes se le cargan al cupo del mes
+  **siguiente**. La operadora que cierra el mes vendiendo de noche —que es
+  cuando se vende— empieza septiembre con el contador ya empezado, y agosto le
+  cuadra corto contra su propia factura. Es la misma decisión que ya tomó el
+  cierre del día en la ola 9.2. `monthStart` se queda como la caída cuando no
+  hay zona declarada, que es lo que hacía antes.
+- **Un recuento que no se pudo hacer valía cero, y cero apaga el techo entero:**
+  `limitCheck` compara contra cero y deja pasar todo, el aviso de «te estás
+  acercando» no salta nunca, y la pantalla del plan le enseña al cliente «0 de 5
+  usuarios» sobre una empresa con cinco. Tres mentiras, ninguna visible. Seguir
+  devolviendo cero **es** lo correcto —la cabecera de `plan.ts` dice que sin dato
+  no se bloquea, y cobrar de más por una consulta caída sería mucho peor—, pero
+  callarlo no. Enseñar «no se sabe» en vez de «0» exige que `PlanUsage` admita
+  nulos y llega hasta la pantalla: es su propia ola y queda anotada.
+- **El doble de la base aprendió tres cosas, y las tres hacían falta de verdad:**
+  · **`upsert` no es un `insert`.** Media docena de servicios escriben con
+    `upsert(..., { onConflict })` para decir «si ya está, actualízala». Con el
+    doble insertando siempre, la segunda visita del mismo cliente creaba un
+    espejo NUEVO y la prueba miraba el primero, con su contador intacto, dando
+    por bueno un contador que en producción sí avanza. Un doble que se equivoca
+    así no prueba: da permiso.
+  · **la clave duplicada (`23505`)**, que tres servicios usan para ser
+    idempotentes —el canje de MembeGo, el token SSO y el sobre del webhook— y
+    que distinguen de un fallo de verdad: uno significa «esto ya se hizo». Sin
+    poder provocarla, la rama que decide si un reintento cobra dos veces no se
+    podía probar.
+  · **`*` como comodín** en `ilike`, porque PostgREST lo convierte antes de SQL.
+- **Cuatro guardas no mordieron a la primera.** Dos eran huecos de las pruebas
+  —el camino del teléfono no tenía su propia lectura rota, y la zona de la
+  empresa se probaba en `loadUsage` pero no en la guarda que la llama—. Una era
+  un hueco del **doble**, el `*`. Y la cuarta fue la buena: el `try/catch` de
+  `addStorageUsage` es inalcanzable porque `tryWrite` se traga el error de la
+  escritura, y al ir a fijarlo por estructura apareció el fallo de verdad —el
+  medidor borrándose por la LECTURA, que nadie miraba—.
+- **Mutación: veintiséis, las veintiséis muertas.**
+- **Quedan tres servicios sin ejecutar**, ~760 líneas: `analytics`, `import` y
+  `seller-goals`.

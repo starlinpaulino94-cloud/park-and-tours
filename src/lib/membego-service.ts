@@ -410,6 +410,44 @@ async function applyEffects(link: MembegoLink, event: MembegoEvent): Promise<voi
 }
 
 /**
+ * EL CORREO SE BUSCA, NO SE INTERPRETA.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LO QUE PASABA
+ *
+ * Abajo se comparaba con `ilike` —insensible a mayúsculas, que es lo que hace
+ * falta: el mismo correo llega de MembeGo escrito de dos maneras— pero `ilike`
+ * es un PATRÓN, y el valor venía del payload del webhook sin tocar. En SQL, `_`
+ * casa con cualquier carácter y `%` con cualquier cosa.
+ *
+ * Y esto no hace falta forzarlo con un payload raro: **los correos con guion
+ * bajo son de todos los días**. `juan_perez@gmail.com` casa también con
+ * `juanXperez@gmail.com`, así que:
+ *
+ *  · si casan dos fichas, `maybeSingle` devuelve error, el error se descartaba,
+ *    y el evento seguía de largo hasta CREAR una ficha duplicada del cliente
+ *    que ya compraba aquí —justo lo que la cabecera de este módulo promete que
+ *    no pasa—;
+ *  · y si casa una sola, y es la equivocada, el espejo de MembeGo queda atado a
+ *    la ficha de OTRA persona: sus visitas, sus compras y su membresía se le
+ *    apuntan a un tercero.
+ *
+ * Con un `%` en el payload, el patrón casa con cualquier cliente de la empresa.
+ *
+ * El escape es el mismo que ya usa el buscador de empresas del superadmin. `*`
+ * no se escapa: PostgREST lo convierte en `%` ANTES de que SQL lo vea, así que
+ * una contrabarra no lo salva — un correo con `*` no es un correo, y se deja sin
+ * buscar por correo en vez de buscar con un comodín.
+ */
+function patronDeCorreo(email: string): string | null {
+  if (email.includes("*")) return null;
+  return email.replace(/[%_\\]/g, "\\$&");
+}
+
+/** Tope de fichas con teléfono que se cruzan en memoria. */
+const TOPE_DE_TELEFONOS = 500;
+
+/**
  * Busca la ficha local por correo y por teléfono; si no hay, la crea con
  * origen 'membego'. El teléfono se compara por dígitos: el mismo número está
  * escrito de cinco maneras, y fallar el cruce duplicaría al cliente.
@@ -420,26 +458,49 @@ async function matchOrCreateCustomer(
 ): Promise<string | null> {
   const sb = supabaseService();
 
-  if (cliente.email) {
-    const { data } = await sb
+  const patron = cliente.email ? patronDeCorreo(cliente.email) : null;
+  if (patron) {
+    const { data, error } = await sb
       .from("customer")
       .select("id")
       .eq("organization_id", organizationId)
-      .ilike("email", cliente.email)
+      .ilike("email", patron)
       .limit(1)
       .maybeSingle();
+    /**
+     * Y si la búsqueda falla, NO se da por hecho que el cliente no existe.
+     *
+     * Descartando el error se caía de largo hasta el `insert`, y la ficha
+     * duplicada es lo que este módulo dice expresamente que no hace: «un cliente
+     * que ya compraba aquí no se duplica». Lanzar deja el evento marcado como
+     * fallido con su payload íntegro, que es reparable; la ficha doble no se
+     * repara sola y nadie la ve hasta que el cliente pregunta por su historial.
+     */
+    if (error) throw new Error(`No se pudo buscar la ficha por correo: ${error.message}`);
     if (data?.id) return data.id as string;
   }
 
   if (cliente.telefono) {
     const digits = cliente.telefono.replace(/\D/g, "");
     if (digits.length >= 7) {
-      const { data } = await sb
+      const { data, error } = await sb
         .from("customer")
         .select("id, phone")
         .eq("organization_id", organizationId)
         .not("phone", "is", null)
-        .limit(500);
+        .limit(TOPE_DE_TELEFONOS);
+      if (error) throw new Error(`No se pudo buscar la ficha por teléfono: ${error.message}`);
+      // El cruce es por dígitos y se hace aquí, así que la página TIENE tope. Con
+      // la página llena, el cliente que está más allá no se encuentra y se
+      // duplica: no se puede arreglar desde aquí —la base no sabe comparar
+      // teléfonos por dígitos— pero sí se puede dejar dicho, que es la
+      // diferencia entre un duplicado explicable y uno misterioso.
+      if ((data?.length ?? 0) >= TOPE_DE_TELEFONOS) {
+        console.error(
+          `[membego] el cruce por teléfono de ${organizationId} llegó al tope de ${TOPE_DE_TELEFONOS} fichas: ` +
+          "a partir de ahí el cliente se duplica en vez de reconocerse."
+        );
+      }
       const match = (data ?? []).find(
         (row) => String(row.phone || "").replace(/\D/g, "").endsWith(digits.slice(-10))
       );

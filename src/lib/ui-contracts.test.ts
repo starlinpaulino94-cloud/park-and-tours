@@ -1840,8 +1840,17 @@ describe("el plan se aplica en la API, no solo en el menú", () => {
     // Es la misma razón por la que `availability.ts` recalcula los pasajeros.
     const service = read("src/lib/plan-service.ts");
     expect(service).toMatch(/from\("booking"\)[\s\S]{0,200}count: "exact"/);
-    expect(service).toContain("monthStart()");
     expect(service).not.toContain("usage_counter");
+    /**
+     * Y el corte del mes va en la zona de la EMPRESA.
+     *
+     * Esto exigía `monthStart()` a secas, que corta en UTC: una reserva de las
+     * 21:00 del 31 de agosto en Santo Domingo son las 01:00 UTC del 1 de
+     * septiembre, y se le cargaba al cupo del mes siguiente. `monthStart` sigue
+     * existiendo como la caída sin zona declarada, que es lo que hacía antes.
+     */
+    expect(service).toContain("gte(\"created_at\", inicioDelMes(timeZone))");
+    expect(service).toContain("monthStart(ahora)");
   });
 
   it("los puntos donde se crea algo con techo comprueban el techo", () => {
@@ -9995,5 +10004,57 @@ describe("las defensas del calendario de cobro que ninguna prueba puede ver corr
     // acabaría con un plan que dice que debe menos que nada.
     expect(cuerpoDe("src/lib/schedule-service.ts"))
       .toMatch(/const paid = Math\.max\(round2\(order\.paid_total \?\? 0\), 0\);/);
+  });
+});
+
+describe("la integración sin sesión no cruza a su gusto", () => {
+  /**
+   * Las dos cosas tienen prueba de comportamiento. Lo que fijan estas guardas es
+   * la FORMA, porque el fallo original es invisible a ojo: un `ilike` parece una
+   * comparación y es un patrón, y el valor venía de fuera.
+   */
+  it("el correo del payload se escapa antes de ir a un `ilike`", () => {
+    const src = cuerpoDe("src/lib/membego-service.ts");
+    expect(src, "el patrón dejó de construirse aparte").toMatch(/function patronDeCorreo\(email: string\)/);
+    expect(src).toMatch(/\.ilike\("email", patron\)/);
+    expect(src, "vuelve a mandarse el valor crudo del payload").not.toMatch(/\.ilike\("email", cliente\.email\)/);
+  });
+
+  it("y el único otro `ilike` del código sigue llevando su escape", () => {
+    // El del buscador de empresas del superadmin, que es de donde salió el
+    // modismo. Si alguien lo quita de ahí, vuelve el mismo agujero por otra
+    // puerta.
+    expect(cuerpoDe("src/app/api/superadmin/companies/route.ts"))
+      .toMatch(/ilike\("name", `%\$\{q\.replace\(\/\[%_\]\/g, "\\\\\$&"\)\}%`\)/);
+  });
+
+  it("y el slug del QR se valida entero antes de su `ilike`", () => {
+    const src = cuerpoDe("src/lib/attribution-service.ts");
+    const validacion = src.indexOf('if (!/^[A-Za-z0-9]+$/.test(clean)) return null;');
+    const consulta = src.indexOf('.ilike("slug", clean)');
+    expect(validacion, "la validación del slug desapareció").toBeGreaterThan(-1);
+    expect(consulta).toBeGreaterThan(validacion);
+  });
+});
+
+describe("la defensa del medidor que ninguna prueba puede ver correr", () => {
+  /**
+   * `addStorageUsage` envuelve todo en un `try/catch` que hoy no se puede
+   * alcanzar: la escritura va por `tryWrite`, que se traga su error y devuelve
+   * `false`, y la lectura ya se comprueba arriba. El mutador convierte el
+   * `catch` en un `throw` y nada cambia.
+   *
+   * Se queda porque lo que la hace inerte es el contrato de `tryWrite`, y
+   * porque lo que protege es concreto: el archivo del cliente YA está subido.
+   * Un error propagándose desde el medidor convertiría una subida buena en un
+   * 500 y el cliente volvería a subirla.
+   */
+  it("un fallo del medidor no sube por encima de la subida", () => {
+    const src = cuerpoDe("src/lib/plan-service.ts");
+    const at = src.indexOf("export async function addStorageUsage");
+    expect(at).toBeGreaterThan(-1);
+    const cuerpo = src.slice(at, at + 1600);
+    expect(cuerpo).toMatch(/\} catch \(err\) \{[\s\S]{0,200}console\.error\([\s\S]{0,120}\);\s*\}/);
+    expect(cuerpo, "el medidor volvió a poder tumbar una subida").not.toMatch(/\} catch \(err\) \{\s*throw/);
   });
 });
