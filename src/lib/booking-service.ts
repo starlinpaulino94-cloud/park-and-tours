@@ -20,7 +20,7 @@ import { creditCheck, holdUntil } from "@/lib/collections";
 import { esPrepago } from "@/lib/monedero-socio";
 import { modoDeCobro, elVendedorRetiene, type ModoDeCobro } from "@/lib/modo-de-cobro";
 import { retenerComision, turnoAbiertoDe } from "@/lib/comision-retenida";
-import { assertSaldo, descontarVenta } from "@/lib/monedero-service";
+import { assertSaldo, descontarVenta, monedaDelMonederoDe } from "@/lib/monedero-service";
 import { accrueBookingCosts, cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { reserveForSale, stockableOffers } from "@/lib/stock-commitment-service";
 import { assertAllotment, consumeAllotment } from "@/lib/allotment-service";
@@ -616,7 +616,13 @@ export async function createOrderWithBookings(
     prepago = esPrepago(creditTerms as { payment_mode?: string | null });
     if (prepago) {
       const estimate = await estimateOrderTotal(companyId, input, currency, exchangeRate, attributedSeller);
-      await assertSaldo(companyId, input.partner_id, estimate);
+      /**
+       * Con la moneda de la venta: es lo que permite comparar contra la del
+       * monedero. Sin ella la comprobación existía y no comprobaba nada, porque
+       * más abajo se le pasaba a `descontarVenta` la moneda de la venta como si
+       * fuera la del monedero y se comparaba consigo misma.
+       */
+      await assertSaldo(companyId, input.partner_id, estimate, currency);
     } else if (Number(creditTerms?.credit_limit ?? 0) > 0) {
       const open = await tenantQuery<{ balance?: number; amount?: number; paid_amount?: number }>(
         companyId, "receivable", {
@@ -1226,7 +1232,12 @@ export async function createOrderWithBookings(
         nota: `Venta ${order.order_number}`,
         userId: ctx.userId,
       },
-      currency
+      /**
+       * La moneda DEL MONEDERO, no la de la venta. Que coincidan ya lo garantizó
+       * `assertSaldo` antes de vender; pasar aquí la de la venta convertía la
+       * comprobación en una comparación consigo misma.
+       */
+      (await monedaDelMonederoDe(companyId, input.partner_id)) ?? currency
     );
   }
 

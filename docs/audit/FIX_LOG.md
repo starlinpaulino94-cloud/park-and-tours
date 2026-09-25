@@ -3616,3 +3616,62 @@ Y la tabla dice dos cosas más que no se preguntaban:
   `attribution`, `commission-adjust`, `gift-card`, `import`, `membego`,
   `membego-redemption`, `monedero`, `plan`, `public-booking`, `quote`, `schedule` y
   `seller-goals`. Y dos ejecutados a medias (`dispatch`, `seller-settlement`).
+
+### Ola 9.3 — el resto del dinero: monedero, ajustes de comisión y gift cards (2 de 3 lotes)
+- **UN FALLO GRANDE, Y ESTABA ESCRITO EN EL PROPIO MÓDULO QUE NO PODÍA PASAR.**
+  `apuntarMovimiento` recibe la moneda del monedero como parámetro aparte, y su
+  comentario dice por qué: «comparar el movimiento consigo mismo es una
+  comprobación que no puede fallar nunca, y la que hace falta es justamente la
+  otra». Los dos únicos sitios que lo llaman desde la operación hacían
+  **exactamente eso**:
+  - la venta: `descontarVenta(..., { moneda: currency }, currency)`;
+  - la cancelación: `devolverAlMonedero(..., { moneda: consumo.currency }, consumo.currency)`.
+  Así que la única comprobación que importa estaba estructuralmente presente y
+  funcionalmente muerta. Una venta en pesos contra un monedero en dólares pasaba
+  el control y descontaba 30.000 de un saldo de dólares. La guarda que existía
+  desde 6.6 comprobaba `monedero-service.ts` y la ruta de recargas a mano —que sí
+  lo hace bien, saca la moneda del contrato— y nunca miró el camino de la venta.
+- **Y el saldo, que es lo que autoriza, sumaba todas las monedas.** `saldoDe` suma
+  lo que se le dé sin mirar la moneda —es su contrato y está bien— y **nadie
+  filtraba antes**: el saldo salía de sumar todos los movimientos del socio. O sea
+  que la defensa estaba solo al ESCRIBIR, y al LEER no había nada. El módulo puro
+  describe ese escenario en su cabecera («el socio cree que tiene treinta mil y la
+  operadora descubre el agujero liquidando») y era alcanzable por la lectura.
+- **El arreglo, en tres piezas.** `monedaDelMonederoDe` resuelve la moneda desde
+  el contrato en **un solo sitio** —los cinco llamantes la necesitan igual, y con
+  cada uno resolviéndola a su manera el saldo que se enseña y el que autoriza una
+  venta pueden ser números distintos—; `saldoDeSocio` filtra por ella y **dice**
+  cuántos movimientos quedaron fuera, porque eso es dinero que nadie puede cuadrar;
+  y `assertSaldo` rechaza **antes de vender** una venta en otra moneda. Se rechaza
+  delante y no al descontar porque `descontarVenta` se traga sus errores a
+  propósito —el cliente ya tiene su voucher— así que un rechazo allí no impide nada.
+- **Lo que NO se tocó, y es una decisión:** entre `assertSaldo` y el descuento no
+  hay cerrojo, así que dos ventas simultáneas pueden pasar las dos el control y
+  dejar el monedero en negativo. Cerrarlo exige una restricción o una función en la
+  base —como `retain_seller_commission` en 7.4— y es una ola propia, no un apaño
+  dentro de una de pruebas. Queda dicho.
+- **Los otros dos servicios no tenían fallos, y eso también es un resultado.** Los
+  ajustes de comisión y las gift cards salieron limpios: lo que se añadió son las
+  pruebas de sus contratos, que no son obvios —una comisión **pagada** no cambia de
+  estado al cancelarse la reserva (se le mete un ajuste en negativo, porque poner
+  `cancelled` sobre dinero que salió haría que el histórico dijera que nunca se
+  pagó); el clawback va por el **neto** y no por el bruto; y el saldo de una gift
+  card se escribe **antes** que su movimiento, que es el orden que deja el menor
+  destrozo sin transacción.
+- **Nueve guardas no mordieron a la primera.** Una era un error mío de
+  indentación. Tres eran **defensa en profundidad inalcanzable**: `Math.abs` sobre
+  el importe, el corte de la devolución de cero y la referencia condicional de la
+  gift card están detrás de un validador que ya rechaza esos casos, así que el
+  mutador las quita y nada cambia. No se pueden probar por comportamiento y quitarlas
+  es justo lo que no se puede hacer —el día que haya un segundo camino de escritura
+  son lo único que queda—, así que se fijaron por estructura, diciendo que la línea
+  existe y por qué. Cuatro eran los tres **call sites** y el aviso de moneda mezclada,
+  que ninguna prueba cubría. Y una fue una guarda mía mal apuntada: prohibía
+  `consumo.currency || booking.currency || "usd"` en todo el fichero, y esa expresión
+  sigue siendo **correcta** en el campo `moneda` del movimiento —la devolución se
+  apunta en la moneda en la que se descontó—; lo que no puede volver a estar es en
+  el argumento que dice cuál es la del monedero.
+- **Mutación: treinta y tres, los treinta y tres muertos.**
+- **Quedan diez servicios sin ejecutar**, ~2.900 líneas: `analytics`,
+  `attribution`, `import`, `membego`, `membego-redemption`, `plan`,
+  `public-booking`, `quote`, `schedule` y `seller-goals`.

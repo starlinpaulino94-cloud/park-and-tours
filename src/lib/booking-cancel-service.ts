@@ -4,7 +4,7 @@ import { recalculateDeparture } from "@/lib/availability";
 import { cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { settleBookingStock } from "@/lib/stock-commitment-service";
 import { releaseBookingAllotment } from "@/lib/allotment-service";
-import { devolverAlMonedero } from "@/lib/monedero-service";
+import { devolverAlMonedero, monedaDelMonederoDe } from "@/lib/monedero-service";
 import { offerFreedSeats } from "@/lib/waitlist-service";
 import { reverseForOrder } from "@/lib/membego-redemption-service";
 import { syncOrderTotals } from "@/lib/booking-service";
@@ -419,7 +419,20 @@ export async function cancelBookingFully(
           nota: `Cancelación de ${booking.booking_number}`,
           userId: ctx.userId,
         },
-        consumo.currency || booking.currency || "usd"
+        /**
+         * La moneda DEL MONEDERO. Antes se pasaba la del propio consumo, así que
+         * la comprobación se comparaba consigo misma y una fila vieja en la
+         * moneda equivocada engendraba su devolución igual de equivocada.
+         *
+         * Si no coinciden, `apuntarMovimiento` la rechaza y `devolverAlMonedero`
+         * lo deja dicho en la consola sin tumbar la cancelación: escribir otra
+         * fila torcida empeoraría el descuadre, y la operadora puede reponer ese
+         * saldo a mano por la pantalla de recargas, que sí usa la moneda buena.
+         */
+        (await monedaDelMonederoDe(ctx.companyId, socioDeLaVenta))
+          ?? consumo.currency
+          ?? booking.currency
+          ?? "usd"
       );
     }
   }

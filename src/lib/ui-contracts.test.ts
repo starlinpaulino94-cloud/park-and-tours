@@ -9624,3 +9624,109 @@ describe("el aislamiento se prueba con un navegador de verdad", () => {
     expect(setup).toMatch(/async function ensureCuentaDelE2E\(/);
   });
 });
+
+/* ========================================================================== */
+/*  Ola 9.3 — la moneda del monedero, y las defensas que no se ven correr      */
+/* ========================================================================== */
+
+describe("la moneda del monedero se compara de verdad, en los tres caminos", () => {
+  it("LA VENTA DICE EN QUÉ MONEDA VA, y esa es toda la comprobación", () => {
+    /**
+     * `assertSaldo` existía sin este parámetro, así que no comparaba nada: la venta
+     * le pasaba a `descontarVenta` la moneda de la VENTA como si fuera la del
+     * monedero y se comparaba consigo misma — exactamente lo que el comentario de
+     * `apuntarMovimiento` dice que no puede hacerse nunca—. Una venta en pesos
+     * contra un monedero en dólares pasaba el control y descontaba 30.000 de un
+     * saldo de dólares.
+     *
+     * Se comprueba estructuralmente porque el camino es una venta completa: lo que
+     * no puede volver a pasar es que la llamada pierda su cuarto argumento.
+     */
+    const venta = cuerpoDe("src/lib/booking-service.ts");
+    expect(venta).toMatch(/await assertSaldo\(companyId, input\.partner_id, estimate, currency\);/);
+  });
+
+  it("y el descuento usa la moneda DEL MONEDERO, no la de la venta", () => {
+    const venta = cuerpoDe("src/lib/booking-service.ts");
+    expect(venta).toMatch(/\(await monedaDelMonederoDe\(companyId, input\.partner_id\)\) \?\? currency/);
+    // La forma que había: el tercer argumento igual a la moneda de la venta.
+    const i = venta.indexOf("await descontarVenta(");
+    expect(venta.slice(i, i + 700), "el descuento vuelve a compararse consigo mismo")
+      .not.toMatch(/\n\s*currency\s*\n\s*\);/);
+  });
+
+  it("y la devolución de una cancelación, también", () => {
+    /**
+     * Pasaba la moneda del propio consumo, así que una fila vieja en la moneda
+     * equivocada engendraba su devolución igual de equivocada — y el descuadre se
+     * duplicaba en vez de quedarse quieto.
+     */
+    const cancelar = cuerpoDe("src/lib/booking-cancel-service.ts");
+    expect(cancelar).toMatch(/\(await monedaDelMonederoDe\(ctx\.companyId, socioDeLaVenta\)\)/);
+    /**
+     * Y se comprueba el TERCER ARGUMENTO, no la expresión.
+     *
+     * `consumo.currency || booking.currency || "usd"` sigue existiendo —y está
+     * bien— en el campo `moneda` del propio movimiento: la devolución se apunta en
+     * la moneda en la que se descontó. Lo que no puede volver a estar es en el
+     * argumento que dice cuál es la del MONEDERO, porque ahí se compara consigo
+     * misma. Una guarda que buscara la expresión a secas denunciaba la línea buena.
+     */
+    const iDevolver = cancelar.indexOf("await devolverAlMonedero(");
+    const llamada = cancelar.slice(iDevolver, cancelar.indexOf(");", cancelar.indexOf("?? \"usd\"", iDevolver)));
+    expect(llamada, "el tercer argumento no sale del monedero")
+      .toMatch(/\},\s*\n\s*\(await monedaDelMonederoDe\(/);
+  });
+
+  it("la moneda del monedero sale del CONTRATO y en un solo sitio", () => {
+    // Cinco llamantes —dos pantallas, el resumen del portal, la venta y la
+    // cancelación— y la moneda tiene que ser la misma en los cinco. Con cada uno
+    // resolviéndola a su manera, el saldo que se enseña y el que autoriza una venta
+    // pueden ser números distintos.
+    const servicio = cuerpoDe("src/lib/monedero-service.ts");
+    expect(servicio).toMatch(/export async function monedaDelMonederoDe\(/);
+    expect(servicio).toMatch(/tenantQuery<\{ currency\?: string \| null \}>\(companyId, "partner"/);
+  });
+
+  it("y el saldo filtra por esa moneda antes de sumar", () => {
+    const servicio = cuerpoDe("src/lib/monedero-service.ts");
+    expect(servicio).toMatch(/const suyos = todos\.filter\(\(m\) => String\(m\.currency \|\| ""\)\.toLowerCase\(\) === delMonedero\);/);
+  });
+});
+
+describe("las defensas del monedero que ninguna prueba puede ver correr", () => {
+  /**
+   * Tres líneas que hoy son inalcanzables porque `movimientoInvalido` rechaza
+   * antes lo que ellas protegen. No se pueden probar por comportamiento —el
+   * mutador las quita y nada cambia— y quitarlas es justo lo que no se puede
+   * hacer: el día que alguien añada un segundo camino de escritura, son lo único
+   * que queda.
+   *
+   * Así que se fijan por estructura, que es lo honesto: la guarda dice que la
+   * línea existe y por qué, no que se ejecute.
+   */
+  it("el importe se guarda SIEMPRE en positivo", () => {
+    // Con importes con signo, una recarga de −500 vacía el monedero y en el
+    // listado se lee como una recarga.
+    expect(cuerpoDe("src/lib/monedero-service.ts"))
+      .toMatch(/amount: Math\.abs\(Number\(movimiento\.importe\)\),/);
+  });
+
+  it("y una devolución de cero no llega a intentarse", () => {
+    // Una reserva sin importe no devolvió nada: la fila no diría nada y habría que
+    // explicarla cada vez que alguien la vea.
+    expect(cuerpoDe("src/lib/monedero-service.ts"))
+      .toMatch(/if \(!\(Number\(movimiento\.importe\) > 0\)\) return null;/);
+  });
+
+  it("y la referencia de una gift card solo se escribe si la hay", () => {
+    /**
+     * `order: undefined` viaja a PostgREST como una columna sin valor y puede
+     * tumbar el INSERT entero — con el saldo de la tarjeta YA cambiado, porque se
+     * escribe antes. El doble de la base descarta los `undefined`, así que esto no
+     * se puede probar por comportamiento; en producción sí pasa.
+     */
+    expect(cuerpoDe("src/lib/gift-card-service.ts"))
+      .toMatch(/\.\.\.\(input\.orderId \? \{ order: input\.orderId \} : \{\}\),/);
+  });
+});
