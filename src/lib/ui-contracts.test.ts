@@ -10929,3 +10929,114 @@ describe("referencias entre inquilinos: las de dinero, cubiertas", () => {
     expect(sql).toMatch(/referenciar la propia empresa se rechaza/);
   });
 });
+
+/**
+ * TODO CRON ESTÁ ENCHUFADO (ola 9.16).
+ *
+ * `reconcileStaleDrafts` existía, estaba documentada —«Meant to be run
+ * periodically (cron) or on demand by an admin»— y **nada la ejecutaba**. La
+ * única puerta exigía sesión de admin y mismo origen, que es justo lo que un
+ * programador de tareas no tiene.
+ *
+ * No estaba mal escrita: estaba sin enchufar. Es la misma familia que la
+ * plantilla de mensajes que nada disparaba (ola 9.11) y la casilla de lista
+ * negra que nadie leía (9.9), y el patrón se repite porque es invisible: el
+ * código está, se lee bien, y no corre.
+ *
+ * Estas guardas cierran esa puerta para los trabajos programados: lo que existe
+ * como cron se declara, y lo que se declara existe.
+ */
+describe("los trabajos programados, enchufados", () => {
+  const rutasDeCron = () =>
+    readdirSync(path.join(ROOT, "src/app/api/cron"), { withFileTypes: true })
+      .filter((e) => e.isDirectory() && existsSync(path.join(ROOT, "src/app/api/cron", e.name, "route.ts")))
+      .map((e) => `/api/cron/${e.name}`)
+      .sort();
+
+  const declarados = () => {
+    const v = JSON.parse(read("vercel.json")) as { crons?: { path: string; schedule: string }[] };
+    return (v.crons ?? []).map((c) => c.path).sort();
+  };
+
+  it("cada ruta de cron está declarada en vercel.json", () => {
+    // Una ruta sin declarar es código que se lee bien, pasa las pruebas y no se
+    // ejecuta nunca. Exactamente lo que pasó con la reconciliación de ventas a
+    // medias.
+    const sinDeclarar = rutasDeCron().filter((r) => !declarados().includes(r));
+    expect(sinDeclarar, `rutas de cron que nadie ejecuta: ${sinDeclarar.join(", ")}`).toEqual([]);
+  });
+
+  it("y cada cron declarado tiene su ruta", () => {
+    // Al revés también rompe, y más ruidosamente: Vercel llama a una URL que
+    // devuelve 404 todos los días y el trabajo figura como «programado».
+    const sinRuta = declarados().filter((d) => !rutasDeCron().includes(d));
+    expect(sinRuta, `crones declarados que no existen: ${sinRuta.join(", ")}`).toEqual([]);
+  });
+
+  it("todos los crones son diarios: uno más frecuente NO DESPLIEGA", () => {
+    /**
+     * El plan en el que esto corre solo admite trabajos diarios, y un cron más
+     * frecuente tumba el despliegue entero — no solo el cron. La guarda ya
+     * existía en espíritu dentro de un comentario; aquí se comprueba.
+     */
+    const v = JSON.parse(read("vercel.json")) as { crons?: { path: string; schedule: string }[] };
+    for (const c of v.crons ?? []) {
+      const campos = c.schedule.trim().split(/\s+/);
+      expect(campos, `${c.path}: el cron no tiene cinco campos`).toHaveLength(5);
+      const [minuto, hora] = campos;
+      expect(minuto, `${c.path}: minuto con comodín = más de una vez al día`).toMatch(/^\d+$/);
+      expect(hora, `${c.path}: hora con comodín = más de una vez al día`).toMatch(/^\d+$/);
+    }
+  });
+
+  it("la reconciliación de ventas a medias corre ANTES que los demás", () => {
+    /**
+     * Si una venta quedó a medias, lo primero del día es devolver sus plazas:
+     * así el resto de los trabajos —y el mostrador— ya las ven libres. Ponerla
+     * después dejaría un día entero de disponibilidad calculada sobre plazas
+     * apartadas por ventas que no existieron.
+     */
+    const v = JSON.parse(read("vercel.json")) as { crons?: { path: string; schedule: string }[] };
+    const horaDe = (p: string) => {
+      const c = (v.crons ?? []).find((x) => x.path === p);
+      return c ? Number(c.schedule.trim().split(/\s+/)[1]) : NaN;
+    };
+    const mia = horaDe("/api/cron/reconcile-drafts");
+    expect(Number.isNaN(mia)).toBe(false);
+    for (const c of v.crons ?? []) {
+      if (c.path === "/api/cron/reconcile-drafts") continue;
+      expect(Number(c.schedule.trim().split(/\s+/)[1]),
+        `${c.path} corre antes que la reconciliación`).toBeGreaterThan(mia);
+    }
+  });
+
+  it("el cron recorre TODAS las empresas y no se calla si se queda corto", () => {
+    const src = read("src/app/api/cron/reconcile-drafts/route.ts");
+    /**
+     * Con un tope fijo, una operadora podía no aparecer nunca en la lista y
+     * quedarse con sus ventas a medias para siempre.
+     *
+     * Se comprueba la LLAMADA y no el identificador: una mutación cambió
+     * `barridoVigilado(...)` por `barrer(...)` —que no levanta incidente— y la
+     * guarda siguió verde porque el nombre seguía en la línea del `import`.
+     */
+    expect(src).toMatch(/await barridoVigilado</);
+    expect(src, "usa barrer a secas: el techo no levantaría incidente")
+      .not.toMatch(/await barrer</);
+    expect(readCodigo("src/app/api/cron/reconcile-drafts/route.ts")).not.toMatch(/_limit:\s*\d{4,}/);
+    // Y la ventana es más ancha que la de la ruta manual: esto corre sin nadie
+    // mirando, y un falso positivo revierte una venta buena.
+    expect(src).toMatch(/const VENTANA_MINUTOS = 60;/);
+  });
+
+  it("revertir una venta deja rastro en la bitácora de su empresa", () => {
+    // Revertir sin dejar rastro es peor que no revertir: al día siguiente falta
+    // una orden que alguien recuerda haber hecho y nada lo explica.
+    const src = read("src/app/api/cron/reconcile-drafts/route.ts");
+    expect(src).toMatch(/action: "drafts_reconciled"/);
+    expect(src).toMatch(/severity: "warning"/);
+    // Y cada reversión es el síntoma de un proceso que murió vendiendo, así que
+    // sube a la pantalla de salud.
+    expect(src).toMatch(/source: "cron:reconcile-drafts"/);
+  });
+});

@@ -33,6 +33,7 @@ import type {
 } from "@/lib/types";
 import { refId, isTerminalBookingStatus } from "@/lib/types";
 import { estaVetado, mensajeInterno, CODIGO_VETADO, type ClienteVetable } from "@/lib/lista-negra";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 /**
  * Booking service — the single write-path for sales.
@@ -1528,9 +1529,23 @@ export async function reconcileStaleDrafts(
   olderThanMinutes = 30
 ): Promise<{ scanned: number; reverted: number }> {
   const cutoff = new Date(Date.now() - olderThanMinutes * 60_000).toISOString();
-  const drafts = await tenantQuery<Order>(companyId, "order", {
-    _filter: { status: "draft" }, _limit: 100, _sort: { createdAt: "asc" },
-  });
+  /**
+   * Los borradores, ENTEROS.
+   *
+   * Tenía `_limit: 100`. Un borrador abandonado es raro —hace falta que un
+   * proceso muera a mitad de una venta— pero cuando la causa es sistemática no
+   * aparecen de a uno: aparecen a cientos, y justo entonces el tope dejaba
+   * fuera a los que más tiempo llevaban apartando plazas. Y como el orden es
+   * ascendente por fecha, los que se quedaban fuera eran los MÁS NUEVOS… lo que
+   * suena bien hasta que se piensa: los viejos ya se revirtieron en la pasada
+   * anterior, así que el que nunca le llegaba el turno era el del medio.
+   */
+  const drafts = await leerTodoElRecurso<Order>("order", (limite, salto) =>
+    tenantQuery(companyId, "order", {
+      _filter: { status: "draft" },
+      _sort: { createdAt: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+    }));
   let reverted = 0;
   for (const o of drafts) {
     const created = o.order_date || (o as { createdAt?: string }).createdAt;

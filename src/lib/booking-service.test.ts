@@ -83,7 +83,7 @@ const rpcNormal = async (nombre: string, args: Record<string, unknown>) => {
 const rpc = vi.fn(rpcNormal);
 vi.mock("@/lib/supabase/service", () => ({ supabaseService: () => ({ rpc }) }));
 
-import { createOrderWithBookings, syncOrderTotals } from "@/lib/booking-service";
+import { createOrderWithBookings, syncOrderTotals, reconcileStaleDrafts } from "@/lib/booking-service";
 
 const ORG = "org-1";
 const ctx = {
@@ -1384,5 +1384,91 @@ describe("no se le vende a quien está en la lista negra", () => {
       customer_id: "cli-inventado",
       items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
     })).resolves.toBeTruthy();
+  });
+});
+
+
+/* ══════════════════════ las ventas que se quedaron a medias ══════════════ */
+
+/**
+ * `reconcileStaleDrafts` — LA REPARACIÓN QUE NADIE EJECUTABA (ola 9.16).
+ *
+ * Existía desde AUD-F34, con su propio comentario diciendo «Meant to be run
+ * periodically (cron)», y su única puerta era un endpoint que exige sesión de
+ * admin y mismo origen: justo lo que un programador de tareas no tiene. Así que
+ * no corría nunca, y tampoco la probaba nadie.
+ *
+ * Lo que repara: una orden `draft` que quedó de un proceso muerto a mitad de la
+ * venta, con sus reservas apartando plazas, su voucher escaneando como válido y
+ * su comisión `pending` esperando que la próxima liquidación la pague.
+ */
+describe("reconciliar las ventas a medias", () => {
+  /** Un borrador abandonado, con la antigüedad que se le diga. */
+  const borrador = (id: string, minutosAtras: number) => ({
+    _id: id, organization_id: ORG, order_number: id, status: "draft",
+    createdAt: new Date(Date.now() - minutosAtras * 60_000).toISOString(),
+    order_date: new Date(Date.now() - minutosAtras * 60_000).toISOString(),
+  });
+
+  it("revierte el borrador viejo y deja en paz al recién nacido", async () => {
+    /**
+     * Es la línea que separa una reparación de un destrozo. Una saga normal tarda
+     * menos de un segundo; un borrador de hace un minuto puede estar
+     * escribiéndose ahora mismo, y cancelarlo sería cancelar una venta viva con
+     * el cliente delante.
+     */
+    db = fakeDb({ ...catalogo(), order: [borrador("viejo", 120), borrador("nuevo", 0)] });
+
+    const r = await reconcileStaleDrafts(ORG, 60);
+
+    expect(r.reverted).toBe(1);
+    const estados = new Map(db.rows("order").map((o) => [o._id, o.status]));
+    expect(estados.get("viejo")).toBe("cancelled");
+    expect(estados.get("nuevo")).toBe("draft");
+  });
+
+  it("y no toca las ventas que SÍ se completaron", async () => {
+    // Solo los borradores. Una orden en `pending_payment` es una venta de
+    // verdad, esperando cobro.
+    db = fakeDb({
+      ...catalogo(),
+      order: [
+        borrador("a-medias", 120),
+        { _id: "buena", organization_id: ORG, order_number: "buena", status: "pending_payment",
+          createdAt: new Date(Date.now() - 7_200_000).toISOString() },
+      ],
+    });
+
+    await reconcileStaleDrafts(ORG, 60);
+
+    const estados = new Map(db.rows("order").map((o) => [o._id, o.status]));
+    expect(estados.get("buena")).toBe("pending_payment");
+  });
+
+  it("revierte TODOS los borradores, no los primeros cien", async () => {
+    /**
+     * Leía con `_limit: 100`. Un borrador abandonado es raro —hace falta que un
+     * proceso muera vendiendo— pero cuando la causa es sistemática no aparecen de
+     * a uno: aparecen a cientos. Y justo entonces el tope dejaba plazas
+     * apartadas por ventas que no existieron.
+     */
+    db = fakeDb({
+      ...catalogo(),
+      order: Array.from({ length: 250 }, (_, i) => borrador(`d-${String(i).padStart(4, "0")}`, 120)),
+    });
+
+    const r = await reconcileStaleDrafts(ORG, 60);
+
+    expect(r.reverted).toBe(250);
+    expect(db.rows("order").filter((o) => o.status === "draft")).toHaveLength(0);
+  });
+
+  it("es idempotente: pasar dos veces no revierte dos veces", async () => {
+    // Corre a diario y también a mano; una segunda pasada no encuentra nada
+    // porque lo revertido ya no es `draft`.
+    db = fakeDb({ ...catalogo(), order: [borrador("uno", 120)] });
+
+    expect((await reconcileStaleDrafts(ORG, 60)).reverted).toBe(1);
+    expect((await reconcileStaleDrafts(ORG, 60)).reverted).toBe(0);
   });
 });

@@ -4754,3 +4754,81 @@ tablas de dinero el hueco exigido es **cero**, no «pequeño».
   La parte 2 **necesita la parte 1 antes**: sus disparadores llaman a la función
   que allí se arregla, y sin ella la caja del socio seguiría rompiéndose igual,
   solo que en más tablas.
+
+### Ola 9.16 — la reparación que nadie ejecutaba (BL-002)
+
+**Encargo: BL-002, «sin transacciones».** PostgREST no da transacciones
+multi-sentencia, así que la venta es una saga: `createOrderWithBookings` crea la
+orden en `draft`, va escribiendo reservas, vouchers, comisiones y cuentas por
+cobrar, y al final la promueve a `pending_payment`. Si algo **lanza**,
+`compensateOrder` lo deshace todo dentro de la misma petición — y eso está bien
+hecho y probado.
+
+**Pero si el PROCESO MUERE no hay excepción que capturar.** Un tiempo de espera
+de Vercel, un despliegue a medio vuelo, un OOM: la compensación no corre nunca.
+Lo que queda es una orden `draft` con sus reservas **apartando plazas**, un
+voucher que **escanea como válido**, una comisión `pending` que la **próxima
+liquidación paga** y una cuenta por cobrar que **parece cobrable**. Una venta que
+no existió, con todos sus efectos.
+
+**Y la reparación ya existía.** `reconcileStaleDrafts` se escribió justo para eso
+en el seguimiento de AUD-F34, con su propio comentario:
+
+> «Meant to be run periodically (cron) or on demand by an admin.»
+
+**Nada la ejecutaba.** Su única puerta era
+`POST /api/maintenance/reconcile-drafts`, que exige sesión de `admin` y mismo
+origen — precisamente lo que un programador de tareas no tiene. Y `vercel.json`
+declaraba seis crones, ninguno de ellos este. No estaba mal escrita: **estaba sin
+enchufar**, que es la misma familia que la plantilla de mensajes que nada
+disparaba y la casilla de lista negra que nadie leía. El patrón se repite porque
+es invisible: el código está, se lee bien, y no corre.
+
+- **`/api/cron/reconcile-drafts`**, con la disciplina de las olas anteriores:
+  credencial del cron, `barridoVigilado` para recorrer **todas** las empresas —con
+  un tope fijo, una operadora podía no aparecer nunca y quedarse con sus ventas a
+  medias para siempre—, una línea de bitácora por empresa con severidad de aviso,
+  y un incidente de plataforma si revirtió algo, porque cada reversión es la
+  huella de un proceso que murió vendiendo.
+- **Declarado en `vercel.json` a las 2:00**, antes que todos los demás: si una
+  venta quedó a medias, lo primero del día es devolver sus plazas para que el
+  resto de los trabajos —y el mostrador— ya las vean libres.
+- **Y la ventana se sube de 30 a 60 minutos.** La ruta manual usa treinta; aquí
+  corre sin nadie mirando y sobre todas las empresas, así que un falso positivo
+  **revierte una venta buena**. Una saga normal tarda menos de un segundo: entre
+  un segundo y una hora solo caben las que de verdad murieron. Prefiero que una
+  huérfana viva una hora de más a cancelar una viva con el cliente delante.
+- **`reconcileStaleDrafts` leía con `_limit: 100`.** Un borrador abandonado es
+  raro, pero cuando la causa es sistemática no aparecen de a uno: aparecen a
+  cientos, y justo entonces el tope dejaba plazas apartadas por ventas que no
+  existieron. Ahora se lee entero.
+
+**La guarda es la parte que dura**: cada ruta bajo `src/app/api/cron` tiene que
+estar declarada en `vercel.json`, y cada cron declarado tiene que existir. Más el
+recordatorio de que todos son diarios —un cron más frecuente **no despliega**, y
+tumba el despliegue entero, no solo el cron—, y que la reconciliación corre antes
+que los demás.
+
+- **Y una guarda que ya existía cazó una omisión mía**: `system-health.test.ts`
+  exige que cada cron tenga su **expectativa** declarada en `JOB_EXPECTATIONS`.
+  Sin ella la pantalla de salud no sabría que este trabajo debe correr a diario, y
+  su silencio no se notaría. Un cron enchufado pero no vigilado es medio arreglo.
+- **Tres mutaciones sobrevivieron a la primera**, y las tres eran gaps reales:
+  - Mi guarda comprobaba que apareciera el nombre `barridoVigilado`, y la
+    mutación lo cambiaba por `barrer` —que no levanta incidente— dejando el
+    nombre en la línea del `import`. Ahora mira la **llamada**.
+  - El lector falso de mi prueba ignoraba el filtro por antigüedad, así que
+    quitarlo no se notaba. Y eso es el fallo **en la dirección peligrosa**: sin
+    corte, el barrido cogería los borradores que se están escribiendo ahora y
+    cancelaría ventas vivas. El doble ahora aplica el corte, y hay dos pruebas de
+    que una venta en vuelo no se toca.
+  - `reconcileStaleDrafts` no la probaba nadie —la mockeaba la prueba del cron—.
+    Cuatro pruebas nuevas, incluida la de que es idempotente y la de que no toca
+    una orden en `pending_payment`, que es una venta de verdad esperando cobro.
+- **Mutación: 14 de 14.**
+- **BL-002 queda REDUCIDO, no cerrado.** La saga sigue sin ser atómica: lo que
+  cambia es que una venta a medias ahora se detecta y se repara **sola**, todos
+  los días, en vez de depender de que alguien con sesión de admin pulsara un
+  botón que nadie sabía que existía. Cerrarlo de verdad pediría mover la venta
+  entera a una función de Postgres, y eso es otra ola.
+- **Sin migración.** Nada nuevo que ejecutar en la base.

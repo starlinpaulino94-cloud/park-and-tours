@@ -138,6 +138,15 @@ export const JOB_EXPECTATIONS: JobExpectation[] = [
     graceMinutes: 180,
     consequence: "El cupo reservado a socios no se liberó: plazas que podrían venderse siguen bloqueadas.",
   },
+  {
+    job: "reconcile-drafts",
+    label: "Ventas que se quedaron a medias",
+    everyHours: 24,
+    graceMinutes: 180,
+    consequence:
+      "Las ventas que un proceso dejó a medias siguen en pie: sus plazas apartadas, su voucher escaneando "
+      + "como válido y su comisión esperando que la próxima liquidación la pague.",
+  },
 ];
 
 export function expectationFor(job: string): JobExpectation | null {

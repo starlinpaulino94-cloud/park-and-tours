@@ -5,6 +5,10 @@
   "installCommand": "npm install",
   "crons": [
     {
+      "path": "/api/cron/reconcile-drafts",
+      "schedule": "0 2 * * *"
+    },
+    {
       "path": "/api/cron/expire-approvals",
       "schedule": "0 4 * * *"
     },
