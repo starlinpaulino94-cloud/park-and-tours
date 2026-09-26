@@ -23,7 +23,17 @@ with o(mig,tipo,nom,propio) as (values
   ('0088','trg','pickup_route_sync_pickups',true),
   ('0091','fn','public.spend_partner_wallet',true),
   ('0093','fn','app.custom_access_token_hook',false),
-  ('0094','fn','public.departure_pax_totals',true)
+  ('0094','fn','public.departure_pax_totals',true),
+  ('0095','fn','app.enforce_same_tenant_refs',false),
+  ('0095','trg','ledger_entry_same_tenant_refs',true),
+  ('0095','trg','cash_session_same_tenant_refs',true),
+  ('0095','trg','cash_register_same_tenant_refs',true),
+  ('0095','trg','cash_movement_same_tenant_refs',false),
+  ('0095','trg','gift_card_same_tenant_refs',true),
+  ('0095','trg','gift_card_movement_same_tenant_refs',true),
+  ('0095','trg','access_ticket_same_tenant_refs',true),
+  ('0095','trg','waiver_same_tenant_refs',true),
+  ('0095','trg','commission_rule_same_tenant_refs',true)
 )
 select o.mig as migracion,
        case when o.tipo = 'fn' then 'funcion ' else 'disparador ' end || o.nom as objeto,

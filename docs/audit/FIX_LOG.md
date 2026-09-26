@@ -4662,3 +4662,95 @@ invertida**, porque al que más vende es al primero al que se le caen filas.
 - **Mutación: 21 de 21.**
 - **Sin migración**, así que la lista de SQL pendiente no cambia. **`0094` sigue
   siendo la primera**: hasta que esté, la aplicación no vende.
+
+### Ola 9.15 — DB-001 medido, y un disparador que llevaba rompiendo la caja de un socio (migración 0095)
+
+**Encargo: DB-001, el último riesgo estructural de la base.** «Ninguna clave
+foránea es compuesta `(organization_id, id)`» llevaba abierto desde la primera
+auditoría **sin un número al lado**. Una clave foránea normal prueba que la fila
+padre existe; no prueba que sea de la misma empresa.
+
+**Lo primero que salió no era eso.** Al enumerar qué referencias tenían
+comprobación, apareció que `cash_session_same_tenant` —puesto por mí en 0081—
+llamaba al disparador genérico con el argumento `partner_id organizations`. Y ese
+disparador valida leyendo `organization_id` de la tabla padre… que
+**`organizations` no tiene**. Comprobado contra Postgres 16:
+
+```
+SIN SOCIO: entra
+CON SOCIO: FALLA -> column "organization_id" does not exist (42703)
+```
+
+No es un rechazo con mensaje: es un **error de esquema crudo**. Así que abrir una
+caja a nombre de un vendedor de tour center —que es exactamente para lo que
+existe 0081— **ha estado fallando desde que se desplegó**, y
+`/api/cash/sessions` y `/api/cash/movements` escriben ese campo en cuatro sitios.
+No lo cazó nada porque ninguna prueba insertaba una sesión de caja con socio
+contra una base de verdad: el disparador solo existe en la base, y solo la base
+puede decir si funciona. Es el mismo aprendizaje de la ola 9.10 —donde `db-test`
+llevaba olas sin correr— llevado un paso más allá: **correr la suite no basta si
+la suite no toca el caso**.
+
+- **El arreglo**: el disparador deja de suponer el nombre de la columna y lo
+  **resuelve del catálogo** — `organization_id` si existe, `tenant_org_id` si no,
+  que es lo que «apunta cada nodo a su raíz de inquilino» (0002) y lo que ya usan
+  los RPC del panel (`o.tenant_org_id = p_org_id`, 0023/0024). Una regla, dicha.
+- **Y un nulo dejó de significar una sola cosa.** El nodo raíz de una empresa
+  tiene `tenant_org_id` nulo porque él mismo *es* el inquilino, así que
+  referenciar la propia empresa tiene que valer. Tratar ese nulo como «no se
+  sabe» habría rechazado referencias legítimas — este disparador ya rompió una
+  cosa por suponer de más.
+
+**DB-001, medido por primera vez.** Contra el esquema real: **289** claves
+foráneas de una columna entre dos tablas con inquilino, de las cuales **174 sin
+ninguna comprobación**.
+
+**No se cubren las 174, y eso es una decisión, no un olvido.** Cada referencia
+comprobada cuesta una lectura por fila insertada; ponerlas todas encarecería el
+camino de la venta para proteger tablas donde cruzar una referencia solo ensucia
+un informe. Se cubren las **33** en las que cruzarla mueve dinero, admite a
+alguien o da por firmado un documento que no se firmó:
+
+- **`ledger_entry`** (7) — el asiento contable, y el peor sitio posible: una
+  línea de la empresa A citando el pago de la B descuadra los libros de **las
+  dos**, y la contabilidad es justo donde vive el «fíate de los números».
+- **`cash_session` / `cash_register` / `cash_movement`** — un arqueo atribuido al
+  mostrador o al vendedor de otra empresa.
+- **`gift_card` / `gift_card_movement`** — un saldo canjeado contra la venta de
+  otra empresa es dinero pasando de una a otra sin que nadie lo apunte.
+- **`access_ticket`** — admitir a alguien con la reserva de otro; en la puerta
+  nadie va a mirar de qué empresa era.
+- **`waiver`** — el descargo. Atado a la reserva de otra empresa, la operadora
+  cree tener una firma que no tiene, y eso se descubre el día del accidente.
+- **`commission_rule`** — acotada al producto o al vendedor de otra empresa: se
+  le paga al que no es.
+
+**Y el resto queda con techo.** `tenant_refs.test.sql` recuenta el hueco contra el
+esquema real y guarda **141** como tope: puede bajar, no subir. En las nueve
+tablas de dinero el hueco exigido es **cero**, no «pequeño».
+
+- **Cuatro mutaciones sobrevivieron a la primera**, y las cuatro enseñaron algo:
+  - **`security definer` no lo comprobaba nadie.** Importa más de lo que parece:
+    es lo que deja al disparador *ver* la fila padre aunque la RLS la esconda del
+    que escribe. Como invocador el rechazo sale igual, pero un cruce se lee como
+    «no existe» (23503) en vez de como un cruce (23514) — el diagnóstico
+    equivocado, y quien investigue buscará una fila borrada que nunca se borró.
+  - **Solo probaba inserciones.** `before insert or update of <columnas>` dispara
+    **siempre** en el insert, así que recortar la lista de columnas no se nota
+    probando inserciones: se nota cuando alguien **mueve** una fila ya escrita al
+    mostrador o al cliente de otra empresa. Es el cruce más fácil de provocar
+    desde la aplicación, porque no hace falta crear nada. Tres pruebas de
+    `update` nuevas.
+  - **Un umbral que vive solo en su propia prueba no es un umbral.** Subir el
+    techo de 141 a 300 hacía pasar todo sin arreglar nada. No se puede hacer
+    inmutable un número escrito en un fichero, pero sí exigir que subirlo pase
+    por **dos** ficheros, de modo que el diff lo cuente en voz alta en vez de
+    esconderlo en un dígito.
+  - **Y comprobar que el mensaje siga escrito no es comprobar la condición.** Una
+    mutación apagaba el `if` y dejaba el texto; la guarda ahora mira el `if`.
+- **Mutación: 20 de 20.**
+- **Pendiente de ejecutar en la base:** `0095_parte_1.sql`, luego
+  `0095_parte_2.sql` y por último `0095_parte_3_verificacion.sql` (seis filas).
+  La parte 2 **necesita la parte 1 antes**: sus disparadores llaman a la función
+  que allí se arregla, y sin ella la caja del socio seguiría rompiéndose igual,
+  solo que en más tablas.

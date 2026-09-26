@@ -100,6 +100,6 @@ select e.mig as migracion,
 -- verificacion en supabase/editor/.
 --
 -- Y estas migraciones no salen arriba por lo mismo, no hay nada que preguntar
--- por catalogo de tablas: 0022, 0023, 0024, 0025, 0026, 0027, 0028, 0029, 0031, 0043, 0063, 0091, 0093, 0094
+-- por catalogo de tablas: 0022, 0023, 0024, 0025, 0026, 0027, 0028, 0029, 0031, 0043, 0063, 0091, 0093, 0094, 0095
 --
 -- Para el detalle columna por columna: auditoria_migraciones_N.sql

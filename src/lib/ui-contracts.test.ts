@@ -10824,3 +10824,108 @@ describe("techos: el inventario está cerrado", () => {
     }
   });
 });
+
+/**
+ * REFERENCIAS ENTRE INQUILINOS (ola 9.15, DB-001).
+ *
+ * Una clave foránea normal prueba que la fila padre EXISTE. No prueba que sea de
+ * la misma empresa. Eso lo hacen los disparadores de 0018, y estas guardas
+ * comprueban lo que se puede comprobar leyendo ficheros: que la cobertura de las
+ * tablas donde cruzar una referencia mueve dinero, admite a alguien o da por
+ * firmado un descargo esté declarada, y que el hueco medido siga con techo.
+ *
+ * Lo demás —que un `insert` cruzado de verdad se rechace— solo lo puede decir
+ * Postgres, y lo dice `supabase/tests/tenant_refs.test.sql`.
+ */
+describe("referencias entre inquilinos: las de dinero, cubiertas", () => {
+  const MIG = "supabase/migrations/0095_tenant_refs_money.sql";
+  const PRUEBA = "supabase/tests/tenant_refs.test.sql";
+
+  const TABLAS = [
+    "ledger_entry", "cash_session", "cash_register", "cash_movement",
+    "gift_card", "gift_card_movement", "access_ticket", "waiver", "commission_rule",
+  ];
+
+  it.each(TABLAS)("%s tiene su disparador declarado", (tabla) => {
+    const sql = read(MIG);
+    expect(sql).toMatch(new RegExp(`create trigger ${tabla}_same_tenant_refs`));
+    // Y se borra el anterior primero: dos disparadores solapados en la misma
+    // tabla harían el doble de lecturas, y el día que se toque uno el otro se
+    // queda atrás.
+    expect(sql).toMatch(new RegExp(`drop trigger if exists ${tabla}_same_tenant_refs on ${tabla};`));
+  });
+
+  it("el disparador deja de suponer cómo se llama la columna de inquilino", () => {
+    /**
+     * Era el fallo: suponía `organization_id`, y contra `organizations` —que
+     * guarda la suya en `tenant_org_id`— reventaba con un error de esquema en vez
+     * de validar. Abrir una caja a nombre de un socio llevaba roto desde 0081.
+     */
+    const sql = read(MIG);
+    expect(sql).toMatch(/attname in \('organization_id', 'tenant_org_id'\)/);
+    // Y prefiere `organization_id` cuando están las dos: es la columna de una
+    // tabla de negocio, y `tenant_org_id` solo aplica al árbol de organizaciones.
+    expect(sql).toMatch(/order by case a\.attname when 'organization_id' then 0 else 1 end/);
+  });
+
+  it("una raíz puede referenciarse a sí misma", () => {
+    // `organizations.tenant_org_id` es nulo en el nodo raíz porque él mismo ES
+    // el inquilino. Tratar ese nulo como «no se sabe» habría rechazado
+    // referencias legítimas — y este disparador ya rompió una cosa por suponer
+    // de más.
+    const sql = read(MIG);
+    expect(sql).toMatch(/if parent_org is null and scope_column = 'tenant_org_id' then/);
+    expect(sql).toMatch(/parent_org := ref_value::uuid;/);
+  });
+
+  it("y una referencia que NO se puede validar se dice, no se calla", () => {
+    // Callarse dejaría una comprobación que parece estar y no está: peor que no
+    // tenerla, porque nadie la vuelve a mirar.
+    expect(read(MIG)).toMatch(/No se puede validar el inquilino de %/);
+  });
+
+  it("el hueco de DB-001 está medido y con techo", () => {
+    /**
+     * DB-001 llevaba abierto desde la primera auditoría sin un número al lado.
+     * La prueba SQL lo cuenta contra el esquema real y guarda el resultado como
+     * techo: puede bajar, no subir. Así una clave foránea nueva entre tablas de
+     * inquilino sin comprobación se ve antes de llegar a producción.
+     */
+    const sql = read(PRUEBA);
+    expect(sql).toMatch(/if sin_cubrir > TECHO then/);
+    // Y en las tablas de dinero el hueco tiene que ser CERO, no pequeño: se
+    // comprueba la CONDICIÓN, no solo que el mensaje siga escrito. Una mutación
+    // que dejaba el texto y apagaba el `if` sobrevivió a la primera versión.
+    expect(sql).toMatch(/if en_dinero is not null then/);
+    expect(sql).toMatch(/SIGUEN sin cubrir referencias de dinero\/entrada\/descargo/);
+  });
+
+  it("el techo del hueco no se puede subir sin que se vea", () => {
+    /**
+     * UN UMBRAL QUE VIVE SOLO EN SU PROPIA PRUEBA NO ES UN UMBRAL.
+     *
+     * La prueba SQL compara contra una constante que ella misma declara, así que
+     * subirla de 141 a 300 hacía pasar todo sin arreglar nada — y eso sobrevivió
+     * a la mutación. No se puede hacer inmutable un número escrito en un
+     * fichero; lo que sí se puede es exigir que subirlo pase por DOS ficheros,
+     * de modo que el diff lo cuente en voz alta en vez de esconderlo en un
+     * dígito.
+     *
+     * Este valor solo baja. Si alguien cubre más referencias, se baja aquí y
+     * allí, y el diff dice exactamente cuántas se cubrieron.
+     */
+    const TECHO_ACORDADO = 141;
+    const m = read(PRUEBA).match(/TECHO constant integer := (\d+);/);
+    expect(m, "la prueba SQL dejó de declarar su techo").not.toBeNull();
+    expect(Number(m![1]), "el techo del hueco subió: cúbrelas o explica por qué")
+      .toBeLessThanOrEqual(TECHO_ACORDADO);
+  });
+
+  it("la prueba SQL comprueba que la caja del socio VUELVE a funcionar", () => {
+    // No basta con probar que lo cruzado se rechaza: lo que llevaba roto era el
+    // caso legítimo, y esa es la prueba que faltaba.
+    const sql = read(PRUEBA);
+    expect(sql).toMatch(/la caja de un socio sigue rota/);
+    expect(sql).toMatch(/referenciar la propia empresa se rechaza/);
+  });
+});
