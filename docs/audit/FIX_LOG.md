@@ -4832,3 +4832,162 @@ que los demás.
   botón que nadie sabía que existía. Cerrarlo de verdad pediría mover la venta
   entera a una función de Postgres, y eso es otra ola.
 - **Sin migración.** Nada nuevo que ejecutar en la base.
+
+---
+
+## Ola 9.17 · P-001: el rendimiento, por fin con números
+
+`P-001` llevaba en la matriz de preparación desde el primer informe con
+**FALLA/FALLA** y una sola frase: «sin `EXPLAIN` ni pruebas de carga». En 9.11 se
+comprobó que los índices del panel **existen**; nadie había comprobado que se
+**usen**, ni cuánto cuesta nada de esto cuando hay datos encima.
+
+Antes de empezar descarté T-001: el binario de docker está, el demonio no, así
+que no voy a escribir un E2E que no puedo correr.
+
+### La medición
+
+Levanté un Postgres efímero con las 95 migraciones y sembré dos inquilinos con
+volumen realista de una operadora grande:
+
+```
+órdenes 120 000 · reservas 120 000 · cobros 60 000 · salidas 5 600 · clientes 20 000
+```
+
+Ya la siembra dio el primer dato: cargar 120 000 reservas tardaba **más de diez
+minutos** con los disparadores puestos y **siete segundos** con
+`session_replication_role = replica`. Eso no es una curiosidad de la siembra: es
+el coste de la escritura, y volvemos a él abajo.
+
+Con `request.jwt.claims` puesto a mano, `dashboard_summary` —la consulta más
+cara de la aplicación, la que carga la pantalla de inicio—:
+
+| ventana | antes |
+| --- | --- |
+| 30 días | **104 ms** |
+| 365 días | **~800 ms** |
+
+Son los primeros números que P-001 ha tenido nunca.
+
+### Dónde se iba el tiempo (`auto_explain`, no intuición)
+
+El plan lo dijo sin ambigüedad. `current_booking` se definía como
+`select b.*, …`: la CTE materializaba las ~60 columnas de `booking` —**1 247
+bytes por fila**, ~150 MB— en un archivo temporal, y los **seis** agregados que
+la leen (resumen, serie diaria, canal, producto, vendedor y socio) la releían
+entera cada uno:
+
+```
+Buffers: shared hit=5801 read=341, temp read=20065 written=4013
+```
+
+**160 MB de E/S en disco dentro de una sola consulta.** Ninguno de los seis
+consumidores necesita `b.*`: entre todos usan siete columnas más los cuatro
+valores derivados. Lo mismo pasaba en las otras siete CTE base.
+
+**0096** sólo recorta la lista de columnas proyectada. La aritmética, los
+filtros y el JSON de salida son los de 0028 **byte por byte** —lo comprobé
+capturando la salida de dos ventanas distintas antes y después y diferenciando—.
+
+| ventana | antes | después |
+| --- | --- | --- |
+| 30 días | 104 ms | **72 ms** |
+| 365 días | ~800 ms | **~450 ms** |
+| ancho de fila de la CTE | 1 247 B | **169 B** |
+| bloques temporales leídos | 20 065 | **5 275** |
+
+### Dos hipótesis que medí y resultaron falsas
+
+Las dejo escritas porque no acusar a quien no fue vale tanto como arreglar lo
+que sí:
+
+- **`(p_x is null or col = p_x)` no impide usar el índice.** Es un peligro
+  conocido del planificador, pero medido aquí con un producto concreto entra por
+  `booking_dashboard_product_idx` (Index Only Scan) y tarda 56 ms. El camino
+  filtrado no era el problema.
+- **Subir `work_mem` casi no cambia nada** (438 ms a 4 MB, 405 ms a 64 MB). El
+  derrame a disco no era el cuello: era procesar las filas. Así que **no** puse
+  un `set work_mem` en la función: habría sido una perilla que aparenta arreglo.
+
+### La escritura también se midió (0097)
+
+2 000 reservas: **1 521 ms** con disparadores, **77 ms** sin ellos. 0,76 ms por
+reserva, veinte veces el coste de escribirla. Desglosado:
+
+| | ms / 2 000 filas |
+| --- | --- |
+| inserción pelada | 77 |
+| + invocar los disparadores (cuerpo vacío) | 216 |
+| + validar las referencias (0095) | 1 521 |
+
+Una reserva tiene **diez** referencias que validar, y 0095 —mío— gastaba **dos**
+consultas en cada una: `exists(...)` y luego la columna de ámbito, sobre la misma
+fila y la misma clave primaria. Veinte consultas por reserva donde bastaban diez.
+**0097** las funde: `select %I, true from %s where id = $1`, aprovechando que
+`into` deja los destinos en nulo cuando no hay fila, así que `existe` sigue
+distinguiendo «no hay fila» de «hay fila con inquilino nulo». Los cinco rechazos
+de 0095 son los mismos y con el mismo SQLSTATE; `tenant_refs.test.sql` pasa
+intacta. → **1 329 ms** (0,66 ms por reserva).
+
+**Y lo que decidí NO hacer**, medido aparte: la consulta al catálogo que resuelve
+la columna de ámbito vale ~194 ms de esos 1 329. Quitarla exigiría fijar la
+columna en los argumentos de los diecisiete disparadores. Un 10% a cambio de
+tocar diecisiete definiciones: no compensa, y dejarlo escrito vale más que
+hacerlo.
+
+### El rango a medida no tenía tope
+
+Buscando el siguiente barrido caro encontré un fallo que no es de velocidad sino
+de disponibilidad: `period=custom` aceptaba **cualquier** par de fechas.
+`from=1900-01-01` pedía dos barridos de un siglo —la ventana y su comparativa—
+y el limitador deja pasar 90 peticiones por minuto. Un solo usuario podía
+saturar la base desde la pantalla de inicio.
+
+`MAX_PERIOD_DAYS = 366` —el mayor de los presets que la propia interfaz ofrece,
+así que ningún uso normal se ve afectado—. Cuando recorta, **lo dice**: es la
+tercera forma de leer de 9.14, el informe que trunca y lo declara. Y al
+enchufarlo salió otra cosa: la ruta devolvía **`truncated: false`** fijo. El
+aviso existía en la interfaz, estaba maquetado, y **no podía encenderse nunca**.
+
+### Las guardas
+
+- `supabase/tests/dashboard_plan.test.sql` — siembra 20 000 reservas repartidas
+  entre **veinte** productos y mide el plan de verdad: el `width` de la
+  proyección contra un techo de 320 (medido: 169 hoy, 1 149 con el comodín), y
+  que el camino filtrado entre por un índice **del panel**. Un tope de
+  milisegundos habría sido una prueba inestable; esto es determinista y es
+  exactamente lo que se rompió.
+- **Dos veces me corrigió mi propia prueba.** La primera aserción del índice
+  sólo miraba que apareciera la palabra «Index»: sin los índices del panel el
+  planificador se agarra a `booking_voucher_code_idx` por mapa de bits y la
+  aserción pasaba tan contenta. La segunda: con **un solo producto** el filtro no
+  descarta nada y el barrido secuencial es la elección correcta —la prueba
+  fallaba por culpa del fixture, no del código—.
+- `editor-sql.test.ts` tuvo que aprender algo nuevo: `dashboard_summary` son
+  20 kB de **una sola sentencia** y el editor de Supabase trunca los pegados
+  largos (ya falló a los 7,3 kB). La copia va en siete partes que dejan el texto
+  en una tabla auxiliar, trozo a trozo, y la última lo ejecuta —comprobando
+  antes que no falte ninguno—. Partir la copia no podía aflojar la garantía: la
+  guarda ahora **concatena los trozos en orden** y compara el resultado con la
+  migración. Verificado de punta a punta: aplicar las seis partes produce una
+  función con el mismo `md5` que aplicar la migración.
+- Y un `readSql` nuevo, porque mi guarda contra `select b.*` **se disparó con mi
+  propio comentario** que describía el fallo. Es la lección de 9.13 otra vez, en
+  SQL esta vez: `readCodigo` quita comentarios de TypeScript, no de SQL.
+- **Mutación: 15 de 15.** La que sobrevivió a la primera vuelta fue subir
+  `TECHO_ANCHO` hasta que dejara de morder: un techo que vive sólo en la prueba
+  que lo usa no es un techo. Ahora se afirma también en `ui-contracts`, como el
+  de las 141 referencias de 9.15, para que subirlo salga en el diff dos veces.
+
+### Qué queda abierto de P-001
+
+Baja de **FALLA** a **PARCIAL**, no a cerrado:
+
+- El panel a 365 días sigue en ~450 ms. Bajarlo más pide fundir los cinco
+  desgloses en **una sola pasada** con `grouping sets`, o una tabla de
+  instantáneas. Lo primero es una reescritura delicada de una función de dinero
+  por ~140 ms; lo segundo es una ola entera. No lo he hecho, y no lo he hecho a
+  propósito.
+- **No hay pruebas de carga con concurrencia.** Todo lo medido aquí es un solo
+  cliente contra una base sin nadie más.
+- T-001 sigue bloqueado aquí: no hay demonio de docker.

@@ -3,6 +3,7 @@ import {
   netBookingAmount,
   netPaymentAmount,
   resolveDashboardPeriod,
+  MAX_PERIOD_DAYS,
   resolveDashboardPermissions,
   summarizeDashboard,
   trendPct,
@@ -79,6 +80,67 @@ describe("dashboard metrics", () => {
     expect(period.from).toBe("2026-08-10T04:00:00.000Z");
     expect(period.to).toBe("2026-08-13T03:59:59.999Z");
     expect(period.previousFrom < period.from).toBe(true);
+  });
+
+  /**
+   * EL RANGO A MEDIDA NO PUEDE SER INFINITO (9.17, P-001).
+   *
+   * `period=custom` aceptaba cualquier par de fechas. Medido: con 120.000
+   * reservas, un año son ~450 ms y la función barre DOS ventanas —la pedida y
+   * su comparativa—, así que `from=1900-01-01` pide dos barridos de un siglo
+   * con un limitador que deja pasar 90 peticiones por minuto.
+   */
+  describe("tope del rango a medida", () => {
+    const TZ = { timezone: "America/Santo_Domingo" };
+    const AHORA = new Date("2026-08-26T12:00:00.000Z");
+    const dias = (p: { from: string; to: string }) =>
+      Math.round((new Date(p.to).getTime() - new Date(p.from).getTime()) / 86_400_000);
+
+    it("un siglo se recorta a MAX_PERIOD_DAYS y se dice", () => {
+      const period = resolveDashboardPeriod("custom", "1900-01-01", "2026-08-26", TZ, AHORA);
+      expect(period.truncated).toBe(true);
+      expect(dias(period)).toBeLessThanOrEqual(MAX_PERIOD_DAYS);
+      // Se conserva el FINAL, que es lo que el usuario está mirando; lo que se
+      // mueve hacia adelante es el principio.
+      expect(period.to).toBe("2026-08-27T03:59:59.999Z");
+      expect(new Date(period.from).getTime())
+        .toBe(new Date(period.to).getTime() - MAX_PERIOD_DAYS * 86_400_000);
+    });
+
+    it("la comparativa se acorta con él y no se queda en un siglo", () => {
+      const period = resolveDashboardPeriod("custom", "1900-01-01", "2026-08-26", TZ, AHORA);
+      // Sin esto el recorte sería inútil: la ventana anterior es otro barrido.
+      // El +1 no es holgura inventada: `shiftRange` encaja la comparativa en
+      // días naturales enteros de la zona de la empresa, así que puede salir
+      // hasta un día más larga que la ventana al milisegundo que refleja.
+      expect(dias({ from: period.previousFrom, to: period.previousTo }))
+        .toBeLessThanOrEqual(MAX_PERIOD_DAYS + 1);
+      expect(period.previousTo <= period.from).toBe(true);
+    });
+
+    it("un rango que cabe pasa intacto y no se marca", () => {
+      const period = resolveDashboardPeriod("custom", "2026-08-10", "2026-08-12", TZ, AHORA);
+      expect(period.truncated).toBe(false);
+      expect(period.from).toBe("2026-08-10T04:00:00.000Z");
+      expect(period.to).toBe("2026-08-13T03:59:59.999Z");
+    });
+
+    it("ninguno de los presets que ofrece la interfaz se ve recortado", () => {
+      // 366 es el mayor de ellos (`year` en bisiesto): si el tope los tocara,
+      // el panel estaría mintiendo en su uso normal.
+      for (const key of ["today", "yesterday", "week", "month", "quarter", "year"]) {
+        const period = resolveDashboardPeriod(key, null, null, TZ, new Date("2028-12-31T12:00:00.000Z"));
+        expect(period.truncated, `el preset ${key} salió recortado`).toBe(false);
+      }
+    });
+
+    it("el tope se aplica justo en el borde, no un día después", () => {
+      const justo = resolveDashboardPeriod("custom", "2025-08-27", "2026-08-26", TZ, AHORA);
+      expect(dias(justo)).toBeLessThanOrEqual(MAX_PERIOD_DAYS);
+      expect(justo.truncated).toBe(false);
+      const uno_mas = resolveDashboardPeriod("custom", "2025-08-20", "2026-08-26", TZ, AHORA);
+      expect(uno_mas.truncated).toBe(true);
+    });
   });
 
   it("aplica permisos para vendedor, cajero y operaciones", () => {

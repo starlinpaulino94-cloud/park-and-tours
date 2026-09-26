@@ -50,6 +50,18 @@ const readCodigo = (rel: string) =>
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/(^|[^:])\/\/.*$/gm, "$1");
 const existe = (rel: string) => existsSync(path.join(ROOT, rel));
+/**
+ * SQL sin sus comentarios.
+ *
+ * `readCodigo` quita los de TypeScript. Una guarda sobre una migración se
+ * cumplía —y se incumplía— con lo que el comentario de cabecera MENCIONA:
+ * describir el fallo que se corrige nombra literalmente el patrón prohibido.
+ * Los literales entre comillas simples se conservan: el `--` de dentro de una
+ * cadena no abre un comentario.
+ */
+const readSql = (rel: string) =>
+  read(rel)
+    .replace(/'(?:[^']|'')*'|--[^\n]*|\/\*[\s\S]*?\*\//g, (m) => (m.startsWith("'") ? m : ""));
 /** El fichero sin comentarios: una guarda no puede darse por cumplida por lo
  *  que un comentario MENCIONA, solo por lo que el código HACE. Varios bloques
  *  declaran el suyo; este es el de los que no. */
@@ -10847,7 +10859,7 @@ describe("referencias entre inquilinos: las de dinero, cubiertas", () => {
   ];
 
   it.each(TABLAS)("%s tiene su disparador declarado", (tabla) => {
-    const sql = read(MIG);
+    const sql = readSql(MIG);
     expect(sql).toMatch(new RegExp(`create trigger ${tabla}_same_tenant_refs`));
     // Y se borra el anterior primero: dos disparadores solapados en la misma
     // tabla harían el doble de lecturas, y el día que se toque uno el otro se
@@ -10861,7 +10873,7 @@ describe("referencias entre inquilinos: las de dinero, cubiertas", () => {
      * guarda la suya en `tenant_org_id`— reventaba con un error de esquema en vez
      * de validar. Abrir una caja a nombre de un socio llevaba roto desde 0081.
      */
-    const sql = read(MIG);
+    const sql = readSql(MIG);
     expect(sql).toMatch(/attname in \('organization_id', 'tenant_org_id'\)/);
     // Y prefiere `organization_id` cuando están las dos: es la columna de una
     // tabla de negocio, y `tenant_org_id` solo aplica al árbol de organizaciones.
@@ -10873,7 +10885,7 @@ describe("referencias entre inquilinos: las de dinero, cubiertas", () => {
     // el inquilino. Tratar ese nulo como «no se sabe» habría rechazado
     // referencias legítimas — y este disparador ya rompió una cosa por suponer
     // de más.
-    const sql = read(MIG);
+    const sql = readSql(MIG);
     expect(sql).toMatch(/if parent_org is null and scope_column = 'tenant_org_id' then/);
     expect(sql).toMatch(/parent_org := ref_value::uuid;/);
   });
@@ -11038,5 +11050,112 @@ describe("los trabajos programados, enchufados", () => {
     // Y cada reversión es el síntoma de un proceso que murió vendiendo, así que
     // sube a la pantalla de salud.
     expect(src).toMatch(/source: "cron:reconcile-drafts"/);
+  });
+});
+
+/**
+ * EL PANEL EJECUTIVO, MEDIDO (ola 9.17, P-001).
+ *
+ * P-001 llevaba en la matriz de preparación desde el principio con FALLA/FALLA
+ * y sin un solo número. Aquí están: con 120.000 reservas y 60.000 cobros de un
+ * mismo inquilino, una ventana de 365 días tardaba ~800 ms y una de 30 días
+ * ~104 ms. El plan señaló la causa —`select b.*` materializando 150 MB y
+ * releyéndolos seis veces— y 0096 la corrige (~450 ms y ~72 ms, con la salida
+ * JSON idéntica byte por byte).
+ *
+ * Lo que se mide de verdad —ancho del plan, uso de índice— vive en
+ * `supabase/tests/dashboard_plan.test.sql`, porque necesita una base con
+ * volumen. Aquí se guarda lo que se puede perder editando TypeScript.
+ */
+describe("panel ejecutivo: lo que costaba y lo que no puede volver", () => {
+  const MIG = "supabase/migrations/0096_dashboard_summary_proyeccion.sql";
+  const METRICS = "src/lib/dashboard-metrics.ts";
+  const RUTA = "src/app/api/dashboard/route.ts";
+  const PLAN = "supabase/tests/dashboard_plan.test.sql";
+
+  it("0096 nombra las columnas y ninguna CTE base vuelve al comodín", () => {
+    const sql = readSql(MIG);
+    // Las siete que consumen los seis agregados. Si se recorta de más, el panel
+    // deja de compilar; si se recorta de menos, vuelve el coste.
+    expect(sql).toMatch(/select b\.status, b\.booking_date, b\.channel, b\.product_id, b\.seller_id,/);
+    for (const alias of ["b", "p", "c", "r", "cs"]) {
+      expect(sql, `una CTE base volvió a proyectar la fila entera: select ${alias}.*`)
+        .not.toContain(`select ${alias}.*,`);
+    }
+  });
+
+  it("la prueba de plan corre con volumen y comprueba el índice del panel", () => {
+    const sql = readSql(PLAN);
+    // Sin volumen el planificador elige barrido secuencial con toda la razón y
+    // la prueba no probaría nada.
+    expect(sql).toMatch(/generate_series\(1, 20000\)/);
+    // Y no basta con que aparezca un índice cualquiera: medido, sin los del
+    // panel se agarra a `booking_voucher_code_idx` y una aserción laxa pasaría.
+    expect(sql).toMatch(/booking_dashboard_/);
+    expect(sql).toMatch(/Index Name/);
+
+    /**
+     * Y SU TECHO SE SUBE EN DOS FICHEROS.
+     *
+     * Un techo que vive solo en la prueba que lo usa no es un techo: subirlo
+     * hasta que deje de morder es una línea. Medido tras 0096 el ancho es 169;
+     * 320 deja aire para una columna más y sigue a un orden de magnitud de los
+     * 1.149 que mide el comodín.
+     */
+    const TECHO_ANCHO_ACORDADO = 320;
+    const m = sql.match(/TECHO_ANCHO constant integer := (\d+);/);
+    expect(m, "la prueba de plan dejó de declarar su techo de ancho").not.toBeNull();
+    expect(Number(m![1]), "el techo de ancho del plan subió: mídelo antes")
+      .toBeLessThanOrEqual(TECHO_ANCHO_ACORDADO);
+  });
+
+  /**
+   * EL TOPE DEL RANGO SE SUBE EN DOS FICHEROS.
+   *
+   * `period=custom` no tenía tope: `from=1900-01-01` pedía dos barridos de un
+   * siglo —la ventana y su comparativa— y el limitador deja pasar 90
+   * peticiones por minuto. Como con el techo de referencias de 9.15, el número
+   * se afirma también aquí para que subirlo salga en el diff dos veces.
+   */
+  it("el rango a medida tiene tope, y subirlo cuesta dos ficheros", () => {
+    const MAX_ACORDADO = 366;
+    const m = readCodigo(METRICS).match(/MAX_PERIOD_DAYS\s*=\s*(\d+)/);
+    expect(m, "dashboard-metrics dejó de declarar MAX_PERIOD_DAYS").not.toBeNull();
+    expect(Number(m![1]), "el tope del rango subió: mídelo antes")
+      .toBeLessThanOrEqual(MAX_ACORDADO);
+
+    const src = readCodigo(METRICS);
+    // El recorte tiene que APLICARSE, no solo estar declarado.
+    expect(src).toMatch(/end\.getTime\(\) - start\.getTime\(\) > maxMs/);
+    expect(src).toMatch(/start = new Date\(end\.getTime\(\) - maxMs\)/);
+  });
+
+  it("el recorte se declara: `truncated` deja de ser una constante falsa", () => {
+    // El aviso existía en la interfaz y colgaba de `truncated: false`: no podía
+    // encenderse nunca. Ahora cuelga del periodo, que es quien recorta.
+    const ruta = readCodigo(RUTA);
+    expect(ruta, "la ruta volvió a fijar truncated en false").not.toMatch(/truncated:\s*false/);
+    expect(ruta).toMatch(/truncated:\s*period\.truncated/);
+
+    const panel = readCodigo("src/app/dashboard/_components/panel-empresa.tsx");
+    expect(panel).toMatch(/data\.period\.truncated/);
+    expect(panel).toMatch(/366 días/);
+  });
+
+  /**
+   * LA ESCRITURA TAMBIÉN SE MIDIÓ (0097).
+   *
+   * 2.000 reservas cuestan 1.521 ms con disparadores y 77 ms sin ellos. Casi
+   * todo se iba en que el disparador de inquilino preguntaba DOS veces por la
+   * misma fila padre —existencia y luego ámbito—, diez veces por reserva.
+   */
+  it("0097 no vuelve a preguntar dos veces por la fila padre", () => {
+    const sql = read("supabase/migrations/0097_tenant_refs_una_consulta.sql");
+    expect(sql).toMatch(/select %I, true from %s where id = \$1/);
+    expect(sql).toMatch(/if existe is not true then/);
+    // Y lo que 0095 arregló tiene que seguir en pie: la autocomprobación de la
+    // propia migración lo exige, así que aquí se exige que la exija.
+    expect(sql).toMatch(/0097: enforce_same_tenant_refs dejó de resolver tenant_org_id/);
+    expect(sql).toMatch(/0097: enforce_same_tenant_refs no quedó security definer/);
   });
 });

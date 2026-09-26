@@ -34,7 +34,23 @@ export interface DashboardPeriod {
   previousTo: string;
   label: string;
   timezone: string;
+  /** El rango pedido excedía `MAX_PERIOD_DAYS` y se acortó: hay que decirlo. */
+  truncated: boolean;
 }
+
+/**
+ * TOPE DEL RANGO A MEDIDA.
+ *
+ * `period=custom` aceptaba cualquier par de fechas: `from=1900-01-01` pedía al
+ * panel dos barridos (la ventana y su comparativa) de un siglo cada uno, sin
+ * que nadie los parara. Medido sobre 120.000 reservas, un año ya son ~450 ms;
+ * un siglo son minutos, y el limitador deja pasar 90 peticiones por minuto.
+ *
+ * 366 días es el mayor de los presets (`year` en un año bisiesto), así que
+ * ningún rango que la propia interfaz ofrece se ve afectado. Cuando se recorta
+ * se dice: `truncated` viaja en la respuesta, igual que los informes de 9.14.
+ */
+export const MAX_PERIOD_DAYS = 366;
 
 export interface DashboardPermissions {
   canCreateSale: boolean;
@@ -201,6 +217,10 @@ export function resolveDashboardPeriod(
     end = endOfToday(now, timezone);
   }
 
+  const maxMs = MAX_PERIOD_DAYS * 86_400_000;
+  const truncated = end.getTime() - start.getTime() > maxMs;
+  if (truncated) start = new Date(end.getTime() - maxMs);
+
   const spanDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86_400_000));
   const previous = shiftRange(start, end, -spanDays, timezone);
 
@@ -212,6 +232,7 @@ export function resolveDashboardPeriod(
     previousTo: previous.to.toISOString(),
     label: LABELS[key],
     timezone,
+    truncated,
   };
 }
 

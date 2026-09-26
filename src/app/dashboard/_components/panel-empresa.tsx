@@ -22,7 +22,7 @@ interface DashboardPermissions {
   canViewGlobalRankings: boolean; forcedSellerId?: string;
 }
 interface DashboardData {
-  period: { key: string; from: string; to: string; previousFrom: string; previousTo: string; label: string; timezone: string };
+  period: { key: string; from: string; to: string; previousFrom: string; previousTo: string; label: string; timezone: string; truncated: boolean };
   currency: string;
   permissions: DashboardPermissions;
   lastUpdatedAt: string;
@@ -231,7 +231,9 @@ export function PanelEmpresa() {
             <p className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-[13px] text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
               {data.incompleteFinancialData
                 ? "Hay datos financieros sin conversión congelada; los totales afectados se excluyen para evitar cifras engañosas."
-                : "Hay más registros de los que este resumen puede analizar en tiempo real; usa filtros o revisa el reporte detallado."}
+                : data.period.truncated
+                  ? `El rango pedido superaba los 366 días; el panel analiza desde ${data.period.from.slice(0, 10)}.`
+                  : "Hay más registros de los que este resumen puede analizar en tiempo real; usa filtros o revisa el reporte detallado."}
             </p>
           )}
 

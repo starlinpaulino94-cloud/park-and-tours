@@ -37,11 +37,36 @@ function sinComentarios(sql: string): string {
   return sql.replace(/--[^\n]*/g, "");
 }
 
-/** El cuerpo entre etiquetas de dólar, normalizado para poder compararlo. */
+/** El cuerpo entre etiquetas de dólar, normalizado para poder comparelo. */
 function cuerpoDeFuncion(sql: string): string | null {
   const m = /\bas\s+\$(\w*)\$([\s\S]*?)\$\1\$\s*;/.exec(sql);
   if (!m) return null;
   return m[2].replace(/\r\n/g, "\n").trim();
+}
+
+/**
+ * LA FUNCIÓN QUE NO CABE EN UN PEGADO.
+ *
+ * `create or replace function` es indivisible, y `dashboard_summary` son 20 kB.
+ * El editor trunca mucho antes —ya falló a los 7,3 kB—, así que esa copia deja
+ * el texto en una tabla auxiliar, trozo a trozo, y la última parte lo ejecuta.
+ *
+ * Partir la copia no puede aflojar la garantía: lo que se compara entonces es
+ * la CONCATENACIÓN de los trozos, en orden, que es exactamente lo que la base
+ * va a ejecutar. Si alguien retoca un trozo, deja de coincidir igual que antes.
+ */
+function cuerpoMontadoPorTrozos(partes: { nombre: string; sql: string }[]): string | null {
+  const trozos: { n: number; txt: string }[] = [];
+  for (const { sql } of partes) {
+    const m = /insert\s+into\s+app\.editor_sql_\w+\s*\(n,\s*txt\)\s*values\s*\((\d+),\s*\$trozo\$([\s\S]*?)\$trozo\$\)/.exec(sql);
+    if (m) trozos.push({ n: Number(m[1]), txt: m[2] });
+  }
+  if (trozos.length === 0) return null;
+  trozos.sort((a, b) => a.n - b.n);
+  // Los números tienen que ser 1..N sin huecos: un trozo perdido montaría media
+  // función sin que nadie lo notara hasta ejecutarla.
+  if (trozos.some((t, i) => t.n !== i + 1)) return null;
+  return cuerpoDeFuncion(trozos.map((t) => t.txt).join(""));
 }
 
 describe("las copias para el editor de Supabase", () => {
@@ -86,10 +111,13 @@ describe("las copias para el editor de Supabase", () => {
       const esperado = cuerpoDeFuncion(readFileSync(`${MIGRACIONES}/${migracion}`, "utf8"));
       if (!esperado) continue; // esa migración no define ninguna función
 
-      const enElEditor = partes
+      const suyas = partes
         .filter((f) => f.startsWith(`${n}_`))
-        .map((f) => cuerpoDeFuncion(readFileSync(`${EDITOR}/${f}`, "utf8")))
-        .filter(Boolean) as string[];
+        .map((f) => ({ nombre: f, sql: readFileSync(`${EDITOR}/${f}`, "utf8") }));
+      const enElEditor = [
+        ...suyas.map((x) => cuerpoDeFuncion(x.sql)),
+        cuerpoMontadoPorTrozos(suyas),
+      ].filter(Boolean) as string[];
 
       if (enElEditor.length === 0) {
         divergentes.push(`${n}: la migración define una función y ninguna copia la trae`);
