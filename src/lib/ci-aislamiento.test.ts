@@ -46,11 +46,22 @@ describe("el aislamiento del CI", () => {
 
   it("levanta su propia pila y la apaga pase lo que pase", () => {
     expect(indiceDe("supabase start"), "no se levanta ninguna pila local").toBeGreaterThan(-1);
-    const apagado = pasos.find((p) => (p.run ?? "").includes("supabase stop"));
-    expect(apagado, "no se apaga la pila").toBeTruthy();
     // Sin `if: always()`, un E2E en rojo deja los contenedores en pie.
-    expect((apagado as unknown as { if?: string }).if, "el apagado tiene que correr siempre")
-      .toBe("always()");
+    //
+    // SE COMPRUEBA LA PROPIEDAD, NO «EL PRIMERO QUE LO DIGA». Desde que el
+    // arranque reintenta, hay DOS pasos que dicen `supabase stop`: el apagado
+    // del final y la limpieza entre intentos —que no lleva `if`, ni debe—.
+    // Quedarse con el primero encontraba la limpieza y daba por incumplida una
+    // regla que sí se cumplía.
+    //
+    // Preguntado así es además más estrecho: lo que se exige es que EXISTA un
+    // apagado que corra pase lo que pase. Otro paso que mencione `supabase
+    // stop` ya no puede romper esta guarda ni, peor, taparla.
+    const apagados = pasos.filter((p) => (p.run ?? "").includes("supabase stop"));
+    expect(apagados.length, "no se apaga la pila").toBeGreaterThan(0);
+    const siempre = apagados.filter((p) => (p as unknown as { if?: string }).if === "always()");
+    expect(siempre.length, "ningún apagado corre pase lo que pase: falta `if: always()`")
+      .toBeGreaterThan(0);
   });
 
   it("COMPILA DESPUÉS de levantar la pila, no antes", () => {

@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyMembegoWebhook, parseMembegoEvent } from "@/lib/membego";
-import { membegoSecret, linkByCompany, applyMembegoEvent } from "@/lib/membego-service";
+import { membegoSecret, linkByCompany, applyMembegoEvent, auditMembego } from "@/lib/membego-service";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { fail } from "@/lib/api-response";
-import { writeAudit } from "@/lib/audit";
 
 export const dynamic = "force-dynamic";
 
@@ -81,14 +80,39 @@ export async function POST(req: NextRequest) {
     // Un evento de la plataforma hermana cambia datos de la empresa sin que
     // nadie de aquí toque nada: si no se anota, no hay forma de explicar por
     // qué un beneficio apareció o desapareció.
-    await writeAudit({
-      companyId: event.companyId,
-      action: "membego_event_applied",
-      entityType: "membego_event",
-      entityId: event.id,
-      description: `MembeGo aplicó un evento (${event.tipo})`,
-      metadata: { tipo: event.tipo },
-    });
+    //
+    // VA POR `auditMembego` Y NO POR `writeAudit`, por las dos razones que
+    // gobiernan todo este camino. La primera es la organización: `writeAudit`
+    // espera el id LOCAL, y aquí lo único que hay a mano es `event.companyId`,
+    // que es el cuid de MembeGo —`organization_id` es `uuid`, así que ese
+    // insert no fallaba a veces: fallaba siempre, con `22P02`—. El id bueno lo
+    // da el VÍNCULO, que es justamente lo que se acaba de resolver arriba.
+    //
+    // La segunda es que `writeAudit` con empresa pasa por las ayudas de
+    // inquilino, que resuelven el cliente desde cookies de sesión. Este
+    // webhook lo firma una máquina: no hay sesión, ni la va a haber. Y como la
+    // bitácora se traga su propio error a propósito —no puede tumbar lo que
+    // describe—, el fallo no se veía por ningún lado: una auditoría que
+    // parecía estar y no estaba, que es peor que no tenerla.
+    //
+    // Un duplicado no se anota: el evento ya se aplicó y ya se anotó en su
+    // primera entrega. Repetir la línea en cada reintento de la cola diría
+    // «MembeGo aplicó un evento» de algo que esta vez no aplicó nada.
+    if (outcome.status !== "duplicate") {
+      await auditMembego(
+        link.organization_id,
+        "membego_event_applied",
+        `MembeGo aplicó un evento (${event.tipo})`,
+        {
+          entityId: event.id,
+          metadata: {
+            tipo: event.tipo,
+            resultado: outcome.status,
+            membego_company_id: event.companyId,
+          },
+        }
+      );
+    }
 
     return NextResponse.json({ ok: true, data: { id: event.id, ...outcome } });
   } catch (err) {

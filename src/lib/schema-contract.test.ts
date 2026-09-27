@@ -1278,3 +1278,47 @@ describe("la lista blanca de la exportación del socio", () => {
     expect(faltan, "campos declarados que no existen en la tabla").toEqual([]);
   });
 });
+
+/**
+ * DOS MIGRACIONES NO PUEDEN LLEVAR EL MISMO NÚMERO.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * ESTO YA HA PASADO DOS VECES
+ *
+ * `0077_membego_membership_status` chocó con `0077_partner_product`, se
+ * renumeró a 0079 — y 0079 ya estaba cogido por `0079_partner_notifications`
+ * en otra rama. El choque no se ve al fusionar: son ficheros distintos, git no
+ * tiene nada que resolver, la suite pasa y `scripts/db-test.sh` también,
+ * porque psql los aplica por orden alfabético sin quejarse.
+ *
+ * Donde revienta es en la pila de Supabase, que lleva su propia contabilidad:
+ *
+ *     Applying migration 0077_membego_membership_status.sql...
+ *     Applying migration 0077_partner_product.sql...
+ *     ERROR: duplicate key value violates unique constraint "schema_migrations_pkey"
+ *
+ * Es decir: el CI de integración y el despliegue de verdad, tarde y con un
+ * error que no dice qué número está repetido. Renumerar es seguro —el número
+ * es contabilidad de la pila, no del esquema— pero hay que ENTERARSE, y para
+ * eso sirve esto: la colisión se cuenta aquí, en un segundo, no allí.
+ */
+describe("la numeración de las migraciones", () => {
+  it("no repite ningún número", () => {
+    const porNumero = new Map<string, string[]>();
+    for (const file of readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql"))) {
+      const m = /^(\d{4})_/.exec(file);
+      // Un fichero sin número delante tampoco lo aplicaría la pila en el orden
+      // que su autor cree: es el mismo problema con otra cara.
+      expect(m, `${file}: una migración tiene que empezar por cuatro dígitos`).not.toBeNull();
+      const n = m![1];
+      porNumero.set(n, [...(porNumero.get(n) ?? []), file]);
+    }
+
+    const repetidos = [...porNumero.entries()]
+      .filter(([, files]) => files.length > 1)
+      .map(([n, files]) => `${n}: ${files.join(" y ")}`);
+
+    expect(repetidos, "la pila de Supabase no levantaría: renumera la más nueva al primer hueco libre")
+      .toEqual([]);
+  });
+});

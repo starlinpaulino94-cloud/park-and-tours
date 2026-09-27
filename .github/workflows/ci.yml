@@ -55,13 +55,113 @@ jobs:
       # TAMBIÉN que las migraciones levantan un sistema utilizable desde cero,
       # que antes no lo comprobaba nadie.
       # ══════════════════════════════════════════════════════════════════════
+      # LA VERSIÓN VA PINCHADA, Y NO ES PEDANTERÍA (CI-003)
+      #
+      # Con `version: latest`, la acción pregunta a la API de GitHub cuál es la
+      # última release. Esa llamada va SIN autenticar, y el límite anónimo se
+      # cuenta por IP de runner —compartida—, así que en una tarde con varias
+      # corridas se agota y el CI muere antes de empezar:
+      #
+      #   Failed to resolve latest Supabase CLI release: rate limit exceeded
+      #
+      # Con una versión explícita, la acción NO llama a la API: construye la URL
+      # de descarga directamente. El fallo deja de ser improbable y pasa a ser
+      # imposible, sin meter ningún token en el flujo.
+      #
+      # Y de regalo, lo que de verdad importa aquí: este job existe para
+      # comprobar que las migraciones levantan un sistema desde cero. Con
+      # `latest`, la herramienta que lo comprueba cambiaba sola entre una
+      # corrida y la siguiente —y con ella las imágenes de Postgres, GoTrue y
+      # Edge Runtime que baja—. Un verde de ayer dejaba de decir nada sobre hoy.
+      #
+      # EL COSTE, dicho claro: esto ya no se actualiza solo. Subir el número es
+      # un cambio a mano, y toca hacerlo a propósito —que es justamente lo que
+      # se quiere de la herramienta que valida el esquema.
       - name: Supabase CLI
         uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 2.117.0
+
+      # ══════════════════════════════════════════════════════════════════════
+      # POR QUÉ `supabase start` NO LEVANTABA (CI-002)
+      #
+      # El error era este, y tumbó el CI de `main` varias veces seguidas:
+      #
+      #   toomanyrequests: retry-after: 215.113µs, allowed: 44000/minute
+      #
+      # LO QUE PARECE Y NO ES. Parece la cuota de descargas anónimas, y la
+      # respuesta obvia sería autenticarse. No lo es: 44.000 por minuto no es
+      # una cuota anónima, es un límite de RITMO que se aplica igual estando
+      # autenticado. Quien lo ha peleado antes cuenta lo mismo —`docker login`
+      # no se lo arregló— y lo que sí funcionó fue bajar la concurrencia.
+      #
+      # LO QUE SÍ ES. `supabase start` levanta una decena de contenedores y el
+      # demonio se pone a bajar TODAS sus capas a la vez: en el registro de la
+      # corrida caída se ven treinta y tantas capas en vuelo entre Postgres,
+      # GoTrue y Edge Runtime. Eso no es un volumen grande de datos; es un
+      # pico de peticiones en un instante, que es justo lo que ese límite
+      # corta. El `retry-after` de 215 MICROsegundos lo delata: es un cubo de
+      # fichas, no una cuota agotada.
+      #
+      # Y los tres reintentos que la CLI hace sola no ayudan, porque los hace
+      # seguidos —«attempt 1, attempt 2, attempt 3» en el mismo suspiro—, así
+      # que los tres se estrellan contra el mismo pico.
+      #
+      # Por eso van dos medidas, y la primera es la que carga el peso:
+      #
+      #   1. Bajar de dos en dos. Tarda algo más y deja de ser un pico.
+      #   2. Reintentar con una espera DE VERDAD entre intentos, para que el
+      #      cubo tenga tiempo de rellenarse.
+      #
+      # Autenticarse contra ghcr.io se probó y se descartó, por dos motivos que
+      # conviene dejar escritos: no arregla esto (ver arriba), y meter un
+      # secreto del repositorio en un paso choca de frente con la guarda de
+      # aislamiento de `ci-aislamiento.test.ts`, que prohíbe exactamente eso.
+      # Esa guarda existe por un incidente real; un «por si acaso» no vale una
+      # excepción en ella.
+      # ══════════════════════════════════════════════════════════════════════
+      - name: Bajar las imágenes de dos en dos
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /etc/docker
+          # Se FUSIONA con lo que el runner ya tenga puesto. Escribir el fichero
+          # entero borraría su configuración, y eso rompe cosas que no tienen
+          # nada que ver con esto y que además solo se ven en el runner.
+          if [ -f /etc/docker/daemon.json ]; then
+            sudo cp /etc/docker/daemon.json /tmp/daemon.json.orig
+          else
+            echo '{}' | sudo tee /tmp/daemon.json.orig > /dev/null
+          fi
+          jq '. + {"max-concurrent-downloads": 2}' /tmp/daemon.json.orig \
+            | sudo tee /etc/docker/daemon.json > /dev/null
+          sudo systemctl restart docker
+          # El demonio tarda un par de segundos en volver; sin esperarlo, el
+          # paso siguiente falla con «cannot connect to the Docker daemon» y
+          # el registro diría que el problema es Docker, no este reinicio.
+          for _ in $(seq 1 30); do
+            docker info > /dev/null 2>&1 && break
+            sleep 1
+          done
+          docker info --format 'descargas en paralelo: {{.Name}}' > /dev/null
 
       - name: Levantar Supabase local (migraciones desde cero)
-        run: supabase start
+        run: |
+          set -uo pipefail
+          for intento in 1 2 3; do
+            if supabase start; then
+              exit 0
+            fi
+            if [ "$intento" -eq 3 ]; then
+              echo "::error::supabase start no levantó tras 3 intentos."
+              exit 1
+            fi
+            espera=$(( intento * 30 ))
+            echo "::warning::supabase start falló (intento $intento). Reintento en ${espera}s."
+            # Sin esto, el siguiente intento se encuentra los contenedores a
+            # medio levantar de éste y falla por un motivo distinto al real.
+            supabase stop --no-backup > /dev/null 2>&1 || true
+            sleep "$espera"
+          done
 
       # Las llaves las genera la CLI al arrancar. NO son secretos: solo abren
       # unos contenedores que viven lo que dura este job. Se leen aquí en vez de

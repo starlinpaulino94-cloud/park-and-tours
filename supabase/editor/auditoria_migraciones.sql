@@ -68,7 +68,8 @@ with e(mig,obj,col) as (values
   ('0088','pickup','supplier_id'),
   ('0089','settlement','supplier_ncf'),
   ('0090','message','attachment_scope'),
-  ('0092','customer','blocked_at')
+  ('0092','customer','blocked_at'),
+  ('0098','membego_customer','membership_status')
 )
 select e.mig as migracion,
        case when to_regclass('public.' || e.obj) is null
