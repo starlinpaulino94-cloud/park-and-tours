@@ -107,7 +107,11 @@ export async function GET(req: NextRequest) {
       rankBy,
       horizonDays: UPCOMING_HORIZON_DAYS,
       incompleteFinancialData,
-      truncated: false,
+      // El único recorte que el panel practica hoy es el del rango: la
+      // ventana a medida se limita a MAX_PERIOD_DAYS y `period.truncated`
+      // lo dice. Antes esta bandera era una constante `false`: el aviso
+      // existía en la interfaz y no podía encenderse nunca.
+      truncated: period.truncated,
       alerts,
       kpis: {
         net_sales: permissions.canViewRevenue ? round2(netSales) : null,

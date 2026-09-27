@@ -38,7 +38,7 @@ vi.mock("@/lib/membego-redemption-service", () => ({ reverseForOrder: vi.fn(asyn
 
 import {
   reserve, confirmBooking, extendBooking, cancelBooking, getBooking,
-  sweepExpiredOctoHolds, markExpiredOctoHolds, type OctoContext,
+  sweepExpiredOctoHolds, markExpiredOctoHolds, octoChannels, type OctoContext,
 } from "@/lib/octo-service";
 
 const ORG = "org-1";
@@ -441,5 +441,59 @@ describe("un revendedor no ve lo del otro", () => {
     const otra: OctoContext = { ...ctx, partnerId: "soc-2", keyId: "key-2" };
     await expect(cancelBooking(otra, booking.uuid, { reason: null })).rejects.toThrow();
     expect(db.rows("booking")[0].status).not.toBe("cancelled");
+  });
+});
+
+
+/**
+ * EL INFORME DE CANALES DICE SI ESTÁ CORTADO (ola 9.14).
+ *
+ * De aquí sale cuánto aporta cada revendedor, y con eso se renegocia una
+ * comisión o se corta un acuerdo. Leía con un tope de dos mil y sin decirlo — y
+ * al que MÁS vende es al primero al que se le empiezan a caer filas, así que el
+ * recorte no daba una tabla incompleta: daba una comparación invertida.
+ */
+describe("el informe de canales dice si está cortado", () => {
+  /** `cuantas` reservas de OTA repartidas entre dos revendedores. */
+  function deOta(cuantas: number) {
+    return Array.from({ length: cuantas }, (_, i) => ({
+      _id: `oct-${String(i).padStart(5, "0")}`,
+      organization_id: ORG,
+      octo_uuid: `uuid-${i}`,
+      partner_id: i % 2 === 0 ? "soc-a" : "soc-b",
+      octo_status: "CONFIRMED",
+      status: "confirmed",
+      total_amount: 100,
+      created_at: new Date(Date.now() - (i % 80) * 86_400_000).toISOString(),
+    }));
+  }
+
+  it("con pocos canales, no dice que falte nada", async () => {
+    db.seed("booking", deOta(20));
+    const informe = await octoChannels(ORG, 90);
+    expect(informe.recorte.truncado).toBe(false);
+    expect(informe.recorte.leidas).toBe(20);
+  });
+
+  it("y llegando al tope, LO DICE", async () => {
+    db.seed("booking", deOta(5000));
+    const informe = await octoChannels(ORG, 90);
+    expect(informe.recorte.truncado).toBe(true);
+    expect(informe.recorte.tope).toBe(5000);
+  });
+
+  it("el aviso sale de lo que se leyó, no de una constante", async () => {
+    // Un informe que devolviera siempre `truncado: false` tendría el campo y
+    // seguiría mintiendo: dos tamaños distintos tienen que dar dos recuentos.
+    db.seed("booking", deOta(9));
+    expect((await octoChannels(ORG, 90)).recorte.leidas).toBe(9);
+  });
+
+  it("y sigue devolviendo las filas agrupadas por revendedor", async () => {
+    // El arreglo no puede haberse llevado por delante lo que el informe hace.
+    db.seed("booking", deOta(20));
+    const informe = await octoChannels(ORG, 90);
+    expect(informe.rows.length).toBeGreaterThan(0);
+    expect(informe.rows.reduce((t, r) => t + r.bookings, 0)).toBe(20);
   });
 });

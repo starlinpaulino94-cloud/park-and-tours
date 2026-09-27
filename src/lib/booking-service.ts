@@ -20,7 +20,7 @@ import { creditCheck, holdUntil } from "@/lib/collections";
 import { esPrepago } from "@/lib/monedero-socio";
 import { modoDeCobro, elVendedorRetiene, type ModoDeCobro } from "@/lib/modo-de-cobro";
 import { retenerComision, turnoAbiertoDe } from "@/lib/comision-retenida";
-import { assertSaldo, descontarVenta } from "@/lib/monedero-service";
+import { assertSaldo, gastarDelMonedero, monedaDelMonederoDe } from "@/lib/monedero-service";
 import { accrueBookingCosts, cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { reserveForSale, stockableOffers } from "@/lib/stock-commitment-service";
 import { assertAllotment, consumeAllotment } from "@/lib/allotment-service";
@@ -32,6 +32,8 @@ import type {
   Booking, Channel, Currency, Departure, Order, Partner, Product, Seller,
 } from "@/lib/types";
 import { refId, isTerminalBookingStatus } from "@/lib/types";
+import { estaVetado, mensajeInterno, CODIGO_VETADO, type ClienteVetable } from "@/lib/lista-negra";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 /**
  * Booking service — the single write-path for sales.
@@ -309,6 +311,119 @@ async function estimateOrderTotal(
   return round2(total);
 }
 
+/**
+ * LA SALIDA TIENE QUE SER DEL PRODUCTO QUE SE VENDE.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LO QUE PASABA
+ *
+ * Nadie lo comprobaba. La salida se cargaba por su identificador, acotada a la
+ * empresa —eso sí— y se usaba para el precio, para el cupo y para la reserva,
+ * sin mirar ni una vez si esa salida es del producto de la línea.
+ *
+ * Y es alcanzable desde fuera con datos PUBLICADOS: el catálogo público da los
+ * identificadores de producto, `/availability?product=` da los de salida, y una
+ * petición con el producto A y la salida de B pasa las dos validaciones que hay
+ * —el producto está publicado, la salida existe y tiene plaza—. El resultado es
+ * un pasajero apuntado en la guagua de B ocupando plaza de B, mientras el
+ * manifiesto de B lo lista como cliente de A; el precio sale del producto A con
+ * la fecha de B; y la salida de A no sabe que vendió nada.
+ *
+ * Dentro pasa lo mismo con menos malicia: un selector de salidas que quedó con
+ * la lista del producto anterior manda exactamente ese par.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * DÓNDE VA
+ *
+ * Aquí, en la puerta única, y no en la ruta pública: el punto de venta, el
+ * portal del socio y la API entran por el mismo sitio y tienen el mismo hueco.
+ * Arreglarlo en el motor público habría dejado tres de cuatro puertas abiertas.
+ *
+ * Una salida SIN producto no se rechaza: las hay de antes de que la columna
+ * fuera obligatoria, y lo desconocido se queda como está. Y una salida que no
+ * aparece tampoco se rechaza aquí —`assertCapacity` ya lo hace, y con su
+ * mensaje— para no tener dos comprobaciones diciendo lo mismo de dos maneras.
+ */
+async function assertSalidaDelProducto(companyId: string, input: CreateOrderInput): Promise<void> {
+  const pares = (input.items ?? [])
+    .filter((item) => typeof item.departure_id === "string" && item.departure_id !== "")
+    .map((item) => ({
+      departureId: String(item.departure_id),
+      productId: String(item.product_id || ""),
+    }));
+  if (pares.length === 0) return;
+
+  const ids = [...new Set(pares.map((par) => par.departureId))];
+  const salidas = await tenantQuery<Departure>(companyId, "departure", {
+    _filter: { _id: { in: ids } }, _limit: 200,
+  });
+  const productoDeLaSalida = new Map<string, string | null>();
+  for (const salida of salidas) {
+    productoDeLaSalida.set(String(salida._id), refId(salida.product) ?? null);
+  }
+
+  for (const par of pares) {
+    const suyo = productoDeLaSalida.get(par.departureId);
+    // `undefined` es «no apareció»: lo cuenta `assertCapacity`. `null` es «no
+    // tiene producto declarado», y eso se deja pasar.
+    if (suyo === undefined || suyo === null) continue;
+    if (par.productId && suyo !== par.productId) {
+      throw Object.assign(
+        new Error(
+          "La salida elegida no es de esa excursión: no se puede reservar una excursión " +
+          "en la salida de otra. Vuelve a elegir la fecha."
+        ),
+        { status: 400 }
+      );
+    }
+  }
+}
+
+/**
+ * NO SE LE VENDE A QUIEN ESTÁ EN LA LISTA NEGRA.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LO QUE PASABA
+ *
+ * `customer.status` admite `blacklist` desde la primera migración y el
+ * formulario del directorio lo ofrece en un desplegable con su etiqueta. Nadie
+ * lo leía: se marcaba a una persona y seguía comprando por el mostrador, por la
+ * web, por la API del socio y por la OTA exactamente igual.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * DÓNDE VA
+ *
+ * Aquí, en la puerta única, por lo mismo que la coherencia salida↔producto: las
+ * cuatro puertas entran por este sitio, y ponerlo en una dejaría tres abiertas.
+ *
+ * Cuesta una lectura por clave primaria en cada venta, y es deliberado. Una
+ * lista negra que solo se comprueba «cuando se puede» es la casilla de antes con
+ * otro nombre.
+ *
+ * Y va ANTES de tocar cupos, crédito y plazas: rechazar tarde obliga a compensar
+ * escrituras que no había que haber hecho.
+ */
+async function assertClienteAtendible(companyId: string, customerId: string | null | undefined): Promise<void> {
+  if (!customerId) return;
+  const [cliente] = await tenantQuery<ClienteVetable & { _id?: string }>(companyId, "customer", {
+    _filter: { _id: customerId }, _limit: 1,
+  });
+  // Que la ficha no aparezca no lo decide esta comprobación: lo dirá la clave
+  // ajena al escribir, con su mensaje. Aquí lo desconocido se deja pasar.
+  if (!cliente || !estaVetado(cliente)) return;
+
+  throw Object.assign(new Error(mensajeInterno(cliente)), {
+    status: 409,
+    /**
+     * El código es lo que hace que la web y la API puedan traducir en vez de
+     * reenviar. Hacia fuera no viaja ni el motivo ni la palabra: un desconocido
+     * que reserva por internet no tiene por qué enterarse de que está en una
+     * lista, y decírselo por una respuesta HTTP es la peor manera de hacerlo.
+     */
+    code: CODIGO_VETADO,
+  });
+}
+
 /** La salida más próxima del pedido, que acota hasta cuándo se retiene la plaza. */
 async function firstDeparture(companyId: string, input: CreateOrderInput): Promise<string | null> {
   const ids = input.items
@@ -440,9 +555,33 @@ export async function createOrderWithBookings(
    * y solo cuesta una consulta cuando la venta es de un socio.
    */
   if (input.partner_id) {
-    const autorizaciones = await tenantQuery<Record<string, unknown>>(companyId, "partner_product", {
-      _filter: { partner: input.partner_id, status: "active" }, _limit: 1000,
-    });
+    /**
+     * SE PREGUNTA POR LOS PRODUCTOS DEL CARRITO, NO POR EL CONTRATO ENTERO.
+     *
+     * Esto leía las autorizaciones del socio con `_limit: 1000` y armaba el
+     * conjunto de lo permitido a partir de ahí. Con más de mil productos bajo
+     * contrato, el que se vende puede caer más allá de la fila mil — y entonces
+     * la comprobación dice «no autorizado» y devuelve un 403 por un producto que
+     * el socio SÍ tiene firmado.
+     *
+     * Es el fallo contrario al de las otras lecturas de esta serie: aquí se
+     * niega en vez de aprobar. Pero es igual de silencioso y de determinista, y
+     * además irreproducible desde el mostrador: el producto de prueba de quien
+     * atiende la queja está entre los primeros mil.
+     *
+     * Y la respuesta no es paginar. La pregunta nunca fue «qué tiene autorizado
+     * este socio» —eso es el catálogo, y vive en otras pantallas— sino «están
+     * ESTOS productos en su contrato». Filtrando por los del carrito no hay tope
+     * que importe: se leen como mucho tantas filas como artículos lleve la
+     * venta, y la consulta además es más barata que la de antes.
+     */
+    const pedidos = [...new Set((input.items ?? []).map((i) => i.product_id).filter(Boolean))];
+    const autorizaciones = pedidos.length === 0 ? [] : await tenantQuery<Record<string, unknown>>(
+      companyId, "partner_product", {
+        _filter: { partner: input.partner_id, status: "active", product: { in: pedidos } },
+        _limit: Math.max(1, pedidos.length),
+      }
+    );
     const fuera = noAutorizados(
       (input.items ?? []).map((i) => i.product_id),
       autorizadosDe(autorizaciones as AutorizacionSocio[])
@@ -476,6 +615,19 @@ export async function createOrderWithBookings(
     const desajuste = desajusteDeAtribucion(fichaDelVendedor ?? null, input.partner_id ?? null);
     if (desajuste) throw Object.assign(new Error(desajuste), { status: 400 });
   }
+
+  // Y no se le vende a quien está en la lista negra. Antes que nada: es la
+  // única de estas comprobaciones que puede acabar con el cliente delante.
+  await assertClienteAtendible(companyId, input.customer_id);
+
+  /**
+   * Y la salida de cada línea tiene que ser de su producto.
+   *
+   * Va ANTES del cupo a propósito: `assertCapacity` apunta y persiste los
+   * contadores de la salida que se le diga, así que comprobar después habría
+   * dejado los contadores de la guagua equivocada tocados antes del rechazo.
+   */
+  await assertSalidaDelProducto(companyId, input);
 
   // ---- validate capacity before writing anything --------------------------
   // AUD-B01: aggregate requested pax PER DEPARTURE across all items. Previously
@@ -616,7 +768,13 @@ export async function createOrderWithBookings(
     prepago = esPrepago(creditTerms as { payment_mode?: string | null });
     if (prepago) {
       const estimate = await estimateOrderTotal(companyId, input, currency, exchangeRate, attributedSeller);
-      await assertSaldo(companyId, input.partner_id, estimate);
+      /**
+       * Con la moneda de la venta: es lo que permite comparar contra la del
+       * monedero. Sin ella la comprobación existía y no comprobaba nada, porque
+       * más abajo se le pasaba a `descontarVenta` la moneda de la venta como si
+       * fuera la del monedero y se comparaba consigo misma.
+       */
+      await assertSaldo(companyId, input.partner_id, estimate, currency);
     } else if (Number(creditTerms?.credit_limit ?? 0) > 0) {
       const open = await tenantQuery<{ balance?: number; amount?: number; paid_amount?: number }>(
         companyId, "receivable", {
@@ -1213,9 +1371,15 @@ export async function createOrderWithBookings(
    * Y una orden descuenta UNA vez: lo hace cumplir un índice único de 0080, no
    * una comprobación de aquí, porque dos instancias a la vez le ganan siempre a
    * una comprobación en la aplicación.
+   *
+   * Desde 0091 el descuento va por una función de base que suma el saldo dentro
+   * de la misma transacción y detrás de un cerrojo sobre el socio: el saldo con
+   * el que se descuenta no puede estar viejo. Y si aun así queda en descubierto
+   * —porque dos ventas se AUTORIZARON a la vez, que eso sigue pudiendo pasar—
+   * se anota en la bitácora con el número, para que alguien lo cobre.
    */
   if (input.partner_id && prepago) {
-    await descontarVenta(
+    const consumo = await gastarDelMonedero(
       companyId,
       {
         partnerId: input.partner_id,
@@ -1226,8 +1390,31 @@ export async function createOrderWithBookings(
         nota: `Venta ${order.order_number}`,
         userId: ctx.userId,
       },
-      currency
+      /**
+       * La moneda DEL MONEDERO, no la de la venta. Que coincidan ya lo garantizó
+       * `assertSaldo` antes de vender; pasar aquí la de la venta convertía la
+       * comprobación en una comparación consigo misma.
+       */
+      (await monedaDelMonederoDe(companyId, input.partner_id)) ?? currency
     );
+
+    if (consumo?.descubierto) {
+      await writeAudit({
+        companyId, userId: ctx.userId,
+        action: "partner_wallet_overdraft",
+        entityType: "partner", entityId: input.partner_id,
+        severity: "warning",
+        description:
+          `El monedero del socio quedó en ${consumo.saldoDespues} ${consumo.moneda.toUpperCase()} ` +
+          `tras la venta ${order.order_number} de ${consumo.importe}: hay que cobrarle la diferencia.`,
+        metadata: {
+          order: order._id,
+          amount: consumo.importe,
+          balance_before: consumo.saldoAntes,
+          balance_after: consumo.saldoDespues,
+        },
+      });
+    }
   }
 
   console.log(`[booking-service] orden ${order.order_number} creada · ${bookings.length} reservas · total ${totals.total} ${currency}`);
@@ -1342,9 +1529,23 @@ export async function reconcileStaleDrafts(
   olderThanMinutes = 30
 ): Promise<{ scanned: number; reverted: number }> {
   const cutoff = new Date(Date.now() - olderThanMinutes * 60_000).toISOString();
-  const drafts = await tenantQuery<Order>(companyId, "order", {
-    _filter: { status: "draft" }, _limit: 100, _sort: { createdAt: "asc" },
-  });
+  /**
+   * Los borradores, ENTEROS.
+   *
+   * Tenía `_limit: 100`. Un borrador abandonado es raro —hace falta que un
+   * proceso muera a mitad de una venta— pero cuando la causa es sistemática no
+   * aparecen de a uno: aparecen a cientos, y justo entonces el tope dejaba
+   * fuera a los que más tiempo llevaban apartando plazas. Y como el orden es
+   * ascendente por fecha, los que se quedaban fuera eran los MÁS NUEVOS… lo que
+   * suena bien hasta que se piensa: los viejos ya se revirtieron en la pasada
+   * anterior, así que el que nunca le llegaba el turno era el del medio.
+   */
+  const drafts = await leerTodoElRecurso<Order>("order", (limite, salto) =>
+    tenantQuery(companyId, "order", {
+      _filter: { status: "draft" },
+      _sort: { createdAt: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+    }));
   let reverted = 0;
   for (const o of drafts) {
     const created = o.order_date || (o as { createdAt?: string }).createdAt;

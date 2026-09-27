@@ -121,6 +121,64 @@ export function windowsOverlap(a: Window, b: Window): boolean {
   return a.start < b.end && b.start < a.end;
 }
 
+/**
+ * LA VENTANA DE UNA RUTA DE RECOGIDA.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ NO ES LA MISMA FUNCIÓN QUE LA DEL RECURSO
+ *
+ * Una ruta de recogida tiene `start_time` y NO tiene `end_time`: la tabla nunca
+ * lo tuvo. Así que el final hay que razonarlo, y la respuesta honesta es **la
+ * hora de la salida**: la guagua recoge, deja a la gente en el punto de
+ * encuentro y a partir de ahí está libre.
+ *
+ * Alargarla hasta el final de la excursión habría sido más «prudente» y es
+ * justo lo que no se puede hacer: si la misma guagua hace además la excursión,
+ * eso es una fila de `departure_resource` de ESA salida, cuya ventana ya cubre
+ * el tour. Contarlo dos veces no protege de nada e inventa ocupación — y con
+ * ocupación inventada, el traslado de vuelta de las cuatro de la tarde sale
+ * marcado como choque todos los días. Una alarma que miente a diario se ignora.
+ *
+ * Sin hora de inicio, la salida entera: es lo que de verdad pasa cuando nadie
+ * ha planificado la recogida todavía.
+ */
+export interface RouteLike {
+  _id?: string | null;
+  id?: string | null;
+  name?: string | null;
+  start_time?: string | null;
+  status?: string | null;
+  vehicle?: unknown;
+  driver?: unknown;
+  guide?: unknown;
+}
+
+export function routeWindow(
+  route: RouteLike,
+  departure: Window,
+  timeZone: string
+): Window {
+  /**
+   * Sin hora de inicio —o con una que no se entiende— la salida entera. Una sola
+   * comprobación y no dos: `instantAtWallTime` ya devuelve `null` para lo que no
+   * sabe leer, así que un `if (!route.start_time)` delante era una rama que
+   * ninguna prueba podía distinguir de ésta.
+   */
+  const start = instantAtWallTime(new Date(departure.start), timeZone, route.start_time ?? null);
+  if (!start) return departure;
+
+  const from = start.getTime();
+  /**
+   * Una recogida que empieza a la hora de la salida o después no describe un
+   * traslado PREVIO, así que no hay nada que acotar: se cae a la ventana de la
+   * salida. La alternativa —una ventana de ancho cero, o invertida— no solaparía
+   * con nada y haría desaparecer el recurso de la detección de choques, que es
+   * peor que ser conservador.
+   */
+  if (from >= departure.start) return departure;
+  return { start: from, end: departure.start };
+}
+
 /* ══════════════════════════════════════════════════ 2 · choques de verdad ══ */
 
 export type ResourceKind = "staff" | "vehicle";
@@ -216,6 +274,96 @@ export function resourceConflicts(uses: ResourceUse[]): DispatchConflict[] {
   }
 
   return conflicts.sort((a, b) => a.resourceName.localeCompare(b.resourceName, "es"));
+}
+
+/**
+ * LOS RECURSOS QUE OCUPA UNA SALIDA, EN UN SOLO SITIO.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LO QUE FALTABA, Y NO ERA UN DETALLE
+ *
+ * La mesa de despacho construía sus usos leyendo SOLO `departure_resource`. Las
+ * rutas de recogida —que llevan vehículo, conductor y guía— no entraban. Así que
+ * la misma guagua puesta en la recogida de la excursión de las seis y como
+ * vehículo de la salida de las siete **no aparecía como choque en ninguna
+ * pantalla**, y es el choque más fácil de cometer: son dos formularios distintos.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * Y POR QUÉ SE EXTRAE AQUÍ Y NO EN EL SERVICIO
+ *
+ * Porque lo preguntan DOS: la mesa, que lo pinta, y la escritura, que lo impide.
+ * Con la extracción escrita dos veces, bastaría con que una de las dos olvidara
+ * una tabla para que la pantalla y el bloqueo dieran respuestas distintas sobre
+ * la misma guagua — y la que decide es la escritura, que es la que nadie mira.
+ */
+export interface DepartureWithResources extends DepartureLike {
+  departure_resource?: unknown;
+  pickup_route?: unknown;
+}
+
+const comoFilas = (v: unknown): Record<string, unknown>[] =>
+  Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => Boolean(x) && typeof x === "object") : [];
+
+const objeto = (v: unknown): Record<string, unknown> | null =>
+  v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+
+/** Cómo se nombra la salida en pantalla: «Isla Saona 08:00». */
+export function departureLabel(departure: DepartureWithResources, timeZone: string): string {
+  const producto = objeto(departure.product);
+  const nombre = String(producto?.name ?? "Salida").trim() || "Salida";
+  const hora = departure.departure_at ? wallTimeOf(new Date(String(departure.departure_at)), timeZone) : null;
+  return hora ? `${nombre} ${hora}` : nombre;
+}
+
+export function usesOfDeparture(
+  departure: DepartureWithResources,
+  timeZone: string
+): ResourceUse[] {
+  const ventana = departureWindow(departure);
+  // Sin hora no hay ventana, y sin ventana no se puede afirmar que dos cosas se
+  // pisen. Una salida sin fecha no ocupa a nadie.
+  if (!ventana) return [];
+
+  const departureId = String(departure._id ?? departure.id ?? "");
+  const etiqueta = departureLabel(departure, timeZone);
+  const usos: ResourceUse[] = [];
+
+  const añadir = (
+    kind: ResourceKind,
+    valor: unknown,
+    window: Window,
+    nombre: (fila: Record<string, unknown>) => string
+  ) => {
+    const fila = objeto(valor);
+    if (!fila) return;
+    const resourceId = String(fila._id ?? fila.id ?? "");
+    if (!resourceId) return;
+    usos.push({ kind, resourceId, resourceName: nombre(fila), departureId, departureLabel: etiqueta, window });
+  };
+
+  const nombreDeVehiculo = (v: Record<string, unknown>) => vehicleLabel(v as never);
+  const nombreDePersona = (s: Record<string, unknown>) => String(s.full_name || "Personal");
+
+  for (const recurso of comoFilas(departure.departure_resource)) {
+    // Una asignación cancelada ya no ocupa el recurso: bloquear por ella sería
+    // dejar la guagua reservada por una fila que nadie va a usar.
+    if (!assignmentIsLive(recurso as never)) continue;
+    const window = resourceWindow(recurso as never, ventana, timeZone);
+    añadir("vehicle", recurso.vehicle, window, nombreDeVehiculo);
+    añadir("staff", recurso.staff, window, nombreDePersona);
+  }
+
+  for (const ruta of comoFilas(departure.pickup_route)) {
+    if (!assignmentIsLive(ruta as never)) continue;
+    const window = routeWindow(ruta as never, ventana, timeZone);
+    añadir("vehicle", ruta.vehicle, window, nombreDeVehiculo);
+    // El conductor y el guía de la ruta son personal, igual que el del recurso:
+    // una persona no puede conducir dos rutas que se pisan.
+    añadir("staff", ruta.driver, window, nombreDePersona);
+    añadir("staff", ruta.guide, window, nombreDePersona);
+  }
+
+  return usos;
 }
 
 /* ═══════════════════════════════════════ 3 · el vehículo que no puede salir ══ */

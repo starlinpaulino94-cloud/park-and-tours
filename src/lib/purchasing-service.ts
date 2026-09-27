@@ -2,6 +2,7 @@ import "server-only";
 import { tenantFindOne, tenantQuery, tenantUpdate, TenantError } from "@/lib/tenant";
 import { postMovement } from "@/lib/inventory";
 import { refId } from "@/lib/types";
+import { leerTodoElRecurso } from "@/lib/barrido";
 import {
   lineStates, receiptPlan, statusAfterReceipt, applyPlan, receiveBlocker, pendingSummary,
   type PurchaseLineLike, type ReceiptRequestLine, type LineState,
@@ -42,10 +43,21 @@ interface MovementRow {
  * entradas daría la orden por cerrada con mercancía que ya no está.
  */
 export async function receivedByLine(companyId: string, purchaseOrderId: string): Promise<Record<string, number>> {
-  const movimientos = await tenantQuery<MovementRow>(companyId, "stock_movement", {
-    _filter: { purchase_order: purchaseOrderId },
-    _limit: 2000,
-  });
+  /**
+   * ENTERO: de esta suma sale si la orden está recibida.
+   *
+   * Con el tope de dos mil, una orden con más movimientos salía como
+   * infra-recibida y no se cerraba nunca; y con devoluciones por medio el signo
+   * se pierde en cualquier dirección, así que también podía cerrarse con
+   * mercancía que no llegó. No es una lista incompleta: es una cantidad
+   * equivocada decidiendo el estado de un documento.
+   */
+  const movimientos = await leerTodoElRecurso<MovementRow>("stock_movement", (limite, salto) =>
+    tenantQuery(companyId, "stock_movement", {
+      _filter: { purchase_order: purchaseOrderId },
+      _sort: { created_at: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+    }));
   const out: Record<string, number> = {};
   for (const m of movimientos) {
     const lineId = refId(m.purchase_order_line);

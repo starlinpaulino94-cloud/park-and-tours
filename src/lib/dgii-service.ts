@@ -1,4 +1,5 @@
 import "server-only";
+import { leerTodoElRecurso } from "@/lib/barrido";
 import { tenantQuery, type TenantContext } from "@/lib/tenant";
 import { companyTimeZone, zonedParts, zoneOffsetMs } from "@/lib/time";
 import {
@@ -114,10 +115,21 @@ async function paymentBreakdown(companyId: string, orderIds: string[]) {
   const byOrder = new Map<string, Record<string, number>>();
   if (orderIds.length === 0) return byOrder;
 
-  const payments = await tenantQuery<{ order?: unknown; method?: string; amount?: number; payment_type?: string }>(
-    companyId, "payment",
-    { _filter: { order: { in: orderIds } }, _limit: 2000 }
-  );
+  /**
+   * Y el desglose, también entero.
+   *
+   * Este tope era el más traicionero de los tres: una factura cuyos cobros se
+   * quedaran fuera de las dos mil filas no daba error ni faltaba del archivo
+   * —salía declarada como VENTA A CRÉDITO—. Así que el 607 cuadraba en importe
+   * total y mentía en la columna de forma de pago, que es justo lo que la DGII
+   * cruza contra los bancos.
+   */
+  const payments = await leerTodoElRecurso<{ order?: unknown; method?: string; amount?: number; payment_type?: string }>(
+    "payment", (limite, salto) => tenantQuery(companyId, "payment", {
+      _filter: { order: { in: orderIds } },
+      _sort: { created_at: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+    }));
 
   for (const payment of payments) {
     const orderId = refId(payment.order);
@@ -136,16 +148,35 @@ async function paymentBreakdown(companyId: string, orderIds: string[]) {
 async function load607(ctx: TenantContext & { companyId: string }, month: string): Promise<DgiiRow[]> {
   const tz = companyTimeZone(ctx.company as { timezone?: string | null } | null);
   const { from, to } = monthRange(month, tz);
-  const invoices = await tenantQuery<Record<string, unknown>>(ctx.companyId, "invoice", {
-    _filter: {
-      issued_at: { gte: from, lt: to },
-      // Solo lo EMITIDO: un borrador no se declara, y una factura anulada se
-      // declara por su nota de crédito, que es otra fila con su propio NCF.
-      status: { nin: ["draft", "cancelled"] },
-    },
-    _limit: 3000,
-    _sort: { issued_at: "asc" },
-  });
+  /**
+   * UNA DECLARACIÓN SE LEE ENTERA O NO SE MANDA.
+   *
+   * Esto leía tres mil facturas como mucho, ordenadas por fecha ASCENDENTE. Una
+   * operadora que emita más de tres mil facturas al mes —cien al día, normal en
+   * un parque que vende entradas— presentaba un 607 al que le faltaban los
+   * últimos días del mes. Siempre los últimos, porque el orden es ascendente:
+   * el recorte no era aleatorio, era el final del período.
+   *
+   * Eso no es una pantalla incompleta: es declarar de menos a Hacienda con un
+   * archivo que parece correcto, y el descuadre aparece meses después en un
+   * cruce que ya no se puede explicar. Por eso `leerTodoElRecurso` LANZA en vez
+   * de devolver una lista a medias.
+   */
+  const invoices = await leerTodoElRecurso<Record<string, unknown>>("invoice", (limite, salto) =>
+    tenantQuery(ctx.companyId, "invoice", {
+      _filter: {
+        issued_at: { gte: from, lt: to },
+        // Solo lo EMITIDO: un borrador no se declara, y una factura anulada se
+        // declara por su nota de crédito, que es otra fila con su propio NCF.
+        status: { nin: ["draft", "cancelled"] },
+      },
+      // El desempate por identidad es obligatorio: varias facturas comparten
+      // el mismo `issued_at` al segundo, y sin él dos páginas consecutivas
+      // pueden repetir una y saltarse otra. En una declaración eso significa
+      // un NCF declarado dos veces y otro sin declarar.
+      _sort: { issued_at: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+    }));
 
   const orderIds = invoices.map((invoice) => refId(invoice.order)).filter((id): id is string => Boolean(id));
   const payments = await paymentBreakdown(ctx.companyId, orderIds);
@@ -204,17 +235,21 @@ async function load606(ctx: TenantContext & { companyId: string }, month: string
    */
   const desde = `${month}-01`;
   const hasta = nextMonthDay(month);
-  const expenses = await tenantQuery<Record<string, unknown>>(ctx.companyId, "expense", {
-    _filter: {
-      expense_date: { gte: desde, lt: hasta },
-      // Un gasto rechazado no es un gasto: declararlo sería declarar algo que
-      // la propia empresa decidió que no cuenta.
-      status: { nin: ["rejected"] },
-    },
-    _limit: 3000,
-    _sort: { expense_date: "asc" },
-    supplier: true,
-  });
+  // Igual que el 607: entero. Declarar de menos las compras no es «menos
+  // grave» que declarar de menos las ventas — es el ITBIS que la empresa deja
+  // de poder deducir, o sea dinero suyo que se queda en Hacienda.
+  const expenses = await leerTodoElRecurso<Record<string, unknown>>("expense", (limite, salto) =>
+    tenantQuery(ctx.companyId, "expense", {
+      _filter: {
+        expense_date: { gte: desde, lt: hasta },
+        // Un gasto rechazado no es un gasto: declararlo sería declarar algo que
+        // la propia empresa decidió que no cuenta.
+        status: { nin: ["rejected"] },
+      },
+      _sort: { expense_date: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+      supplier: true,
+    }));
 
   return expenses.map((expense) => {
     const supplier = expense.supplier as { name?: string; tax_id?: string } | null;
@@ -275,14 +310,18 @@ async function load606(ctx: TenantContext & { companyId: string }, month: string
 async function load608(ctx: TenantContext & { companyId: string }, month: string): Promise<DgiiRow[]> {
   const tz = companyTimeZone(ctx.company as { timezone?: string | null } | null);
   const { from, to } = monthRange(month, tz);
-  const invoices = await tenantQuery<Record<string, unknown>>(ctx.companyId, "invoice", {
-    _filter: {
-      issued_at: { gte: from, lt: to },
-      status: "voided",
-    },
-    _sort: { issued_at: "asc" },
-    _limit: 3000,
-  });
+  // Y los anulados. Un NCF anulado que no se declara sigue contando como
+  // venta: el tope aquí no quitaba una fila de una lista, añadía una venta que
+  // no existió.
+  const invoices = await leerTodoElRecurso<Record<string, unknown>>("invoice", (limite, salto) =>
+    tenantQuery(ctx.companyId, "invoice", {
+      _filter: {
+        issued_at: { gte: from, lt: to },
+        status: "voided",
+      },
+      _sort: { issued_at: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+    }));
 
   return invoices.map((inv) => {
     const voided = {

@@ -4,6 +4,7 @@ import { NADIE } from "@/lib/seller-scope";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { goalsWithProgress, awardGoalBonus } from "@/lib/seller-goals-service";
+import { companyTimeZone } from "@/lib/time";
 
 /**
  * GET  /api/seller-goals — el tablero de metas con su progreso real.
@@ -41,12 +42,18 @@ export async function GET(req: NextRequest) {
      * Y quien no tiene ficha vinculada no ve las de nadie, no ve «todas».
      */
     if (ctx.role === "seller") {
-      return ok({ goals: await goalsWithProgress(ctx.companyId, { sellerId: ctx.sellerId ?? NADIE }) });
+      return ok({ goals: await goalsWithProgress(ctx.companyId, {
+        sellerId: ctx.sellerId ?? NADIE,
+        timeZone: companyTimeZone(ctx.company as { timezone?: string | null } | null),
+      }) });
     }
 
     requireAtLeast(ctx, "manager");
     const sellerId = new URL(req.url).searchParams.get("seller");
-    return ok({ goals: await goalsWithProgress(ctx.companyId, { sellerId }) });
+    return ok({ goals: await goalsWithProgress(ctx.companyId, {
+      sellerId,
+      timeZone: companyTimeZone(ctx.company as { timezone?: string | null } | null),
+    }) });
   } catch (err) {
     return fail(err);
   }

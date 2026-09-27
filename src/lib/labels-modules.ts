@@ -415,14 +415,25 @@ export const MESSAGE_STATUS = dict(
   ["failed", "Fallido", "danger"], ["cancelled", "Cancelado"]
 );
 /** Qué hecho dispara cada plantilla. */
+/**
+ * Los avisos que la empresa puede reescribir.
+ *
+ * Faltaban dos, y no daba la misma clase de problema cada uno: sin
+ * `booking_rescheduled` el desplegable de plantillas no ofrecía el texto de
+ * «te movemos la excursión de fecha» —que el sistema sí manda—, así que no había
+ * forma de cambiarlo; y `manifest_dispatch` es el manifiesto que sale hacia quien
+ * opera la salida, que no va a un cliente y por eso se rotula aparte.
+ */
 export const MESSAGE_TEMPLATE_KEY = dict(
   ["booking_confirmation", "Confirmación de reserva", "success"],
   ["booking_cancelled", "Reserva cancelada", "danger"],
+  ["booking_rescheduled", "Cambio de fecha", "warning"],
   ["pre_tour_reminder", "Recordatorio de la víspera", "info"],
   ["payment_receipt", "Recibo de pago", "accent"],
   ["balance_due", "Saldo pendiente", "warning"],
   ["quote_sent", "Cotización enviada", "violet"],
-  ["post_tour_thanks", "Agradecimiento post-tour"]
+  ["post_tour_thanks", "Agradecimiento post-tour"],
+  ["manifest_dispatch", "Manifiesto al equipo", "info"]
 );
 
 export const DELIVERY_CHANNEL = dict(

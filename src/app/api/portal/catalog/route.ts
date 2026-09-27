@@ -9,6 +9,7 @@ import { plazasLibres, type SalidaConCupo } from "@/lib/plazas";
 import { allotmentsOf } from "@/lib/allotment-service";
 import { pickAllotment, allotmentState } from "@/lib/allotments";
 import { cupoVisible } from "@/lib/cupo-socio";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 /**
  * GET /api/portal/catalog?date=YYYY-MM-DD
@@ -48,9 +49,14 @@ export async function GET(req: NextRequest) {
      * se aplicó nunca — ni una vez. La pantalla prometía «catálogo autorizado»
      * y enseñaba el catálogo entero.
      */
-    const autorizaciones = await tenantQuery<Record<string, unknown>>(ctx.companyId, "partner_product", {
-      _filter: { partner: partnerId, status: "active" }, _limit: 1000,
-    });
+    // Entero, por lo mismo que la API: esta pantalla promete «catálogo
+    // autorizado», y un tope la convierte en «parte del catálogo autorizado».
+    const autorizaciones = await leerTodoElRecurso<Record<string, unknown>>("partner_product", (limite, salto) =>
+      tenantQuery(ctx.companyId, "partner_product", {
+      _filter: { partner: partnerId, status: "active" },
+      _sort: { created_at: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+      }));
     const autorizados = autorizadosDe(autorizaciones as AutorizacionSocio[]);
     const authorizedIds = [...autorizados];
 

@@ -1504,7 +1504,33 @@ const PARTNER_SHARED_TABLES = new Set([
  * El recorte de campos es lo que decide qué columnas de esas dos filas ve; esta
  * lista solo dice a qué filas llega.
  */
-const SUPPLIER_OWNED_TABLES = new Set(["departure_resource", "pickup_route"]);
+const SUPPLIER_OWNED_TABLES = new Set([
+  "departure_resource", "pickup_route",
+  // Y su dinero (0089). `settlement` lleva `supplier_id` desde 0040 y
+  // `booking_cost` también: el ámbito sale por columna sin desnormalizar nada,
+  // que es la primera vez en toda la fase que no hace falta.
+  //
+  // `payable` NO entra, y es deliberado: es el libro de la operadora —lo que
+  // debe, a quién y cuándo vence— y el proveedor no tiene nada que hacer
+  // leyéndolo. Lo suyo es la liquidación, que es el documento con el que se
+  // discute.
+  "settlement", "booking_cost",
+  /**
+   * Y SU FLOTA (8.9). `vehicle.supplier_id` y `staff.supplier_id` existen desde
+   * 0009: el ámbito sale por columna, como el dinero.
+   *
+   * Hace falta porque desde esta ola el proveedor ASIGNA su propia flota al
+   * servicio que le encargan, y para elegir tiene que poder listar lo que tiene.
+   * Lo que ve es lo SUYO: sus guaguas y su gente, nunca las de la operadora ni
+   * las del transportista de enfrente.
+   *
+   * Esto NO le abre la escritura: `vehicle` y `staff` exigen rango de operación
+   * para escribir, y el proveedor está por debajo del vendedor en el escalafón.
+   * Lo único que escribe es la asignación, por su propia ruta y con sus propias
+   * comprobaciones (`/api/proveedor/asignacion`).
+   */
+  "vehicle", "staff",
+]);
 
 /**
  * Y lo que puede mirar sin ser suyo: el catálogo mínimo para entender el

@@ -1,8 +1,11 @@
 import "server-only";
 import { supabaseService } from "@/lib/supabase/service";
-import { buildVoucherPdf, buildQuotePdf } from "@/lib/pdf/documents";
+import { buildVoucherPdf, buildQuotePdf, buildManifestPdf } from "@/lib/pdf/documents";
 import { personName } from "@/lib/manifest";
 import { optionBreakdown } from "@/lib/quotes";
+import { loadManifest, fuenteDeServicio } from "@/lib/manifest-service";
+import { formatDate } from "@/lib/format";
+import { PUBLICOS_DEL_MANIFIESTO, type PublicoDelManifiesto } from "@/lib/manifiesto-envio";
 
 /**
  * El documento que viaja con un aviso.
@@ -161,10 +164,67 @@ async function quoteFor(companyId: string, quoteId: string, company: CompanyInfo
   return { filename: `cotizacion-${row.code || quoteId}.pdf`, content: base64(bytes) };
 }
 
+/**
+ * EL MANIFIESTO, RECORTADO PARA QUIEN LO ABRE.
+ *
+ * El corte NO se decide aquí: llega en la fila (`attachment_scope`) y se pasa a
+ * `buildManifestPdf`, que filtra sus columnas con la lista blanca del público.
+ * Decidirlo aquí habría sido el tercer sitio donde se decide lo mismo.
+ *
+ * Y un recorte que no se reconoce NO se compone: devolver el manifiesto entero
+ * «por si acaso» es justo la forma de que un valor mal escrito en una fila
+ * entregue teléfonos y saldos de clientes a una empresa de transporte. Lo que no
+ * se entiende, no sale.
+ */
+async function manifestFor(
+  companyId: string,
+  departureId: string,
+  scope: string | null,
+  company: CompanyInfo | null
+): Promise<MessageAttachment | null> {
+  if (!PUBLICOS_DEL_MANIFIESTO.includes(scope as PublicoDelManifiesto)) {
+    console.error(`[mensajería] manifiesto de ${departureId} sin recorte declarado (${scope}): no se adjunta`);
+    return null;
+  }
+  const publico = scope as PublicoDelManifiesto;
+
+  // Con la fuente DE SERVICIO: la entrega ocurre tanto desde una petición con
+  // sesión como desde el cron, y las ayudas de inquilino le devolverían al cron
+  // una salida vacía en vez de fallar — un PDF con cero pasajeros que se manda
+  // igual y que nadie nota hasta que el chofer llega al hotel.
+  const m = await loadManifest(companyId, departureId, fuenteDeServicio());
+  const dep = m.departure;
+  const productName = (m.product?.name as string) || "Salida";
+
+  const bytes = await buildManifestPdf(
+    company,
+    {
+      product_name: productName,
+      departure_at: (dep.departure_at as string) ?? null,
+      meeting_point: (dep.meeting_point as string) || (m.product?.meeting_point as string) || null,
+      capacity: Number(dep.capacity) || 0,
+      vehicles: m.vehicles.map((v) => ({
+        plate: (v.plate as string) ?? null, name: (v.name as string) ?? null, capacity: Number(v.capacity) || 0,
+      })),
+      staff: m.staff.map((s) => ({
+        name: personName(s), role: (s.resource_role as string) ?? null, phone: (s.phone as string) ?? null,
+      })),
+      notes: (dep.notes as string) ?? null,
+    },
+    m.rows, m.stops, m.summary, publico
+  );
+
+  const day = dep.departure_at ? formatDate(dep.departure_at as string) : "sin-fecha";
+  return { filename: `manifiesto-${productName}-${day}.pdf`, content: base64(bytes) };
+}
+
 export interface AttachmentRequest {
   kind?: string | null;
   bookingId?: string | null;
   quoteId?: string | null;
+  departureId?: string | null;
+  /** Para quién se recorta. Obligatorio para el manifiesto. */
+  scope?: string | null;
 }
 
 /**
@@ -185,6 +245,9 @@ export async function resolveAttachment(
     }
     if (request.kind === "quote" && request.quoteId) {
       return await quoteFor(companyId, request.quoteId, company);
+    }
+    if (request.kind === "manifest" && request.departureId) {
+      return await manifestFor(companyId, request.departureId, request.scope ?? null, company);
     }
   } catch (err) {
     console.error("[mensajería] el adjunto no se pudo componer:", err);

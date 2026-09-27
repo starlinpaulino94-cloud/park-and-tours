@@ -15,6 +15,9 @@ import { sellerStampFor } from "@/lib/seller-scope";
 import { protectedFieldChanges, protectedFieldMessage } from "@/lib/field-write-role";
 import { assertSellerUserLinkable } from "@/lib/seller-identity";
 import { assertPayloadAssignable } from "@/lib/hr-service";
+import { assertPayloadVehicleUsable } from "@/lib/flota-service";
+import { puertaEquivocada } from "@/lib/lista-negra";
+import { assertPayloadSinChoque } from "@/lib/choque-de-recurso";
 
 /** Generic tenant-scoped list endpoint: GET /api/erp/:resource */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ resource: string }> }) {
@@ -148,7 +151,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ res
     // vencida se para AQUÍ. La pantalla puede pintarlo en rojo; lo que impide
     // que el guía suba al bote es esta línea, porque por aquí pasan el turno,
     // el recurso de la salida y la ruta de recogida.
+    // Y nacer bloqueado también es bloquear: sin esto bastaba con crear la
+    // ficha ya en la lista negra para saltarse la puerta entera.
+    const puerta = puertaEquivocada(def.table, sellado, null);
+    if (puerta) throw new TenantError(puerta, 409);
+
     await assertPayloadAssignable(ctx.companyId, def.table, sellado);
+
+    /**
+     * Y la misma idea con la flota: `vehicleBlock` existía desde 0065 y solo
+     * pintaba de rojo la mesa de despacho. Lo que impide que salga una guagua
+     * con el seguro vencido es esta línea, porque por aquí pasan el recurso de
+     * la salida y la ruta de recogida — y también el encargado que asigna desde
+     * el móvil, que no mira ninguna pantalla.
+     */
+    await assertPayloadVehicleUsable(ctx.companyId, def.table, sellado);
+
+    /**
+     * Y LA MISMA GUAGUA NO PUEDE ESTAR EN DOS SITIOS A LA VEZ.
+     *
+     * `resourceConflicts` existía desde la ola 5 para pintar en rojo la mesa de
+     * despacho; nunca impidió una escritura. Bloquea solo el solape REAL de dos
+     * salidas distintas: dos servicios el mismo día que no se pisan son la
+     * operación normal, y el mismo recurso dos veces en la misma salida es una
+     * fila duplicada, no un problema de agenda.
+     */
+    await assertPayloadSinChoque(ctx.company, ctx.companyId, def.table, sellado);
 
     const created = await tenantCreate(ctx.companyId, def.table, sellado);
 

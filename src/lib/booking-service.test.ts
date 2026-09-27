@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fakeDb, type FakeDb } from "@/test/fake-tenant";
+import { fakeDb, paxTotalsDeLaBase, type FakeDb } from "@/test/fake-tenant";
 
 /**
  * EL CAMINO DEL DINERO.
@@ -51,7 +51,39 @@ vi.mock("@/lib/attribution-service", () => ({
   recordPurchaseOnce: vi.fn(),
 }));
 
-import { createOrderWithBookings, syncOrderTotals } from "@/lib/booking-service";
+/**
+ * El monedero prepago se descuenta por una función de Postgres desde 0091, y
+ * aquí no hay Postgres. Se falsea el RPC y nada más: `assertSaldo` y
+ * `gastarDelMonedero` corren de verdad, así que lo que se comprueba es lo que
+ * esta capa decide —cuándo se llama, con qué importe y qué se hace con la
+ * respuesta—, no la aritmética de la función.
+ */
+const MONEDERO = {
+  data: {
+    movement_id: "mov-1", amount: 0, currency: "usd",
+    balance_before: 1000, balance_after: 800, overdraft: false, already: false,
+  },
+  error: null,
+};
+
+/**
+ * Y el recuento de pasajeros también es una función de Postgres desde 0094.
+ *
+ * Esa NO se puede falsear con una respuesta fija: es la que decide si cabe la
+ * venta, así que una constante haría pasar en verde la prueba de que el cupo se
+ * respeta. Se reimplementa sobre la misma base en memoria
+ * (`paxTotalsDeLaBase`), que es lo que mantiene la guarda contra la sobreventa
+ * probada contra la suma de verdad.
+ */
+/** El reparto normal: el recuento de verdad, y el monedero con saldo de sobra. */
+const rpcNormal = async (nombre: string, args: Record<string, unknown>) => {
+  if (nombre === "departure_pax_totals") return paxTotalsDeLaBase(db)(args);
+  return MONEDERO;
+};
+const rpc = vi.fn(rpcNormal);
+vi.mock("@/lib/supabase/service", () => ({ supabaseService: () => ({ rpc }) }));
+
+import { createOrderWithBookings, syncOrderTotals, reconcileStaleDrafts } from "@/lib/booking-service";
 
 const ORG = "org-1";
 const ctx = {
@@ -104,6 +136,11 @@ function futuro(dias: number): string {
 beforeEach(() => {
   auditoria.mockReset();
   db = fakeDb(catalogo());
+  // El reparto se repone en cada prueba: la del descubierto lo cambia entero
+  // —por nombre y no con un `Once`— y sin esto se lo llevaría a las siguientes,
+  // que empezarían a vender con el monedero en rojo sin haberlo pedido.
+  rpc.mockReset();
+  rpc.mockImplementation(rpcNormal);
 });
 
 /* ══════════════════════════════════════════════ el total tiene que cuadrar ══ */
@@ -885,6 +922,60 @@ describe("lo que un tour center tiene autorizado vender", () => {
     })).rejects.toThrow(/no tienes autorizada la venta/i);
   });
 
+  it("un socio con miles de productos firmados PUEDE vender el que está al final", async () => {
+    /**
+     * EL FALLO CONTRARIO AL DE LAS OTRAS LECTURAS DE ESTA SERIE.
+     *
+     * La comprobación leía las autorizaciones del socio con `_limit: 1000` y
+     * armaba el conjunto de lo permitido a partir de eso. Con más de mil
+     * productos bajo contrato, el que se vende puede caer más allá de la fila
+     * mil — y entonces la venta se RECHAZA con un 403 por un producto que el
+     * socio sí tiene firmado.
+     *
+     * No aprueba de más: niega. Pero es igual de silencioso, igual de
+     * determinista, y además irreproducible desde el mostrador: el producto con
+     * el que prueba quien atiende la queja está entre los primeros mil.
+     *
+     * La respuesta no fue paginar, fue cambiar la pregunta: ya no se lee «qué
+     * tiene autorizado este socio» sino «están ESTOS productos en su contrato».
+     */
+    const muchas = Array.from({ length: 1500 }, (_, i) => ({
+      _id: `aut-${String(i).padStart(5, "0")}`,
+      partner: "soc-1",
+      product: `prod-relleno-${i}`,
+      status: "active",
+    }));
+    db = fakeDb(catalogo({
+      partner: [{ _id: "soc-1", name: "Caribe", credit_limit: 0, credit_days: 0 }],
+      // El de verdad, EL ÚLTIMO: justo donde el tope viejo lo dejaba fuera.
+      partner_product: [...muchas, { _id: "aut-saona", partner: "soc-1", product: "prod-saona", status: "active" }],
+    }));
+
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1", partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    });
+    expect(res.bookings).toHaveLength(1);
+  });
+
+  it("y sigue negando lo que de verdad no está firmado, por muchas que tenga", async () => {
+    // El arreglo no puede convertirse en «déjalo pasar»: la pregunta cambió, la
+    // respuesta a un producto ajeno no.
+    const muchas = Array.from({ length: 1500 }, (_, i) => ({
+      _id: `aut-${String(i).padStart(5, "0")}`,
+      partner: "soc-1", product: `prod-relleno-${i}`, status: "active",
+    }));
+    db = fakeDb(catalogo({
+      partner: [{ _id: "soc-1", name: "Caribe", credit_limit: 0, credit_days: 0 }],
+      partner_product: [...muchas, { _id: "aut-saona", partner: "soc-1", product: "prod-saona", status: "active" }],
+    }));
+
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1", partner_id: "soc-1",
+      items: [{ product_id: "prod-buggy", departure_id: "sal-buggy", adults: 2 }],
+    })).rejects.toThrow(/no tienes autorizada la venta/i);
+  });
+
   it("y el mensaje dice QUÉ producto, por su nombre", async () => {
     // Un 403 con uuids dentro obliga a quien integra a cruzarlos a mano contra
     // su catálogo para entender qué le están negando.
@@ -961,5 +1052,423 @@ describe("lo que un tour center tiene autorizado vender", () => {
     expect(salida?.booked_pax ?? 0, "se tomaron plazas de una venta rechazada").toBe(0);
     expect(salida?.pending_pax ?? 0).toBe(0);
     expect(db.rows("sales_order")).toHaveLength(0);
+  });
+});
+
+/* ═══════════════════════════ la salida es del producto que se vende ══ */
+
+describe("la salida tiene que ser de su producto", () => {
+  it("VENDER SAONA EN LA GUAGUA DEL BUGGY SE RECHAZA", async () => {
+    /**
+     * Nadie lo comprobaba, y es alcanzable desde fuera con datos publicados: el
+     * catálogo público da los identificadores de producto y `/availability` los
+     * de salida. Con el producto A y la salida de B, el pasajero ocupaba plaza
+     * en la guagua de B mientras el manifiesto de B lo listaba como cliente de
+     * A, y el precio salía de A con la fecha de B.
+     */
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-buggy", adults: 2 }],
+    })).rejects.toThrow(/no es de esa excursión/);
+  });
+
+  it("y se rechaza ANTES de tocar los contadores de la salida", async () => {
+    // `assertCapacity` recalcula y PERSISTE los contadores de la salida que se
+    // le diga: comprobar después habría dejado tocada la guagua equivocada.
+    const antes = db.row("departure", { _id: "sal-buggy" })!;
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-buggy", adults: 2 }],
+    })).rejects.toThrow();
+
+    const despues = db.row("departure", { _id: "sal-buggy" })!;
+    expect(despues.pending_pax ?? 0).toBe(antes.pending_pax ?? 0);
+    expect(despues.available_pax ?? null).toBe(antes.available_pax ?? null);
+    expect(db.rows("booking")).toHaveLength(0);
+  });
+
+  it("una línea buena y otra cruzada tumban la venta entera", async () => {
+    // No se escribe media venta: la que iba bien tampoco nace.
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [
+        { product_id: "prod-saona", departure_id: "sal-saona", adults: 2 },
+        { product_id: "prod-buggy", departure_id: "sal-saona", adults: 1 },
+      ],
+    })).rejects.toThrow(/no es de esa excursión/);
+    expect(db.rows("booking")).toHaveLength(0);
+    expect(db.rows("order")).toHaveLength(0);
+  });
+
+  it("cada producto con su salida pasa sin ruido", async () => {
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [
+        { product_id: "prod-saona", departure_id: "sal-saona", adults: 2 },
+        { product_id: "prod-buggy", departure_id: "sal-buggy", adults: 1 },
+      ],
+    });
+    expect(res.bookings).toHaveLength(2);
+  });
+
+  it("una salida SIN producto declarado se deja pasar", async () => {
+    // Las hay de antes de que la columna fuera obligatoria, y lo desconocido se
+    // queda como está: rechazarlas rompería ventas que hoy funcionan.
+    db = fakeDb({
+      ...catalogo(),
+      departure: [
+        { _id: "sal-vieja", departure_at: futuro(3), capacity: 30,
+          booked_pax: 0, pending_pax: 0, cutoff_hours: 0, status: "available" },
+      ],
+    });
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-vieja", adults: 1 }],
+    });
+    expect(res.bookings).toHaveLength(1);
+  });
+
+  it("una venta sin salida sigue siendo una venta", async () => {
+    // La reserva a fecha abierta no tiene salida que cuadrar.
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", adults: 2 }],
+    });
+    expect(res.bookings).toHaveLength(1);
+  });
+
+  it("una salida que no existe la sigue rechazando el cupo, con su mensaje", async () => {
+    // Dos comprobaciones diciendo lo mismo de dos maneras es peor que una:
+    // `assertCapacity` ya lo hacía y sigue siendo la que contesta.
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-inventada", adults: 1 }],
+    })).rejects.toThrow(/Salida no encontrada/);
+  });
+});
+
+
+/* ═══════════════════════ la venta al socio prepago ══════════════════════ */
+
+describe("la venta de un socio prepago", () => {
+  const conSaldo = (saldo: number) => {
+    db = fakeDb({
+      ...catalogo(),
+      partner: [{
+        _id: "soc-1", name: "Caribe Tours", payment_mode: "prepaid",
+        currency: "usd", pricing_model: "commission",
+      }],
+      partner_wallet_movement: [{
+        _id: "mov-0", partner: "soc-1", movement_type: "topup",
+        amount: saldo, currency: "usd",
+      }],
+    });
+  };
+
+  /**
+   * Solo las llamadas AL MONEDERO.
+   *
+   * Desde 0094 el mismo `rpc` sirve también el recuento de pasajeros, y eso pasa
+   * en CADA venta: contar llamadas a secas dejó de distinguir «descontó del
+   * monedero» de «contó los pasajeros». Se filtra por nombre, que es lo que la
+   * prueba quería decir desde el principio.
+   */
+  const alMonedero = () => rpc.mock.calls.filter((c) => c[0] === "spend_partner_wallet");
+
+  it("SE DESCUENTA, y por el total de verdad", async () => {
+    /**
+     * Con la estimación se comprueba el saldo —para no armar la venta entera y
+     * descubrir al final que no cabía— pero cobrar por ella dejaría el saldo
+     * distinto de lo que el socio ve en su factura.
+     */
+    conSaldo(1000);
+    rpc.mockClear();
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    } as never);
+
+    expect(alMonedero(), "la venta al socio prepago no descontó nada").toHaveLength(1);
+    const [, args] = alMonedero()[0] as unknown as [string, { p_movement: { amount: number } }];
+    expect(args.p_movement.amount).toBe(Number(res.order.total));
+  });
+
+  it("y un saldo corto rechaza la venta ANTES de escribir nada", async () => {
+    // 402 y no 403: no le faltan permisos, le falta dinero.
+    conSaldo(10);
+    rpc.mockClear();
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    } as never)).rejects.toMatchObject({ status: 402 });
+
+    expect(db.rows("order"), "se escribió la venta que no cabía").toHaveLength(0);
+    expect(alMonedero()).toHaveLength(0);
+  });
+
+  it("UN DESCUBIERTO QUEDA EN LA BITÁCORA, con el número", async () => {
+    /**
+     * Pasa cuando dos ventas se AUTORIZARON a la vez: la función de 0091 pone
+     * los consumos en fila pero no puede deshacer una venta que ya existe, así
+     * que apunta el consumo y avisa. Sin esta línea, el descubierto solo se ve
+     * sumando el libro a mano.
+     */
+    conSaldo(1000);
+    rpc.mockClear();
+    /**
+     * Solo la respuesta del MONEDERO se cambia; el recuento de pasajeros sigue
+     * siendo el de verdad, o esta venta no llegaría a existir.
+     *
+     * Y se cambia por nombre, no con un `Once`: desde 0094 la PRIMERA llamada al
+     * `rpc` de una venta es el recuento, así que un `Once` se lo habría comido y
+     * el monedero habría contestado lo de siempre —la prueba del descubierto
+     * habría pasado sin descubierto—.
+     */
+    rpc.mockImplementation(async (nombre, args) => {
+      if (nombre === "departure_pax_totals") return paxTotalsDeLaBase(db)(args);
+      return {
+        data: {
+          movement_id: "mov-2", amount: 200, currency: "usd",
+          balance_before: 100, balance_after: -100, overdraft: true, already: false,
+        },
+        error: null,
+      };
+    });
+    const gritos: string[] = [];
+    const real = console.error;
+    console.error = (...a: unknown[]) => { gritos.push(a.join(" ")); };
+    try {
+      await createOrderWithBookings(ctx, {
+        customer_id: "cli-1",
+        partner_id: "soc-1",
+        items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+      } as never);
+    } finally {
+      console.error = real;
+    }
+
+    const acciones = auditoria.mock.calls.map((c) => (c[0] as { action: string }).action);
+    expect(acciones, "el descubierto no llegó a la bitácora").toContain("partner_wallet_overdraft");
+    const linea = auditoria.mock.calls
+      .map((c) => c[0] as { action: string; metadata?: Record<string, unknown> })
+      .find((a) => a.action === "partner_wallet_overdraft");
+    expect(linea?.metadata?.balance_after).toBe(-100);
+    expect(gritos.join(" ")).toMatch(/DESCUBIERTO/);
+  });
+
+  it("y un saldo que aguanta no ensucia la bitácora", async () => {
+    conSaldo(1000);
+    auditoria.mockReset();
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    } as never);
+    const acciones = auditoria.mock.calls.map((c) => (c[0] as { action: string }).action);
+    expect(acciones).not.toContain("partner_wallet_overdraft");
+  });
+
+  it("un socio a crédito no toca el monedero", async () => {
+    db = fakeDb({
+      ...catalogo(),
+      partner: [{ _id: "soc-1", name: "Caribe Tours", payment_mode: "credit", currency: "usd" }],
+    });
+    rpc.mockClear();
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    } as never);
+    expect(alMonedero()).toHaveLength(0);
+  });
+});
+
+/* ═════════════════════════════ la lista negra ═══════════════════════════ */
+
+describe("no se le vende a quien está en la lista negra", () => {
+  const vetado = (motivo: string | null = "Tres no-shows sin avisar en agosto") => {
+    db = fakeDb({
+      ...catalogo(),
+      customer: [
+        { _id: "cli-1", first_name: "Laura", last_name: "Gutiérrez", status: "active" },
+        { _id: "cli-veto", first_name: "Pedro", last_name: "Mora", status: "blacklist", blocked_reason: motivo },
+      ],
+    });
+  };
+
+  it("LA VENTA SE RECHAZA, y con el motivo delante", async () => {
+    /**
+     * `customer.status` admitía `blacklist` desde la primera migración y el
+     * formulario lo ofrecía en un desplegable con su etiqueta. Nadie lo leía:
+     * se marcaba a una persona y seguía comprando por las cuatro puertas.
+     *
+     * El motivo va en el mensaje porque quien vende tiene al cliente delante y
+     * decide en treinta segundos.
+     */
+    vetado();
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-veto",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow(/lista negra: Tres no-shows sin avisar/);
+  });
+
+  it("y se rechaza ANTES de escribir o de tocar la salida", async () => {
+    // Rechazar tarde obliga a compensar escrituras que no había que haber
+    // hecho, y deja tocados los contadores de una guagua que no vendió nada.
+    vetado();
+    const antes = db.row("departure", { _id: "sal-saona" })!;
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-veto",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow();
+
+    expect(db.rows("order")).toHaveLength(0);
+    expect(db.rows("booking")).toHaveLength(0);
+    const despues = db.row("departure", { _id: "sal-saona" })!;
+    expect(despues.pending_pax ?? 0).toBe(antes.pending_pax ?? 0);
+  });
+
+  it("el rechazo lleva su código, que es lo que traducen las puertas de fuera", async () => {
+    // Hacia fuera no viaja ni el motivo ni la palabra: la web y la API leen el
+    // código y contestan otra cosa.
+    vetado();
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-veto",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toMatchObject({ status: 409, code: "CUSTOMER_BLOCKED" });
+  });
+
+  it("sin motivo anotado se rechaza igual, y se dice lo que hay", async () => {
+    // Hay fichas de antes de que el motivo fuera obligatorio. El bloqueo vale;
+    // lo que no se hace es inventarse una explicación.
+    vetado(null);
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-veto",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow(/Este cliente está en la lista negra\.$/);
+  });
+
+  it("UNA FICHA INACTIVA SÍ COMPRA", async () => {
+    /**
+     * `inactive` es otra cosa: una ficha archivada, un duplicado que se retiró
+     * del listado. Bloquear ventas por eso convertiría una tarea de limpieza en
+     * un veto comercial sin que nadie lo decidiera.
+     */
+    db = fakeDb({
+      ...catalogo(),
+      customer: [{ _id: "cli-1", first_name: "Laura", status: "inactive" }],
+    });
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    });
+    expect(res.bookings).toHaveLength(1);
+  });
+
+  it("y un cliente normal, también", async () => {
+    vetado();
+    const res = await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    });
+    expect(res.bookings).toHaveLength(1);
+  });
+
+  it("una ficha que no aparece no la rechaza ESTA comprobación", async () => {
+    // Lo dirá la clave ajena al escribir, con su mensaje: dos comprobaciones
+    // diciendo lo mismo de dos maneras es peor que una.
+    vetado();
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-inventado",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).resolves.toBeTruthy();
+  });
+});
+
+
+/* ══════════════════════ las ventas que se quedaron a medias ══════════════ */
+
+/**
+ * `reconcileStaleDrafts` — LA REPARACIÓN QUE NADIE EJECUTABA (ola 9.16).
+ *
+ * Existía desde AUD-F34, con su propio comentario diciendo «Meant to be run
+ * periodically (cron)», y su única puerta era un endpoint que exige sesión de
+ * admin y mismo origen: justo lo que un programador de tareas no tiene. Así que
+ * no corría nunca, y tampoco la probaba nadie.
+ *
+ * Lo que repara: una orden `draft` que quedó de un proceso muerto a mitad de la
+ * venta, con sus reservas apartando plazas, su voucher escaneando como válido y
+ * su comisión `pending` esperando que la próxima liquidación la pague.
+ */
+describe("reconciliar las ventas a medias", () => {
+  /** Un borrador abandonado, con la antigüedad que se le diga. */
+  const borrador = (id: string, minutosAtras: number) => ({
+    _id: id, organization_id: ORG, order_number: id, status: "draft",
+    createdAt: new Date(Date.now() - minutosAtras * 60_000).toISOString(),
+    order_date: new Date(Date.now() - minutosAtras * 60_000).toISOString(),
+  });
+
+  it("revierte el borrador viejo y deja en paz al recién nacido", async () => {
+    /**
+     * Es la línea que separa una reparación de un destrozo. Una saga normal tarda
+     * menos de un segundo; un borrador de hace un minuto puede estar
+     * escribiéndose ahora mismo, y cancelarlo sería cancelar una venta viva con
+     * el cliente delante.
+     */
+    db = fakeDb({ ...catalogo(), order: [borrador("viejo", 120), borrador("nuevo", 0)] });
+
+    const r = await reconcileStaleDrafts(ORG, 60);
+
+    expect(r.reverted).toBe(1);
+    const estados = new Map(db.rows("order").map((o) => [o._id, o.status]));
+    expect(estados.get("viejo")).toBe("cancelled");
+    expect(estados.get("nuevo")).toBe("draft");
+  });
+
+  it("y no toca las ventas que SÍ se completaron", async () => {
+    // Solo los borradores. Una orden en `pending_payment` es una venta de
+    // verdad, esperando cobro.
+    db = fakeDb({
+      ...catalogo(),
+      order: [
+        borrador("a-medias", 120),
+        { _id: "buena", organization_id: ORG, order_number: "buena", status: "pending_payment",
+          createdAt: new Date(Date.now() - 7_200_000).toISOString() },
+      ],
+    });
+
+    await reconcileStaleDrafts(ORG, 60);
+
+    const estados = new Map(db.rows("order").map((o) => [o._id, o.status]));
+    expect(estados.get("buena")).toBe("pending_payment");
+  });
+
+  it("revierte TODOS los borradores, no los primeros cien", async () => {
+    /**
+     * Leía con `_limit: 100`. Un borrador abandonado es raro —hace falta que un
+     * proceso muera vendiendo— pero cuando la causa es sistemática no aparecen de
+     * a uno: aparecen a cientos. Y justo entonces el tope dejaba plazas
+     * apartadas por ventas que no existieron.
+     */
+    db = fakeDb({
+      ...catalogo(),
+      order: Array.from({ length: 250 }, (_, i) => borrador(`d-${String(i).padStart(4, "0")}`, 120)),
+    });
+
+    const r = await reconcileStaleDrafts(ORG, 60);
+
+    expect(r.reverted).toBe(250);
+    expect(db.rows("order").filter((o) => o.status === "draft")).toHaveLength(0);
+  });
+
+  it("es idempotente: pasar dos veces no revierte dos veces", async () => {
+    // Corre a diario y también a mano; una segunda pasada no encuentra nada
+    // porque lo revertido ya no es `draft`.
+    db = fakeDb({ ...catalogo(), order: [borrador("uno", 120)] });
+
+    expect((await reconcileStaleDrafts(ORG, 60)).reverted).toBe(1);
+    expect((await reconcileStaleDrafts(ORG, 60)).reverted).toBe(0);
   });
 });

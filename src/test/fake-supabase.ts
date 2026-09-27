@@ -11,7 +11,8 @@
  *
  * Este doble entiende el trozo de la gramática de PostgREST que la aplicación
  * usa de verdad, y nada más: `from`, `select`, `insert`, `update`, `eq`, `in`,
- * `not`, `lt`, `lte`, `gt`, `gte`, `order`, `limit`, `single` y `maybeSingle`.
+ * `not`, `lt`, `lte`, `gt`, `gte`, `order` (encadenable), `limit`, `range`,
+ * `single` y `maybeSingle`.
  * Añadir lo que no se usa sería escribir un motor de base de datos, que es
  * exactamente lo que no queremos tener que mantener.
  *
@@ -28,13 +29,13 @@
  * están `supabase/tests/*.test.sql`.
  */
 
-import type { FakeDb } from "@/test/fake-tenant";
+import { paxTotalsDeLaBase, type FakeDb } from "@/test/fake-tenant";
 
 type Fila = Record<string, unknown>;
 
 interface Resultado {
   data: unknown;
-  error: { message: string } | null;
+  error: { message: string; code?: string } | null;
   count?: number | null;
 }
 
@@ -117,7 +118,11 @@ function columnasDe(cols: string): string[] | null {
 
 class Builder implements PromiseLike<Resultado> {
   private filtros: Filtro[] = [];
-  private orden: { columna: string; asc: boolean } | null = null;
+  /** Columnas de `onConflict` cuando la escritura es un `upsert`. */
+  private conflicto: string[] = [];
+  private orden: { columna: string; asc: boolean }[] = [];
+  /** Desde qué fila empieza el resultado. `range` lo usa; `limit` no lo toca. */
+  private desde = 0;
   private tope = 0;
   private modo: "select" | "insert" | "update" | "delete" = "select";
   private payload: Fila | Fila[] | null = null;
@@ -140,7 +145,23 @@ class Builder implements PromiseLike<Resultado> {
   insert(rows: Fila | Fila[]) { this.modo = "insert"; this.payload = rows; return this; }
   update(row: Fila) { this.modo = "update"; this.payload = row; return this; }
   delete() { this.modo = "delete"; return this; }
-  upsert(rows: Fila | Fila[]) { this.modo = "insert"; this.payload = rows; return this; }
+  /**
+   * `upsert` NO es un `insert`, y tratarlo como tal escondía el fallo entero.
+   *
+   * Media docena de servicios escriben con `upsert(..., { onConflict })` para
+   * decir «esta fila es única por estas columnas: si ya está, actualízala».
+   * Con el doble insertando siempre, la segunda visita del mismo cliente creaba
+   * un espejo NUEVO en vez de sumar sobre el que había — y la prueba veía el
+   * primero, con su contador intacto, dando por bueno un contador que en
+   * producción sí avanza. Un doble que se equivoca así no prueba nada: da
+   * permiso.
+   */
+  upsert(rows: Fila | Fila[], opts?: { onConflict?: string }) {
+    this.modo = "insert";
+    this.payload = rows;
+    this.conflicto = (opts?.onConflict ?? "").split(",").map((c) => c.trim()).filter(Boolean);
+    return this;
+  }
 
   /* ── filtros ─────────────────────────────────────────────────────────── */
 
@@ -168,6 +189,31 @@ class Builder implements PromiseLike<Resultado> {
     }
     throw new Error(`fake-supabase: not(${col}, "${op}", …) no está soportado; añádelo si la aplicación lo usa`);
   }
+  /**
+   * `ilike`: comparación insensible a mayúsculas CON comodines.
+   *
+   * Se implementan los comodines a propósito y no como una igualdad relajada:
+   * `%` y `_` son lo que hace que `ilike` sobre una cadena que viene de una URL
+   * no sea una comparación sino un patrón, y una prueba que los ignorara
+   * escondería justo esa clase de fuga.
+   */
+  ilike(col: string, patron: string) {
+    // `*` es comodín igual que `%`: PostgREST lo convierte ANTES de que SQL vea
+    // el patrón, así que una contrabarra delante no lo salva. Un doble que lo
+    // tratara como un carácter normal daría por buena la única defensa que no
+    // vale para él.
+    const escapado = String(patron)
+      .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+      .replace(/[%*]/g, ".*")
+      .replace(/_/g, ".");
+    const re = new RegExp(`^${escapado}$`, "i");
+    this.filtros.push((f) => {
+      const v = valorDe(f, col);
+      return v !== null && v !== undefined && re.test(String(v));
+    });
+    return this;
+  }
+
   is(col: string, value: unknown) {
     this.filtros.push((f) => {
       const v = valorDe(f, col);
@@ -197,12 +243,32 @@ class Builder implements PromiseLike<Resultado> {
 
   /* ── forma del resultado ─────────────────────────────────────────────── */
 
+  /**
+   * ORDENAR POR VARIAS COLUMNAS, COMO PostgREST.
+   *
+   * Encadenar `.order()` dos veces en PostgREST ordena por las dos, en ese
+   * orden. Este doble se quedaba solo con la ÚLTIMA, y eso importa porque un
+   * barrido paginado necesita un desempate estable: sin él, dos filas con la
+   * misma fecha pueden salir en distinto orden en dos páginas consecutivas, y
+   * entonces una se repite y otra no sale nunca. Justo el fallo que el barrido
+   * existe para evitar, y el doble lo habría dado por bueno.
+   */
   order(columna: string, opts?: { ascending?: boolean }) {
-    this.orden = { columna, asc: opts?.ascending !== false };
+    this.orden.push({ columna, asc: opts?.ascending !== false });
     return this;
   }
   limit(n: number) { this.tope = n; return this; }
-  range(desde: number, hasta: number) { this.tope = hasta - desde + 1; return this; }
+  /**
+   * `range` ES UNA VENTANA, NO UN TOPE.
+   *
+   * Esto descartaba `desde` y solo calculaba el tamaño. Con eso, un barrido
+   * que pidiera la página 2 recibía otra vez la página 1 —y como cada pasada
+   * devolvía filas, el bucle habría dado vueltas para siempre sobre las
+   * mismas, o peor: la prueba de un barrido que NO avanza su cursor habría
+   * salido en verde. Un doble que perdona el error que se está probando no
+   * prueba nada.
+   */
+  range(desde: number, hasta: number) { this.desde = desde; this.tope = hasta - desde + 1; return this; }
   single() { this.unico = "single"; return this; }
   maybeSingle() { this.unico = "maybeSingle"; return this; }
 
@@ -210,14 +276,18 @@ class Builder implements PromiseLike<Resultado> {
 
   private filas(): Fila[] {
     let filas = this.db.rows(this.tabla).filter((f) => this.filtros.every((p) => p(f)));
-    if (this.orden) {
-      const { columna, asc } = this.orden;
+    if (this.orden.length > 0) {
       filas = [...filas].sort((a, b) => {
-        const x = String(valorDe(a, columna) ?? "");
-        const y = String(valorDe(b, columna) ?? "");
-        return asc ? x.localeCompare(y) : y.localeCompare(x);
+        for (const { columna, asc } of this.orden) {
+          const x = String(valorDe(a, columna) ?? "");
+          const y = String(valorDe(b, columna) ?? "");
+          const c = x.localeCompare(y);
+          if (c !== 0) return asc ? c : -c;
+        }
+        return 0;
       });
     }
+    if (this.desde > 0) filas = filas.slice(this.desde);
     if (this.tope > 0) filas = filas.slice(0, this.tope);
     return filas;
   }
@@ -228,8 +298,28 @@ class Builder implements PromiseLike<Resultado> {
         const rows = Array.isArray(this.payload) ? this.payload : [this.payload as Fila];
         const creadas: Fila[] = [];
         for (const row of rows) {
+          // Con `onConflict`, la fila que ya casa por esas columnas se ACTUALIZA.
+          if (this.conflicto.length > 0) {
+            const ya = this.db.rows(this.tabla).find((f) =>
+              this.conflicto.every((col) => valorDe(f, col) === (ref(row[col]) ?? row[col]))
+            );
+            if (ya) {
+              creadas.push(await this.db.tenantUpdate(
+                String(ya.organization_id ?? ""), this.tabla, String(ya._id),
+                conAmbasFormas(row)
+              ));
+              continue;
+            }
+          }
+          // `created_at` lo pone la base con `default now()`, y hay servicios
+          // que FILTRAN por él —la deduplicación de visitas del embudo, sin ir
+          // más lejos—. Sin sello, esas filas no pasan su propio `gte` y la
+          // prueba diría que la deduplicación no funciona.
+          const conSello = row.created_at === undefined
+            ? { ...row, created_at: new Date().toISOString() }
+            : row;
           creadas.push(await this.db.tenantCreate(
-            String(row.organization_id ?? ""), this.tabla, conAmbasFormas(row)));
+            String(row.organization_id ?? ""), this.tabla, conAmbasFormas(conSello)));
         }
         return this.envolver(creadas);
       }
@@ -301,11 +391,22 @@ class Builder implements PromiseLike<Resultado> {
 export interface FakeSupabase {
   from(tabla: string): Builder;
   /**
+   * Las funciones de Postgres que la aplicación llama por RPC.
+   *
+   * Solo las que DECIDEN algo se reimplementan; el resto devuelve nulo, que es
+   * lo que quiere decir «esta prueba no va de eso». Hoy hay una:
+   * `departure_pax_totals` (0094), el recuento de pasajeros de una salida — y
+   * ésa NO se puede falsear con una constante, porque es justo el número que
+   * decide si cabe la venta: una respuesta fija haría pasar en verde la prueba
+   * de que el cupo se respeta con la guarda apagada.
+   */
+  rpc(nombre: string, args?: Record<string, unknown>): Promise<{ data: unknown; error: null }>;
+  /**
    * Hace que TODA escritura sobre esa tabla falle, para probar qué pasa cuando
    * la base dice no. Es la forma de comprobar que un servicio no se traga sus
    * errores.
    */
-  breakWrites(tabla: string, mensaje?: string): void;
+  breakWrites(tabla: string, mensaje?: string, codigo?: string): void;
   /**
    * Hace que toda LECTURA de esa tabla falle.
    *
@@ -314,17 +415,31 @@ export interface FakeSupabase {
    * indistinguible de «no hay nada» —no existe la reserva, no hay salidas—, y
    * ese «no hay nada» suele ser justo la rama que deja pasar lo que no debería.
    */
-  breakReads(tabla: string, mensaje?: string): void;
+  breakReads(tabla: string, mensaje?: string, codigo?: string): void;
+  /**
+   * La clave duplicada, que NO es un error cualquiera.
+   *
+   * Tres servicios se apoyan en ella para ser idempotentes —el canje de
+   * MembeGo, el canje del token SSO y el sobre del webhook— y los tres
+   * distinguen `23505` de un fallo de verdad: uno significa «esto ya se hizo» y
+   * se contesta que sí; el otro, «no se pudo hacer». Sin poder provocarla, esa
+   * rama —la que decide si un reintento cobra dos veces— no se podía probar.
+   */
+  breakWithDuplicate(tabla: string): void;
   /** Deja de romper. */
   healWrites(tabla?: string): void;
   healReads(tabla?: string): void;
 }
 
 export function fakeSupabase(db: FakeDb): FakeSupabase {
-  const rotas = new Map<string, string>();
-  const rotasLectura = new Map<string, string>();
+  const rotas = new Map<string, { message: string; code?: string }>();
+  const rotasLectura = new Map<string, { message: string; code?: string }>();
 
   return {
+    async rpc(nombre: string, args: Record<string, unknown> = {}) {
+      if (nombre === "departure_pax_totals") return paxTotalsDeLaBase(db)(args);
+      return { data: null, error: null };
+    },
     from(tabla: string) {
       const builder = new Builder(db, tabla);
       const roto = rotas.get(tabla);
@@ -345,17 +460,24 @@ export function fakeSupabase(db: FakeDb): FakeSupabase {
       }
       builder.then = ((onDone?: never, onFail?: never) => {
         if (escribe && roto) {
-          return Promise.resolve({ data: null, error: { message: roto } }).then(onDone, onFail);
+          return Promise.resolve({ data: null, error: { ...roto } }).then(onDone, onFail);
         }
         if (!escribe && rotoLeer) {
-          return Promise.resolve({ data: null, error: { message: rotoLeer } }).then(onDone, onFail);
+          return Promise.resolve({ data: null, error: { ...rotoLeer } }).then(onDone, onFail);
         }
         return original(onDone, onFail);
       }) as typeof builder.then;
       return builder;
     },
-    breakWrites(tabla, mensaje = "la base rechazó la escritura") { rotas.set(tabla, mensaje); },
-    breakReads(tabla, mensaje = "la base rechazó la lectura") { rotasLectura.set(tabla, mensaje); },
+    breakWrites(tabla, mensaje = "la base rechazó la escritura", codigo) {
+      rotas.set(tabla, { message: mensaje, code: codigo });
+    },
+    breakReads(tabla, mensaje = "la base rechazó la lectura", codigo) {
+      rotasLectura.set(tabla, { message: mensaje, code: codigo });
+    },
+    breakWithDuplicate(tabla) {
+      rotas.set(tabla, { message: "duplicate key value violates unique constraint", code: "23505" });
+    },
     healWrites(tabla) { if (tabla) rotas.delete(tabla); else rotas.clear(); },
     healReads(tabla) { if (tabla) rotasLectura.delete(tabla); else rotasLectura.clear(); },
   };

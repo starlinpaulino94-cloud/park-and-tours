@@ -1,6 +1,7 @@
 import "server-only";
 import { tenantQuery, tenantUpdate, TenantError } from "@/lib/tenant";
 import { refId } from "@/lib/types";
+import { leerTodoElRecurso } from "@/lib/barrido";
 import {
   pickAllotment, allotmentState, saleBlocker, SALE_BLOCK_MESSAGE,
   shouldRelease, releasableSeats, allotmentMatrix,
@@ -156,11 +157,16 @@ export async function releaseExpiredAllotments(
 ): Promise<ReleaseReport> {
   const out: ReleaseReport = { reviewed: 0, released: 0, seats: 0, details: [] };
 
-  const rows = await tenantQuery<AllotmentRow>(companyId, "allotment", {
-    _filter: { allotment_type: "guaranteed", status: "active" },
-    departure: true,
-    _limit: 2000,
-  });
+  // Entero: lo que se quede fuera son plazas garantizadas a un socio que ya no
+  // las va a usar y que nadie más puede vender. Y como el orden no cambia entre
+  // pasadas, serían siempre las mismas.
+  const rows = await leerTodoElRecurso<AllotmentRow>("allotment", (limite, salto) =>
+    tenantQuery(companyId, "allotment", {
+      _filter: { allotment_type: "guaranteed", status: "active" },
+      departure: true,
+      _sort: { created_at: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+    }));
 
   for (const row of rows) {
     const departure = row.departure as { _id?: string; departure_at?: string } | null;

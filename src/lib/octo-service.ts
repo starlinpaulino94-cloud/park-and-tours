@@ -18,6 +18,8 @@ import {
 } from "@/lib/octo";
 import type { Company } from "@/lib/types";
 import { writeAudit } from "@/lib/audit";
+import { recorteDe, TOPE_INFORME, type Recorte } from "@/lib/barrido";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 /**
  * EL CONECTOR OCTO CONTRA LA BASE.
@@ -154,17 +156,27 @@ async function modalitiesOf(companyId: string, productIds: string[]): Promise<Ma
 async function startTimesOf(companyId: string, productIds: string[], timeZone: string): Promise<Map<string, string[]>> {
   const out = new Map<string, string[]>();
   if (productIds.length === 0) return out;
-  const { data } = await supabaseService()
-    .from("departure")
-    .select("product_id,departure_at")
-    .eq("organization_id", companyId)
-    .in("product_id", productIds)
-    .gte("departure_at", new Date().toISOString())
-    .in("status", [...SELLABLE_DEPARTURE])
-    .order("departure_at", { ascending: true })
-    .limit(2000);
+  /**
+   * Enteras: un horario que se caiga de esta lista es una hora que el revendedor
+   * no puede vender, sin que nada lo diga. El tope de dos mil recortaba dentro
+   * de una lista que ya está acotada a lo futuro y lo vendible.
+   */
+  const horas = await leerTodoElRecurso<{ product_id: unknown; departure_at: unknown }>(
+    "departure", async (limite, salto) => {
+      const { data } = await supabaseService()
+        .from("departure")
+        .select("product_id,departure_at")
+        .eq("organization_id", companyId)
+        .in("product_id", productIds)
+        .gte("departure_at", new Date().toISOString())
+        .in("status", [...SELLABLE_DEPARTURE])
+        .order("departure_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(salto, salto + limite - 1);
+      return (data ?? []) as { product_id: unknown; departure_at: unknown }[];
+    });
 
-  for (const row of data ?? []) {
+  for (const row of horas) {
     const key = String(row.product_id);
     const hour = localDate(String(row.departure_at), timeZone).length === 10
       ? new Date(String(row.departure_at)).toISOString()
@@ -223,13 +235,27 @@ async function hasDepartures(companyId: string, productIds: string[]): Promise<S
   // Con error se LANZA en vez de devolver un conjunto vacío: vacío significa
   // «este producto no se vende por fecha», y con eso `reserve` deja pasar una
   // reserva sin salida, sin cupo comprobado y sin manifiesto.
-  const data = await mustRead<{ product_id: unknown }[]>("leer las salidas del producto", supabaseService()
-    .from("departure")
-    .select("product_id")
-    .eq("organization_id", companyId)
-    .in("product_id", productIds)
-    .limit(5000));
-  for (const row of data ?? []) out.add(String(row.product_id));
+  /**
+   * Y EL TOPE HACÍA LO MISMO QUE EL ERROR.
+   *
+   * El párrafo de arriba explica por qué aquí no se puede devolver un conjunto
+   * vacío. Pero con `.limit(5000)` el conjunto salía INCOMPLETO por otra puerta:
+   * un producto cuyas salidas cayeran más allá de la fila cinco mil quedaba
+   * fuera, o sea marcado como «no se vende por fecha» — exactamente el estado
+   * que el comentario advierte que deja pasar una reserva sin salida, sin cupo
+   * comprobado y sin manifiesto.
+   *
+   * Se lee entero, paginando por identidad de salida.
+   */
+  const data = await leerTodoElRecurso<{ product_id: unknown }>("departure", async (limite, salto) =>
+    await mustRead<{ product_id: unknown }[]>("leer las salidas del producto", supabaseService()
+      .from("departure")
+      .select("product_id, id")
+      .eq("organization_id", companyId)
+      .in("product_id", productIds)
+      .order("id", { ascending: true })
+      .range(salto, salto + limite - 1)) ?? []);
+  for (const row of data) out.add(String(row.product_id));
   return out;
 }
 
@@ -1122,7 +1148,19 @@ export interface ChannelRow {
  * retenciones venció y el barrido todavía no pasó, enseñar «12 retenidas»
  * haría que la operadora creyera que tiene doce ventas a punto de cerrar.
  */
-export async function octoChannels(companyId: string, days = 90): Promise<ChannelRow[]> {
+/**
+ * Lo que vende cada revendedor, y SI EL INFORME ESTÁ CORTADO.
+ *
+ * Devolvía solo las filas, con un tope de dos mil y sin decirlo. De aquí sale
+ * cuánto aporta cada canal —y con eso se renegocia una comisión o se corta un
+ * acuerdo—, así que un recorte silencioso no da una tabla incompleta: da una
+ * comparación falsa entre revendedores, porque al que más vende es al que
+ * primero se le empiezan a caer filas.
+ */
+export async function octoChannels(
+  companyId: string,
+  days = 90
+): Promise<{ rows: ChannelRow[]; recorte: Recorte }> {
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
   const sb = supabaseService();
   const { data } = await sb
@@ -1131,15 +1169,20 @@ export async function octoChannels(companyId: string, days = 90): Promise<Channe
     .eq("organization_id", companyId)
     .not("octo_uuid", "is", null)
     .gte("created_at", since)
+    // Lo más reciente primero: si hay que recortar, se pierde lo más viejo del
+    // período, que es el orden correcto para un informe de canales — pero se
+    // dice, porque de aquí sale cuánto vende cada revendedor.
     .order("created_at", { ascending: false })
-    .limit(2000);
+    .order("id", { ascending: false })
+    .limit(TOPE_INFORME);
 
   const rows = data ?? [];
+  const recorte = recorteDe(rows.length);
   const orderIds = [...new Set(rows.map((r) => r.order_id).filter(Boolean).map(String))];
   const holds = new Map<string, string | null>();
   if (orderIds.length > 0) {
     const { data: orders } = await sb.from("sales_order").select("id,hold_until")
-      .eq("organization_id", companyId).in("id", orderIds).limit(2000);
+      .eq("organization_id", companyId).in("id", orderIds).limit(Math.max(1, orderIds.length));
     for (const order of orders ?? []) holds.set(String(order.id), (order.hold_until as string | null) ?? null);
   }
 
@@ -1183,7 +1226,7 @@ export async function octoChannels(companyId: string, days = 90): Promise<Channe
     byPartner.set(key, current);
   }
 
-  return [...byPartner.values()].sort((a, b) => b.bookings - a.bookings);
+  return { rows: [...byPartner.values()].sort((a, b) => b.bookings - a.bookings), recorte };
 }
 
 /** Las últimas reservas entrantes, para la lista de la pantalla. */

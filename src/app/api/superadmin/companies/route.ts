@@ -5,6 +5,7 @@ import { writeAudit } from "@/lib/audit";
 import { supabaseService } from "@/lib/supabase/service";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { mustWrite } from "@/lib/supabase/io";
+import { recorteDe, TOPE_INFORME } from "@/lib/barrido";
 
 function slugify(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -38,9 +39,9 @@ export async function GET(req: NextRequest) {
 
     const ids = (companies || []).map((c) => c.id);
     const [bookings, products, memberships] = await Promise.all([
-      ids.length ? sb.from("booking").select("organization_id").in("organization_id", ids).limit(5000) : Promise.resolve({ data: [] as any[] }),
-      ids.length ? sb.from("product").select("organization_id").in("organization_id", ids).limit(5000) : Promise.resolve({ data: [] as any[] }),
-      ids.length ? sb.from("organization_memberships").select("organization_id").in("organization_id", ids).limit(5000) : Promise.resolve({ data: [] as any[] }),
+      ids.length ? sb.from("booking").select("organization_id").in("organization_id", ids).limit(TOPE_INFORME) : Promise.resolve({ data: [] as any[] }),
+      ids.length ? sb.from("product").select("organization_id").in("organization_id", ids).limit(TOPE_INFORME) : Promise.resolve({ data: [] as any[] }),
+      ids.length ? sb.from("organization_memberships").select("organization_id").in("organization_id", ids).limit(TOPE_INFORME) : Promise.resolve({ data: [] as any[] }),
     ]);
     const countBy = (rows: any[] = []) => rows.reduce((map, row) => map.set(row.organization_id, (map.get(row.organization_id) || 0) + 1), new Map<string, number>());
     const bookingCount = countBy(bookings.data || []);
@@ -51,8 +52,25 @@ export async function GET(req: NextRequest) {
       ...mapCompany(c),
       usage: { bookings: bookingCount.get(c.id) || 0, users: userCount.get(c.id) || 0, products: productCount.get(c.id) || 0, storage_mb: c.metadata?.storage_used_mb || 0 },
     }));
+    /**
+     * EL USO POR EMPRESA SE CUENTA TRAYENDO FILAS, Y ESO TIENE TECHO.
+     *
+     * Las tres consultas de arriba traen una fila por reserva, producto y
+     * usuario para contarlas aquí. Pasado el tope, el uso de las últimas
+     * empresas de la página sale por debajo del real — y de este número cuelga
+     * la conversación sobre el plan que paga cada una.
+     *
+     * Contarlo exacto pediría una consulta de recuento por empresa y por
+     * métrica: ciento cincuenta viajes para pintar una tabla. Así que se recorta
+     * y SE DICE: quien lo lee sabe cuándo no puede fiarse.
+     */
+    const recorte = recorteDe(Math.max(
+      (bookings.data || []).length,
+      (products.data || []).length,
+      (memberships.data || []).length,
+    ));
     console.log(`[superadmin] ${rows.length} empresas listadas por ${ctx.email}`);
-    return ok(rows, { total: count ?? rows.length });
+    return ok(rows, { total: count ?? rows.length, recorte });
   } catch (err) {
     return fail(err);
   }

@@ -29,7 +29,9 @@ export interface MessageRow {
   _id: string;
   channel: MessageChannel;
   attachment_kind?: string | null;
+  attachment_scope?: string | null;
   booking_id?: string | null;
+  departure_id?: string | null;
   quote_id?: string | null;
   template_key?: string | null;
   language?: string | null;
@@ -65,7 +67,16 @@ export interface EnqueueInput {
   /** Fecha a la que se ancla un mensaje programado (la salida, el viaje). */
   anchor?: string | Date | null;
   /** Documento que se compone y adjunta al entregar (no se guarda en la fila). */
-  attachmentKind?: "voucher" | "quote" | null;
+  attachmentKind?: "voucher" | "quote" | "manifest" | null;
+  /**
+   * Para quién se RECORTA ese documento.
+   *
+   * Hace falta porque el documento no se guarda —se compone al entregar— y el
+   * despachador, que corre sin sesión, no tiene otra forma de saber qué corte
+   * generar. Sin esto el manifiesto saldría entero, con teléfonos, habitaciones
+   * y saldos de clientes, hacia la empresa de transporte.
+   */
+  attachmentScope?: string | null;
   userId?: string | null;
 }
 
@@ -116,6 +127,10 @@ export async function enqueueMessage(
     // Solo el correo lleva ficheros: pedirle un adjunto a un WhatsApp de texto
     // solo produciría un fallo de entrega en cada envío.
     attachment_kind: input.channel === "email" ? input.attachmentKind || undefined : undefined,
+    // Viaja atado al adjunto: sin adjunto no significa nada, y guardarlo suelto
+    // invitaría a leerlo como «a quién va el mensaje», que ya dice `to_address`.
+    attachment_scope:
+      input.channel === "email" && input.attachmentKind ? input.attachmentScope || undefined : undefined,
     customer: input.refs?.customer || undefined,
     booking: input.refs?.booking || undefined,
     order: input.refs?.order || undefined,
@@ -265,6 +280,8 @@ export async function dispatchQueue(
           kind: row.attachment_kind,
           bookingId: row.booking_id ?? null,
           quoteId: row.quote_id ?? null,
+          departureId: row.departure_id ?? null,
+          scope: row.attachment_scope ?? null,
         })
       : null;
 

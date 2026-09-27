@@ -9,6 +9,7 @@ import type { BeneficiaryType, Commission, Currency, Settlement } from "@/lib/ty
 import { refId, isTerminalBookingStatus } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { attachBonusesToSettlement } from "@/lib/seller-goals-service";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 /**
  * POST /api/settlements/generate
@@ -43,9 +44,26 @@ export async function POST(req: NextRequest) {
     if (body.partner_id) filter.partner = body.partner_id;
     if (body.seller_id) filter.seller = body.seller_id;
 
-    const candidates = await tenantQuery<Commission>(ctx.companyId, "commission", {
-      _filter: filter, _limit: 1000, booking: true,
-    });
+    /**
+     * LAS COMISIONES DEL PERÍODO, TODAS.
+     *
+     * Con el tope de mil, un socio o vendedor con más comisiones pendientes
+     * recibía una liquidación por las mil primeras. Las demás no se perdían
+     * —siguen `pending` y entran en la siguiente—, pero el documento dice
+     * «período del X al Y» y cubre una parte, sin nada que lo advierta. Y la
+     * siguiente generación crea una SEGUNDA liquidación del mismo período, que
+     * es exactamente la clase de cosa que nadie sabe conciliar seis meses
+     * después.
+     */
+    const candidates = await leerTodoElRecurso<Commission>("commission", (limite, salto) =>
+      tenantQuery(ctx.companyId, "commission", {
+        _filter: filter,
+        // Desempate por identidad: varias comisiones comparten `generated_at`,
+        // y sin él una página puede repetir una comisión que otra se salta —lo
+        // que aquí significa reclamarla dos veces o dejarla sin reclamar.
+        _sort: { generated_at: "asc", _id: "asc" },
+        _limit: limite, _offset: salto, booking: true,
+      }));
 
     if (candidates.length === 0) {
       throw Object.assign(new Error("No hay comisiones pendientes en el período seleccionado"), { status: 404 });

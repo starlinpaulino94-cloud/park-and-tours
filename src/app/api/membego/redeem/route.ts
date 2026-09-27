@@ -35,16 +35,25 @@ export async function POST(req: NextRequest) {
       order_id?: string;
       booking_id?: string | null;
       benefit?: EvaluatedBenefit;
-      evaluated_at?: string;
     }>(req);
 
     if (!body.order_id) throw Object.assign(new Error("Indica la venta."), { status: 400 });
     if (!body.benefit?.id) throw Object.assign(new Error("Elige el beneficio que se va a canjear."), { status: 400 });
 
+    /**
+     * DEL CUERPO SOLO VIAJA CUÁL, NUNCA CUÁNTO.
+     *
+     * La pantalla manda el beneficio entero —así lo tiene en la mano— y antes se
+     * pasaba tal cual, con su `eligible` y su `effect` dentro. Eso dejaba que el
+     * navegador decidiera si el cliente tenía derecho y cuánto se le rebajaba.
+     * Aquí se queda en el identificador y el tipo; el resto lo vuelve a preguntar
+     * el servicio a MembeGo. El `evaluated_at` que la pantalla sigue mandando ya
+     * no se lee: la frescura la pone la evaluación que hace el servidor, no la
+     * que el cliente dice que hizo.
+     */
     const result = await redeemForOrder(ctx, {
       orderId: body.order_id,
-      benefit: body.benefit,
-      evaluatedAt: String(body.evaluated_at || ""),
+      benefit: { id: String(body.benefit.id), type: body.benefit.type },
       bookingId: body.booking_id ?? null,
     });
 

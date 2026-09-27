@@ -386,6 +386,43 @@ export const NOTIFY_EVENTS = {
     link: () => "/dashboard/operaciones/despacho",
   },
 
+  /**
+   * EL PROVEEDOR REGISTRÓ SU FACTURA (0089).
+   *
+   * Este SÍ avisa, y la conformidad de al lado no: aquí hay algo que alguien
+   * tiene que hacer —registrar la compra para que el comprobante llegue al
+   * 606—, y sin aviso el NCF se queda en la liquidación y la declaración sale
+   * sin él. La audiencia es `admin` porque quien declara es administración, no
+   * el despacho.
+   */
+  supplier_invoice_received: {
+    type: "settlement",
+    audience: "admin",
+    title: (v) => `Factura de ${v.proveedor ?? "un proveedor"}`,
+    message: (v) =>
+      `NCF ${v.referencia ?? ""}. Regístrala como compra para que entre en el 606.`.trim(),
+    link: () => "/dashboard/proveedores/liquidaciones",
+  },
+
+  /**
+   * EL TRANSPORTISTA DIJO QUÉ GUAGUA Y QUIÉN LA CONDUCE.
+   *
+   * Es el punto del portal: que lo que decide el proveedor llegue al despacho sin
+   * una llamada de teléfono. La audiencia es `operations` y no `admin` —esto no
+   * es dinero, es quién sale mañana— y el enlace va a la mesa de despacho, que es
+   * donde alguien puede mirar si encaja con el resto del día.
+   *
+   * Sin aviso, la asignación existe en la base y nadie la mira hasta que sale el
+   * manifiesto — que es demasiado tarde para cambiarla.
+   */
+  supplier_fleet_assigned: {
+    type: "operation",
+    audience: "operations",
+    title: (v) => `Flota asignada para el ${v.referencia ?? "servicio"}`,
+    message: (v) => `El proveedor asignó ${v.detalle ?? "su flota"}.`,
+    link: () => "/dashboard/operaciones/despacho",
+  },
+
   /** Un comprobante fiscal anulado. Se justifica ante la DGII, no se esconde. */
   invoice_voided: {
     type: "alert",

@@ -31,7 +31,7 @@ vi.mock("@/lib/notify-service", () => ({
 
 import {
   askDeparture, sweepDueSurveys, loadSurvey, answerSurvey, optOutByToken,
-  expireSurveys, markReviewClicked, surveyUrl,
+  expireSurveys, markReviewClicked, surveyUrl, loadVoice,
 } from "@/lib/voice-service";
 
 const ORG = "org-1";
@@ -433,5 +433,65 @@ describe("cuando la base rechaza una escritura", () => {
     sb.breakWrites("guest_survey", "la base rechazó la escritura");
     await expect(askDeparture(company, ORG, "sal-1")).rejects.toThrow();
     expect(encolados).toHaveLength(0);
+  });
+});
+
+
+/**
+ * EL PANEL DICE SI ESTÁ CORTADO (ola 9.14).
+ *
+ * Un NPS es una conclusión de negocio: «a la gente le gusta menos que antes» se
+ * decide mirando este número. Calculado sobre parte de las encuestas, el que se
+ * mueve es el número, no la gente — y el panel leía con un tope sin decirlo.
+ *
+ * Aquí NO se lanza, a diferencia de un arqueo: la operadora más grande es justo
+ * la que más necesita el panel. Se recorta, se dice, y quien lo pinta avisa. Por
+ * eso lo que se prueba es que el aviso REFLEJE la realidad: un informe que
+ * declara `truncado: false` pase lo que pase es tan mentiroso como el tope de
+ * antes, solo que con un campo más.
+ */
+describe("el panel de la voz dice si está cortado", () => {
+  /** `cuantas` encuestas contestadas, con su NPS. */
+  function encuestasDe(cuantas: number, nps = 10) {
+    return Array.from({ length: cuantas }, (_, i) => ({
+      _id: `enc-${String(i).padStart(5, "0")}`,
+      organization_id: ORG,
+      status: "answered",
+      nps,
+      created_at: `2026-09-${String(1 + (i % 28)).padStart(2, "0")}T10:00:00.000Z`,
+      answered_at: `2026-09-${String(1 + (i % 28)).padStart(2, "0")}T12:00:00.000Z`,
+    }));
+  }
+
+  it("con pocas encuestas, no dice que falte nada", async () => {
+    db.seed("guest_survey", encuestasDe(12));
+    const panel = await loadVoice(ORG, 365);
+    expect(panel.recorte.truncado).toBe(false);
+    expect(panel.recorte.leidas).toBe(12);
+  });
+
+  it("y llegando al tope, LO DICE", async () => {
+    // Justo en el tope: no hay forma de distinguir «cabían exactamente» de «se
+    // quedó a medias», y en un informe decir «puede que falte» es el error
+    // correcto.
+    db.seed("guest_survey", encuestasDe(5000));
+    const panel = await loadVoice(ORG, 365);
+    expect(panel.recorte.truncado).toBe(true);
+    // Y lleva el tope dentro, porque «faltan datos» sin decir desde dónde no le
+    // sirve a nadie.
+    expect(panel.recorte.tope).toBe(5000);
+  });
+
+  it("el aviso sale de lo que se leyó, no de una constante", async () => {
+    /**
+     * Es la prueba que importa: un panel que devolviera siempre
+     * `truncado: false` tendría el campo y seguiría mintiendo. Dos tamaños
+     * distintos tienen que dar dos recuentos distintos.
+     */
+    db.seed("guest_survey", encuestasDe(7));
+    expect((await loadVoice(ORG, 365)).recorte.leidas).toBe(7);
+
+    db.seed("guest_survey", encuestasDe(9).map((e, i) => ({ ...e, _id: `otra-${i}` })));
+    expect((await loadVoice(ORG, 365)).recorte.leidas).toBe(16);
   });
 });

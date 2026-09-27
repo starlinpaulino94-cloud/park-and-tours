@@ -28,6 +28,8 @@ interface ScheduleRow extends Installment {
   _id: string;
   booking?: unknown;
   currency?: string | null;
+  /** Derivado, como lo imputado: lo escribe `refreshAllocation` y nadie más. */
+  balance?: number | null;
 }
 
 async function liveSchedule(companyId: string, orderId: string): Promise<ScheduleRow[]> {
@@ -132,9 +134,19 @@ export async function ensureSchedule(
   if (planned.length === 0) return;
 
   const bookingId = bookings.length === 1 ? bookings[0].bookingId : null;
+  /**
+   * Y el plan nuevo sigue numerando donde acabó el viejo.
+   *
+   * Aquí se llega cuando TODAS las cuotas anteriores están muertas —perdonadas
+   * o anuladas—, y sin el desplazamiento el plan nuevo volvía a empezar en 1.
+   * La venta acababa con dos cuotas «1» y dos «2», una viva y otra muerta, y el
+   * recibo que dice «abono de la cuota 2 de 3» deja de poder señalar una sola.
+   * `setSchedule` ya lo hacía; esto es lo mismo por el otro camino.
+   */
   await writePlan(companyId, orderId, planned, {
     currency: String(order.currency || "usd"),
     bookingId,
+    offset: await nextSequence(companyId, orderId),
   });
   await refreshAllocation(companyId, orderId, now);
 }
@@ -228,6 +240,20 @@ export async function refreshAllocation(
   const order = await tenantFindOne<Order>(companyId, "order", orderId);
   const paid = Math.max(round2(order.paid_total ?? 0), 0);
 
+  /**
+   * Las muertas fuera, y el cobro nunca en negativo.
+   *
+   * Las dos líneas son defensa en profundidad y hoy no se pueden alcanzar:
+   * `allocate` se salta las cuotas muertas por su cuenta, `statusFor` conserva
+   * su estado y `collectionStatus` las vuelve a filtrar, así que quitarlas de
+   * aquí no cambia nada de lo que se escribe. Un mutador las borra y todo sigue
+   * verde; lo fija una guarda estructural en `ui-contracts.test.ts`.
+   *
+   * Se quedan porque lo que las hace inertes es el contrato de OTRO módulo. El
+   * día que `allocate` se reescriba para repartir un abono y ese filtro se
+   * mueva, esto es lo único que impide que una cuota perdonada vuelva a pedir
+   * dinero y que un reembolso se impute como si fuera un cobro.
+   */
   const live = rows.filter((row) => !DEAD.has(row.status || ""));
   // Se parte de cero: repartir sobre lo ya imputado sumaría dos veces el mismo
   // dinero en cuanto el plan o un cobro cambien.
@@ -252,8 +278,22 @@ export async function refreshAllocation(
     const balance = hit?.balance ?? amount;
     const status = hit?.status ?? statusFor({ ...row, paid_amount: 0 }, now);
 
+    /**
+     * EL SALDO TAMBIÉN SE DERIVA, ASÍ QUE TAMBIÉN SE COMPARA.
+     *
+     * Esto miraba lo imputado y el estado, y no el saldo. Una cuota cuyo
+     * importe se corrige a mano —el gerente baja de 500 a 300 la última— queda
+     * con el mismo `paid_amount` y el mismo estado, así que salía por aquí sin
+     * tocarse y se quedaba con el `balance` del importe viejo. Y el saldo es lo
+     * que el cliente ve en su cuota y lo que el listado de cobros suma: el
+     * plan seguía pidiendo doscientos que ya nadie debe.
+     *
+     * La cabecera de este módulo dice que lo imputado se deriva y no se
+     * acumula. El saldo es parte de lo derivado.
+     */
     const unchanged =
       round2(row.paid_amount ?? 0) === paidAmount &&
+      round2(row.balance ?? 0) === balance &&
       (row.status || "") === status;
     if (unchanged) continue;
 

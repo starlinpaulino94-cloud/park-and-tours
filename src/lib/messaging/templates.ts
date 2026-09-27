@@ -45,6 +45,16 @@ export const TEMPLATE_VARIABLES: Record<TemplateKey, string[]> = {
   balance_due: ["cliente", "empresa", "reserva", "producto", "fecha", "saldo", "moneda", "vence", "telefono_empresa"],
   quote_sent: ["cliente", "empresa", "cotizacion", "titulo", "total", "moneda", "vigencia", "anticipo", "vendedor"],
   post_tour_thanks: ["cliente", "empresa", "producto", "fecha", "enlace", "telefono_empresa"],
+  /**
+   * La única que NO va a un cliente: va a quien opera la salida. `destinatario`
+   * es el guía, el chofer o la oficina del proveedor, y `paradas` es el resumen
+   * de recogidas — la lista de pasajeros viaja en el PDF adjunto y recortada,
+   * nunca en el cuerpo del mensaje.
+   */
+  manifest_dispatch: [
+    "destinatario", "empresa", "producto", "fecha", "hora", "pax", "vehiculos",
+    "punto_encuentro", "paradas",
+  ],
 };
 
 /** Qué hecho dispara cada plantilla, en una línea. */
@@ -57,6 +67,7 @@ export const TEMPLATE_TRIGGER: Record<TemplateKey, string> = {
   balance_due: "Cuando la reserva llega con saldo pendiente",
   quote_sent: "Al enviar la cotización",
   post_tour_thanks: "4 horas después de terminar",
+  manifest_dispatch: "La víspera de la salida, a quien la opera",
 };
 
 export const DEFAULT_TEMPLATES: DefaultTemplate[] = [
@@ -445,6 +456,95 @@ we'd rather hear it from you first.
     key: "post_tour_thanks", channel: "whatsapp", language: "en",
     trigger: TEMPLATE_TRIGGER.post_tour_thanks, offset_hours: 4,
     body: `Hi {{cliente}}, how was {{producto}}? One tap to tell us: {{enlace}} — {{empresa}}`,
+  },
+  {
+    key: "manifest_dispatch", channel: "email", language: "es",
+    // SIN `{{telefono_empresa}}` y sin `offset_hours`, y las dos cosas por el
+    // mismo motivo: que este mensaje no se quede sin salir.
+    //
+    // Un hueco sin rellenar NO se manda (ver `render.ts`), y ese hueco se
+    // rellena con el teléfono que la empresa haya escrito en su ficha. En los
+    // demás avisos eso es correcto: un cliente que recibe «escríbenos a » no
+    // sabe a dónde. Aquí el destinatario es el guía o el transportista, que ya
+    // tienen el número de la oficina — y una operadora que no rellenó su propio
+    // teléfono se habría quedado sin mandar NINGÚN manifiesto, con el autobús
+    // saliendo igual.
+    //
+    // SIN `offset_hours` a propósito. Los demás avisos se programan respecto al
+    // hecho; el manifiesto sale EN CUANTO SE SABE. Con -24 h, el barrido diario
+    // de las 6:00 lo dejaría programado para una hora antes de la salida, que
+    // es cuando el chofer ya va camino del primer hotel. La ventana la decide
+    // quien encola (`vetoDeEnvio`, 36 h), no la plantilla.
+    trigger: TEMPLATE_TRIGGER.manifest_dispatch,
+    subject: "Manifiesto · {{producto}} · {{fecha}}",
+    body: `{{destinatario}}:
+
+Adjunto el manifiesto de la salida de {{empresa}}.
+
+Excursión: {{producto}}
+Fecha: {{fecha}} a las {{hora}}
+Pasajeros: {{pax}}
+Vehículo: {{vehiculos}}
+Punto de encuentro: {{punto_encuentro}}
+
+Recogidas:
+{{paradas}}
+
+El PDF adjunto lleva la lista con la que se opera. Es información de clientes
+de {{empresa}}: se usa para este servicio y no se reenvía fuera del equipo que
+lo opera.
+
+Si la lista cambia antes de la salida, recibirás una versión nueva.
+
+{{empresa}}`,
+  },
+  {
+    key: "manifest_dispatch", channel: "whatsapp", language: "es",
+    trigger: TEMPLATE_TRIGGER.manifest_dispatch,
+    body: `{{destinatario}}, manifiesto de {{empresa}} 🚐
+{{producto}} · {{fecha}} {{hora}} · {{pax}} pax
+Vehículo: {{vehiculos}}
+
+Recogidas:
+{{paradas}}
+
+La lista completa va en el correo.`,
+  },
+  {
+    key: "manifest_dispatch", channel: "email", language: "en",
+    trigger: TEMPLATE_TRIGGER.manifest_dispatch,
+    subject: "Manifest · {{producto}} · {{fecha}}",
+    body: `{{destinatario}}:
+
+Attached is the manifest for this {{empresa}} departure.
+
+Tour: {{producto}}
+Date: {{fecha}} at {{hora}}
+Passengers: {{pax}}
+Vehicle: {{vehiculos}}
+Meeting point: {{punto_encuentro}}
+
+Pickups:
+{{paradas}}
+
+The attached PDF is the list you operate with. It holds {{empresa}} customer
+data: use it for this service and do not forward it outside the team running it.
+
+If the list changes before departure, you'll get a new version.
+
+{{empresa}}`,
+  },
+  {
+    key: "manifest_dispatch", channel: "whatsapp", language: "en",
+    trigger: TEMPLATE_TRIGGER.manifest_dispatch,
+    body: `{{destinatario}}, manifest from {{empresa}} 🚐
+{{producto}} · {{fecha}} {{hora}} · {{pax}} pax
+Vehicle: {{vehiculos}}
+
+Pickups:
+{{paradas}}
+
+The full list is in the email.`,
   },
 ];
 

@@ -1,12 +1,16 @@
 import { NextRequest } from "next/server";
 import { supabaseService } from "@/lib/supabase/service";
 import { ok, fail } from "@/lib/api-response";
-import { startJobRun, finishJobRun, reportIncident } from "@/lib/system-health-service";
+import { startJobRun, finishJobRun, reportIncident, barridoVigilado } from "@/lib/system-health-service";
+import type { ResumenBarrido } from "@/lib/barrido";
 import { TenantError } from "@/lib/tenant";
 import { dispatchQueue } from "@/lib/messaging/outbox";
 import { serviceStore } from "@/lib/messaging/service-store";
 import { enqueuePreTourReminder } from "@/lib/messaging/events";
 import { sweepDueSurveys, expireSurveys, SWEEP_LOOKBACK_DAYS } from "@/lib/voice-service";
+import { barrerManifiestos } from "@/lib/manifiesto-envio-service";
+import { fuenteDeServicio } from "@/lib/manifest-service";
+import { VENTANA_DE_ENVIO_HORAS } from "@/lib/manifiesto-envio";
 import type { Booking } from "@/lib/types";
 import { configuredChannels } from "@/lib/messaging/providers";
 import type { Company } from "@/lib/types";
@@ -65,31 +69,61 @@ interface SweepRow {
  * antes, y barrer solo las 24 siguientes dejaría fuera justo las salidas que
  * todavía no han llegado a su hora de aviso.
  */
-async function sweepReminders(): Promise<{ enqueued: number; companies: string[] }> {
+async function sweepReminders(): Promise<{ enqueued: number; companies: string[]; barrido: ResumenBarrido | null }> {
   const from = new Date().toISOString();
   const to = new Date(Date.now() + 48 * 3_600_000).toISOString();
 
-  const { data, error } = await supabaseService()
-    .from("booking")
-    .select(
-      "id, organization_id, booking_number, travel_date, pax_total, currency, balance_amount, " +
-      "pickup_time, pickup_location, order_id, departure_id, customer_id, product_id, status, " +
-      "customer:customer_id (id, first_name, last_name, email, phone, whatsapp, language), " +
-      "product:product_id (name, meeting_point)"
-    )
-    .gte("travel_date", from)
-    .lte("travel_date", to)
-    .not("status", "in", "(cancelled,refunded,partially_refunded,draft)")
-    .limit(1000);
-
-  if (error) {
-    console.error("[cron/dispatch-messages] barrido de recordatorios falló:", error.message);
-    return { enqueued: 0, companies: [] };
-  }
-
   const companies = new Set<string>();
   let enqueued = 0;
-  for (const row of (data ?? []) as unknown as SweepRow[]) {
+
+  /**
+   * RECORRIDO: encolar el aviso no cambia el estado de la reserva, así que la
+   * fila sigue en el filtro.
+   *
+   * Por fecha de viaje ascendente: primero lo que sale antes, que es lo que ya
+   * casi no da tiempo a avisar. El tope de mil de antes no tenía orden, así
+   * que la reserva que se quedaba sin recordatorio podía ser precisamente la
+   * de mañana por la mañana — y el recordatorio de la víspera lleva la hora de
+   * recogida: sin él, el cliente no sabe dónde esperar la guagua.
+   */
+  let barrido: ResumenBarrido | null = null;
+  try {
+    barrido = await barridoVigilado<SweepRow>({
+      etiqueta: "mensajeria:recordatorios",
+      modo: "recorrido",
+      idDe: (row) => row.id,
+      leer: async (desde, hasta) => {
+        const { data, error } = await supabaseService()
+          .from("booking")
+          .select(
+            "id, organization_id, booking_number, travel_date, pax_total, currency, balance_amount, " +
+            "pickup_time, pickup_location, order_id, departure_id, customer_id, product_id, status, " +
+            "customer:customer_id (id, first_name, last_name, email, phone, whatsapp, language), " +
+            "product:product_id (name, meeting_point)"
+          )
+          .gte("travel_date", from)
+          .lte("travel_date", to)
+          .not("status", "in", "(cancelled,refunded,partially_refunded,draft)")
+          .order("travel_date", { ascending: true })
+          .order("id", { ascending: true })
+          .range(desde, hasta);
+        if (error) throw new Error(error.message);
+        return (data ?? []) as unknown as SweepRow[];
+      },
+      tratar: async (filas) => { enqueued += await recordarVuelta(filas, companies); },
+    });
+  } catch (err) {
+    console.error("[cron/dispatch-messages] barrido de recordatorios falló:", err);
+    return { enqueued, companies: [...companies], barrido: null };
+  }
+
+  return { enqueued, companies: [...companies], barrido };
+}
+
+/** Encola los recordatorios de una vuelta y devuelve cuántos salieron. */
+async function recordarVuelta(filas: SweepRow[], companies: Set<string>): Promise<number> {
+  let enqueued = 0;
+  for (const row of filas) {
     const companyId = row.organization_id;
     companies.add(companyId);
     try {
@@ -114,7 +148,7 @@ async function sweepReminders(): Promise<{ enqueued: number; companies: string[]
       console.error(`[cron/dispatch-messages] recordatorio de ${row.id} falló:`, err);
     }
   }
-  return { enqueued, companies: [...companies] };
+  return enqueued;
 }
 
 /**
@@ -125,19 +159,71 @@ async function sweepReminders(): Promise<{ enqueued: number; companies: string[]
  * aparte, la primera encuesta de una operadora no saldría nunca —no hay nada
  * encolado hasta que alguien la encola—.
  */
-async function companiesWithFinishedDepartures(now: Date): Promise<string[]> {
-  const desde = new Date(now.getTime() - SWEEP_LOOKBACK_DAYS * 86_400_000).toISOString();
-  const { data, error } = await supabaseService()
-    .from("departure")
-    .select("organization_id")
-    .gte("departure_at", desde)
-    .lte("departure_at", now.toISOString())
-    .limit(2000);
-  if (error) {
-    console.error("[cron/dispatch-messages] no se pudieron leer las salidas terminadas:", error.message);
-    return [];
+/**
+ * Las empresas que tienen algo que salir pronto.
+ *
+ * El manifiesto se encola por SALIDA, igual que la encuesta, así que tampoco
+ * aparece en la cola de mensajes: sin buscarlas aparte, el primer manifiesto de
+ * una operadora no saldría nunca.
+ */
+/**
+ * LAS EMPRESAS DE UNA LECTURA, SIN QUE EL TOPE SE COMA A NINGUNA.
+ *
+ * Las tres lecturas siguientes solo quieren la lista de empresas a las que hay
+ * que repasar; las filas dan igual. Pero el tope de dos mil caía sobre las
+ * FILAS: bastaba con que una operadora grande llenara la página para que otra
+ * no saliera en la lista y se quedara sin encolar NADA —ni encuesta, ni
+ * manifiesto, ni recordatorio—. Y sin orden declarado, era siempre la misma.
+ *
+ * Recorrido, ordenado por fecha, hasta el final.
+ */
+async function empresasDe(
+  etiqueta: string,
+  // El constructor de PostgREST es «thenable» pero no una promesa entera:
+  // `PromiseLike` es lo que acepta las dos formas sin un `as` que tape otra cosa.
+  consulta: (desde: number, hasta: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }>
+): Promise<string[]> {
+  const empresas = new Set<string>();
+  try {
+    await barridoVigilado<{ id?: string; organization_id: string }>({
+      etiqueta,
+      modo: "recorrido",
+      idDe: (row) => String(row.id ?? row.organization_id),
+      leer: async (desde, hasta) => {
+        const { data, error } = await consulta(desde, hasta);
+        if (error) throw new Error(error.message);
+        return (data ?? []) as { id?: string; organization_id: string }[];
+      },
+      tratar: async (filas) => { for (const f of filas) empresas.add(String(f.organization_id)); },
+    });
+  } catch (err) {
+    console.error(`[cron/dispatch-messages] ${etiqueta}:`, err);
   }
-  return [...new Set((data ?? []).map((r) => String(r.organization_id)))];
+  return [...empresas];
+}
+
+async function companiesWithUpcomingDepartures(now: Date): Promise<string[]> {
+  const hasta = new Date(now.getTime() + VENTANA_DE_ENVIO_HORAS * 3_600_000).toISOString();
+  return empresasDe("mensajeria:salidas-proximas", (desde, fin) => supabaseService()
+    .from("departure")
+    .select("id, organization_id")
+    .gte("departure_at", now.toISOString())
+    .lte("departure_at", hasta)
+    .order("departure_at", { ascending: true })
+    .order("id", { ascending: true })
+    .range(desde, fin));
+}
+
+async function companiesWithFinishedDepartures(now: Date): Promise<string[]> {
+  const inicio = new Date(now.getTime() - SWEEP_LOOKBACK_DAYS * 86_400_000).toISOString();
+  return empresasDe("mensajeria:salidas-terminadas", (desde, fin) => supabaseService()
+    .from("departure")
+    .select("id, organization_id")
+    .gte("departure_at", inicio)
+    .lte("departure_at", now.toISOString())
+    .order("departure_at", { ascending: true })
+    .order("id", { ascending: true })
+    .range(desde, fin));
 }
 
 export async function GET(req: NextRequest) {
@@ -157,13 +243,14 @@ export async function GET(req: NextRequest) {
 
     // Solo las empresas con algo que mandar: recorrerlas todas sería una
     // consulta por inquilino en cada pasada para nada.
-    const { data: pending, error } = await supabaseService()
+    const pendientes = await empresasDe("mensajeria:cola", (desde, fin) => supabaseService()
       .from("message")
-      .select("organization_id")
+      .select("id, organization_id")
       .eq("status", "queued")
       .lte("scheduled_at", now)
-      .limit(2000);
-    if (error) throw new Error(error.message);
+      .order("scheduled_at", { ascending: true })
+      .order("id", { ascending: true })
+      .range(desde, fin));
 
     // Antes de despachar, el barrido de recordatorios: las reservas que salen
     // en las próximas 48 h y todavía no tienen aviso encolado. Cubre la cartera
@@ -173,13 +260,19 @@ export async function GET(req: NextRequest) {
     const reminded = await sweepReminders();
 
     const companyIds = [...new Set([
-      ...(pending ?? []).map((r) => r.organization_id as string),
+      ...pendientes,
       ...reminded.companies,
       // Y las que operaron una salida hace poco: su encuesta todavía no está
       // encolada, así que no aparecería por la cola de mensajes.
       ...(await companiesWithFinishedDepartures(new Date())),
+      // Y las que tienen una salida a la vuelta de la esquina: su manifiesto
+      // tampoco está encolado todavía.
+      ...(await companiesWithUpcomingDepartures(new Date())),
     ])];
-    const report = { companies: companyIds.length, sent: 0, failed: 0, waiting: 0, surveys: 0, surveysExpired: 0 };
+    const report = {
+      companies: companyIds.length, sent: 0, failed: 0, waiting: 0,
+      surveys: 0, surveysExpired: 0, manifests: 0,
+    };
     const notConfigured = new Set<string>();
 
     for (const companyId of companyIds) {
@@ -215,6 +308,28 @@ export async function GET(req: NextRequest) {
         console.error(`[cron/dispatch-messages] caducidad de encuestas de ${companyId} falló:`, err);
       }
 
+      /**
+       * El manifiesto de lo que sale pronto, también ANTES de despachar: lo que
+       * se encole aquí sale en esta misma pasada. Con la cadencia diaria,
+       * dejarlo para después sería mandarle al chofer la lista un día tarde.
+       *
+       * Con la fuente DE SERVICIO. Escrito contra las ayudas de inquilino no
+       * habría fallado: habría leído cero salidas y dicho que no había nada que
+       * mandar, que es el fallo que no se nota.
+       *
+       * Y con su propio try, como los otros dos: un manifiesto que no se pudo
+       * componer no puede dejar a una empresa sin el recordatorio que lleva la
+       * hora de recogida de sus clientes.
+       */
+      try {
+        const manifiestos = await barrerManifiestos(
+          company, companyId, new Date(), serviceStore(), fuenteDeServicio()
+        );
+        report.manifests += manifiestos.encolados;
+      } catch (err) {
+        console.error(`[cron/dispatch-messages] manifiestos de ${companyId} fallaron:`, err);
+      }
+
       try {
         const result = await dispatchQueue(company, companyId, 100, serviceStore());
         report.sent += result.sent;
@@ -229,7 +344,8 @@ export async function GET(req: NextRequest) {
 
     console.log(
       `[cron/dispatch-messages] ${report.companies} empresas · ${report.sent} enviados · ` +
-      `${report.failed} fallidos · ${report.waiting} en espera · ${report.surveys} encuestas`
+      `${report.failed} fallidos · ${report.waiting} en espera · ${report.surveys} encuestas · ` +
+      `${report.manifests} manifiestos`
     );
 
     await finishJobRun(runId, {
@@ -237,6 +353,7 @@ export async function GET(req: NextRequest) {
       summary: {
         companies: report.companies, sent: report.sent, failed: report.failed,
         waiting: report.waiting, surveys: report.surveys, surveysExpired: report.surveysExpired,
+        manifests: report.manifests,
       },
     });
 

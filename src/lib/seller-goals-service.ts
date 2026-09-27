@@ -8,6 +8,8 @@ import {
   type Actuals, type GoalRow, type ProgressLine, type DateRange, type BonusTotals,
 } from "@/lib/seller-goals";
 import type { Currency } from "@/lib/types";
+import { limitesConsulta } from "@/lib/report";
+import { companyTimeZone } from "@/lib/time";
 
 /**
  * Las metas contra la base.
@@ -66,7 +68,13 @@ async function sellersInScope(companyId: string, scope: GoalScope): Promise<stri
   if (scope.sellerTypeId) query = query.eq("seller_type_id", scope.sellerTypeId);
   if (scope.branchId) query = query.eq("branch_id", scope.branchId);
 
-  const { data } = await query;
+  const { data, error } = await query;
+  // Sin esto, un fallo de lectura devuelve «este alcance no cubre a nadie» y
+  // TODAS las metas de grupo salen al 0 % en el tablero, sin una línea en
+  // ningún sitio que lo explique.
+  if (error) {
+    console.error(`[metas] no se pudo resolver el alcance de la meta en ${companyId}: ${error.message}`);
+  }
   return (data ?? []).map((r) => r.id as string);
 }
 
@@ -77,10 +85,33 @@ async function sellersInScope(companyId: string, scope: GoalScope): Promise<stri
  * porque son dos cosas distintas: captar a alguien que no compra sigue siendo
  * trabajo, y es justamente lo que una meta de captación quiere premiar.
  */
+/**
+ * EL DÍA DE LA META ES EL DE LA EMPRESA, NO EL DEL SERVIDOR.
+ *
+ * El rango salía como `${range.from}T00:00:00.000Z` … `T23:59:59.999Z`, o sea
+ * cortado en UTC. Una venta de las 21:00 del 30 de septiembre en Santo Domingo
+ * son las 01:00 UTC del 1 de octubre: quedaba FUERA de la meta de septiembre, y
+ * dentro entraban las ventas de las últimas cuatro horas del 31 de agosto. El
+ * vendedor pierde de su premio lo que vendió la última noche —que es cuando se
+ * vende— y se le apunta lo que hizo la víspera del primer día.
+ *
+ * Aquí no es una imprecisión de informe: de este número depende si alguien
+ * cobra un bono. Se corta con el mismo ayudante semiabierto que usan todos los
+ * listados. Sin zona declarada se cae al corte de antes.
+ */
+function limitesDelRango(range: DateRange, timeZone?: string | null): { from: string; to: string } {
+  if (!timeZone) {
+    return { from: `${range.from}T00:00:00.000Z`, to: `${range.to}T23:59:59.999Z` };
+  }
+  const { gte, lt } = limitesConsulta({ desde: range.from, hasta: range.to }, timeZone);
+  return { from: gte, to: lt };
+}
+
 export async function actualsFor(
   companyId: string,
   scope: GoalScope,
-  range: DateRange
+  range: DateRange,
+  timeZone?: string | null
 ): Promise<Actuals> {
   const sellers = await sellersInScope(companyId, scope);
   // Un alcance que no cubre a nadie —un tipo de vendedor sin gente— tiene sus
@@ -89,8 +120,7 @@ export async function actualsFor(
     return { signups: 0, bookings: 0, sales: 0, pax: 0, revenue: 0 };
   }
 
-  const from = `${range.from}T00:00:00.000Z`;
-  const to = `${range.to}T23:59:59.999Z`;
+  const { from, to } = limitesDelRango(range, timeZone);
   const sb = supabaseService();
 
   // ── captados: el embudo (0058) ────────────────────────────────────────────
@@ -100,10 +130,16 @@ export async function actualsFor(
     .eq("organization_id", companyId)
     .eq("stage", "signup")
     .gte("created_at", from)
-    .lte("created_at", to)
+    // Menor ESTRICTO: `limitesConsulta` devuelve el instante del día siguiente,
+    // que no pertenece al rango. Con `lte` entraría el primer momento del día
+    // de después, y una venta de medianoche contaría en dos metas.
+    .lt("created_at", to)
     .limit(MAX_GOAL_ROWS);
   if (sellers) signupQuery = signupQuery.in("seller_id", sellers);
-  const { data: signupRows } = await signupQuery;
+  const { data: signupRows, error: errorDeCaptados } = await signupQuery;
+  if (errorDeCaptados) {
+    console.error(`[metas] no se pudieron leer los captados: ${errorDeCaptados.message}`);
+  }
 
   // Personas, no eventos: el mismo cliente captado dos veces es uno.
   const captados = new Set<string>();
@@ -123,11 +159,16 @@ export async function actualsFor(
     .eq("organization_id", companyId)
     .in("status", COUNTED_BOOKING as unknown as string[])
     .gte("created_at", from)
-    .lte("created_at", to)
+    .lt("created_at", to)
     .limit(MAX_GOAL_ROWS);
   if (sellers) bookingQuery = bookingQuery.in("seller_id", sellers);
   if (scope.productId) bookingQuery = bookingQuery.eq("product_id", scope.productId);
-  const { data: bookingRows } = await bookingQuery;
+  const { data: bookingRows, error: errorDeReservas } = await bookingQuery;
+  // Cero por una lectura rota es una meta que parece sin empezar. No bloquea
+  // —el bono lo otorga una persona— pero tiene que poder mirarse.
+  if (errorDeReservas) {
+    console.error(`[metas] no se pudieron leer las reservas de la meta: ${errorDeReservas.message}`);
+  }
 
   let rows = bookingRows ?? [];
 
@@ -179,7 +220,7 @@ export interface GoalProgress {
 /** El progreso de todas las metas vivas de una empresa. */
 export async function goalsWithProgress(
   companyId: string,
-  options: { sellerId?: string | null; now?: Date } = {}
+  options: { sellerId?: string | null; now?: Date; timeZone?: string | null } = {}
 ): Promise<GoalProgress[]> {
   const filter: Record<string, unknown> = { status: "active" };
   const goals = await tenantQuery<GoalProgress["goal"]>(companyId, "seller_goal", {
@@ -203,7 +244,7 @@ export async function goalsWithProgress(
     if (options.sellerId && scope.sellerId && scope.sellerId !== options.sellerId) continue;
 
     const range = rangeOf(goal, options.now);
-    const actuals = await actualsFor(companyId, scope, range);
+    const actuals = await actualsFor(companyId, scope, range, options.timeZone);
     const lines = progressOf(goal, actuals);
     out.push({ goal, range, lines, achieved: isAchieved(lines), overall: overallPct(lines) });
   }
@@ -252,11 +293,47 @@ export async function awardGoalBonus(
   } as never);
   if (!goal) throw Object.assign(new Error("La meta no existe"), { status: 404 });
 
-  const range = rangeOf(goal);
-  const actuals = await actualsFor(ctx.companyId, {
-    sellerId: input.sellerId,
+  /**
+   * EL ALCANCE ES EL DE LA META, NO EL QUE VENGA EN LA PETICIÓN.
+   *
+   * ──────────────────────────────────────────────────────────────────────────
+   * LO QUE PASABA
+   *
+   * Aquí se armaba `{ sellerId: input.sellerId, productId: ... }`, tirando el
+   * `seller_type` de la meta y sustituyendo su vendedor por el del cuerpo de la
+   * petición. Dos cosas, las dos caras:
+   *
+   *  · una meta de UN vendedor se podía cobrar a nombre de OTRO. El
+   *    `goal.seller` no se comparaba con `input.sellerId` en ningún sitio: si
+   *    el segundo daba los números por su cuenta, se le pagaba un premio que no
+   *    era suyo;
+   *  · y una meta de GRUPO —«los hoteles», una sucursal— se juzgaba contra las
+   *    cifras de una sola persona, así que el tablero y el botón de otorgar
+   *    decidían cosas distintas sobre la misma meta. Es exactamente lo que el
+   *    comentario de `attachBonusesToSettlement` dice que no puede pasar: dos
+   *    sitios calculando el mismo total acaban discrepando.
+   *
+   * El alcance se arma igual que en el tablero, y el vendedor que cobra tiene
+   * que estar DENTRO de él.
+   */
+  const scope: GoalScope = {
+    sellerId: refOf(goal.seller),
+    sellerTypeId: refOf(goal.seller_type),
     productId: refOf(goal.product),
-  }, range);
+  };
+  const alcanzados = await sellersInScope(ctx.companyId, scope);
+  if (alcanzados !== null && !alcanzados.includes(input.sellerId)) {
+    throw Object.assign(
+      new Error("Ese vendedor no entra en el alcance de esta meta."),
+      { status: 409 }
+    );
+  }
+
+  const range = rangeOf(goal);
+  const actuals = await actualsFor(
+    ctx.companyId, scope, range,
+    companyTimeZone(ctx.company as { timezone?: string | null } | null)
+  );
   const lines = progressOf(goal, actuals);
 
   if (!isAchieved(lines)) {
@@ -341,8 +418,31 @@ export async function attachBonusesToSettlement(
     });
   }
 
-  // Se leen DESPUÉS de engancharlos: los que acaban de pasar a `settled` son
-  // justo los que esta liquidación paga, y antes del update no contarían.
-  const { totals } = await bonusesOf(ctx.companyId, sellerId);
-  return totals;
+  /**
+   * Y SE SUMAN LOS DE ESTA LIQUIDACIÓN, NO TODOS LOS DEL VENDEDOR.
+   *
+   * ──────────────────────────────────────────────────────────────────────────
+   * LO QUE PASABA, Y SALÍA POR EL BANCO
+   *
+   * Esto llamaba a `bonusesOf(sellerId)`, que lee los doscientos bonos más
+   * recientes de esa persona —de cualquier liquidación y de cualquier fecha— y
+   * `bonusTotals` cuenta todo lo que esté `approved` **o `settled`**. O sea que
+   * los bonos ya pagados en liquidaciones ANTERIORES volvían a sumarse aquí.
+   *
+   * Y de aquí sale `pending_total`, que es lo que se transfiere: la segunda
+   * liquidación de un vendedor le pagaba otra vez los bonos de la primera, la
+   * tercera los de las dos, y así. Nadie lo ve, porque cada liquidación por
+   * separado cuadra consigo misma.
+   *
+   * El comentario que había decía que se leían después «porque antes del update
+   * no contarían», y no era verdad por partida doble: `approved` ya contaba, y
+   * lo que sobraba no era lo de antes del update sino lo de otras
+   * liquidaciones. Se leen por `settlement`, que es la pregunta de verdad: qué
+   * paga ESTA.
+   */
+  const deEsta = await tenantQuery<Record<string, unknown>>(ctx.companyId, "seller_bonus", {
+    _filter: { seller: sellerId, settlement: settlementId },
+    _limit: 200,
+  });
+  return bonusTotals(deEsta as never);
 }

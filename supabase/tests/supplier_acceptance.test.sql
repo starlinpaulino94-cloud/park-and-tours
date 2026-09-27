@@ -23,6 +23,9 @@ declare
   v_prov2 uuid;
   v_dep   uuid;
   v_rec   uuid;
+  v_prod  uuid;
+  v_veh   uuid;
+  v_veh2  uuid;
   v_tok   uuid;
   r       record;
   res     jsonb;
@@ -30,20 +33,41 @@ declare
   v_plazo  timestamptz;
   v_salida timestamptz := now() + interval '3 hours';
 begin
-  insert into organizations (name) values ('Prueba 0087') returning id into v_org;
+  -- `kind` es `not null` sin valor por defecto desde 0002: sin nombrarlo, este
+  -- insert nunca entró y esta prueba no llegó a correr ni una vez.
+  insert into organizations (name, kind) values ('Prueba 0087', 'tenant') returning id into v_org;
   insert into supplier (organization_id, name, on_deadline_expiry)
     values (v_org, 'Transporte A', 'alert') returning id into v_prov;
   insert into supplier (organization_id, name, on_deadline_expiry)
     values (v_org, 'Transporte B', 'tacit') returning id into v_prov2;
-  insert into departure (organization_id, departure_at)
-    values (v_org, v_salida) returning id into v_dep;
+
+  -- ── EL PROVEEDOR DE UN SERVICIO SE DERIVA, NO SE TECLEA ──────────────────
+  --
+  -- `app.fill_supplier_from_resource` (0085) calcula `supplier_id` a partir del
+  -- vehículo —y si no hay, del chofer— en CADA inserción, así que escribirlo a
+  -- mano no sirve de nada: el disparador lo pisa con el que salga del recurso, o
+  -- con nulo si no hay ninguno.
+  --
+  -- Esta prueba lo hacía a mano y por eso no podía pasar: el servicio nacía sin
+  -- proveedor y el disparador de 0087 lo dejaba, correctamente, en
+  -- `not_required`. Lo que se asigna es la guagua.
+  insert into vehicle (organization_id, supplier_id, plate, name)
+    values (v_org, v_prov, 'A-0001', 'Guagua de A') returning id into v_veh;
+  insert into vehicle (organization_id, supplier_id, plate, name)
+    values (v_org, v_prov2, 'B-0001', 'Guagua de B') returning id into v_veh2;
+  -- La salida necesita su producto: `departure.product_id` es `not null` desde
+  -- 0004, y sin él este bloque tampoco llegaba a entrar.
+  insert into product (organization_id, name, base_price)
+    values (v_org, 'Excursión de prueba', 100) returning id into v_prod;
+  insert into departure (organization_id, product_id, departure_at)
+    values (v_org, v_prod, v_salida) returning id into v_dep;
 
   -- ── asignar es preguntar ──────────────────────────────────────────────────
   -- Se inserta SIN tocar `acceptance`: lo tiene que poner el disparador. Si lo
   -- pusiera la aplicación, el día que se asigne desde la mesa de despacho o
   -- desde una importación el servicio saldría sin que nadie lo hubiera pedido.
-  insert into departure_resource (organization_id, departure_id, supplier_id, resource_role)
-    values (v_org, v_dep, v_prov, 'vehicle') returning id into v_rec;
+  insert into departure_resource (organization_id, departure_id, vehicle_id, resource_role)
+    values (v_org, v_dep, v_veh, 'vehicle') returning id into v_rec;
 
   select acceptance, acceptance_deadline into v_estado, v_plazo
     from departure_resource where id = v_rec;
@@ -65,7 +89,7 @@ begin
     values (v_org, v_prov, 'departure_resource', v_rec, 'hash-de-prueba', v_salida)
     returning id into v_tok;
 
-  update departure_resource set supplier_id = v_prov2 where id = v_rec;
+  update departure_resource set vehicle_id = v_veh2 where id = v_rec;
 
   select revoked_at is not null as revocado into r from supplier_response_token where id = v_tok;
   if not r.revocado then
@@ -78,7 +102,7 @@ begin
   update departure_resource
      set acceptance = 'accepted', confirmation_number = 'CNF-PRUEBA-1'
    where id = v_rec;
-  update departure_resource set supplier_id = v_prov where id = v_rec;
+  update departure_resource set vehicle_id = v_veh where id = v_rec;
   select acceptance, confirmation_number is null as sin_numero into r
     from departure_resource where id = v_rec;
   if r.acceptance is distinct from 'pending' or not r.sin_numero then
@@ -136,7 +160,7 @@ begin
   end if;
 
   -- ── sin proveedor no hay nada que preguntar ───────────────────────────────
-  update departure_resource set supplier_id = null where id = v_rec;
+  update departure_resource set vehicle_id = null where id = v_rec;
   select acceptance, acceptance_deadline is null as sin_plazo into r
     from departure_resource where id = v_rec;
   if r.acceptance is distinct from 'not_required' or not r.sin_plazo then

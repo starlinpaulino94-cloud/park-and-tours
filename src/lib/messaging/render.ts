@@ -21,7 +21,13 @@ export type TemplateKey =
   | "payment_receipt"
   | "balance_due"
   | "quote_sent"
-  | "post_tour_thanks";
+  | "post_tour_thanks"
+  /**
+   * El manifiesto de la salida hacia quien la opera: el guía, el chofer y la
+   * oficina del proveedor. Es la única plantilla que NO va a un cliente, y por
+   * eso su contenido depende del público (ver `src/lib/manifiesto-envio.ts`).
+   */
+  | "manifest_dispatch";
 
 export type TemplateVars = Record<string, string | number | null | undefined>;
 

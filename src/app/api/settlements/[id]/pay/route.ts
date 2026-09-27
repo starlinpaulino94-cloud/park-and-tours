@@ -9,6 +9,7 @@ import { postSettlementPayment } from "@/lib/ledger-events";
 import { payBlocker, stateAfterPayment, PAY_BLOCK_MESSAGE } from "@/lib/supplier-settlement";
 import { refId, type Settlement } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -112,17 +113,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     let closedCommissions = 0;
     let closedServices = 0;
     if (state.status === "paid") {
-      const commissions = await tenantQuery<{ _id: string }>(ctx.companyId, "commission", {
-        _filter: { settlement: id, status: "settled" }, _limit: 1000,
-      });
+      /**
+       * CERRAR LO QUE LA LIQUIDACIÓN PAGA — TODO.
+       *
+       * Con el tope de mil, las comisiones que quedaban fuera se quedaban en
+       * `settled` para siempre: pagadas de verdad, pero sin marcar. Y no vuelven
+       * nunca, porque la generación solo mira `pending` y `approved`. El
+       * vendedor cobró y su histórico dice que se le debe.
+       */
+      const commissions = await leerTodoElRecurso<{ _id: string }>("commission", (limite, salto) =>
+        tenantQuery(ctx.companyId, "commission", {
+          _filter: { settlement: id, status: "settled" },
+          _sort: { _id: "asc" },
+          _limit: limite, _offset: salto,
+        }));
       for (const commission of commissions) {
         await tenantUpdate(ctx.companyId, "commission", commission._id, { status: "paid" });
         closedCommissions++;
       }
 
-      const services = await tenantQuery<{ _id: string }>(ctx.companyId, "booking_cost", {
-        _filter: { settlement: id, status: "settled" }, _limit: 1000,
-      });
+      // Y lo mismo con los servicios del proveedor.
+      const services = await leerTodoElRecurso<{ _id: string }>("booking_cost", (limite, salto) =>
+        tenantQuery(ctx.companyId, "booking_cost", {
+          _filter: { settlement: id, status: "settled" },
+          _sort: { _id: "asc" },
+          _limit: limite, _offset: salto,
+        }));
       for (const service of services) {
         await tenantUpdate(ctx.companyId, "booking_cost", service._id, { status: "paid" });
         closedServices++;

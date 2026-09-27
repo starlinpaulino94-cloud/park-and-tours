@@ -68,7 +68,23 @@ export async function recordTouch(input: TouchInput): Promise<string | null> {
       recent = input.visitorId
         ? recent.eq("visitor_id", input.visitorId)
         : recent.eq("customer_id", input.customerId!);
-      const { data: already } = await recent;
+      /**
+       * Si esta lectura falla se escribe igual, y es lo correcto AQUÍ.
+       *
+       * La deduplicación existe para que la tabla no crezca sin techo por una
+       * superficie que cualquiera puede llamar, no para que el recuento salga
+       * bien: el embudo cuenta personas, no filas, así que una visita repetida
+       * no desvía ningún número. Ante la duda se prefiere una fila de más a
+       * perder el paso que dice quién trajo a este cliente.
+       *
+       * Es justo lo contrario de `recordPurchaseOnce`, y la diferencia es que
+       * allí la fila de más SÍ desvía el número. Se dice en la consola para que
+       * un crecimiento raro de la tabla tenga dónde mirarse.
+       */
+      const { data: already, error: errorDeVisitas } = await recent;
+      if (errorDeVisitas) {
+        console.error("[attribution] no se pudo comprobar si la visita era repetida:", errorDeVisitas.message);
+      }
       if (already && already.length > 0) return already[0].id as string;
     }
 
@@ -149,13 +165,31 @@ export async function recordPurchaseOnce(
   extra: { customerId?: string | null; channel?: string | null } = {}
 ): Promise<void> {
   try {
-    const { data } = await supabaseService()
+    const { data, error } = await supabaseService()
       .from("seller_attribution")
       .select("id")
       .eq("organization_id", companyId)
       .eq("order_id", orderId)
       .eq("stage", "purchase")
       .limit(1);
+    /**
+     * NO PODER COMPROBARLO NO ES «TODAVÍA NO HAY NINGUNA».
+     *
+     * PostgREST no lanza: devolvía `{ data: null, error }`, el error se
+     * descartaba y la comprobación caía de largo hasta escribir. O sea que la
+     * regla que este comentario explica —una compra por venta— se apagaba sola
+     * justo cuando la base va mal, y encima de la peor manera: `syncOrderTotals`
+     * corre con CADA pago, así que la venta cobrada en tres plazos deja tres
+     * compras y el vendedor que cobra a plazos parece el triple de bueno.
+     *
+     * Aquí se falla cerrado, al revés que la visita de `recordTouch`: un paso
+     * de embudo que falta es un hueco en un informe, y una compra de más es un
+     * número equivocado con toda la pinta de bueno. El segundo no se ve.
+     */
+    if (error) {
+      console.error("[attribution] no se pudo comprobar si la venta ya estaba en el embudo:", error.message);
+      return;
+    }
     if (data && data.length > 0) return;
 
     await recordTouch({
@@ -197,6 +231,21 @@ export interface ResolvedLink {
 export async function resolveLinkBySlug(slug: string): Promise<ResolvedLink | null> {
   const clean = String(slug || "").trim();
   if (!clean || clean.length > 64) return null;
+  /**
+   * EL SLUG ES UN SLUG, NO UN PATRÓN.
+   *
+   * Abajo se compara con `ilike`, que es lo correcto —el código va impreso bajo
+   * un QR y quien lo teclea puede escribirlo en minúsculas—, pero `ilike`
+   * interpreta `%` y `_`: son comodines, y esto viene de la URL sin tocar. Con
+   * `/e/%` el patrón casa con TODOS los enlaces activos de la base, y con `_`
+   * se pueden tantear slugs de uno en uno. Cuando casa exactamente uno, quien
+   * lo probó se lleva la atribución de ese vendedor sin haber tenido nunca su
+   * QR delante.
+   *
+   * `slugify` solo produce `[A-Z0-9]`, así que exigir eso no rechaza ningún
+   * enlace que exista: rechaza justo lo que nunca fue un enlace.
+   */
+  if (!/^[A-Za-z0-9]+$/.test(clean)) return null;
 
   const { data: link } = await supabaseService()
     .from("seller_link")
@@ -284,6 +333,36 @@ export async function resolveOrderAttribution(
     }
 
     const results = await Promise.all(queries);
+
+    /**
+     * UN CONJUNTO INCOMPLETO NO DECIDE QUIÉN COBRA.
+     *
+     * Las dos consultas —por ficha y por cookie— se descartaban con
+     * `for (const { data } of results)`, así que un error en cualquiera de las
+     * dos salía de aquí como «ese cliente no tiene histórico». Y eso tiene dos
+     * caras, las dos malas:
+     *
+     *  · devolver `null` es decir que la venta es DIRECTA, y el docblock de
+     *    arriba dice que eso «es la verdad». Con una lectura rota no es la
+     *    verdad: es el conserje que trajo al cliente quedándose sin comisión,
+     *    en silencio y sin nada que revisar después;
+     *  · y con política de último toque, resolver sobre la mitad de los hechos
+     *    es peor todavía: el ganador puede ser OTRO vendedor, y entonces no se
+     *    pierde una comisión, se le paga a quien no la hizo.
+     *
+     * Así que si falla una, no se resuelve con la otra. Se dice y se devuelve
+     * sin atribución, que sigue siendo lo único que no tumba la venta.
+     */
+    const rota = results.find((r) => r.error);
+    if (rota) {
+      console.error(
+        "[attribution] no se pudo leer el histórico completo de atribución " +
+        `(cliente ${who.customerId ?? "—"}, visitante ${who.visitorId ?? "—"}): ${rota.error?.message}. ` +
+        "La venta queda SIN atribuir en vez de atribuirse a medias."
+      );
+      return null;
+    }
+
     const seen = new Set<string>();
     const facts: Record<string, unknown>[] = [];
     for (const { data } of results) {
@@ -351,11 +430,17 @@ export async function funnelReport(
   const sellerIds = [...new Set(rows.map((r) => r.seller_id as string).filter(Boolean))];
   const names = new Map<string, string>();
   if (sellerIds.length > 0) {
-    const { data: sellers } = await supabaseService()
+    // Si esta falla, el ranking sale con todo el mundo llamándose «Vendedor» y
+    // nadie sabe por qué. No tumba el informe —los números siguen siendo
+    // buenos— pero se dice.
+    const { data: sellers, error: errorDeNombres } = await supabaseService()
       .from("seller")
       .select("id, first_name, last_name")
       .eq("organization_id", companyId)
       .in("id", sellerIds);
+    if (errorDeNombres) {
+      console.error("[attribution] no se pudieron leer los nombres de los vendedores:", errorDeNombres.message);
+    }
     for (const s of sellers ?? []) {
       names.set(
         s.id as string,

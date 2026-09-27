@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { supabaseService } from "@/lib/supabase/service";
 import { assertSameOriginMutation } from "@/lib/csrf";
+import { recorteDe, TOPE_INFORME } from "@/lib/barrido";
 
 const EDITABLE = [
   "name", "code", "description", "monthly_price", "yearly_price", "currency",
@@ -37,7 +38,7 @@ export async function GET() {
     const sb = supabaseService();
     const [{ data: plans, error: plansError }, { data: companies, error: companiesError }, { data: invoices, error: invoicesError }] = await Promise.all([
       sb.from("plan").select("*").order("sort_order", { ascending: true }).limit(100),
-      sb.from("organizations").select("id, plan_id, subscription_status, status, name").eq("kind", "tenant").limit(1000),
+      sb.from("organizations").select("id, plan_id, subscription_status, status, name").eq("kind", "tenant").limit(TOPE_INFORME),
       sb.from("subscription_invoice").select("*").order("issued_at", { ascending: false }).limit(500),
     ]);
     if (plansError) throw plansError;
@@ -60,7 +61,15 @@ export async function GET() {
         },
       };
     });
-    return ok({ plans: rows, invoices: (invoices || []).slice(0, 60).map(mapRow), unassigned_companies: (companies || []).filter((c) => !c.plan_id).length });
+    // El MRR por plan se cuenta sobre esta lista de inquilinos: pasado el tope,
+    // la plataforma se declara más pequeña y factura menos de lo que factura.
+    // No se lanza —es una consola, no una liquidación— pero se dice.
+    return ok({
+      plans: rows,
+      invoices: (invoices || []).slice(0, 60).map(mapRow),
+      unassigned_companies: (companies || []).filter((c) => !c.plan_id).length,
+      recorte: recorteDe((companies || []).length),
+    });
   } catch (err) {
     return fail(err);
   }

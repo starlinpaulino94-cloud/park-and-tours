@@ -6,6 +6,7 @@ import {
   fingerprintOf, safeMessage, safeContext, sortBySeverity,
   type HealthCheck, type HealthLevel, type JobRunLite, type IncidentLite,
 } from "@/lib/system-health";
+import { barrer, avisoDeTope, type OpcionesDeBarrido, type ResumenBarrido } from "@/lib/barrido";
 
 /**
  * LO QUE HABLA CON LA BASE.
@@ -68,6 +69,32 @@ export async function finishJobRun(
   } catch (err) {
     console.error("[salud] no se pudo cerrar el diario:", err);
   }
+}
+
+/**
+ * Un barrido que, si no llega al final, LO DICE.
+ *
+ * `barrer` recorre y devuelve el resumen sin opinar. Esto es lo que convierte
+ * un resumen en un aviso: el techo y el atasco dejan de ser un número en un
+ * JSON que nadie abre y pasan a ser un incidente en la pantalla de salud, con
+ * la misma forma que cualquier otro fallo del sistema.
+ *
+ * Es la diferencia entera de esta ola. El tope de antes también era un límite;
+ * lo que lo hacía peligroso no era el número, era que no se oía.
+ */
+export async function barridoVigilado<T>(opciones: OpcionesDeBarrido<T>): Promise<ResumenBarrido> {
+  const resumen = await barrer(opciones);
+  if (resumen.truncado || resumen.atascado) {
+    const aviso = avisoDeTope(opciones.etiqueta, resumen);
+    console.error(`[barrido] ${aviso}`);
+    await reportIncident({
+      source: `barrido:${opciones.etiqueta}`,
+      error: aviso,
+      level: "error",
+      context: resumen as unknown as Record<string, unknown>,
+    });
+  }
+  return resumen;
 }
 
 /** Lo que hizo un trabajo PARA UNA EMPRESA, que es lo que a esa empresa le importa. */
@@ -153,15 +180,39 @@ export async function reportIncident(input: {
 /** Cuántos incidentes abiertos se miran para decidir el estado. */
 const INCIDENT_WINDOW = 200;
 
+/**
+ * La última ejecución de cada trabajo.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * EL ERROR SE MIRA, Y ANTES NO
+ *
+ * Esto destructuraba solo `data` y tiraba `error`. PostgREST no lanza: cuando la
+ * consulta falla devuelve `{ data: null, error }`, así que la promesa se resolvía
+ * tan tranquila, el mapa salía vacío —y el `catch` del llamante, que estaba
+ * puesto creyendo que fallaría lanzando, no se ejecutaba nunca—.
+ *
+ * Un mapa vacío no significa «no hay diario»: significa, para `jobHealth`,
+ * **«nunca se ha ejecutado»**, en rojo, para los CINCO trabajos esperados. O sea
+ * que un fallo al leer una tabla se convertía en cinco diagnósticos inventados
+ * sobre cinco crons que probablemente estaban bien, y el informe entero en `down`.
+ *
+ * Es el fallo que este módulo dice en su cabecera que no puede permitirse —leer
+ * cero filas y dar un veredicto— solo que al revés: en vez de decir que todo va
+ * bien, acusa a todo el mundo. Las dos mentiras cuestan lo mismo.
+ */
 async function lastRuns(): Promise<Map<string, JobRunLite>> {
   const sb = supabaseService();
   const out = new Map<string, JobRunLite>();
-  const { data } = await sb
+  const { data, error } = await sb
     .from("job_run")
     .select("job, started_at, finished_at, status, error")
+    // Las porciones por empresa (`recordOrgSlice`) llevan `organization_id` y no
+    // son la ejecución del trabajo: contarlas haría parecer reciente un trabajo
+    // que no corre desde hace días.
     .is("organization_id", null)
     .order("started_at", { ascending: false })
     .limit(400);
+  if (error) throw new Error(error.message);
   for (const row of data ?? []) {
     // La primera que aparece de cada trabajo es la más reciente: viene ordenado.
     if (!out.has(row.job)) out.set(row.job, row as JobRunLite);
@@ -223,10 +274,34 @@ export async function healthReport(): Promise<{
     return { key: "auth_hook", label: "Emisión de sesiones", level: "ok", detail: "El enganche del token está bien declarado." };
   });
 
-  // 3. ¿Corrieron los trabajos de anoche?
-  const runs = await lastRuns().catch(() => new Map<string, JobRunLite>());
-  for (const expectation of JOB_EXPECTATIONS) {
-    checks.push(jobHealth(expectation, runs.get(expectation.job) ?? null));
+  /**
+   * 3. ¿Corrieron los trabajos de anoche?
+   *
+   * Si el diario no se puede leer se dice ESO, en una sola comprobación, y no se
+   * emiten cinco «nunca se ha ejecutado». «No lo sé» y «no corrió» son respuestas
+   * distintas que llevan a sitios distintos: la primera se arregla mirando la
+   * base, la segunda despertando a alguien para relanzar cinco crons que
+   * seguramente están bien.
+   */
+  const started = Date.now();
+  let runs: Map<string, JobRunLite> | null = null;
+  let fallo: string | null = null;
+  try {
+    runs = await lastRuns();
+  } catch (err) {
+    fallo = safeMessage(err);
+  }
+
+  if (!runs) {
+    checks.push({
+      key: "jobs", label: "Diario de trabajos", level: "down",
+      detail: `No se pudo leer: ${fallo}. No se sabe si los trabajos corrieron.`,
+      ms: Date.now() - started,
+    });
+  } else {
+    for (const expectation of JOB_EXPECTATIONS) {
+      checks.push(jobHealth(expectation, runs.get(expectation.job) ?? null));
+    }
   }
 
   // 4. ¿Hay algo fallando ahora mismo?

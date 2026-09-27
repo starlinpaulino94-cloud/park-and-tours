@@ -4,6 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import type { Product } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { writeAudit } from "@/lib/audit";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
@@ -54,13 +55,25 @@ export async function POST(req: NextRequest) {
     const days = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1;
     if (days > 366) throw Object.assign(new Error("El rango no puede superar 12 meses"), { status: 400 });
 
-    const existing = await tenantQuery<{ departure_at?: string }>(ctx.companyId, "departure", {
-      _filter: {
-        product: body.product_id,
-        departure_at: { gte: start.toISOString(), lte: new Date(end.getTime() + 86_400_000).toISOString() },
-      },
-      _limit: 1000,
-    });
+    /**
+     * LAS QUE YA EXISTEN, TODAS.
+     *
+     * De esta lectura sale el conjunto `taken` que evita crear una salida dos
+     * veces. Con el tope de mil, un producto con varios pases al día —una
+     * atracción cada hora son más de cuatro mil en un año— dejaba fuera parte de
+     * lo existente, y entonces el generador CREA DUPLICADOS: dos salidas a la
+     * misma hora, el cupo partido entre las dos y la mitad de los pasajeros en
+     * la que nadie mira.
+     */
+    const existing = await leerTodoElRecurso<{ departure_at?: string }>("departure", (limite, salto) =>
+      tenantQuery(ctx.companyId, "departure", {
+        _filter: {
+          product: body.product_id,
+          departure_at: { gte: start.toISOString(), lte: new Date(end.getTime() + 86_400_000).toISOString() },
+        },
+        _sort: { departure_at: "asc", _id: "asc" },
+        _limit: limite, _offset: salto,
+      }));
     const taken = new Set(existing.map((d) => (d.departure_at || "").slice(0, 16)));
 
     let created = 0;

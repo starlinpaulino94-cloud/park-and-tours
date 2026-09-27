@@ -804,13 +804,15 @@ export const QUICK_ACTIONS: NavItem[] = [
 /**
  * El portal del PROVEEDOR (0084).
  *
- * Su hoja de ruta y su estado de cuenta llegan en las entregas siguientes, y no
- * se anuncian aquí hasta que existan: una navegación llena de enlaces a
- * pantallas que no están es peor que una corta.
+ * La hoja de ruta NO está en el menú a propósito: se abre desde el servicio al
+ * que pertenece, porque una hoja sin ruta no es nada — y un enlace de menú que
+ * pide elegir ruta primero es un enlace que no lleva a ninguna parte.
  */
 export const PROVEEDOR_NAV: NavItem[] = [
   { id: "prov-servicios", href: "/proveedor/servicios", label: "Mis servicios", icon: "CalendarRange",
     description: "Lo que te toca prestar, con su día y su punto de encuentro." },
+  { id: "prov-cuenta", href: "/proveedor/estado-de-cuenta", label: "Mi estado de cuenta", icon: "Receipt",
+    description: "Lo que se te liquida, con tu conformidad y tu factura." },
   { id: "prov-inicio", href: "/proveedor", label: "Mi ficha", icon: "Truck",
     description: "Lo que la operadora tiene registrado de ti." },
 ];

@@ -3053,3 +3053,1941 @@ Y la tabla dice dos cosas más que no se preguntaban:
   blanca, así que pasaba idéntica con la columna borrada. Ahora comprueba un
   valor que no es el de por defecto.
 - **Mutación: cincuenta y cuatro, las cincuenta y cuatro muertas.**
+
+### La auditoría de migraciones, y el «OK» que no probaba nada
+- **El pegado falló en el editor** con «syntax error at end of input» en la
+  línea 0. Lo que había llegado eran solo los comentarios de cabecera, y un
+  bloque de comentarios a secas es una sentencia vacía. Tres cambios: **la
+  consulta va primero** y la explicación detrás del `;` final —así un pegado a
+  medias todavía trae la consulta—, el fichero baja de 7,3 kB a 4 kB, y fuera
+  los emoji: `⚠️` lleva detrás un selector de variación (U+FE0F) que algunos
+  portapapeles parten por la mitad.
+- **Y después el resumen dijo «OK» de todo, incluido 0087, y eso era falso.**
+  El resumen comprueba la última COLUMNA que el fichero escribe. De 0077 en
+  adelante lo que cada migración aporta son **funciones y disparadores**, que
+  van al final — mientras la columna la crea la primera línea. Una migración de
+  cinco partes de la que solo se ejecutó la primera salía en verde.
+- **Es exactamente el fallo del que venimos**: un verde que alguien usa para
+  decidir que puede desplegar, y que no había mirado lo que importa. El
+  inventario no lo cubría porque sirve a `verify-migrations.mjs`, que habla por
+  PostgREST y no ve los catálogos de Postgres.
+- **`auditoria_funciones_N.sql`** se genera leyendo los propios ficheros de
+  migración —no una lista a mano, que se quedaría atrás a la primera migración
+  nueva— y comprueba cada función y cada disparador.
+- **Y distingue crear de reemplazar.** `app.custom_access_token_hook` existe
+  desde 0063 y `app.can_read_partner` desde 0001: verlas no prueba que 0084 o
+  0072 se ejecutaran. Esas salen como «solo lo reemplaza», no como OK. Para
+  saber quién define cada objeto por primera vez se leen TODAS las migraciones,
+  también las anteriores a la 0021 — sin eso, `can_read_partner` parecía nacer
+  en 0072 y habría dado por ejecutada una migración que igual no se ejecutó.
+
+### Fase 8.5 — la hoja de ruta del chofer, y el despacho que solo pedía sesión
+- **TRES RUTAS BAJO `/api/operations/` EXIGÍAN SESIÓN Y NADA MÁS**: el despacho
+  del día, rehacer las rutas de recogida y la hoja de ruta. Lo que devuelven o
+  mueven son los clientes del día con su hotel, y a qué hora pasa el transporte
+  a buscarlos.
+- **Y `loadRunSheet` no recibía ningún actor.** `loadRunSheet(companyId, routeId)`
+  devolvía, por parada, el nombre del cliente, su hotel, su habitación y su
+  teléfono, de CUALQUIER ruta que se le pidiera. Mientras los únicos con sesión
+  eran empleados de la operadora eso era un permiso que faltaba; desde 0073 hay
+  tour centers con cuenta y desde 0084 proveedores, así que era **la lista de
+  clientes de la operadora a un identificador de distancia** — y en manos del
+  actor con más datos de terceros a tiro.
+- **El ámbito va en el SERVICIO, no en la ruta HTTP.** La hoja se lee desde la
+  pantalla interna y desde el portal del proveedor: una comprobación por
+  llamante es una comprobación que alguien se deja.
+- **Y se comprueba por INVENTARIO**, no ruta por ruta: lo que se cierra no son
+  tres ficheros, es la idea de que bajo `operations/` vive lo de la casa. Rango
+  de operaciones y nada de actores externos, comprobado recorriendo el
+  directorio.
+- **Aquí SÍ salen los datos del cliente, y es deliberado.** En «Mis servicios»
+  no sale ni un nombre, y es correcto: allí el proveedor mira qué le toca hacer.
+  En la hoja de ruta está recogiendo a esas personas, así que necesita saber a
+  quién busca, en qué habitación está y a qué teléfono llamar. Lo que se acota
+  no es esconder campos: es **cuándo y cuánto**.
+- **Solo sus rutas, y solo alrededor del servicio.** Doce horas por delante y
+  doce por detrás. Sin ventana, la hoja de ruta no es la hoja del día: es el
+  histórico de clientes de la operadora, con teléfono, descargable cuando
+  quiera. Y **una ruta sin fecha NO abre** — lo contrario de lo que pide el
+  cuerpo, porque «sin fecha» querría decir «siempre».
+- **Cada apertura del proveedor queda anotada, no solo las que fallan.** Es una
+  lectura de datos personales de gente que no es suya, y una bitácora que solo
+  apunta los intentos fallidos no responde «quién vio esta lista», que es la
+  única pregunta que se hace cuando un teléfono se filtra.
+- **De quién es cada parada, POR COLUMNA.** Cuarta vez que aparece el patrón
+  —la fecha de la comisión (0070), el proveedor en recursos (0085), la fecha de
+  servicio (0086)—: un filtro sobre una columna que no existe no da error,
+  devuelve la empresa entera. Aquí eso serían los clientes del día de todos los
+  proveedores. Con las dos mitades del disparador, porque reasignar una ruta
+  tiene que llevarse sus paradas: si no, el chofer anterior sigue viendo los
+  clientes de un servicio que ya no es suyo.
+- **«RECOGIDO» Y «NO-SHOW» ESTABAN EN EL ESQUEMA DESDE 0011 Y NADIE LOS
+  ESCRIBÍA.** La operadora se enteraba de que un cliente no bajó cuando ese
+  cliente llamaba a reclamar. Ahora se marcan desde el móvil del chofer, con la
+  hora y con el nombre de quien marcó (0088).
+- **Y un no-show no es un dato, es una ACUSACIÓN**: dice que alguien pagó, no se
+  presentó y no le toca reembolso. Por eso se guarda la hora al lado de la
+  prevista —que es lo que dice si se esperó—, se anota con severidad de aviso, y
+  **no se bloquea** marcarlo antes de tiempo: un chofer que no puede marcar deja
+  la hoja a medias y la operadora se queda sin saber qué pasó, que es peor que
+  una marca temprana anotada como tal.
+- **Sin hora prevista, no se dice que no esperó.** `null` y no `false`: inventar
+  esa respuesta sería inventar la acusación que luego se discute.
+- **Cancelar no es del chofer.** Solo dos marcas. Una parada cancelada no se
+  marca: el cliente avisó, y ponerle un no-show le cuelga un incumplimiento a
+  quien hizo las cosas bien.
+- **La pantalla es de pulgar, no de ratón.** El chofer está parado en la puerta
+  de un hotel a las siete de la mañana con una mano en el volante: bloques
+  grandes y dos botones grandes, no filas de tabla. Y el teléfono es un enlace
+  `tel:`, porque con el motor encendido copiar un número no es una opción.
+- **Una prueba mía volvió a pasar por el motivo equivocado.** La del orden de
+  las paradas: los datos sembrados ya venían ordenados, así que pasaba idéntica
+  con el orden quitado. Ahora siembra una parada SIN secuencia y con la hora más
+  temprana de todas —la consulta la devuelve primero y tiene que salir la
+  última—. Es la tercera ola seguida en que aparece la misma familia.
+- **Mutación: cuarenta y una, las cuarenta y una muertas.**
+
+### Fase 8.6 — no sale una guagua sin papeles
+- **LA REGLA EXISTÍA DESDE 0065 Y NO PARABA NADA.** `vehicleBlock` está escrito,
+  probado y usado… para **pintar en rojo la mesa de despacho**. Nunca impidió
+  una escritura: el encargado que asigna desde el móvil a las seis de la mañana,
+  la pantalla genérica de recursos de salida y cualquier integración que escriba
+  por la API pasaban de largo con el seguro vencido.
+- **Es la misma historia que la certificación del guía en 0051**, y se cierra en
+  el mismo sitio y por la misma razón: la comprobación va en la ESCRITURA, que
+  es por donde pasa todo el mundo, y no en la pantalla, que es por donde pasa
+  quien mira. El chokepoint ya existía —`assertPayloadAssignable`—; esto es su
+  hermano para la flota.
+- **Y al editar también.** Con la guarda solo en el alta bastaba con crear el
+  recurso vacío y colgarle el vehículo en una segunda petición. Literalmente la
+  lección que dejó 0051, aplicada antes de que la repitiera.
+- **SE MIRA CONTRA EL DÍA DEL SERVICIO, NO CONTRA HOY.** La mesa de despacho
+  pregunta por el día que está mirando y para eso está bien; al escribir, no:
+  con «hoy» se reserva para dentro de un mes una guagua cuyo seguro vence la
+  semana que viene, y el día del viaje nadie se entera hasta que la para la
+  policía. El día se busca por tres sitios en orden —lo que trae el payload, la
+  salida a la que se engancha, y la fila que ya existe cuando se edita, porque
+  una edición que solo cambia el vehículo no trae la salida—.
+- **Lo que NO bloquea importa tanto como lo que bloquea.** Solo las dos tablas
+  que DESPACHAN el vehículo: el recurso de una salida y la ruta de recogida. Una
+  incidencia, una inspección, una orden de trabajo o un plan de mantenimiento
+  también apuntan a un vehículo, y bloquearlas sería absurdo: se registra una
+  inspección sobre esa guagua **precisamente porque** tiene los papeles
+  vencidos. Bloquear ahí la dejaría sin poder arreglarse.
+- **Un solo sitio donde la regla está escrita.** El servicio llama a
+  `vehicleBlock`, no rehace la comparación de fechas — con dos copias, el día
+  que cambie el criterio una se queda vieja, y la que se quede corta decide. Hay
+  guarda que comprueba que el servicio ni siquiera nombra las columnas de
+  caducidad.
+- **El motor de rutas ya descartaba la flota bloqueada** desde 0065, y deja el
+  motivo como aviso. Lo que faltaba era la asignación a mano, no la automática.
+- **Todo recurso escribible declara su rango**, y ahora hay guarda. Es lo que
+  mantiene al proveedor fuera de la escritura genérica: su rango es el más bajo
+  que existe, así que cualquier `writeRole` lo rechaza — pero un recurso
+  escribible SIN rango declarado no lo rechazaría, y ahí se colaría un
+  transportista escribiendo en el ERP de la operadora. Hoy se cumple en los 55
+  recursos; la guarda existe para que siga cumpliéndose.
+- **Lo que queda fuera, dicho a propósito:** el choque de agenda al escribir —la
+  misma guagua en dos salidas que se solapan—. `resourceConflicts` existe y es
+  puro, pero está pensado para el día entero; comprobarlo en una escritura suelta
+  exige reconstruir las ventanas de esa salida, y es una ola propia. Hoy lo
+  sigue detectando la mesa de despacho.
+- **Mutación: catorce, las catorce muertas.**
+
+### Fase 8.7 — el estado de cuenta del proveedor
+- **LA COSTURA YA ESTABA ANUNCIADA, Y POR ESO EL CAMBIO ES UNA LÍNEA.**
+  `settlement-access.ts` decía desde la fase 2: «el proveedor todavía no tiene
+  identidad en el sistema (llega en una fase posterior), así que hoy sus
+  liquidaciones solo las abre gerencia. Se declara igual para que el día que la
+  tenga no haya que volver a razonar esto». Desde 0084 la tiene. Añadir la rama
+  del proveedor a `assertSettlementBeneficiary` abrió **la pantalla, el PDF y la
+  disputa a la vez**, y ninguno se quedó atrás — que era exactamente el motivo
+  de que esa pregunta viviera en un solo sitio.
+- **Lo que sustituye.** Hoy el transportista se entera de su corte porque
+  alguien se lo dice por teléfono o le manda un PDF por WhatsApp. Si no está de
+  acuerdo, llama, y de esa llamada no queda nada. Si tiene que facturar, dicta
+  el número de comprobante y lo teclea otra persona.
+- **La conformidad es la otra mitad de la disputa.** `disputed` se podía poner
+  desde 0076; lo contrario —«esto está bien»— no. Y sin eso, el silencio de un
+  proveedor y su acuerdo se parecen demasiado: una liquidación aceptada se paga
+  sin volver a preguntar, y una que nadie contestó es una llamada pendiente.
+- **Aceptar no es aprobar, y son dos columnas.** `approved_at` es la operadora
+  diciendo «esto es lo que pago»; `accepted_at`, el proveedor diciendo «de
+  acuerdo». Confundirlas convierte una aprobación interna en un finiquito
+  firmado por quien no lo firmó.
+- **Y una liquidación PAGADA sí se puede aceptar**, igual que se puede disputar:
+  «me pagaste lo correcto» llega después del pago, y cerrarlo sería convertir el
+  pago en un finiquito unilateral. Lo que no se puede es aceptar una **en
+  disputa** — la conformidad taparía el desacuerdo sin resolverlo.
+- **EL NCF LO ESCRIBE QUIEN TIENE EL PAPEL DELANTE.** Un dígito de más en un
+  comprobante recibido es un 606 rechazado por la DGII semanas después, cuando ya
+  nadie se acuerda de qué factura era. `ncf.ts` valida la forma antes de
+  guardarlo, y **el tipo sale del propio número**: con dos campos —«tipo» y
+  «número»— un formulario admite que digan cosas distintas, y entonces el 606
+  sale con un tipo que no es el del comprobante.
+- **Y no se sobrescribe.** Un NCF es un documento fiscal emitido: corregirlo no
+  es editar un campo, es emitir una nota de crédito y otra factura. Si se
+  pudiera pisar, el 606 de la operadora diría un número y el papel del proveedor
+  otro — y el que se queda con el problema es quien declara.
+- **El mismo NCF del mismo proveedor dos veces no entra**, por índice único
+  parcial. Solo puede ser la misma factura contada dos veces, y eso se paga dos
+  veces. **Por proveedor y no global**: dos proveedores distintos sí pueden
+  emitir el mismo número, cada uno tiene su serie.
+- **LAS DOS POLÍTICAS SE ACUMULAN.** `settlement` ya filtraba por socio desde
+  0007. Reescribir la política con solo la condición del proveedor habría abierto
+  a cada tour center las liquidaciones de los demás — la clase de regresión que
+  no se ve hasta que alguien mira la pantalla de otro.
+- **Su dinero entró en su ámbito sin desnormalizar nada**, por primera vez en
+  toda la fase: `settlement` y `booking_cost` llevan `supplier_id` desde 0040.
+  **`payable` se queda fuera a propósito**: es el libro de la operadora —lo que
+  debe, a quién y cuándo vence— y el proveedor no tiene nada que hacer leyéndolo.
+- **La cabecera del estado de cuenta se recorta; las líneas ya estaban
+  mapeadas.** La fila de la liquidación viaja ENTERA desde la base, con quién la
+  aprobó, a quién se le asignó la disputa y `commission_total` —lo que la casa le
+  paga a OTROS por vender ese viaje— dentro. Pasarla por la lista blanca la deja
+  en lo que ese actor puede ver, y una columna que alguien añada mañana nace
+  fuera.
+- **Disputar NO se reimplementó.** La ruta del portal ofrece aceptar y facturar;
+  disputar sigue en `/api/settlements/:id/dispute`, que abre la misma
+  comprobación de beneficiario. Dos rutas para lo mismo son dos sitios donde vive
+  la regla, y el que se quede viejo es el que decide.
+- **Solo la factura avisa; la conformidad no.** Un aviso por cada conformidad
+  convierte la campana en ruido y a la semana nadie la abre. La factura sí: hay
+  algo que alguien tiene que hacer —registrar la compra para que el comprobante
+  llegue al 606— y sin aviso el NCF se queda en la liquidación.
+- **Tres guardas no mordieron a la primera, y las tres eran defectos de guarda:**
+  una `toMatch` donde hacían falta dos coincidencias contadas —el mutador quitó
+  el rango del GET y la guarda encontró el del POST—, un aviso cuyo contenido
+  nadie comprobaba, y **otra repetición de la lección de 8.3**: la prueba
+  comprobaba que no se colaran campos prohibidos, pero quien los excluía era el
+  MAPEO y no el recorte, así que pasaba idéntica con el recorte quitado. Ahora
+  hay guarda estructural de que el recorte va delante.
+- **Mutación: treinta y cinco, las treinta y cinco muertas.**
+
+### Fase 8.8 — el manifiesto sale solo, y sale recortado
+- **DOS AGUJEROS QUE ABRIÓ 0084 SIN QUE NADIE LOS TOCARA.** Las dos puertas del
+  manifiesto —la pantalla y el PDF— decían `if (esDeSocio(ctx)) throw`. Mientras
+  el socio fue el único de fuera, eso quería decir «interno». Desde que el
+  proveedor tiene sesión en la empresa, esa negación quiere decir «interno **o**
+  proveedor»: **cualquier cuenta de una empresa de transporte podía pedir el
+  manifiesto de cualquier salida** —también de las que no opera— y llevarse
+  nombre, teléfono, correo, idioma, nacionalidad, número de habitación y el saldo
+  de cada cliente. Es el mismo hallazgo de 8.5 con `loadRunSheet`, en el
+  documento que lleva más datos de terceros de todo el sistema.
+- **Lo que sustituye.** El manifiesto existía en dos sitios y los dos detrás de
+  una sesión. El chofer que arranca a las seis no tiene sesión y el transportista
+  tampoco, así que alguien de la oficina abría la pantalla, bajaba el PDF y lo
+  reenviaba a mano por WhatsApp la noche antes. Cuando se acordaba. Cuando no, el
+  chofer salía con la lista de la semana pasada.
+- **LO QUE DECIDE EL MÓDULO NO ES A QUIÉN SE LE MANDA, SINO QUÉ DICE EL PAPEL
+  SEGÚN QUIÉN LO ABRE.** Mandar el manifiesto entero a una empresa de transporte
+  es entregarle la cartera de clientes de la operadora con el saldo de cada uno
+  dentro — y además exactamente lo que necesita para llamarlos el año que viene
+  por su cuenta.
+- **Y son CUATRO públicos, no tres.** `guia` es el guía de la casa: viaja con el
+  grupo y **cobra a bordo**, así que el saldo le hace falta de verdad. `chofer`
+  llama a la puerta de la habitación 412: nombre, hotel, habitación, teléfono y
+  hora, y **ni un número de dinero** —un chofer ajeno cobrando en la puerta es
+  dinero que no vuelve—. `proveedor` es la OFICINA del transportista: planifica
+  vehículos, así que lleva paradas, horas y cuánta gente sube, y **ningún
+  nombre**. Esa última distinción es la que evita que la lista de clientes acabe
+  archivada en el ordenador de otra empresa.
+- **Un guía PRESTADO por el transportista sale por el corte de chofer.** Hace el
+  mismo trabajo y no es quien cobra. Sin esa distinción, «guía» habría querido
+  decir «alguien autorizado a pedirle dinero al cliente en nombre de la
+  operadora».
+- **La lista es de PERMITIDOS, no de prohibidos.** El día que `manifestRow` gane
+  un campo —el documento de identidad, la alergia, el número de vuelo— ese campo
+  NO sale hasta que alguien lo escriba a mano. Con una lista de prohibidos habría
+  salido solo, que es como se filtra lo que nadie decidió filtrar.
+- **El PDF saca sus columnas de la MISMA lista.** Con las columnas fijas habría
+  dos sitios donde se decide lo mismo, y el papel del chofer llevaría una columna
+  «Cobrar» vacía — que es la pista de que el dato existe. Dos fugas más se colaban
+  **por dentro de una columna permitida** y no las cierra el filtro de columnas: la
+  habitación va pegada al hotel, y los requerimientos se rotulan con el nombre del
+  pasajero fuera de la tabla.
+- **Y el dinero del resumen va atado al MISMO permiso que el de la fila.**
+  Quitar `balance` de las filas y dejar `to_collect` en la cabecera habría
+  publicado lo mismo sumado, y encima con pinta de estar recortado.
+- **El recorte llega al segundo nivel.** Una parada lleva sus reservas DENTRO
+  (`PickupStop.bookings`): mandar las paradas «tal cual» habría entregado por la
+  puerta de atrás justo lo que la lista blanca quita por la de delante.
+- **EL WHATSAPP NO LLEVA LA LISTA, NI PARA EL CHOFER QUE SÍ PUEDE VERLA.** El
+  canal decide, no solo el público: un mensaje se reenvía de un grupo a otro sin
+  pensarlo y una captura de pantalla viaja más lejos que un adjunto. Lleva las
+  paradas —hotel, hora y cuánta gente—, que es lo que se mira en el semáforo.
+- **UN MANIFIESTO NO ES UN AVISO: ES UNA LISTA QUE CAMBIA.** Se manda a las
+  seis, entra una reserva a las dos de la tarde, y el chofer sale con una lista a
+  la que le falta gente — peor que no haberla mandado, porque cree que la tiene.
+  La clave de deduplicación lleva dentro una **huella** de lo material (quién
+  viaja, cuántos, dónde y cuándo se recoge): mientras no cambie, barrer cien
+  veces deja un mensaje; en cuanto cambia, sale una versión nueva sola. El
+  embarque y el saldo **no** entran en la huella: se marcan durante la salida y
+  mandarían un manifiesto nuevo por cada pasajero que sube.
+- **QUIEN RECHAZÓ EL ENCARGO NO RECIBE LA LISTA.** Era la mitad que faltaba de
+  la aceptación de 0087: hasta ahora, decir «no» no quitaba ningún acceso y el
+  proveedor seguía recibiendo los clientes de un servicio que no va a operar.
+  Igual con el plazo vencido.
+- **DE DÓNDE SE LEE ES UN PARÁMETRO, Y NO POR ELEGANCIA.** Quien compone y manda
+  es un cron sin cookies. Con `SUPABASE_USE_RLS=true` —obligatorio en producción,
+  lo exige `data-backend.ts`— las ayudas de inquilino resuelven el cliente a
+  partir de la petición: el barrido escrito contra ellas **no habría fallado**,
+  habría leído cero salidas y dicho que no había nada que mandar, y el adjunto
+  habría salido con cero pasajeros. Un PDF vacío que se manda igual no lo nota
+  nadie hasta que el chofer llega al hotel. Es la misma trampa que documenta
+  `outbox.ts`, y se evita igual: `FuenteDelManifiesto` con dos implementaciones.
+- **Sin cron nuevo.** Se cuelga del barrido diario que ya existe
+  (`dispatch-messages`, 06:00), encolando **antes** de despachar para que salga en
+  la misma pasada. El plan de Vercel no admite crons sub-diarios y una cadencia
+  más fina tumba el despliegue entero, así que la ventana es de **36 horas** y no
+  de 24: con 24 la salida de pasado mañana a primera hora se quedaría fuera y el
+  proveedor no tendría tiempo de asignar vehículo.
+- **Y un botón, porque el barrido corre una vez al día.** Cuando se reasigna el
+  vehículo a las cuatro de la tarde, la operadora no puede esperar a mañana. La
+  huella hace que apretarlo tres veces deje un mensaje, y la pantalla sabe decir
+  las tres respuestas distintas: salió, ya lo tenían, y no salió por esto.
+- **UNA RESTRICCIÓN QUE MENTÍA DESDE 0034.** `message_template_key_check`
+  enumeraba SIETE claves y el código declaraba OCHO: una empresa que intentara
+  reescribir el texto de «te movemos la excursión de fecha» —que el sistema sí
+  manda— se llevaba un 23514 de PostgreSQL sin que nada lo anticipara. Faltaba
+  también en `MESSAGE_TEMPLATE_KEY`, así que el desplegable no la ofrecía. No se
+  veía leyendo el código porque la lista de verdad estaba en SQL: ahora una
+  guarda lee las migraciones y las compara con la unión de TypeScript.
+- **El manifiesto no depende del teléfono que la empresa haya rellenado.** Un
+  hueco sin rellenar no se manda, y en los demás avisos eso es correcto: un
+  cliente que lee «escríbenos a » no sabe a dónde. Aquí el destinatario es el
+  guía o el transportista, que ya tienen el número — y una operadora que no
+  rellenó su propia ficha se habría quedado sin mandar **ningún** manifiesto, con
+  el autobús saliendo igual.
+- **Y quien solo tiene un canal recibe por ese.** `enqueueMessage` guarda como
+  fallido lo que no puede entregar, que para un aviso a un cliente es lo correcto.
+  Para el manifiesto no: el barrido pasa todos los días y el chofer sin correo
+  generaría una fila fallida por pasada hasta hacer la bandeja ilegible.
+- **Doce guardas no mordieron a la primera.** Dos eran huecos de prueba de
+  verdad: **la fuente de servicio no estaba probada en absoluto** —quitarle el
+  `eq("organization_id", …)` no rompía nada, y con la llave de servicio ese `eq`
+  es todo el aislamiento que hay— y no había caso de un destinatario alcanzable
+  por un solo canal. Una era **la lección de siempre otra vez**: la guarda buscaba
+  `envio.veto`, que aparece también en el texto del aviso (`No salió: ${…}`), así
+  que se cumplía con el `if` quitado. Dos eran restricciones de SQL que ningún
+  código lee. Cuatro eran recortes del PDF sin guarda. Dos eran valores por
+  defecto —la fuente de `loadManifest`, la lista de empresas del cron— cuyo
+  cambio no rompe nada visible. Y una era un error del mutador: el fichero
+  equivocado.
+- **Mutación: setenta, las setenta muertas.**
+
+### Fase 8.9 — la flota del proveedor: la asigna él, validada contra papeles y choques
+- **LA REGLA EXISTÍA Y NO PARABA NADA — POR TERCERA VEZ.** `resourceConflicts`
+  está escrito y probado desde la ola 5… para **pintar en rojo** la mesa de
+  despacho del día que alguien esté mirando. Nunca impidió una escritura: asignar
+  la misma guagua a dos salidas que se pisan por la pantalla genérica de recursos,
+  desde el móvil o por la API funcionaba sin una queja. Es la misma historia que
+  el seguro vencido (8.6) y la certificación del guía (0051), y se cierra en el
+  mismo sitio: **en la escritura**, que es por donde pasa todo el mundo.
+- **Y PEOR: LA MESA TAMPOCO LO VEÍA cuando una de las dos era una ruta de
+  recogida.** Construía sus usos leyendo solo `departure_resource`, así que la
+  guagua puesta en la recogida de la excursión de las seis y como vehículo de la
+  salida de las siete **no aparecía como choque en ninguna pantalla** — y es el
+  choque más fácil de cometer, porque son dos formularios distintos. La extracción
+  vive ahora en el dominio (`usesOfDeparture`) y la usan las dos: la que pinta y
+  la que impide.
+- **Lo que NO bloquea es la mitad del diseño.** Dos servicios el mismo día que no
+  se pisan son la operación normal; el mismo recurso dos veces en la MISMA salida
+  es una fila duplicada, no un problema de agenda —la guagua de la recogida y la
+  del tour son la misma guagua—; la fila que se edita no choca consigo misma; y un
+  choque que ya estaba ahí entre otras dos salidas no bloquea, porque para
+  arreglarlo hay que poder escribir. Una comprobación que bloquea de más se acaba
+  quitando, y entonces no queda ninguna.
+- **La ventana de una ruta de recogida acaba cuando arranca la salida.**
+  `pickup_route` no tiene `end_time` y nunca lo tuvo. Alargarla hasta el final de
+  la excursión habría sido «más prudente» y es justo lo que no se puede hacer: si
+  la misma guagua hace además el tour, eso es una fila de `departure_resource` de
+  esa salida, cuya ventana ya lo cubre. Con ocupación inventada, el traslado de
+  vuelta de las cuatro sale marcado como choque todos los días.
+- **Se lee por `service_date` con un día a cada lado.** Una excursión que sale a
+  las 22:00 y dura cuatro horas ocupa la guagua en dos fechas, y un choque a las
+  00:30 es un choque igual.
+- **EL TRANSPORTISTA ASIGNA SU PROPIA FLOTA, y es su primera escritura sobre la
+  operación.** La operadora encarga «una guagua de 30 plazas para la Saona del
+  jueves»; cuál manda y quién la conduce lo sabe él. Antes lo decía por WhatsApp y
+  alguien lo teclaba — y cuando no lo teclaba, el manifiesto salía con «sin
+  asignar» y la hoja de ruta sin chofer.
+- **Y el rango no responde a ninguna de las tres preguntas que eso abre.** ¿Es
+  suya la fila? Lo decide `supplier_id`. ¿Es suya la guagua? **Se lee la ficha y
+  se compara su `supplier_id`**, porque el desplegable lo pinta el navegador y
+  cualquiera puede mandar otro identificador — sin eso, un transportista podía
+  asignar la guagua de la competencia a su propio servicio, y quien lo
+  descubriría es el chofer de la competencia el día del viaje. ¿Puede todavía? Un
+  servicio que rechazó, que se le venció o que ya pasó, no.
+- **Un guía PRESTADO por el transportista no es el guía de la casa.** Hace el
+  mismo trabajo y no es quien cobra. Es la misma distinción que decide el corte
+  del manifiesto en 8.8, y por eso vive en un solo sitio.
+- **El día se compara por FECHA, no contra el reloj.** El servicio de hoy a las
+  seis se sigue pudiendo asignar a las siete: el chofer ya salió, y apuntar quién
+  fue es exactamente lo que hace falta para que la hoja de ruta y la liquidación
+  digan la verdad. Comparar contra el instante habría cerrado la puerta en el peor
+  momento — cuando hay que corregir un cambio de última hora.
+- **Escribe por lista blanca, y no están `pax_assigned` ni `status`.** Cuánta
+  gente lleva el servicio lo decide quien vende; en qué estado está, la operación.
+  Con el primero cobraría por treinta pasajeros de un servicio de doce; con el
+  segundo marcaría como completado algo que no prestó.
+- **Y `null` es «quítalo» mientras ausente es «no lo toques».** Sin esa
+  distinción, no podría retirar la guagua que se le acaba de averiar: la
+  asignación vieja seguiría ahí con el despacho creyendo que sale.
+- **Las dos comprobaciones de la casa se REUSAN.** Los papeles del vehículo (8.6)
+  y el choque de agenda son las mismas funciones que corren cuando escribe la
+  operadora. Una copia «para el portal» sería la versión floja de la misma regla,
+  y la floja es la que se queda sin actualizar.
+- **Su flota entra en su ámbito por columna** (`vehicle.supplier_id` y
+  `staff.supplier_id` existen desde 0009) **y con su lista blanca**: sin la tarifa
+  diaria del vehículo, sin sus notas internas y sin la cédula de su gente. Leerla
+  no le abre la escritura: esas dos tablas siguen exigiendo rango de operación.
+- **UNA GUARDA QUE NO VEÍA UN TERCIO DE LO QUE DEBÍA COMPROBAR.** La que exige
+  que toda acción de la bitácora tenga su texto en castellano leía solo la primera
+  cadena de cada `writeAudit`, dentro de una ventana de 600 caracteres, y sin
+  admitir puntos en el nombre. Consecuencias reales: **la acción del manifiesto que
+  esta misma rama añadió en 8.8 se colaba** —su llamada pasa de 600 caracteres—, y
+  con ella **treinta acciones más**, todas las decididas con un ternario («entrada
+  o salida», «aprobada o rechazada», «aceptado o rechazado por el proveedor») y
+  todas las escritas con puntos. Salían en el papel con su nombre técnico. La
+  guarda recorre ahora la llamada contando llaves, lee la expresión completa
+  —esté en una línea o en cuatro— y descarta lo que está a la derecha de una
+  comparación, que es la condición y no la acción.
+- **Lo que esa guarda SIGUE sin ver, y está medido:** cinco sitios componen la
+  acción en tiempo de ejecución (`quote_${decision}`, `commissions_${status}`,
+  `payroll_${…}`, `period_${…}`) o la reciben por parámetro
+  (`gift-card-service`). Son unas cuarenta acciones más, ninguna traducida.
+  Enumerarlas exige escribir las cuarenta etiquetas y es trabajo aparte: queda
+  apuntado, no hecho.
+- **Doce guardas no mordieron a la primera, y nueve eran huecos de prueba de
+  verdad:** los cinco campos nuevos de la lista de servicios del portal —lo
+  asignado, si se puede asignar y por qué no— no los comprobaba nada; la ventana
+  que cruza la medianoche tampoco; ni que `vehicle` y `staff` estuvieran de verdad
+  en el ámbito del proveedor. Dos eran guardas que pasaban por el motivo
+  equivocado: la de «una tabla que no despacha no se comprueba» usaba una fila sin
+  salida, así que salía vacía de todos modos y pasaba con la lista de tablas
+  abierta de par en par; y la de «una cuenta sin ficha no asigna» miraba solo el
+  403, que también contesta la comprobación de más abajo. Y tres no eran defectos
+  sino código redundante: una rama que `instantAtWallTime` ya cubría (se borró) y
+  un `.slice(0, 10)` que la comparación no necesita.
+- **Mutación: sesenta y uno, los sesenta y uno muertos.**
+
+### Ola 9.1 — el aislamiento de los tres actores, con un navegador de verdad
+- **EL PLAN SE ACABA EN LA FASE 8, Y LO QUE FALTABA NO ERA CÓDIGO NUEVO: ERA LA
+  PRUEBA DE QUE LO HECHO SE SOSTIENE.** Ocho fases de aislamiento multi-actor y,
+  hasta esta ola, **cinco pruebas de extremo a extremo en tres ficheros**, todas
+  del vendedor. Es T-001 del registro y el riesgo que el propio plan marca como
+  transversal.
+- **Lo que las 3380 pruebas unitarias NO comprueban.** Dicen que las reglas son
+  correctas y que las rutas las llaman. Ninguna ejercita la cadena que produce el
+  identificador —membresía → enganche del token → `auth-context` → la función de
+  ámbito— porque en todas ellas ese identificador sale de un `mock`. Si el
+  enganche dejara de acotar la ficha del proveedor a la empresa de la membresía, o
+  si `supplierSigueActivo` dejara de fallar cerrado, **las 3380 seguirían verdes**.
+- **UN HALLAZGO, Y ES DEL MISMO PATRÓN QUE 8.8.** El layout del panel decía
+  `if (esDeSocio(ctx)) redirect("/portal")` y nada más. Desde 0084 —que le dio
+  sesión al proveedor— una cuenta de transportista que escribiera `/dashboard`
+  **cargaba el armazón interno entero**, con su menú de finanzas, caja, comisiones
+  y clientes. Los datos no salían: cada ruta y cada página de dentro lo rechazan
+  una por una, y eso estaba probado. Pero el armazón le enseña el mapa completo de
+  la operación de otra empresa, y el portal del proveedor nace con guarda en el
+  layout precisamente porque «el menú no es una barrera» — la norma vale en las dos
+  direcciones. Ahora se desvía a su portal, y los dos specs lo comprueban
+  **tecleando la URL**, que es donde el menú no protege.
+- **Dos actores nuevos en el arranque, y su OTRO.** El aislamiento consiste en no
+  ver lo del vecino, así que hace falta un vecino: dos fichas de proveedor con dos
+  liquidaciones y dos servicios **sobre la misma salida**, y una venta de la
+  operadora que el socio no puede ver. Con una fila de cada cosa, los specs
+  pasarían con el filtro quitado.
+- **El socio va en la empresa DEL SOCIO; el proveedor, en el inquilino.** No es
+  simetría: el enganche pone `partner_id` desde el `org_id` de la membresía cuando
+  esa organización es de tipo socio, y `supplier_id` buscando `supplier.user_id`
+  acotado a la empresa de la membresía. Poner la membresía del socio en el
+  inquilino lo habría metido como **personal interno** con rango `partner` y sin
+  acotar por nada — y el E2E habría seguido pasando, que es el peor fallo posible
+  en una prueba de aislamiento.
+- **Las negativas se piden con un identificador QUE NO EXISTE, y eso prueba más.**
+  En el manifiesto y en el despacho la guarda corre antes de buscar la fila: con un
+  uuid de nadie la respuesta correcta sigue siendo 403 y no 404, así que el 403
+  demuestra que **no llega ni a mirar**. Y el uuid tiene que estar bien formado:
+  uno inválido daría 400 por otro motivo y la prueba pasaría sin comprobar nada.
+- **La afirmación central se hace sobre el cuerpo CRUDO.** El nombre, el teléfono
+  y la habitación del cliente sembrado no pueden aparecer en la respuesta de
+  `/api/proveedor/servicios`. Lo que importa es que el servidor no lo entregue, no
+  que la pantalla no lo pinte — y los tres literales se importan del arranque para
+  que no puedan divergir de lo sembrado: un spec que busca una cadena que nadie
+  sembró pasa siempre.
+- **Y lo negado se comprueba como NEGADO, no como lista vacía.** Una lista vacía
+  es indistinguible de «no hay nada»: el día que el filtro se rompiera, nadie lo
+  notaría.
+- **LA GUARDA QUE SOSTIENE UN ARRANQUE QUE NO SE PUEDE EJECUTAR AQUÍ.** Este
+  entorno no tiene Supabase, así que el sembrado se escribió sin poder correrlo, y
+  PostgREST anula el INSERT ENTERO por una sola columna que no exista. Se añadió
+  una guarda que reconstruye el esquema desde las migraciones y comprueba cada
+  columna que el arranque escribe —la misma maquinaria que protege al sembrador de
+  demostración—, **más una segunda que prohíbe `insert(variable)`**: un payload
+  pasado por variable quedaría sin comprobar en silencio, con la guarda en verde.
+  Se verificó que muerde rompiendo una columna a propósito.
+- **Y la comprobación que impide apropiarse de la cuenta de una persona vive en UN
+  solo sitio.** Las cuentas derivadas repetían el mismo bloque de diez líneas, que
+  es donde vive `assertExclusivoDelE2E`. Cuatro copias son cuatro sitios donde
+  olvidarla al añadir la quinta cuenta.
+- **Ocho guardas no mordieron a la primera, y las ocho eran la misma familia:
+  afirmaciones del spec que ninguna guarda unitaria cubría.** Dos repitieron el
+  defecto que ya ha morderme cinco veces en esta rama —la guarda encontraba su
+  texto en otro sitio del mismo fichero: el comentario de cabecera del spec
+  enumera las ocho puertas para explicar de dónde viene cada una, y las cuatro
+  constantes del arranque se declaran en el fichero que las siembra—. Una era una
+  `toContain` donde hacían falta dos coincidencias contadas. Ahora las guardas
+  comprueban **la línea que pide**, no la cadena que se menciona.
+- **Mutación: treinta y tres, los treinta y tres muertos.**
+- **LO QUE NO SE HA PODIDO EJECUTAR AQUÍ, y hay que decirlo:** este entorno no
+  tiene Supabase, así que los tres specs y el sembrado **no se han corrido ni una
+  vez**. Lo que sí está comprobado: los 16 tests se registran en Playwright, el
+  sembrado pasa contra el doble de Supabase en la prueba unitaria del arranque, y
+  cada columna que escribe existe en el esquema. La primera ejecución de verdad es
+  la del CI, que levanta su propia pila local.
+
+### Ola 9.2 — los servicios que mueven dinero y no los ejecutaba nadie (1 de 3 lotes)
+- **EL DATO ERA PEOR DE LO APUNTADO.** No son 19 servicios sin fichero de
+  pruebas: son **18**, y de esos **16 no los ejecuta ninguna prueba**, ni de
+  rebote. Solo `dispatch-service` y `seller-settlement-service` llegan a correr, y
+  parcialmente. Los demás aparecían «mencionados» en pruebas de otros módulos
+  porque estaban **mockeados**, que es lo contrario de estar probados. Unas 4.000
+  líneas. Este lote cubre los tres que mueven dinero o deciden si suena una
+  alarma; los otros trece van en lotes siguientes.
+- **TRES FALLOS REALES, uno por servicio.**
+
+- **1 · El cierre del día devolvía UN MES con cara de un día.** El comentario
+  decía «una fecha ilegible cae en hoy: `normalizarPeriodo` ya decide eso», y no
+  era verdad. `fecha || hoy` solo cae en hoy cuando la fecha viene **vacía**; una
+  cadena con contenido pero ilegible —`?date=hoy`, `?date=10/04/2026`, un dedazo—
+  es «truthy» y pasa de largo. `normalizarPeriodo`, al no entender ninguno de los
+  dos extremos, hace lo correcto **para un reporte**: devuelve el mes en curso. Y
+  la ruta pasa `?date=` tal cual, sin validar.
+  Resultado: `GET /api/reports/daily-close?date=hoy` devolvía un documento
+  titulado «cierre del 1 de abril» con **un mes** de ventas, cobros y cajas
+  dentro, cuadrando el efectivo de treinta días contra las sesiones de treinta
+  días. Con toda la pinta de un cierre bueno, y firmable. El mes no es un fallo de
+  `normalizarPeriodo`: es su respuesta correcta a «no me diste fechas». Lo que
+  estaba mal era preguntárselo así desde un cierre **diario**, y por eso la
+  comprobación vive ahora en el servicio.
+
+- **2 · La comprobación de salud declaraba muertos a los cinco crons cuando no
+  podía leer el diario.** `lastRuns` destructuraba solo `data` y tiraba `error`.
+  PostgREST no lanza: devuelve `{ data: null, error }`, así que la promesa se
+  resolvía tan tranquila —y el `.catch()` del llamante, puesto creyendo que
+  fallaría lanzando, no se ejecutaba nunca—. Un mapa vacío significa, para
+  `jobHealth`, **«nunca se ha ejecutado»**, en rojo, para todos los trabajos
+  esperados. O sea que un fallo al leer una tabla se convertía en cinco
+  diagnósticos inventados sobre cinco crons que probablemente estaban bien, y el
+  informe entero en `down`. Es el fallo que ese módulo dice en su cabecera que no
+  puede permitirse —leer cero filas y dar un veredicto— solo que al revés: en vez
+  de decir que todo va bien, acusa a todo el mundo. Ahora, si el diario no se
+  puede leer, sale **una** comprobación que dice eso: «no se sabe si los trabajos
+  corrieron». «No lo sé» y «no corrió» llevan a sitios distintos — la primera se
+  arregla mirando la base, la segunda despertando a alguien de madrugada.
+
+- **3 · Un cajón contado y VACÍO cuadraba.** El arqueo leía
+  `countTotal(...) || Number(stored.counted_total ?? 0)`, y ese `||` se come el
+  cero: un cajón que se contó y estaba vacío —el que se dejó sin fondo, o la
+  moneda secundaria en la que no había nada— da `countTotal = 0`, que es falso, y
+  caía al total guardado. El arqueo enseñaba un contado que el cajero **no**
+  contó, y calculaba la diferencia y el veredicto sobre él: con un `counted_total`
+  de 500 contra un esperado de 500, el papel firma «cuadra» sobre un cajón vacío.
+  Lo que decide es si **hay** desglose, no si su total es distinto de cero.
+- **Los tres se verificaron rompiendo el arreglo a propósito**: la prueba
+  correspondiente falla sin él. No son mejoras de estilo.
+- **Y una cosa que se encontró y NO se tocó:** `recordOrgSlice` está exportada y
+  **no la llama nadie**. Es la costura para apuntar lo que un trabajo hizo para una
+  empresa concreta; queda dicho aquí en vez de borrada, porque borrar una costura
+  declarada es una decisión del dueño del módulo y no de quien pasa a probarlo.
+- **Dos guardas no mordieron a la primera.** Una era un mutador inerte: quitar
+  `if (!id) return;` de `finishJobRun` no escribe nada —es un UPDATE con `id`
+  nulo, que no encuentra fila— así que no describe ningún comportamiento y se
+  retiró del lote. La otra sí era un hueco: la prueba de la huella comprobaba
+  «misma fuente + mismo mensaje = misma huella» y «otra fuente = otra huella»,
+  pero no **«misma fuente + OTRO mensaje = otra huella»**, que es la mitad que de
+  verdad importa: agrupando solo por fuente, los dos fallos distintos de un mismo
+  cron se apilarían en un incidente con el texto del primero, y el segundo se
+  vería como «esto ya lo sabemos».
+- **Mutación: treinta y uno, los treinta y uno muertos.**
+- **Quedan trece servicios sin ejecutar**, ~3.300 líneas: `analytics`,
+  `attribution`, `commission-adjust`, `gift-card`, `import`, `membego`,
+  `membego-redemption`, `monedero`, `plan`, `public-booking`, `quote`, `schedule` y
+  `seller-goals`. Y dos ejecutados a medias (`dispatch`, `seller-settlement`).
+
+### Ola 9.3 — el resto del dinero: monedero, ajustes de comisión y gift cards (2 de 3 lotes)
+- **UN FALLO GRANDE, Y ESTABA ESCRITO EN EL PROPIO MÓDULO QUE NO PODÍA PASAR.**
+  `apuntarMovimiento` recibe la moneda del monedero como parámetro aparte, y su
+  comentario dice por qué: «comparar el movimiento consigo mismo es una
+  comprobación que no puede fallar nunca, y la que hace falta es justamente la
+  otra». Los dos únicos sitios que lo llaman desde la operación hacían
+  **exactamente eso**:
+  - la venta: `descontarVenta(..., { moneda: currency }, currency)`;
+  - la cancelación: `devolverAlMonedero(..., { moneda: consumo.currency }, consumo.currency)`.
+  Así que la única comprobación que importa estaba estructuralmente presente y
+  funcionalmente muerta. Una venta en pesos contra un monedero en dólares pasaba
+  el control y descontaba 30.000 de un saldo de dólares. La guarda que existía
+  desde 6.6 comprobaba `monedero-service.ts` y la ruta de recargas a mano —que sí
+  lo hace bien, saca la moneda del contrato— y nunca miró el camino de la venta.
+- **Y el saldo, que es lo que autoriza, sumaba todas las monedas.** `saldoDe` suma
+  lo que se le dé sin mirar la moneda —es su contrato y está bien— y **nadie
+  filtraba antes**: el saldo salía de sumar todos los movimientos del socio. O sea
+  que la defensa estaba solo al ESCRIBIR, y al LEER no había nada. El módulo puro
+  describe ese escenario en su cabecera («el socio cree que tiene treinta mil y la
+  operadora descubre el agujero liquidando») y era alcanzable por la lectura.
+- **El arreglo, en tres piezas.** `monedaDelMonederoDe` resuelve la moneda desde
+  el contrato en **un solo sitio** —los cinco llamantes la necesitan igual, y con
+  cada uno resolviéndola a su manera el saldo que se enseña y el que autoriza una
+  venta pueden ser números distintos—; `saldoDeSocio` filtra por ella y **dice**
+  cuántos movimientos quedaron fuera, porque eso es dinero que nadie puede cuadrar;
+  y `assertSaldo` rechaza **antes de vender** una venta en otra moneda. Se rechaza
+  delante y no al descontar porque `descontarVenta` se traga sus errores a
+  propósito —el cliente ya tiene su voucher— así que un rechazo allí no impide nada.
+- **Lo que NO se tocó, y es una decisión:** entre `assertSaldo` y el descuento no
+  hay cerrojo, así que dos ventas simultáneas pueden pasar las dos el control y
+  dejar el monedero en negativo. Cerrarlo exige una restricción o una función en la
+  base —como `retain_seller_commission` en 7.4— y es una ola propia, no un apaño
+  dentro de una de pruebas. Queda dicho.
+- **Los otros dos servicios no tenían fallos, y eso también es un resultado.** Los
+  ajustes de comisión y las gift cards salieron limpios: lo que se añadió son las
+  pruebas de sus contratos, que no son obvios —una comisión **pagada** no cambia de
+  estado al cancelarse la reserva (se le mete un ajuste en negativo, porque poner
+  `cancelled` sobre dinero que salió haría que el histórico dijera que nunca se
+  pagó); el clawback va por el **neto** y no por el bruto; y el saldo de una gift
+  card se escribe **antes** que su movimiento, que es el orden que deja el menor
+  destrozo sin transacción.
+- **Nueve guardas no mordieron a la primera.** Una era un error mío de
+  indentación. Tres eran **defensa en profundidad inalcanzable**: `Math.abs` sobre
+  el importe, el corte de la devolución de cero y la referencia condicional de la
+  gift card están detrás de un validador que ya rechaza esos casos, así que el
+  mutador las quita y nada cambia. No se pueden probar por comportamiento y quitarlas
+  es justo lo que no se puede hacer —el día que haya un segundo camino de escritura
+  son lo único que queda—, así que se fijaron por estructura, diciendo que la línea
+  existe y por qué. Cuatro eran los tres **call sites** y el aviso de moneda mezclada,
+  que ninguna prueba cubría. Y una fue una guarda mía mal apuntada: prohibía
+  `consumo.currency || booking.currency || "usd"` en todo el fichero, y esa expresión
+  sigue siendo **correcta** en el campo `moneda` del movimiento —la devolución se
+  apunta en la moneda en la que se descontó—; lo que no puede volver a estar es en
+  el argumento que dice cuál es la del monedero.
+- **Mutación: treinta y tres, los treinta y tres muertos.**
+- **Quedan diez servicios sin ejecutar**, ~2.900 líneas: `analytics`,
+  `attribution`, `import`, `membego`, `membego-redemption`, `plan`,
+  `public-booking`, `quote`, `schedule` y `seller-goals`.
+
+### Ola 9.4 — las dos puertas por las que entra una venta desde fuera (3 de 3 lotes)
+
+`public-booking-service.ts` (387 líneas) y `membego-redemption-service.ts` (596),
+los dos caminos por los que entra dinero desde fuera de la empresa: un
+desconocido en internet y una integración de fidelización. Ninguno de los dos se
+había ejecutado nunca en una prueba.
+
+- **EL DESCUENTO DE MEMBEGO LO PONÍA EL NAVEGADOR.** `POST /api/membego/redeem`
+  recibe el beneficio en el cuerpo, y lo pasaba **entero** al servicio: su
+  `eligible` y su `effect` incluidos. O sea que quien llamaba decidía si el
+  cliente tenía derecho y **cuánto se le rebajaba**. Un `POST` con
+  `effect: { kind: "FREE" }` sobre una promoción real del 5 % dejaba la línea en
+  cero: MembeGo consumía el 5 % que sí existe, la venta bajaba el 100 %, y el
+  recibo de aquí anotaba «FREE» con toda la cara de bueno. Lo pide `requireAtLeast(ctx, "seller")`,
+  y desde 5.1 «seller» incluye a los vendedores de un tour center.
+  Y había una segunda mitad: `redeemMembership` manda a MembeGo el
+  `membershipId` **sin el cliente**, así que con el beneficio viniendo de fuera,
+  cualquier identificador de membresía de esa empresa valía sobre **cualquier**
+  venta — la membresía de uno pagando la excursión de otro.
+  El arreglo es que `redeemForOrder` vuelva a llamar a `evaluateBenefits` y cruce
+  por identificador **y tipo** contra los beneficios de **ese** cliente; de la
+  petición solo sobrevive cuál. Y no es un comentario: `RedeemInput.benefit` pasó
+  a ser `{ id, type }`, así que no hay forma de leer un `effect` de la petición ni
+  por descuido. La cabecera del módulo ya decía que la elegibilidad se pregunta
+  «siempre, en el momento» — canjear sobre la copia del navegador no era
+  preguntar en el momento, era creerle.
+- **UNA EXCURSIÓN SE PODÍA RESERVAR EN LA GUAGUA DE OTRA.** Nadie comprobaba que
+  `departure_id` fuera del `product_id` de la línea. La salida se cargaba por su
+  identificador —acotada a la empresa, eso sí— y se usaba para el precio, el cupo
+  y la reserva sin mirar de qué producto es. Se llega desde fuera con datos
+  **publicados**: el catálogo público da los identificadores de producto,
+  `/availability?product=` los de salida, y una petición con el producto A y la
+  salida de B pasa las dos validaciones que había. El pasajero acaba ocupando
+  plaza en la guagua de B mientras el manifiesto de B lo lista como cliente de A,
+  el precio sale de A con la fecha de B, y la salida de A no sabe que vendió
+  nada. Dentro pasa lo mismo con menos malicia: un selector que quedó con la
+  lista del producto anterior manda ese par exacto.
+  Va en `createOrderWithBookings`, la puerta única, y **antes** del cupo:
+  `assertCapacity` recalcula y persiste los contadores de la salida que se le
+  diga, así que comprobar después habría dejado tocada la guagua equivocada antes
+  de rechazar. Arreglarlo en el motor público habría dejado tres de cuatro
+  puertas abiertas —el punto de venta, el portal del socio y la API entran por el
+  mismo sitio—.
+- **CANCELAR UNA RESERVA DEVOLVÍA EL BENEFICIO DE OTRA.** `reverseForOrder` barría
+  todos los canjes aplicados de la **venta**, y quien la llama es la cancelación
+  de **una reserva**. En una orden de tres excursiones —una familia que se baja de
+  la del jueves y hace las otras dos— la reversa se llevaba el beneficio aplicado
+  a una línea que sigue viva: MembeGo le devolvía el uso al cliente,
+  `restoreLine` le subía el importe a esa línea, y el total de la venta **subía**
+  después de una cancelación. Si esa línea ya estaba pagada o ya se prestó, la
+  operadora regaló el servicio y el uso volvió a la cuenta del cliente. Ahora
+  viaja el identificador de la reserva. Los canjes **sin** reserva anotada se
+  devuelven igual: no se puede saber de quién son, y dejar un beneficio sin
+  devolver es peor que devolverlo de más.
+- **UN CANJE CONSUMIDO SIN RECIBO SE ANOTABA COMO FALLIDO**, que dice exactamente
+  lo contrario de lo que pasó. La escritura del recibo estaba dentro del mismo
+  `try` que la llamada a MembeGo, así que un fallo de base al guardarlo caía en
+  el mismo `catch` y dejaba una fila `status: "failed"` — una fila asegurando que
+  el cliente **no** perdió el uso, cuando sí lo perdió. Con eso delante nadie va a
+  ir a devolvérselo. Son dos pasos ahora: si el segundo falla, queda una
+  auditoría `membego_redemption_orphan` con el identificador del canje **remoto**,
+  que es lo único con lo que se puede cuadrar o revertir a mano.
+- **Cuatro lecturas que se tragaban su error.** PostgREST no lanza: resuelve
+  `{ data: null, error }`, y descartar el `error` convierte «no se pudo leer» en
+  «no hay». Aquí valía cuatro cosas distintas:
+  la empresa → la página pública de una operadora viva contestaba **404** por un
+  hipo de la base, que es la respuesta más cara de todas —el cliente que hizo
+  clic en el anuncio cree que cerraron, y el 404 es lo que se queda en los
+  índices—; el catálogo → la página se dibujaba entera, con su logo y su
+  teléfono, y **sin nada que comprar**, y la caché de la ruta lo servía otro medio
+  minuto; las salidas → «no hay fechas disponibles» sobre una excursión que sale
+  todos los días; y la ficha del cliente → **la única que cuesta dinero**: caía de
+  largo hasta el `insert`, creaba una ficha duplicada y la marcaba como
+  `created`, que es justo lo que distingue «cliente captado» de «cliente que
+  vuelve». Un repetidor contado como captación le apunta al conserje del hotel una
+  captación que no hizo, y las captaciones se pagan.
+  La quinta lectura de ese fichero **no** se tocó, y es lo contrario a propósito:
+  guardar la petición original va después de crear la reserva, y contestar error
+  ahí haría que el cliente volviera a reservar y pagara dos veces por no haber
+  podido guardar una copia del formulario. `tryWrite` es la diferencia.
+- **Y dos más pequeñas del mismo canje:** la regla de «un beneficio por venta» se
+  apagaba sola cuando la lectura de canjes previos fallaba (dos usos del cliente
+  por un servicio, sin un aviso); y la línea elegida por el cajero entraba con un
+  `find` a secas, saltándose el único invariante que `defaultLine` defiende —que
+  tenga importe—, así que con una línea de cortesía elegida el uso se gastaba y la
+  venta no bajaba ni un peso.
+- **Lo que NO se tocó, y es una decisión:** `customer.status` admite `blacklist`
+  desde que existe la tabla y **nadie lo lee, en ninguna parte del sistema**. El
+  motor público reutiliza la ficha por correo o teléfono sin mirarlo, pero eso no
+  es un fallo de este servicio: es una función que no está construida, y
+  construirla es su propia ola —hay que decidir qué hace el mostrador cuando el
+  cliente está delante—. Queda dicho.
+- **Una guarda no mordió a la primera**, y por una razón que merece quedar
+  escrita: la que fija que el recibo se escribe **fuera** del `try` de la llamada
+  remota miraba el primer `recordFailure` del fichero. Añadir un **segundo** en el
+  `catch` del recibo —que es exactamente el fallo de antes— la dejaba pasar,
+  porque el primero seguía donde tenía que estar. Y ninguna prueba de
+  comportamiento lo ve: en el escenario del recibo roto, esa segunda escritura va
+  a la **misma tabla rota** y no llega a escribir nada. La guarda pasó a exigir
+  que haya **un solo sitio** que anote un canje como fallido.
+- **Mutación: veinticuatro, las veinticuatro muertas.**
+- **Quedan ocho servicios sin ejecutar**, ~2.300 líneas: `analytics`,
+  `attribution`, `import`, `membego`, `plan`, `quote`, `schedule` y
+  `seller-goals`. Más `membego-service.ts` (550 líneas, el enlace y los
+  webhooks), que entró en el inventario como parte de MembeGo pero es un servicio
+  aparte y sigue sin pruebas propias.
+
+### Ola 9.5 — cuánto se cobra, cuándo, y quién se lleva la comisión
+
+`quote-service.ts` (172 líneas), `schedule-service.ts` (293) y
+`attribution-service.ts` (378): el precio que se promete, el calendario con el
+que se cobra y el vendedor al que se le paga. Ninguno tenía pruebas propias.
+
+- **EL HISTÓRICO A MEDIAS DECIDÍA QUIÉN COBRA.** `resolveOrderAttribution` lanza
+  dos consultas —por ficha del cliente y por cookie del navegador— y las
+  recogía con `for (const { data } of results)`, o sea descartando el `error`
+  de las dos. Un fallo en cualquiera salía de aquí como «ese cliente no tiene
+  histórico», y eso tiene dos caras y las dos cuestan dinero: devolver `null`
+  es declarar la venta **directa** —el propio docblock dice que eso «es la
+  verdad», y con una lectura rota no lo es: es el conserje que trajo al cliente
+  quedándose sin comisión, en silencio—; y con política de **último toque**,
+  resolver sobre la mitad de los hechos puede coronar a **otro** vendedor, así
+  que no se pierde una comisión, se le paga a quien no la hizo. Si falla una, no
+  se resuelve con la otra.
+- **`recordPurchaseOnce` SE APAGABA SOLA CUANDO LA BASE IBA MAL.** La lectura que
+  comprueba si esa venta ya está en el embudo descartaba su error, así que caía
+  de largo hasta escribir. Y su propio comentario explica por qué importa:
+  `syncOrderTotals` corre con **cada** pago, cada abono y cada cancelación de
+  línea, de modo que una venta cobrada en tres plazos dejaba tres compras y el
+  vendedor que cobra a plazos parecía el triple de bueno. Ahora falla cerrado.
+  **La deduplicación de visitas hace lo contrario, y también es correcto**: un
+  paso de embudo que falta es un hueco en un informe; una compra de más es un
+  número equivocado con cara de bueno. La asimetría está fijada por una guarda,
+  porque es justo lo que alguien ordenado «armonizaría».
+- **EL SLUG DEL QR ERA UN PATRÓN.** `resolveLinkBySlug` compara con `ilike` —que
+  es lo correcto: el código va impreso bajo un QR y quien lo teclea puede
+  escribirlo en minúsculas— pero `ilike` interpreta `%` y `_`, y la cadena venía
+  de la URL sin tocar. Con `/e/%` el patrón casa con **todos** los enlaces
+  activos de la base, y con `_` se tantean de uno en uno; cuando casa
+  exactamente uno, quien lo probó se lleva la atribución de ese vendedor sin
+  haber tenido nunca su QR delante. `slugify` solo produce `[A-Z0-9]`, así que
+  exigir eso no rechaza ningún enlace que exista.
+- **UN TOTAL DE COTIZACIÓN ESCRITO SOBRE UN DESGLOSE LEÍDO A MEDIAS.**
+  `loadQuoteBundle` lee con tope (200 líneas, 20 alternativas) y
+  `recalculateQuote` **guarda** lo que suma. Con el desglose recortado, la
+  cabecera se quedaba con la suma de las primeras doscientas líneas —escrita, no
+  calculada al vuelo— y la propuesta salía en PDF con un precio que su propio
+  desglose contradice, con cara de buena; y de ahí sale la orden al convertir.
+  Es exactamente lo que el módulo existe para impedir: su cabecera dice que los
+  totales son «una proyección de las líneas», y una proyección de la mitad de
+  las líneas no es un total. Ahora se lanza en vez de guardar, y el total
+  anterior se queda como estaba.
+- **CAMBIAR LA ALTERNATIVA ESCOGIDA DE UNA PROPUESTA ACEPTADA.** La ruta decía
+  `if (!selecting && DECIDED_STATUSES.has(...))`: bloqueaba **desmarcar** y
+  dejaba pasar **marcar**, al revés de lo que hace falta. La cabecera toma el
+  total de la alternativa escogida, así que marcar otra sobre una cotización
+  aceptada le cambia el precio a un documento con el que la empresa ya se
+  comprometió, `convert` arma la orden con la nueva, y el rastro que queda es un
+  `quote_option_selected` igual a los demás. No hay camino legítimo que lo
+  necesite: `decide` ya exige que la alternativa esté marcada **antes** de
+  aceptar.
+- **EL SALDO DE UNA CUOTA NO SE DERIVABA.** La cabecera de `schedule-service`
+  dice que lo imputado se deriva y no se acumula, pero la comparación de «esta
+  fila no ha cambiado» miraba lo imputado y el estado, y no el saldo. Una cuota
+  cuyo importe se corrige a mano —el gerente baja la última de 700 a 500— sale
+  con el mismo `paid_amount` y el mismo estado, así que se quedaba con el
+  `balance` del importe viejo: el plan seguía pidiendo doscientos que ya nadie
+  debe, y el saldo es lo que el cliente ve en su cuota.
+- **Y un plan nuevo reutilizaba los números de uno muerto.** Cuando todas las
+  cuotas anteriores están perdonadas o anuladas, `ensureSchedule` no encontraba
+  ninguna viva y volvía a numerar desde 1: la venta acababa con dos cuotas «1» y
+  dos «2» —una muerta y otra viva— y el recibo que dice «abono de la cuota 2 de
+  3» deja de poder señalar una sola. `setSchedule` ya lo hacía bien; esto es lo
+  mismo por el otro camino.
+- **El doble de la base aprendió dos cosas que hacían falta de verdad:** `ilike`
+  **con** sus comodines —una prueba que los ignorara escondería justo la fuga
+  que hay que buscar— y el sello de `created_at` al insertar, porque la columna
+  lo tiene por `default now()` y hay servicios que **filtran** por él; sin sello,
+  esas filas no pasan su propio `gte` y la prueba diría que la deduplicación de
+  visitas no funciona.
+- **Dos guardas no mordieron a la primera, y las dos por motivos ya conocidos.**
+  El filtro de cuotas muertas y el acotado del cobro a cero son **defensa en
+  profundidad inalcanzable**: `allocate` se salta las muertas por su cuenta,
+  `statusFor` conserva su estado y `collectionStatus` las vuelve a filtrar, así
+  que el mutador las quita y nada cambia. Se quedan porque lo que las hace
+  inertes es el contrato de **otro** módulo, y se fijan por estructura. Y al
+  escribir esa guarda apareció otra vez la familia de siempre —**la guarda
+  encuentra su texto en otro sitio del mismo fichero**—: el filtro está en dos
+  funciones (`refreshAllocation` reparte, `scheduleRefFor` etiqueta) y un
+  `toMatch` a secas dejaba pasar que se quitara de una. La guarda cuenta dos.
+- **Mutación: veintiuna, las veintiuna muertas.**
+- **Quedan cinco servicios sin ejecutar**, ~1.500 líneas: `analytics`, `import`,
+  `membego` (el enlace y los webhooks, 550), `plan` y `seller-goals`.
+
+### Ola 9.6 — la integración que escribe sin sesión, y el techo que decide si se puede escribir
+
+`membego-service.ts` (550 líneas) y `plan-service.ts` (223). El primero es el
+único módulo del sistema donde **todo** entra sin sesión —el SSO llega ANTES de
+que exista una y el webhook lo firma una máquina—, así que lo que delimita es el
+código y nada más. El segundo decide si una empresa puede seguir registrando
+operaciones. Ninguno tenía pruebas propias.
+
+- **UN CORREO CORRIENTE ERA UN COMODÍN.** El espejo de MembeGo busca la ficha
+  local con `ilike("email", cliente.email)` —insensible a mayúsculas, que es lo
+  que hace falta— pero `ilike` es un **patrón**, y el valor venía del payload del
+  webhook sin tocar. En SQL, `_` casa con cualquier carácter. Y esto no hay que
+  forzarlo con un payload raro: **los correos con guion bajo son de todos los
+  días**. `juan_perez@gmail.com` casa también con `juanXperez@gmail.com`, así
+  que o casaban dos fichas —`maybeSingle` devuelve error, el error se
+  descartaba, y el evento seguía hasta **crear una ficha duplicada** del cliente
+  que ya compraba aquí, justo lo que la cabecera del módulo promete que no
+  pasa— o casaba **la equivocada**, y entonces las visitas, las compras y la
+  membresía de un cliente de MembeGo quedaban apuntadas a **otra persona**. Con
+  un `%` en el payload, el patrón casa con cualquier cliente de la empresa.
+  El escape es el mismo modismo que ya usaba el buscador de empresas del
+  superadmin. `*` no se escapa: PostgREST lo convierte en `%` **antes** de que
+  SQL lo vea, así que una contrabarra no lo salva — un correo con `*` no es un
+  correo y se deja sin buscar por correo, en vez de buscar con un comodín.
+- **Y las dos búsquedas de ficha se tragaban su error**, con la misma
+  consecuencia: caer de largo hasta el `insert` y duplicar. Ahora lanzan, y eso
+  es exactamente lo que el diseño del webhook quiere: el sobre queda marcado
+  como `failed` con su payload íntegro, que es reparable; la ficha doble no se
+  repara sola y nadie la ve hasta que el cliente pregunta por su historial.
+- **EL MEDIDOR DE ALMACENAMIENTO SE BORRABA CON UNA LECTURA FALLIDA.**
+  `addStorageUsage` lee el acumulado y escribe `current + mb`. Descartando el
+  error de la lectura, `current` salía 0 y se escribía `0 + mb`: una empresa con
+  900 MB medidos quedaba en 5 por **una** lectura fallida, y a partir de ahí el
+  techo de almacenamiento no vuelve a saltar nunca. Eso no es «cobrar de menos»
+  —que es el lado del error que este módulo elige a propósito— es borrar el
+  medidor. Sin poder leer, no se escribe.
+- **EL MES DEL CUPO ERA EL DEL SERVIDOR, NO EL DE LA EMPRESA.** `monthStart()`
+  corta en UTC y el proceso corre en UTC. Una reserva de las 21:00 del 31 de
+  agosto en Santo Domingo son las 01:00 UTC del 1 de septiembre: cortando en
+  UTC, las ventas de las últimas horas del mes se le cargan al cupo del mes
+  **siguiente**. La operadora que cierra el mes vendiendo de noche —que es
+  cuando se vende— empieza septiembre con el contador ya empezado, y agosto le
+  cuadra corto contra su propia factura. Es la misma decisión que ya tomó el
+  cierre del día en la ola 9.2. `monthStart` se queda como la caída cuando no
+  hay zona declarada, que es lo que hacía antes.
+- **Un recuento que no se pudo hacer valía cero, y cero apaga el techo entero:**
+  `limitCheck` compara contra cero y deja pasar todo, el aviso de «te estás
+  acercando» no salta nunca, y la pantalla del plan le enseña al cliente «0 de 5
+  usuarios» sobre una empresa con cinco. Tres mentiras, ninguna visible. Seguir
+  devolviendo cero **es** lo correcto —la cabecera de `plan.ts` dice que sin dato
+  no se bloquea, y cobrar de más por una consulta caída sería mucho peor—, pero
+  callarlo no. Enseñar «no se sabe» en vez de «0» exige que `PlanUsage` admita
+  nulos y llega hasta la pantalla: es su propia ola y queda anotada.
+- **El doble de la base aprendió tres cosas, y las tres hacían falta de verdad:**
+  · **`upsert` no es un `insert`.** Media docena de servicios escriben con
+    `upsert(..., { onConflict })` para decir «si ya está, actualízala». Con el
+    doble insertando siempre, la segunda visita del mismo cliente creaba un
+    espejo NUEVO y la prueba miraba el primero, con su contador intacto, dando
+    por bueno un contador que en producción sí avanza. Un doble que se equivoca
+    así no prueba: da permiso.
+  · **la clave duplicada (`23505`)**, que tres servicios usan para ser
+    idempotentes —el canje de MembeGo, el token SSO y el sobre del webhook— y
+    que distinguen de un fallo de verdad: uno significa «esto ya se hizo». Sin
+    poder provocarla, la rama que decide si un reintento cobra dos veces no se
+    podía probar.
+  · **`*` como comodín** en `ilike`, porque PostgREST lo convierte antes de SQL.
+- **Cuatro guardas no mordieron a la primera.** Dos eran huecos de las pruebas
+  —el camino del teléfono no tenía su propia lectura rota, y la zona de la
+  empresa se probaba en `loadUsage` pero no en la guarda que la llama—. Una era
+  un hueco del **doble**, el `*`. Y la cuarta fue la buena: el `try/catch` de
+  `addStorageUsage` es inalcanzable porque `tryWrite` se traga el error de la
+  escritura, y al ir a fijarlo por estructura apareció el fallo de verdad —el
+  medidor borrándose por la LECTURA, que nadie miraba—.
+- **Mutación: veintiséis, las veintiséis muertas.**
+- **Quedan tres servicios sin ejecutar**, ~760 líneas: `analytics`, `import` y
+  `seller-goals`.
+
+### Ola 9.7 — las metas, el importador y la analítica (y se cierra el inventario)
+
+`seller-goals-service.ts` (348 líneas), `import-service.ts` (189) y
+`analytics-service.ts` (221). Con estos tres **no queda ningún servicio del
+sistema sin pruebas propias**: el inventario que se abrió en la ola 9.2 con
+dieciocho servicios sin ejecutar llega a cero.
+
+- **UNA LIQUIDACIÓN PAGABA OTRA VEZ LOS BONOS DE LA ANTERIOR.**
+  `attachBonusesToSettlement` engancha los bonos aprobados del vendedor a la
+  liquidación y luego devolvía los totales de `bonusesOf(sellerId)` — que lee
+  los **doscientos bonos más recientes de esa persona**, de cualquier
+  liquidación y de cualquier fecha— y `bonusTotals` cuenta todo lo que esté
+  `approved` **o `settled`**. De ahí sale `bonus_total` y, sobre todo,
+  `pending_total`, que es **lo que se transfiere**. Así que la segunda
+  liquidación de un vendedor le pagaba de nuevo los bonos de la primera, la
+  tercera los de las dos, y así hacia arriba. Nadie lo ve, porque cada
+  liquidación por separado cuadra consigo misma. El comentario que había decía
+  que se leían después de enganchar «porque antes del update no contarían», y no
+  era verdad por partida doble: `approved` ya contaba, y lo que sobraba no era
+  lo de antes del update sino lo de **otras liquidaciones**. Ahora se leen por
+  `settlement`, que es la pregunta de verdad: qué paga ESTA.
+- **EL BONO DE UNA META SE PODÍA COBRAR A NOMBRE DE OTRO.** `awardGoalBonus`
+  armaba el alcance con el `sellerId` del **cuerpo de la petición** y tiraba el
+  `seller_type` de la meta, así que `goal.seller` no se comparaba con nadie en
+  ningún sitio: si el otro daba los números por su cuenta, se le otorgaba un
+  premio que no era suyo. Y la otra cara: una meta de **grupo** —«los hoteles»,
+  una sucursal— se juzgaba contra las cifras de **una sola persona**, de modo
+  que el tablero y el botón de otorgar decidían cosas distintas sobre la misma
+  meta. Es exactamente lo que el comentario de la liquidación advierte tres
+  funciones más abajo: dos sitios calculando el mismo total acaban discrepando.
+- **EL DÍA DEL RANGO DE UNA META ERA EL DEL SERVIDOR.** Salía cortado en UTC, así
+  que una venta de las 21:00 del 30 de septiembre en Santo Domingo —01:00 UTC del
+  1 de octubre— quedaba **fuera** de la meta de septiembre, y dentro entraban las
+  últimas cuatro horas del 31 de agosto. Aquí no es una imprecisión de informe:
+  de ese número depende si alguien cobra un bono. Tercera vez que aparece la
+  misma familia (9.2 el día, 9.6 el mes del cupo), y con el mismo ayudante
+  semiabierto que usan todos los listados — con el límite superior **estricto**,
+  porque con `lte` sobre un instante exclusivo una venta de medianoche contaría
+  en dos metas.
+- **EL CRUCE DE DUPLICADOS DEL IMPORTADOR SE QUEDABA CORTO.** La consulta pedía
+  `_limit: chunk.length` —tantas filas como valores se preguntan— dando por hecho
+  que cada valor casa con una. El propio comentario del servicio dice lo
+  contrario («con dos fichas del mismo correo, que no debería pasar pero
+  pasa»), y cuando pasa, las repetidas gastan cupo: los últimos valores del lote
+  se quedan sin respuesta, se toman por nuevos y el archivo los vuelve a crear.
+  O sea que una cartera con duplicados los **multiplica** en cada importación,
+  que es lo único que un importador no puede hacer.
+- **UN INFORME DE COHORTES RECORTADO PARECÍA COMPLETO.** El tope son cinco mil
+  filas y el resultado se presentaba sin más. Es el peor sesgo posible para lo
+  que mide: al quedarse con el **principio** del rango, las segundas compras de
+  esos mismos clientes son justo las que se caen, así que la retención sale baja
+  y parece un problema de negocio. Ahora lleva su bandera, como el embudo de la
+  red comercial. Y un informe vacío por una lectura rota deja de darse por
+  bueno: «esta operadora no tiene clientes que repitan» no es una conclusión que
+  se saque de un hipo de la base.
+- **Lo que NO se arregló, y está escrito como prueba:** el cruce de duplicados
+  del importador **no es insensible a mayúsculas**, aunque leyendo `keyOf`
+  —que pasa las dos partes a minúsculas— lo parezca. La consulta va con un `in`
+  exacto, así que una ficha guardada como `Laura@Example.com` no casa con
+  `laura@example.com`, se toma por nueva y el archivo la duplica. Y hay fichas
+  así: el motor público normaliza el correo, pero la captura a mano y el espejo
+  de MembeGo guardan lo que les den. No se arregla aquí porque un `in`
+  insensible a mayúsculas no se puede expresar en PostgREST y una consulta por
+  valor serían doscientas por lote: lo que lo arregla es normalizar la columna
+  en la base (`citext` o un índice funcional), o sea una migración. Queda una
+  prueba que afirma el comportamiento de HOY y dice en su cabecera que sobra el
+  día que se arregle.
+- **Dos guardas no mordieron a la primera.** Una era un hueco de las pruebas —la
+  zona de la empresa se probaba en `actualsFor` pero no en el camino del bono—.
+  La otra es **defensa en profundidad inalcanzable**: el corte temprano cuando
+  el alcance no cubre a nadie da lo mismo que dejar correr las consultas, porque
+  un `in` con lista vacía no casa con nada. Se queda igual, y va por estructura:
+  lo que la hace inerte es cómo trata PostgREST una lista vacía —un detalle de
+  la capa de consultas— y basta con que el traductor cambie para que un filtro
+  vacío pase a significar «sin filtro», o sea las cifras de toda la empresa
+  atribuidas a un tipo de vendedor sin gente.
+- **Mutación: veintidós, las veintidós muertas.**
+- **INVENTARIO CERRADO.** Los dieciocho servicios que la ola 9.2 encontró sin
+  pruebas propias —dieciséis de ellos sin ejecutarse nunca— están los dieciocho
+  cubiertos. En las seis olas (9.2 a 9.7) salieron **veintitrés fallos reales**,
+  y el reparto dice algo por sí solo: casi todos son de **fuente** —de dónde sale
+  el número— y no de **cuenta**. Sumar bien el conjunto equivocado da un total
+  que cuadra consigo mismo, y eso es lo que ninguna prueba de aritmética iba a
+  encontrar nunca.
+
+### Ola 9.8 — el monedero se gasta con el cerrojo puesto (migración 0091)
+
+La carrera que la ola 9.3 dejó anotada como «su propia ola». No es un fallo de
+cuenta: es que entre comprobar y descontar pasa toda la venta.
+
+- **LA CARRERA, EN CUATRO LÍNEAS.** Una venta a un socio prepago hace dos cosas
+  y entre ellas pasa tiempo: `assertSaldo` lee el saldo y autoriza al empezar, y
+  `descontarVenta` apunta el consumo cuando la venta ya existe. Con dos ventas a
+  la vez del mismo socio, las dos leen el **mismo** saldo —ninguna ve el consumo
+  de la otra, que todavía no existe— y las dos pasan. Con 100 de saldo y dos
+  ventas de 80, el socio acaba en −60: la operadora prestó 160 de servicio
+  contra un depósito de 100. No hace falta mala fe ni concurrencia rara, solo
+  dos mostradores del mismo tour center vendiendo un sábado.
+- **QUÉ CIERRA `spend_partner_wallet`, Y QUÉ NO.** Es importante decirlo entero
+  porque es fácil vender esto como más de lo que es.
+  **Cierra** que el saldo con el que se descuenta sea **viejo**: la suma se hace
+  dentro de la misma transacción que escribe y detrás de un `for update` sobre
+  el socio, así que dos consumos del mismo monedero se ponen en fila y el
+  segundo ve el primero ya escrito. Hasta ahora el saldo se calculaba en
+  JavaScript sobre un `select` que había terminado hacía rato.
+  **No cierra** que dos ventas se **autoricen** a la vez en el primer paso. Eso
+  solo se arregla RESERVANDO el importe al autorizar, y este sistema decidió lo
+  contrario a propósito: «descontar antes y que la saga se compensara dejaría al
+  socio pagando una reserva que no llegó a nacer». Cambiar esa decisión es una
+  decisión de producto, no una corrección, y no se toma desde una ola de
+  arreglos.
+- **LO QUE SÍ CAMBIA DEL TODO ES QUE EL DESCUBIERTO DEJA DE SER MUDO.** Antes el
+  consumo se apuntaba sin mirar y nadie se enteraba hasta que alguien sumaba el
+  libro. Ahora la función devuelve el saldo de antes, el de después y si quedó
+  en negativo; el servicio lo grita en la consola y la venta lo deja en la
+  bitácora como `partner_wallet_overdraft`, con el importe y los dos saldos.
+  El consumo **se apunta igual**, y eso también es una decisión: el servicio ya
+  se prestó y ese dinero se gastó, así que un libro que se niega a anotarlo es
+  un libro que miente. Es la misma preferencia que el módulo ya tenía escrita —
+  un descuadre visible antes que una reserva perdida con el turista delante.
+- **Y dos cosas que sí impide por completo:** gastar en una moneda que no es la
+  del monedero —la comprobación vivía solo en la aplicación, y 0080 ya explica
+  por qué eso no basta: «el día que alguien inserte por SQL la aplicación no
+  está delante»— y descontar dos veces la misma venta, que antes lo paraba el
+  índice único **lanzando un error que `descontarVenta` se tragaba**; o sea que
+  un reintento correcto quedaba registrado como «no se pudo descontar», que es
+  otra cosa. Ahora es una respuesta: «esta orden ya descontó, aquí tienes el
+  movimiento».
+- **El saldo se suma en SQL con los mismos signos que `monedero-socio.ts`**, en
+  valor absoluto (por lo mismo que el `check` de 0080) y **solo de su moneda**
+  — sumar todas fue el fallo de la ola 9.3 y aquí habría vuelto por la puerta de
+  atrás. Un tipo de movimiento desconocido no suma ni resta, igual que en el
+  módulo puro: contarlo a ciegas el día que alguien añada uno sería inventarse
+  dinero.
+- **Tres guardas preexistentes saltaron, las tres con razón:** la copia para el
+  editor tiene que decir **exactamente** lo mismo que la migración (así que se
+  genera desde ella y no se reescribe a mano), la auditoría de migraciones que
+  se pega en el editor se había quedado atrás (`node
+  scripts/build-auditoria-migraciones.mjs`), y la guarda del orden
+  «comprobar antes / descontar después» seguía buscando `descontarVenta`.
+- **Tres mutaciones sobrevivieron a la primera, y las tres eran huecos de
+  prueba, no defensa inerte.** Dos guardas estructurales pasaban con el bloque
+  **desactivado** —el texto seguía ahí— y una tercera tenía el ancla mal. La
+  venta a un socio prepago no se ejecutaba en ninguna prueba: ahora tiene cinco
+  —que se descuenta por el total de verdad, que un saldo corto la rechaza con
+  402 sin escribir nada, que el descubierto llega a la bitácora con su número,
+  que un saldo que aguanta no la ensucia, y que un socio a crédito no toca el
+  monedero—.
+- **Mutación: veinticuatro, las veinticuatro muertas.**
+- **Pendiente de ejecutar en la base:** `supabase/editor/0091_parte_1.sql` y
+  después `0091_parte_2_verificacion.sql` (cinco filas, todas tienen que decir
+  OK). Hasta que la función exista, `gastarDelMonedero` falla, se traga el error
+  y la venta sigue en pie sin descontar — o sea que el prepago deja de
+  descontar hasta que la migración esté puesta. Va en la misma tanda que 0088,
+  0089 y 0090.
+
+### Ola 9.9 — la lista negra del cliente: era una casilla (migración 0092)
+
+Lo que la ola 9.4 encontró de paso y dejó anotado. No es un arreglo: es que la
+función no estaba construida, y de la peor manera posible.
+
+- **`customer.status` ADMITE `blacklist` DESDE LA PRIMERA MIGRACIÓN**, y el
+  formulario del directorio lo ofrece en un desplegable con su etiqueta «Lista
+  negra». Lo que no existía en ninguna parte del sistema era alguien que lo
+  **leyera**: se marcaba a una persona y seguía comprando por el mostrador, por
+  la web, por la API del socio y por la OTA exactamente igual. De las casillas
+  que no hacen nada, esta es de las peores — quien la marca se queda convencido
+  de que hizo algo, y deja de vigilar.
+- **Se comprueba en la puerta única**, `createOrderWithBookings`, por lo mismo
+  que la coherencia salida↔producto de la ola 9.4: las cuatro puertas entran por
+  ahí y ponerlo en una dejaría tres abiertas. Cuesta una lectura por clave
+  primaria en cada venta y es deliberado: una lista negra que solo se comprueba
+  «cuando se puede» es la casilla de antes con otro nombre. Va **antes** de
+  tocar cupos, crédito y plazas.
+- **HACIA FUERA NO VIAJA NI EL MOTIVO NI LA PALABRA.** El motor lanza con el
+  motivo dentro porque quien vende tiene al cliente delante y decide en treinta
+  segundos. Pero un desconocido que reserva por internet no tiene por qué
+  enterarse de que está en una lista, y decírselo por una respuesta HTTP es
+  además la peor manera de hacerlo: sin nadie delante que lo explique y con el
+  texto listo para reenviarlo. La web y la API del socio **traducen** el código
+  —`CUSTOMER_BLOCKED`— al mismo mensaje que ya usa la página cuando el plan no
+  admite reservas: no se pudo completar en línea, y con quién hablar.
+- **QUÉ BLOQUEA Y QUÉ NO.** Bloquea **vender**: una reserva nueva a nombre de
+  esa ficha. No toca nada de lo que ya existe —sus reservas siguen en pie, se le
+  cobra lo que debe, se le cancela si hay que cancelar y viaja si ya pagó—. Una
+  lista negra que cancelara el pasado sería una forma de perder dinero y de
+  dejar gente tirada en un hotel. Y `inactive` **no** veta: es una ficha
+  archivada, y bloquear ventas por eso convertiría una tarea de limpieza en un
+  veto comercial que nadie decidió.
+- **EL MOTIVO ES OBLIGATORIO, Y VIVE EN LA FICHA.** Una lista negra sin motivo
+  deja de servir en seis meses: el cliente aparece en el mostrador, el cajero ve
+  «bloqueado» y o lo levanta —y el bloqueo no valía nada— o lo sostiene sin
+  saber por qué, que es peor. Por eso va en la ficha y no solo en la bitácora:
+  la bitácora sirve para reconstruir qué pasó, no para consultarla con un
+  cliente esperando. Y hay un `check` en la base, porque la aplicación puede
+  exigirlo hoy y el día que aparezca un segundo camino vuelve a quedar una ficha
+  bloqueada que nadie sabe explicar. Las fichas que ya estaban marcadas reciben
+  un motivo que dice la verdad —que no se anotó ninguno— en vez de
+  desbloquearlas para que el `check` entre.
+- **Y NO LO DECIDE QUIEN VENDE.** La puerta es
+  `PUT /api/customers/:id/lista-negra`, con rango de `manager`: el rango de
+  vender lo tiene también el vendedor de un tour center desde 5.1, así que sin
+  esto el empleado de una agencia podía vetarle un cliente a la empresa que le
+  da el producto. El desplegable de la ficha deja de ser una puerta en los dos
+  sentidos —y también al crear, porque nacer bloqueado también es bloquear—
+  mientras `active` ↔ `inactive` sigue siendo trabajo normal de quien ordena el
+  directorio.
+- **Al levantar el bloqueo, el motivo se borra.** Dejarlo dejaría una ficha
+  activa con un texto que dice por qué está bloqueada, y el siguiente que la
+  abra se queda sin saber si lo está o no. Lo que queda del episodio son los dos
+  movimientos de la bitácora, con sus dos motivos.
+- **Tres mutaciones sobrevivieron a la primera.** Dos eran comportamiento de la
+  ruta que ninguna prueba ejecutaba —qué se escribe al levantar el bloqueo y qué
+  pasa al bloquear a quien ya está bloqueado—, y se cerraron con una prueba de
+  ruta de verdad, con el precedente del ámbito del vendedor. La tercera fue más
+  interesante: la comprobación «si no viene el campo, no hay nada que mirar»
+  estaba **dos veces** —en `puertaEquivocada` y en `cambioDeVeto`, en el mismo
+  fichero y a tres funciones—. Eso no es defensa en profundidad, es una segunda
+  copia de la misma regla, y de esas la que se queda desactualizada es siempre
+  la que nadie mira. Se quitó la copia en vez de sujetarla con una guarda.
+- **Mutación: veintitrés, las veintitrés muertas.**
+- **Pendiente de ejecutar en la base:** `supabase/editor/0092_parte_1.sql` y
+  después `0092_parte_2_verificacion.sql` (cuatro filas, todas OK). Hasta que
+  estén, bloquear desde la ruta falla al escribir las tres columnas nuevas —el
+  rechazo de ventas sí funciona, porque solo lee `status`—.
+
+### Ola 9.10 — DR-001: el simulacro de restauración, y lo que encontró por el camino (migración 0093)
+
+**El hallazgo no estaba en el plan.** Para escribir el simulacro hacía falta una
+base poblada, y para eso corrí `scripts/db-test.sh` — que llevaba varias olas sin
+correr, porque venía verificando con `vitest` y `vitest` no habla con Postgres.
+Volvió con **tres pruebas SQL en rojo**, y dos de ellas eran una regresión mía:
+
+- `auth_hook.test.sql` — «el enganche dejó de enviar branch_id».
+- `active_workspace.test.sql` — «con la B elegida, el token debería llevar la B».
+- `supplier_acceptance.test.sql` — `null value in column "kind" of relation
+  "organizations"`.
+
+**0084 reescribió `app.custom_access_token_hook` partiendo de la versión de 0063
+y perdió por el camino dos cosas**: el selector de empresa activa que había
+puesto 0068 y el `branch_id` que había puesto 0046. Las dos eran mías, de esta
+misma serie de olas, y llevaban semanas fuera del token. En la práctica: quien
+tenía varias empresas volvía siempre a la primaria por mucho que eligiera otra, y
+el `branch_id` que acota a una sucursal no viajaba, así que todo lo que depende de
+él se comportaba como si nadie tuviera sucursal asignada.
+
+- **Migración 0093** reescribe el enganche **con las cinco reclamaciones juntas y
+  nombradas**: `org_id`, `app_role`, `status`, `partner_id`, `supplier_id`, más
+  `branch_id`, más la consulta a `user_active_workspace` con respaldo en la
+  membresía primaria. Lleva su propia autocomprobación (`do $$` que revienta si
+  el objeto no queda `security definer` o sin `search_path` fijado), porque un
+  enganche que existe pero corre como invocador no falla: devuelve un token sin
+  reclamaciones y la aplicación entera se comporta como si nadie tuviera empresa.
+- **La prueba SQL ahora nombra las cinco, una por una.** Este objeto se ha
+  reescrito **seis veces** (0002, 0020, 0046, 0063, 0068, 0084) y cada reescritura
+  parte de la anterior de memoria. Una aserción que dijera «trae varios atributos»
+  habría pasado en verde las dos veces que se perdió algo. Lo que no se nombra es
+  exactamente lo que la séptima reescritura va a perder.
+- `supplier_acceptance.test.sql` **nunca había corrido**, ni una vez, desde que la
+  escribí en 0087: su primer `insert` no nombraba `kind` —`not null` sin valor por
+  defecto desde 0002— así que el bloque entero reventaba antes de la primera
+  aserción. Al repararlo salieron dos cosas más que el fichero daba por ciertas:
+  `departure.product_id` es `not null` desde 0004, y `app.fill_supplier_from_resource`
+  (0085) **pisa siempre** `supplier_id` con el que salga del vehículo o del chofer,
+  así que asignar el proveedor a mano no asignaba nada. Lo que se asigna es la
+  guagua.
+
+**Y luego, DR-001.** El plan de recuperación existía en papel y no se había
+probado nunca.
+
+- `supabase/verify/restauracion.sql` — once filas `comprueba | resultado | por_qué`
+  que se pasan a una base recién restaurada. No cuentan tablas: comprueban que el
+  enganche está y es `security definer` con `search_path` fijado, que las cuatro
+  ayudas de inquilino existen, que ninguna tabla se quedó sin RLS, que ninguna
+  tabla tiene 1–3 de las cuatro políticas de inquilino —media política es peor que
+  ninguna—, que la mayoría de las tablas con RLS conserva las cuatro, y que no hay
+  membresías sin cuenta en `auth.users`.
+- **El script dice en su cabecera lo que NO puede ver**: que el enganche esté
+  **registrado** en la configuración de Auth del proyecto (eso vive en Supabase, no
+  en la base), los bytes de Storage, y las variables de entorno. Una verificación
+  que se calla sus límites es peor que no tenerla, porque sale verde el día que más
+  falta hace que grite.
+- `scripts/restore-drill.sh` — seis pasos: poblar, `pg_dump -Fc`, **`dropdb` y
+  `createdb`** (con la comprobación de que la base quedó de verdad vacía), `pg_restore`,
+  pasar la verificación exigiendo cero `REVISAR` y que los recuentos cuadren, y
+  entonces **cuatro controles negativos**: romper la base a propósito cuatro veces
+  y exigir que la verificación lo cace **por la fila concreta que debía cazarlo**.
+  Una verificación que no puede fallar no verifica nada; un simulacro que no
+  destruye no es un simulacro, es una copia.
+- Los cuatro sabotajes: pasar el enganche a `security invoker`, apagar la RLS de
+  `booking`, renombrar `app.current_partner_id()` y borrar `auth.users` con los
+  disparadores desactivados. Corre en CI, detrás de las pruebas de base de datos.
+- `docs/runbooks/RESTAURACION.md` — el procedimiento de treinta minutos contra un
+  proyecto **nuevo**, las tres cosas que la copia no trae, y una tabla «Registro de
+  simulacros» **vacía**, que es la parte honesta del documento.
+
+- **Lo que quedó comprobado la primera vez que corrió**: la fila 6 marcaba rotas
+  cuatro tablas —`api_key`, `membego_sso_jti`, `stripe_event`,
+  `supplier_response_token`—. No estaban rotas: son deliberadamente RLS encendida
+  **sin ninguna política**, o sea solo para el rol de servicio. La comprobación
+  estaba mal, no la base. Se partió en `6a` (ninguna tabla con 1–3 de las cuatro) y
+  `6b` (la mayoría conserva las cuatro), las dos sin envejecer.
+- **Mutación: diecisiete, las diecisiete muertas.** La última en caer fue «el
+  enganche pierde `partner_id`»: ninguna prueba SQL nombraba esa reclamación, que
+  es exactamente el agujero por el que se fueron las otras dos.
+- **DR-001 queda REDUCIDO, NO CERRADO.** El procedimiento y la verificación ahora
+  se prueban en cada CI contra una base real. El simulacro de treinta minutos
+  contra un proyecto de Supabase de verdad **sigue sin haberse hecho ni una vez**, y
+  el runbook lo dice con la tabla de registro en blanco.
+- **Pendiente de ejecutar en la base:** `supabase/editor/0093_parte_1.sql` y después
+  `0093_parte_2_verificacion.sql` (cinco filas, todas OK). Y luego **cerrar sesión y
+  volver a entrar**: el token que ya tienes en el navegador sigue siendo válido
+  durante su vida entera y sigue sin `branch_id` ni empresa activa; el enganche solo
+  se ejecuta al emitir uno nuevo.
+
+### Ola 9.11 — los techos silenciosos: P-001 deja de estar en blanco
+
+**Encargo: mirar el rendimiento, que era la única puerta del informe de
+producción en FALLA/FALLA.** Lo primero fue medir en vez de opinar: levanté un
+Postgres 16 con las 93 migraciones y fui a buscar los índices que faltaran. No
+faltaban. Las tablas calientes —`booking`, `sales_order`, `payment`,
+`departure`, `commission`, `customer`— tienen índices compuestos bien pensados,
+encabezados por `organization_id` y con la segunda columna puesta donde toca; y
+las cuatro ayudas de inquilino son `stable`, así que la RLS no las reevalúa por
+fila. La historia fácil de «falta un índice» no era la historia.
+
+**La historia era otra, y no es de rendimiento: es de corrección.** Los trabajos
+programados leían con un tope fijo —`.limit(1000)`, `.limit(2000)`,
+`.limit(3000)`— y trataban lo que saliera. Un tope es correcto cuando es UNA
+PÁGINA de una lista que alguien puede seguir pasando. Es un fallo cuando es un
+TECHO sobre un trabajo que tiene que pasar por todas las filas, porque lo que
+queda fuera no se retrasa, no se reintenta y no se avisa: **desaparece**.
+
+**Y desaparece siempre lo mismo.** Medido, no supuesto. Con 2 500 retenciones
+vencidas y el tope de mil de la cobranza:
+
+```
+pasada 1: 1000 filas
+pasada 2: 1000 filas
+diferencia entre las dos pasadas: 0 filas
+jamás atendidas: 1500
+
+la más VIEJA que se atiende | 16:40:17
+la más VIEJA que se ignora  | 1 day 17:40:17
+```
+
+Cero diferencias entre pasadas: las mismas mil filas, siempre. Y como ninguna
+consulta tenía `order`, el orden que salía era el del montón —el de inserción—,
+así que el barrido atendía retenciones vencidas hacía dieciséis horas mientras
+ignoraba, para siempre, una vencida hacía un día y diecisiete. **La cola se
+atendía al revés: el que más llevaba esperando era justo el que no se atendía
+nunca.** Y empeora con el éxito: mientras la operadora tiene ochocientas
+retenciones el tope no se nota; el día que pasa de mil, las plazas se quedan
+apartadas sin un error en ninguna pantalla.
+
+**Doce techos, en cuatro trabajos.** Lo que cada uno se dejaba sin hacer:
+
+- **`cron/collections`** (cuatro). El peor: el de las retenciones leía FILAS
+  para sacar EMPRESAS, así que bastaba con que una operadora grande llenara la
+  página para que a otra **no se le liberara ni una plaza** —y siempre la misma.
+  Los otros tres dejaban cuotas vencidas diciendo «pendiente», clientes sin el
+  recordatorio de saldo que el sistema promete, y deudas de 120 días con la
+  antigüedad en «corriente».
+- **`cron/allotments`** (3 000). Cupos garantizados a un socio que ya no los va a
+  usar y que nadie más puede vender. Es el mismo fallo que esta migración vino a
+  arreglar en su día —«existe desde 0010 y no liberaba nunca»—, reabierto por la
+  puerta del tope.
+- **`cron/certifications`** (3 000). Un chofer con el permiso vencido que el
+  sistema sigue dando por bueno: `blocks_assignment` no se enciende, el despacho
+  lo asigna, y sube a la guagua alguien que no puede conducirla.
+- **`cron/dispatch-messages`** (cuatro). Una operadora que no aparece en la lista
+  se queda sin encolar **nada**: ni encuesta, ni manifiesto, ni el recordatorio
+  de la víspera —que es el que lleva la hora de recogida—.
+
+**La solución: `src/lib/barrido.ts`, y dos formas de barrer que no son
+intercambiables.**
+
+- **Recorrido.** Tratar la fila NO la saca del filtro (poner una cuota en
+  `overdue` cuando el filtro admite `overdue`). Hay que **avanzar** la ventana.
+- **Drenaje.** Tratar la fila SÍ la saca (un mensaje que se manda). Hay que pedir
+  **siempre la primera página**, porque avanzar se saltaría tantas filas como se
+  llevaran tratadas.
+
+Al revés, cada uno rompe de la forma del otro: un recorrido drenando da vueltas
+para siempre y un drenaje recorriendo se salta la mitad. Por eso el modo se
+declara en la llamada y no se adivina, y hay dos pruebas dedicadas a enseñar qué
+pasa cuando se confunden.
+
+- **El techo sigue existiendo, pero se oye.** Un barrido sin techo es una forma
+  de tumbar la base desde un cron. El techo se queda —20 000, un número que una
+  operadora sana no toca nunca, para que tocarlo signifique algo— y cuando se
+  toca **`barridoVigilado` levanta un incidente** y lo apunta en el resumen del
+  trabajo. Es la única diferencia de fondo con el tope de antes: aquel también se
+  quedaba corto; este lo dice.
+- **La salida por atasco.** Si el tratamiento falla en todas las filas, la fila
+  se queda en el filtro y la vuelta siguiente la trae otra vez. Sin esa salida el
+  cron daría vueltas hasta el techo sobre las mismas quinientas filas rotas y
+  terminaría diciendo «truncado» — la explicación equivocada del problema
+  equivocado. Se compara por identidad y no por número: una vuelta con la misma
+  cantidad pero otras filas sí está avanzando.
+- **Todas las lecturas van ordenadas, y con desempate por `id`.** Paginar sin
+  orden declarado es el fallo silencioso de la paginación: dos páginas pueden
+  solaparse y dejar filas en medio sin tratar. Y ordenar por una sola columna no
+  basta cuando empata —dos cupos de la misma salida, dos cuotas del mismo día—:
+  el desempate por identidad es lo que hace el orden total. El criterio de orden
+  es siempre el de **urgencia** (`hold_until`, `due_date`, `expires_at`,
+  `scheduled_at`), así que si algún día se toca el techo, lo tratado es lo que
+  más urgía.
+
+**El doble de Supabase perdonaba exactamente el error que se estaba probando.**
+`range(desde, hasta)` descartaba `desde` y solo calculaba el tamaño, y `order`
+se quedaba con la ÚLTIMA llamada en vez de encadenarlas. Con eso, **la prueba de
+un barrido que no avanza su cursor habría salido en verde**, y la de un barrido
+sin desempate también. Los dos arreglados en el doble, con su comentario: un
+doble que perdona el fallo que se prueba no prueba nada, y es de los fallos más
+caros que hay porque se descubre en producción.
+
+- **Dos mutaciones sobrevivieron a la primera.** Una era un hueco en mi propia
+  prueba de `atascado`: el caso «sin vuelta anterior» con la actual vacía, que
+  `every` sobre una lista vacía resuelve a verdadero. Se cerró probando el
+  contrato que la función ya declaraba —no haber mirado todavía no es prueba de
+  nada—. La otra era un hueco de verdad: **ningún test ejecutaba
+  `cron/collections`**, así que el campo del resumen que dice qué barrido se
+  quedó corto podía renombrarse sin que nada se enterara. Se cerró con una prueba
+  de ruta completa (cinco casos) que además es la que demuestra el fallo original
+  en una línea: con 2 500 retenciones, la operadora que estaba detrás del tope
+  ahora sí recibe la liberación de su cupo.
+- **Mutación: veintidós, las veintidós muertas.**
+- **Considerado y dejado como está:** el `.limit(60)` sobre las cuotas de UNA
+  venta. Es una cota real del dominio —sesenta cuotas mensuales son cinco años—,
+  no un barrido de plataforma, y la guarda de estructura prohíbe a propósito solo
+  los topes de cuatro cifras: prohibir los de dos o tres la habría convertido en
+  ruido que alguien desactiva.
+- **Lo que sigue abierto de P-001:** esto cierra los techos silenciosos, que era
+  el defecto de corrección escondido detrás de la puerta de rendimiento. **No
+  cierra P-001**: sigue sin haber pruebas de carga ni un `EXPLAIN` sistemático
+  sobre las consultas del panel con volumen de producción. Lo que sí quedó
+  medido, y se apunta aquí para no repetirlo: los índices de las seis tablas
+  calientes están bien y las ayudas de inquilino son `stable`.
+- **No hay migración en esta ola** y no hay nada que ejecutar en la base.
+
+### Ola 9.12 — los techos sobre el dinero y sobre lo que se declara
+
+**La misma familia de la ola anterior, ahora donde duele.** Los barridos de
+9.11 TRATABAN filas: quedarse corto y avisar es lo correcto, porque diecinueve
+mil filas tratadas son diecinueve mil cosas hechas bien. Estos once topes
+SUMAN. El resultado es un número —lo que el cajero tiene que tener en el cajón,
+lo que se declara a Hacienda, lo que se le paga al proveedor— y una lista a
+medias no es un resultado parcial: es un número equivocado presentado como el
+bueno. **Nadie reintenta lo que no sabe que falta.**
+
+**1. El arqueo de caja.** `recalcCashSession` calculaba `expected_cash` —el
+dinero que se le exige al cajero al cerrar— leyendo mil movimientos y mil
+cobros. En un kiosco de parque cada venta deja su movimiento, así que mil se
+pasan en un día bueno. Pasado el tope, el número guardado era MENOR que el real
+y al cerrar aparecía un **sobrante**; si lo truncado eran los retiros, un
+**faltante**. En los dos casos el sistema acusa a una persona con un número
+calculado a medias y guardado como bueno. Y `loadCashClose` —lo que se enseña—
+tenía el mismo tope por separado, así que pantalla y sesión podían dar cifras
+distintas sin que nada lo explicara.
+
+**2. La declaración a la DGII.** `load607`, `load606` y `load608` leían tres mil
+filas, **ordenadas por fecha ascendente**. Una operadora que emita más de tres
+mil facturas al mes —cien al día, normal vendiendo entradas— presentaba un 607
+al que le faltaban los ÚLTIMOS DÍAS del mes. No por azar: el orden es
+ascendente, así que el recorte siempre caía en el final del período. Y el peor
+de los tres era el desglose por forma de pago (`_limit: 2000`): una factura
+cuyos cobros quedaran fuera no daba error ni faltaba del archivo — salía
+declarada como **venta a crédito**. El 607 cuadraba en importe total y mentía
+justo en la columna que la DGII cruza contra los bancos.
+
+**3. Las liquidaciones.** Seis topes sobre lo que se paga: los candidatos del
+proveedor, su estado de cuenta, el pendiente por proveedor, el estado de cuenta
+del vendedor, la generación de la liquidación y la conciliación. Aquí no se
+perdían filas —siguen reclamables y entran en la siguiente— pero el PAPEL decía
+cubrir un período y cubría una parte. Un transportista que cuadra su mes contra
+ese papel encuentra una diferencia que la operadora no sabe explicar. Dos casos
+sí eran pérdida de verdad: `pay` dejaba las comisiones que no cabían en
+`settled` **para siempre** (pagadas de verdad, sin marcar, y la generación solo
+mira `pending` y `approved`, así que no vuelven nunca), y `confirm` comparaba la
+factura del proveedor contra un devengo corto e **inventaba una disputa** contra
+quien había facturado bien.
+
+**La solución: `leerTodoElRecurso`, que LANZA.** Es la diferencia deliberada con
+`barridoVigilado` de 9.11. Allí el truncamiento es un incidente y el trabajo
+sigue. Aquí no sale número: un arqueo que no se puede cuadrar se arregla
+mirándolo; un arqueo mal cuadrado se arregla despidiendo a alguien. El techo es
+más bajo —diez mil frente a veinte mil— porque aquí no hay nada que trocear.
+
+- **Todas las lecturas paginan con orden TOTAL**: la clave que importa más el
+  desempate por `_id`. Sin desempate, dos páginas consecutivas pueden repetir
+  una fila y saltarse otra —varias facturas comparten `issued_at` al segundo—, y
+  en una suma eso no se ve: sale un importe que no cuadra con nada. En la
+  declaración serían un NCF declarado dos veces y otro sin declarar; en la
+  liquidación, un servicio pagado dos veces.
+- **Y no se rinde por caber EXACTAMENTE en el techo.** La primera versión sí, y
+  lo cazó su propia prueba: con mil filas y páginas de quinientas, la última
+  página está llena y no se distingue de «hay más». Ahora pregunta por una sola
+  fila más antes de fallar. Un error que salta sin hacer falta acaba siempre
+  igual: alguien sube el número sin mirar por qué saltaba.
+
+**El doble de inquilino perdonaba, otra vez, el error que se estaba probando.**
+`fake-tenant` ignoraba `_offset` —así que una lectura de la página 2 recibía
+otra vez la página 1, y la prueba de un bucle que no avanza habría salido en
+verde— y se quedaba con la PRIMERA clave de `_sort`, tirando el desempate. Los
+dos arreglados, y ahora el doble tiene su propio fichero de pruebas
+(`src/test/fake-tenant.test.ts`, 6 casos): un doble sin pruebas es una segunda
+implementación sin pruebas, y cuando se desvía no falla — pone en verde justo lo
+que tenía que ponerse rojo. Es la segunda ola seguida en la que el doble es
+parte del hallazgo.
+
+- **Pruebas nuevas: 47.** Ocho del módulo, cinco del arqueo, cinco de la DGII,
+  cuatro del proveedor, ocho del vendedor (fichero nuevo: `loadSellerStatement`
+  **no tenía ninguna prueba**, y es la nómina de una persona), seis del doble y
+  once guardas de estructura. Todas suman dinero en vez de contar filas: un
+  estado de cuenta con mil líneas de mil trescientas y uno con las mil
+  trescientas dan el mismo tipo de respuesta y distinto importe.
+- **Mutación: 25 de 25 muertas.** Pero con una salvedad que conviene tener
+  escrita: **corriendo SOLO las pruebas de comportamiento, sin las guardas de
+  estructura, mueren 19 de 25**. Las seis que dependen de la guarda son la
+  generación de la liquidación, el cierre de comisiones y de servicios en `pay`,
+  la conciliación en `confirm` —tres rutas que no tienen ninguna prueba de
+  comportamiento, ni de esto ni de nada— y dos de orden que el doble **no puede**
+  reproducir: `Array.prototype.sort` es estable en V8, así que quitar el
+  desempate no hace que dos páginas se solapen en el doble aunque sí lo haga en
+  Postgres. Esas dos quedan sostenidas por la guarda a sabiendas.
+- **Lo que quedó fuera a propósito.** Hay más topes de cuatro cifras en el
+  código —`octo-service`, `hr-service`, `dispatch-service`, `voice-service`,
+  `purchasing-service`, `availability`, `allotment-service`,
+  `inventory-valuation`, `superadmin/stats` y `superadmin/companies`—. No son
+  dinero que sale ni declaración que se presenta, así que van en otra ola; el más
+  llamativo es `superadmin/stats` con `.limit(5000)` sobre las reservas del mes,
+  que es la cifra de negocio de la propia plataforma.
+- **No hay migración en esta ola** y no hay nada que ejecutar en la base.
+
+### Ola 9.13 — el cupo, la seguridad y la nómina (migración 0094)
+
+**Tercera entrega de la misma familia, y la que llega a lo que más importa.**
+Estos techos no recortaban una lista: **rompían una decisión**.
+
+**1. La sobreventa entraba por un `_limit: 1000`.** `recalculateDeparture` suma
+los pasajeros de una salida y `assertCapacity` decide con ese número si cabe una
+venta más. La cabecera del módulo dice de sí misma dos cosas: «the single guard
+against overselling» y «the counters can never silently drift out of sync with
+reality». Las dos eran falsas. Una salida de entrada general de un parque —dos
+mil entradas al día— pasa de mil reservas sin nada raro, y entonces la suma sale
+corta, `available_pax` sale alta, y **la guarda no falla: aprueba**. Los
+contadores escritos en la salida quedan por debajo de la realidad, así que el
+despacho, la previsión de ocupación y el semáforo de «casi llena» mienten los
+tres a la vez y **en la misma dirección**. Un error que va siempre hacia el mismo
+lado no se compensa: se acumula.
+
+- **Migración 0094**, y no paginar. Esto corre en CADA venta: con una salida de
+  cinco mil reservas, paginar traería cinco mil filas por cada entrada vendida
+  para sumar dos números —la operadora que más vende sería la que más lento
+  vende—. `public.departure_pax_totals` devuelve una fila con los dos totales,
+  exacta y sin tope.
+- **Las listas de estados viajan como argumento.** Qué cuenta como confirmada lo
+  sigue decidiendo `availability.ts`, que es donde está escrito y probado;
+  copiarlas a la base habría dejado dos copias de la misma regla. La función no
+  sabe qué es una reserva confirmada: suma lo que se le diga, y hay una prueba
+  SQL que se lo demuestra pasándole las listas al revés.
+- **Y de paso se fue una tercera copia**: `ACTIVE_STATUSES` era exactamente la
+  unión de las otras dos y servía de filtro de la consulta.
+- **Lo que NO cierra**, dicho en la propia migración para que nadie la lea como
+  «la sobreventa está resuelta»: la carrera de AUD-B01. La suma es exacta, no
+  atómica respecto de la venta. Cerrar eso pide apartar la plaza al autorizar,
+  la misma decisión de producto que quedó abierta en 0091 para el monedero.
+
+**2. El despacho daba por bueno al chofer con la licencia vencida.** La pantalla
+marca al personal cuya acreditación bloqueante ha caducado. Leía con
+`_limit: 2000` y encima de la consulta había esto escrito:
+
+> «La lista entera cabe de sobra en una consulta.»
+
+Una suposición escrita y nunca comprobada — y el peor tipo, porque queda ahí y
+nadie la vuelve a mirar. Cuatrocientas personas con seis acreditaciones cada una
+ya no caben. Lo que se quedaba fuera no era una fila de una lista: era la
+licencia vencida que la pantalla existe para enseñar. Otra vez la guarda no
+fallaba, aprobaba, y el chofer subía a la guagua.
+
+**3. La nómina dejaba horas sin pagar.** `generatePayrollRun` leía los marcajes
+con `_limit: 5000` —un parque de trescientas personas con dos marcajes diarios
+llega en nueve días—, y lo que quedaba fuera **no se pagaba**: sin error, sin
+salir en la corrida, con `payroll_run_id` nulo, o sea que volvería el mes
+siguiente si alguien mirase un período ya cerrado. Nadie lo mira. Y
+`releasePayrollRun` tenía el mismo tope, con la cabecera de la propia función
+avisando del desastre —un marcaje pegado a una corrida anulada «no se pagaría
+nunca»—: el techo hacía que ocurriera en silencio.
+
+**4. Y los cupos garantizados** que no cabían en los dos mil no se liberaban
+nunca: plazas apartadas para un socio que ya no las va a usar y que nadie más
+puede vender.
+
+- **Pruebas nuevas: 29.** Once de `availability` —que **no tenía fichero
+  propio**, siendo la única guarda contra la sobreventa—, cinco del despacho
+  (fichero nuevo), tres de la nómina, tres de los cupos, cuatro del recuento en
+  el doble y tres guardas de estructura, más la prueba SQL de la función contra
+  Postgres real con 1 500 reservas.
+- **Los dos dobles, otra vez parte del arreglo.** `fake-tenant` ganó
+  `paxTotalsDeLaBase` y `fake-supabase` ganó `rpc`. Y aquí había una trampa
+  concreta: el recuento **no se puede falsear con una constante**, porque ese
+  número ES la decisión — una respuesta fija haría pasar en verde la prueba de
+  que el cupo se respeta con la guarda apagada. Se reimplementa sobre la misma
+  base en memoria.
+- **Una guarda mía salió mal escrita y saltó a la primera**, contra los
+  comentarios que explicaban el tope viejo en los ficheros donde acababa de
+  quitarse. Prohibía un patrón mirando el fichero entero, comentarios incluidos.
+  Se arregló con `readCodigo`, que los quita: una guarda que se queja de que
+  expliques lo que arreglaste es una guarda que alguien desactiva.
+- **Mutación: 20 de 20.** Corriendo solo comportamiento, sin las guardas de
+  estructura, **19 de 20**: la única que depende de la guarda es `linesOf`, la
+  lectura de las líneas ya guardadas de una corrida.
+- **Dos mutaciones sobrevivieron a la primera**, y eran el mismo hueco por los
+  dos lados: nada ejercitaba el `found` de la función cuando la ficha de la
+  salida SÍ existe. Son dos comprobaciones distintas —la ficha se lee con las
+  ayudas de inquilino, el recuento acota por empresa por su cuenta— y cuando
+  discrepan no vale creerle a la ficha: cero pasajeros quiere decir «caben
+  todos».
+- **Lo que queda de la familia**, ya sin dinero ni seguridad de por medio:
+  `octo-service` (cuatro), `superadmin/stats` y `superadmin/companies` (cinco),
+  `voice-service`, `purchasing-service`, `inventory-valuation`,
+  `respuesta-proveedor` y los `_limit: 1000` de catálogo del portal y la API del
+  socio.
+- **Pendiente de ejecutar en la base:** `supabase/editor/0094_parte_1.sql` y
+  después `0094_parte_2_verificacion.sql` (cinco filas, todas OK). **Esta va
+  primero de todas**: hasta que esté, `assertCapacity` no puede contar los
+  pasajeros y **la aplicación no vende**. Es deliberado — la alternativa era
+  seguir vendiendo con un recuento corto, que es justo lo que causaba la
+  sobreventa.
+
+### Ola 9.14 — el inventario de techos, cerrado: y son TRES formas, no una
+
+**Cuarta y última entrega.** Lo que queda escrito de esta serie no es «no uses
+números grandes». Es que **hay tres formas de leer mucho, y elegir la equivocada
+es un fallo por sí sola**:
+
+| | Qué es | Qué hace al quedarse corto |
+|---|---|---|
+| **Barrido** (9.11) | Un trabajo que TRATA filas | Se queda corto, **levanta un incidente** y sigue |
+| **Lectura completa** (9.12–9.13) | Un número que alguien usa | **Lanza**: o se lee todo o el número está mal |
+| **Informe** (9.14) | Una pantalla de análisis | **Se recorta y lo dice** |
+
+Y confundirlas tiene consecuencias concretas: un informe tratado como suma deja
+sin pantalla a la operadora más grande —la que más lo necesita—; una suma tratada
+como informe da un número falso con aspecto de bueno; y un trabajo tratado como
+cualquiera de los dos deja de hacer su trabajo.
+
+**El hallazgo de esta ola falla al revés que todos los anteriores.** La venta de
+un socio comprueba que los productos del carrito estén en su contrato, y leía las
+autorizaciones con `_limit: 1000` para armar el conjunto de lo permitido. Con más
+de mil productos firmados, el que se vende puede caer más allá de la fila mil — y
+entonces la venta se **RECHAZA con un 403 por un producto que el socio sí tiene**.
+No aprueba de más: niega. Igual de silencioso, igual de determinista, y encima
+**irreproducible desde el mostrador**, porque el producto con el que prueba quien
+atiende la queja está entre los primeros mil.
+
+**Y el arreglo no fue paginar.** La pregunta nunca fue «qué tiene autorizado este
+socio» —eso es el catálogo y vive en otras pantallas— sino «están ESTOS productos
+en su contrato». Filtrando por los del carrito no hay tope que importe, se leen
+como mucho tantas filas como artículos lleve la venta, y la consulta sale **más
+barata que la de antes**. Cuando un techo estorba, a veces la respuesta es
+cambiar la pregunta.
+
+**Lo demás que decidía algo y se leía corto:**
+
+- **El catálogo del socio y su tarifario** (cuatro sitios). Son los documentos
+  contra los que vende y después reclama. Y la fase 6.3 puso una prueba de que
+  el tarifario descargable **coincide** con lo que devuelve la API: con dos topes
+  iguales, coincidían los dos en estar cortados.
+- **Generar salidas.** La lectura de las existentes arma el conjunto que evita
+  duplicar. Un producto con varios pases al día —una atracción cada hora son más
+  de cuatro mil al año— dejaba fuera parte de lo existente y el generador **creaba
+  duplicados**: dos salidas a la misma hora, el cupo partido y la mitad de los
+  pasajeros en la que nadie mira.
+- **Los productos con salidas de OCTO.** Aquí el comentario ya estaba escrito:
+  «vacío significa *este producto no se vende por fecha*, y con eso `reserve` deja
+  pasar una reserva sin salida, sin cupo comprobado y sin manifiesto». Estaba
+  puesto para el caso del ERROR — y el tope producía el mismo estado por otra
+  puerta.
+- **Los horarios de OCTO y la lista del mostrador.** Una hora que se cae de la
+  lista es una hora que no se puede vender, sin nada en pantalla que lo diga: el
+  cajero simplemente no la ve y le dice al cliente que no hay.
+- **La recepción de una orden de compra**, que decide si está recibida; **la
+  valoración del almacén**, que es un total contra el que se cierra un ejercicio;
+  **las ventas y comisiones de los vendedores de un socio**, de las que cuelga lo
+  que se les paga; y **los plazos vencidos de proveedor**, donde el tope caía
+  sobre las filas pero lo que se sacaba eran empresas —el mismo fallo de la
+  cobranza en 9.11—.
+
+**Y cinco informes que ahora dicen si están cortados**: el panel de la voz del
+cliente (un NPS sobre parte de las encuestas mueve el número, no a la gente), las
+dos consolas de plataforma (`gmv_month` salía más bajo de lo real y nadie
+contrasta esa cifra contra otra cosa), el MRR por plan y el informe de canales de
+OCTO — donde el recorte no daba una tabla incompleta sino una **comparación
+invertida**, porque al que más vende es al primero al que se le caen filas.
+
+- **La guarda que cierra la familia recorre el árbol entero** (`src/app/api` y
+  `src/lib`) y prohíbe los topes de cuatro cifras escritos a mano, que fue la
+  forma de todos los fallos de 9.11 a 9.14. Los de dos y tres cifras se dejan en
+  paz a propósito —los 300 empleados activos, las 60 cuotas de una venta: cotas
+  reales del dominio— porque prohibirlas convertiría la guarda en ruido.
+- **Dos sitios que había decidido dejar como páginas no sobrevivieron a mi propia
+  guarda**, y estuvo bien: al mirarlos otra vez, los dos decidían qué se puede
+  vender. Cerrar el inventario de verdad era mejor que tallarles una excepción.
+- **Una mutación sobrevivió, y enseñó algo:** la ruta del informe de canales podía
+  sustituir el recorte por `{ truncado: false }` y todo seguía en verde, porque mi
+  guarda solo comprobaba que la palabra apareciera. **Tener el campo no basta**:
+  un informe que siempre dice que está completo es el tope de antes con una
+  propiedad más, y quien lo lee deja de mirar un aviso que nunca salta. La guarda
+  ahora exige que el valor se CALCULE —de `recorteDe` o del servicio— y no se
+  afirme.
+- **Mutación: 21 de 21.**
+- **Sin migración**, así que la lista de SQL pendiente no cambia. **`0094` sigue
+  siendo la primera**: hasta que esté, la aplicación no vende.
+
+### Ola 9.15 — DB-001 medido, y un disparador que llevaba rompiendo la caja de un socio (migración 0095)
+
+**Encargo: DB-001, el último riesgo estructural de la base.** «Ninguna clave
+foránea es compuesta `(organization_id, id)`» llevaba abierto desde la primera
+auditoría **sin un número al lado**. Una clave foránea normal prueba que la fila
+padre existe; no prueba que sea de la misma empresa.
+
+**Lo primero que salió no era eso.** Al enumerar qué referencias tenían
+comprobación, apareció que `cash_session_same_tenant` —puesto por mí en 0081—
+llamaba al disparador genérico con el argumento `partner_id organizations`. Y ese
+disparador valida leyendo `organization_id` de la tabla padre… que
+**`organizations` no tiene**. Comprobado contra Postgres 16:
+
+```
+SIN SOCIO: entra
+CON SOCIO: FALLA -> column "organization_id" does not exist (42703)
+```
+
+No es un rechazo con mensaje: es un **error de esquema crudo**. Así que abrir una
+caja a nombre de un vendedor de tour center —que es exactamente para lo que
+existe 0081— **ha estado fallando desde que se desplegó**, y
+`/api/cash/sessions` y `/api/cash/movements` escriben ese campo en cuatro sitios.
+No lo cazó nada porque ninguna prueba insertaba una sesión de caja con socio
+contra una base de verdad: el disparador solo existe en la base, y solo la base
+puede decir si funciona. Es el mismo aprendizaje de la ola 9.10 —donde `db-test`
+llevaba olas sin correr— llevado un paso más allá: **correr la suite no basta si
+la suite no toca el caso**.
+
+- **El arreglo**: el disparador deja de suponer el nombre de la columna y lo
+  **resuelve del catálogo** — `organization_id` si existe, `tenant_org_id` si no,
+  que es lo que «apunta cada nodo a su raíz de inquilino» (0002) y lo que ya usan
+  los RPC del panel (`o.tenant_org_id = p_org_id`, 0023/0024). Una regla, dicha.
+- **Y un nulo dejó de significar una sola cosa.** El nodo raíz de una empresa
+  tiene `tenant_org_id` nulo porque él mismo *es* el inquilino, así que
+  referenciar la propia empresa tiene que valer. Tratar ese nulo como «no se
+  sabe» habría rechazado referencias legítimas — este disparador ya rompió una
+  cosa por suponer de más.
+
+**DB-001, medido por primera vez.** Contra el esquema real: **289** claves
+foráneas de una columna entre dos tablas con inquilino, de las cuales **174 sin
+ninguna comprobación**.
+
+**No se cubren las 174, y eso es una decisión, no un olvido.** Cada referencia
+comprobada cuesta una lectura por fila insertada; ponerlas todas encarecería el
+camino de la venta para proteger tablas donde cruzar una referencia solo ensucia
+un informe. Se cubren las **33** en las que cruzarla mueve dinero, admite a
+alguien o da por firmado un documento que no se firmó:
+
+- **`ledger_entry`** (7) — el asiento contable, y el peor sitio posible: una
+  línea de la empresa A citando el pago de la B descuadra los libros de **las
+  dos**, y la contabilidad es justo donde vive el «fíate de los números».
+- **`cash_session` / `cash_register` / `cash_movement`** — un arqueo atribuido al
+  mostrador o al vendedor de otra empresa.
+- **`gift_card` / `gift_card_movement`** — un saldo canjeado contra la venta de
+  otra empresa es dinero pasando de una a otra sin que nadie lo apunte.
+- **`access_ticket`** — admitir a alguien con la reserva de otro; en la puerta
+  nadie va a mirar de qué empresa era.
+- **`waiver`** — el descargo. Atado a la reserva de otra empresa, la operadora
+  cree tener una firma que no tiene, y eso se descubre el día del accidente.
+- **`commission_rule`** — acotada al producto o al vendedor de otra empresa: se
+  le paga al que no es.
+
+**Y el resto queda con techo.** `tenant_refs.test.sql` recuenta el hueco contra el
+esquema real y guarda **141** como tope: puede bajar, no subir. En las nueve
+tablas de dinero el hueco exigido es **cero**, no «pequeño».
+
+- **Cuatro mutaciones sobrevivieron a la primera**, y las cuatro enseñaron algo:
+  - **`security definer` no lo comprobaba nadie.** Importa más de lo que parece:
+    es lo que deja al disparador *ver* la fila padre aunque la RLS la esconda del
+    que escribe. Como invocador el rechazo sale igual, pero un cruce se lee como
+    «no existe» (23503) en vez de como un cruce (23514) — el diagnóstico
+    equivocado, y quien investigue buscará una fila borrada que nunca se borró.
+  - **Solo probaba inserciones.** `before insert or update of <columnas>` dispara
+    **siempre** en el insert, así que recortar la lista de columnas no se nota
+    probando inserciones: se nota cuando alguien **mueve** una fila ya escrita al
+    mostrador o al cliente de otra empresa. Es el cruce más fácil de provocar
+    desde la aplicación, porque no hace falta crear nada. Tres pruebas de
+    `update` nuevas.
+  - **Un umbral que vive solo en su propia prueba no es un umbral.** Subir el
+    techo de 141 a 300 hacía pasar todo sin arreglar nada. No se puede hacer
+    inmutable un número escrito en un fichero, pero sí exigir que subirlo pase
+    por **dos** ficheros, de modo que el diff lo cuente en voz alta en vez de
+    esconderlo en un dígito.
+  - **Y comprobar que el mensaje siga escrito no es comprobar la condición.** Una
+    mutación apagaba el `if` y dejaba el texto; la guarda ahora mira el `if`.
+- **Mutación: 20 de 20.**
+- **Pendiente de ejecutar en la base:** `0095_parte_1.sql`, luego
+  `0095_parte_2.sql` y por último `0095_parte_3_verificacion.sql` (seis filas).
+  La parte 2 **necesita la parte 1 antes**: sus disparadores llaman a la función
+  que allí se arregla, y sin ella la caja del socio seguiría rompiéndose igual,
+  solo que en más tablas.
+
+### Ola 9.16 — la reparación que nadie ejecutaba (BL-002)
+
+**Encargo: BL-002, «sin transacciones».** PostgREST no da transacciones
+multi-sentencia, así que la venta es una saga: `createOrderWithBookings` crea la
+orden en `draft`, va escribiendo reservas, vouchers, comisiones y cuentas por
+cobrar, y al final la promueve a `pending_payment`. Si algo **lanza**,
+`compensateOrder` lo deshace todo dentro de la misma petición — y eso está bien
+hecho y probado.
+
+**Pero si el PROCESO MUERE no hay excepción que capturar.** Un tiempo de espera
+de Vercel, un despliegue a medio vuelo, un OOM: la compensación no corre nunca.
+Lo que queda es una orden `draft` con sus reservas **apartando plazas**, un
+voucher que **escanea como válido**, una comisión `pending` que la **próxima
+liquidación paga** y una cuenta por cobrar que **parece cobrable**. Una venta que
+no existió, con todos sus efectos.
+
+**Y la reparación ya existía.** `reconcileStaleDrafts` se escribió justo para eso
+en el seguimiento de AUD-F34, con su propio comentario:
+
+> «Meant to be run periodically (cron) or on demand by an admin.»
+
+**Nada la ejecutaba.** Su única puerta era
+`POST /api/maintenance/reconcile-drafts`, que exige sesión de `admin` y mismo
+origen — precisamente lo que un programador de tareas no tiene. Y `vercel.json`
+declaraba seis crones, ninguno de ellos este. No estaba mal escrita: **estaba sin
+enchufar**, que es la misma familia que la plantilla de mensajes que nada
+disparaba y la casilla de lista negra que nadie leía. El patrón se repite porque
+es invisible: el código está, se lee bien, y no corre.
+
+- **`/api/cron/reconcile-drafts`**, con la disciplina de las olas anteriores:
+  credencial del cron, `barridoVigilado` para recorrer **todas** las empresas —con
+  un tope fijo, una operadora podía no aparecer nunca y quedarse con sus ventas a
+  medias para siempre—, una línea de bitácora por empresa con severidad de aviso,
+  y un incidente de plataforma si revirtió algo, porque cada reversión es la
+  huella de un proceso que murió vendiendo.
+- **Declarado en `vercel.json` a las 2:00**, antes que todos los demás: si una
+  venta quedó a medias, lo primero del día es devolver sus plazas para que el
+  resto de los trabajos —y el mostrador— ya las vean libres.
+- **Y la ventana se sube de 30 a 60 minutos.** La ruta manual usa treinta; aquí
+  corre sin nadie mirando y sobre todas las empresas, así que un falso positivo
+  **revierte una venta buena**. Una saga normal tarda menos de un segundo: entre
+  un segundo y una hora solo caben las que de verdad murieron. Prefiero que una
+  huérfana viva una hora de más a cancelar una viva con el cliente delante.
+- **`reconcileStaleDrafts` leía con `_limit: 100`.** Un borrador abandonado es
+  raro, pero cuando la causa es sistemática no aparecen de a uno: aparecen a
+  cientos, y justo entonces el tope dejaba plazas apartadas por ventas que no
+  existieron. Ahora se lee entero.
+
+**La guarda es la parte que dura**: cada ruta bajo `src/app/api/cron` tiene que
+estar declarada en `vercel.json`, y cada cron declarado tiene que existir. Más el
+recordatorio de que todos son diarios —un cron más frecuente **no despliega**, y
+tumba el despliegue entero, no solo el cron—, y que la reconciliación corre antes
+que los demás.
+
+- **Y una guarda que ya existía cazó una omisión mía**: `system-health.test.ts`
+  exige que cada cron tenga su **expectativa** declarada en `JOB_EXPECTATIONS`.
+  Sin ella la pantalla de salud no sabría que este trabajo debe correr a diario, y
+  su silencio no se notaría. Un cron enchufado pero no vigilado es medio arreglo.
+- **Tres mutaciones sobrevivieron a la primera**, y las tres eran gaps reales:
+  - Mi guarda comprobaba que apareciera el nombre `barridoVigilado`, y la
+    mutación lo cambiaba por `barrer` —que no levanta incidente— dejando el
+    nombre en la línea del `import`. Ahora mira la **llamada**.
+  - El lector falso de mi prueba ignoraba el filtro por antigüedad, así que
+    quitarlo no se notaba. Y eso es el fallo **en la dirección peligrosa**: sin
+    corte, el barrido cogería los borradores que se están escribiendo ahora y
+    cancelaría ventas vivas. El doble ahora aplica el corte, y hay dos pruebas de
+    que una venta en vuelo no se toca.
+  - `reconcileStaleDrafts` no la probaba nadie —la mockeaba la prueba del cron—.
+    Cuatro pruebas nuevas, incluida la de que es idempotente y la de que no toca
+    una orden en `pending_payment`, que es una venta de verdad esperando cobro.
+- **Mutación: 14 de 14.**
+- **BL-002 queda REDUCIDO, no cerrado.** La saga sigue sin ser atómica: lo que
+  cambia es que una venta a medias ahora se detecta y se repara **sola**, todos
+  los días, en vez de depender de que alguien con sesión de admin pulsara un
+  botón que nadie sabía que existía. Cerrarlo de verdad pediría mover la venta
+  entera a una función de Postgres, y eso es otra ola.
+- **Sin migración.** Nada nuevo que ejecutar en la base.
+
+---
+
+## Ola 9.17 · P-001: el rendimiento, por fin con números
+
+`P-001` llevaba en la matriz de preparación desde el primer informe con
+**FALLA/FALLA** y una sola frase: «sin `EXPLAIN` ni pruebas de carga». En 9.11 se
+comprobó que los índices del panel **existen**; nadie había comprobado que se
+**usen**, ni cuánto cuesta nada de esto cuando hay datos encima.
+
+Antes de empezar descarté T-001: el binario de docker está, el demonio no, así
+que no voy a escribir un E2E que no puedo correr.
+
+### La medición
+
+Levanté un Postgres efímero con las 95 migraciones y sembré dos inquilinos con
+volumen realista de una operadora grande:
+
+```
+órdenes 120 000 · reservas 120 000 · cobros 60 000 · salidas 5 600 · clientes 20 000
+```
+
+Ya la siembra dio el primer dato: cargar 120 000 reservas tardaba **más de diez
+minutos** con los disparadores puestos y **siete segundos** con
+`session_replication_role = replica`. Eso no es una curiosidad de la siembra: es
+el coste de la escritura, y volvemos a él abajo.
+
+Con `request.jwt.claims` puesto a mano, `dashboard_summary` —la consulta más
+cara de la aplicación, la que carga la pantalla de inicio—:
+
+| ventana | antes |
+| --- | --- |
+| 30 días | **104 ms** |
+| 365 días | **~800 ms** |
+
+Son los primeros números que P-001 ha tenido nunca.
+
+### Dónde se iba el tiempo (`auto_explain`, no intuición)
+
+El plan lo dijo sin ambigüedad. `current_booking` se definía como
+`select b.*, …`: la CTE materializaba las ~60 columnas de `booking` —**1 247
+bytes por fila**, ~150 MB— en un archivo temporal, y los **seis** agregados que
+la leen (resumen, serie diaria, canal, producto, vendedor y socio) la releían
+entera cada uno:
+
+```
+Buffers: shared hit=5801 read=341, temp read=20065 written=4013
+```
+
+**160 MB de E/S en disco dentro de una sola consulta.** Ninguno de los seis
+consumidores necesita `b.*`: entre todos usan siete columnas más los cuatro
+valores derivados. Lo mismo pasaba en las otras siete CTE base.
+
+**0096** sólo recorta la lista de columnas proyectada. La aritmética, los
+filtros y el JSON de salida son los de 0028 **byte por byte** —lo comprobé
+capturando la salida de dos ventanas distintas antes y después y diferenciando—.
+
+| ventana | antes | después |
+| --- | --- | --- |
+| 30 días | 104 ms | **72 ms** |
+| 365 días | ~800 ms | **~450 ms** |
+| ancho de fila de la CTE | 1 247 B | **169 B** |
+| bloques temporales leídos | 20 065 | **5 275** |
+
+### Dos hipótesis que medí y resultaron falsas
+
+Las dejo escritas porque no acusar a quien no fue vale tanto como arreglar lo
+que sí:
+
+- **`(p_x is null or col = p_x)` no impide usar el índice.** Es un peligro
+  conocido del planificador, pero medido aquí con un producto concreto entra por
+  `booking_dashboard_product_idx` (Index Only Scan) y tarda 56 ms. El camino
+  filtrado no era el problema.
+- **Subir `work_mem` casi no cambia nada** (438 ms a 4 MB, 405 ms a 64 MB). El
+  derrame a disco no era el cuello: era procesar las filas. Así que **no** puse
+  un `set work_mem` en la función: habría sido una perilla que aparenta arreglo.
+
+### La escritura también se midió (0097)
+
+2 000 reservas: **1 521 ms** con disparadores, **77 ms** sin ellos. 0,76 ms por
+reserva, veinte veces el coste de escribirla. Desglosado:
+
+| | ms / 2 000 filas |
+| --- | --- |
+| inserción pelada | 77 |
+| + invocar los disparadores (cuerpo vacío) | 216 |
+| + validar las referencias (0095) | 1 521 |
+
+Una reserva tiene **diez** referencias que validar, y 0095 —mío— gastaba **dos**
+consultas en cada una: `exists(...)` y luego la columna de ámbito, sobre la misma
+fila y la misma clave primaria. Veinte consultas por reserva donde bastaban diez.
+**0097** las funde: `select %I, true from %s where id = $1`, aprovechando que
+`into` deja los destinos en nulo cuando no hay fila, así que `existe` sigue
+distinguiendo «no hay fila» de «hay fila con inquilino nulo». Los cinco rechazos
+de 0095 son los mismos y con el mismo SQLSTATE; `tenant_refs.test.sql` pasa
+intacta. → **1 329 ms** (0,66 ms por reserva).
+
+**Y lo que decidí NO hacer**, medido aparte: la consulta al catálogo que resuelve
+la columna de ámbito vale ~194 ms de esos 1 329. Quitarla exigiría fijar la
+columna en los argumentos de los diecisiete disparadores. Un 10% a cambio de
+tocar diecisiete definiciones: no compensa, y dejarlo escrito vale más que
+hacerlo.
+
+### El rango a medida no tenía tope
+
+Buscando el siguiente barrido caro encontré un fallo que no es de velocidad sino
+de disponibilidad: `period=custom` aceptaba **cualquier** par de fechas.
+`from=1900-01-01` pedía dos barridos de un siglo —la ventana y su comparativa—
+y el limitador deja pasar 90 peticiones por minuto. Un solo usuario podía
+saturar la base desde la pantalla de inicio.
+
+`MAX_PERIOD_DAYS = 366` —el mayor de los presets que la propia interfaz ofrece,
+así que ningún uso normal se ve afectado—. Cuando recorta, **lo dice**: es la
+tercera forma de leer de 9.14, el informe que trunca y lo declara. Y al
+enchufarlo salió otra cosa: la ruta devolvía **`truncated: false`** fijo. El
+aviso existía en la interfaz, estaba maquetado, y **no podía encenderse nunca**.
+
+### Las guardas
+
+- `supabase/tests/dashboard_plan.test.sql` — siembra 20 000 reservas repartidas
+  entre **veinte** productos y mide el plan de verdad: el `width` de la
+  proyección contra un techo de 320 (medido: 169 hoy, 1 149 con el comodín), y
+  que el camino filtrado entre por un índice **del panel**. Un tope de
+  milisegundos habría sido una prueba inestable; esto es determinista y es
+  exactamente lo que se rompió.
+- **Dos veces me corrigió mi propia prueba.** La primera aserción del índice
+  sólo miraba que apareciera la palabra «Index»: sin los índices del panel el
+  planificador se agarra a `booking_voucher_code_idx` por mapa de bits y la
+  aserción pasaba tan contenta. La segunda: con **un solo producto** el filtro no
+  descarta nada y el barrido secuencial es la elección correcta —la prueba
+  fallaba por culpa del fixture, no del código—.
+- `editor-sql.test.ts` tuvo que aprender algo nuevo: `dashboard_summary` son
+  20 kB de **una sola sentencia** y el editor de Supabase trunca los pegados
+  largos (ya falló a los 7,3 kB). La copia va en siete partes que dejan el texto
+  en una tabla auxiliar, trozo a trozo, y la última lo ejecuta —comprobando
+  antes que no falte ninguno—. Partir la copia no podía aflojar la garantía: la
+  guarda ahora **concatena los trozos en orden** y compara el resultado con la
+  migración. Verificado de punta a punta: aplicar las seis partes produce una
+  función con el mismo `md5` que aplicar la migración.
+- Y un `readSql` nuevo, porque mi guarda contra `select b.*` **se disparó con mi
+  propio comentario** que describía el fallo. Es la lección de 9.13 otra vez, en
+  SQL esta vez: `readCodigo` quita comentarios de TypeScript, no de SQL.
+- **Mutación: 15 de 15.** La que sobrevivió a la primera vuelta fue subir
+  `TECHO_ANCHO` hasta que dejara de morder: un techo que vive sólo en la prueba
+  que lo usa no es un techo. Ahora se afirma también en `ui-contracts`, como el
+  de las 141 referencias de 9.15, para que subirlo salga en el diff dos veces.
+
+### Qué queda abierto de P-001
+
+Baja de **FALLA** a **PARCIAL**, no a cerrado:
+
+- El panel a 365 días sigue en ~450 ms. Bajarlo más pide fundir los cinco
+  desgloses en **una sola pasada** con `grouping sets`, o una tabla de
+  instantáneas. Lo primero es una reescritura delicada de una función de dinero
+  por ~140 ms; lo segundo es una ola entera. No lo he hecho, y no lo he hecho a
+  propósito.
+- **No hay pruebas de carga con concurrencia.** Todo lo medido aquí es un solo
+  cliente contra una base sin nadie más.
+- T-001 sigue bloqueado aquí: no hay demonio de docker.

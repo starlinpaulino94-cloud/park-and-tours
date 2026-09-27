@@ -606,6 +606,53 @@ describe("el esquema cubre todo lo que la aplicación escribe", () => {
     expect(sinInventariar, "columnas nuevas que el verificador de migraciones no comprueba").toEqual([]);
   });
 
+  it("la auditoría que se pega en el editor está al día", () => {
+    /**
+     * `supabase/editor/auditoria_migraciones*.sql` se GENERA del inventario, y
+     * responde la única pregunta que importa al aplicar migraciones a mano:
+     * «¿cuáles me faltan?».
+     *
+     * Una copia generada que nadie regenera es peor que no tenerla: a la
+     * primera migración nueva diría «todo aplicado» sin haber mirado lo último
+     * — y ese verde es justo el que alguien usa para decidir que puede
+     * desplegar. Así que aquí se vuelve a generar y se compara.
+     */
+    const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+    const { mkdtempSync, rmSync } = require("node:fs") as typeof import("node:fs");
+    const os = require("node:os") as typeof import("node:os");
+    const RAIZ = path.resolve(__dirname, "../..");
+    const EDITOR = path.join(RAIZ, "supabase/editor");
+
+    const enDisco = new Map<string, string>();
+    for (const f of readdirSync(EDITOR).filter((n) => /^auditoria_migraciones/.test(n))) {
+      enDisco.set(f, readFileSync(path.join(EDITOR, f), "utf8"));
+    }
+    expect(enDisco.size, "no hay auditoría generada").toBeGreaterThan(0);
+
+    /**
+     * Se regenera EN OTRO SITIO, no encima. Escribir sobre los ficheros buenos
+     * mientras otra prueba los lee deja ver uno a medio escribir — y una prueba
+     * que falla una de cada cuatro veces se acaba volviendo a ejecutar hasta
+     * que pasa, que es no tener prueba.
+     */
+    const tmp = mkdtempSync(path.join(os.tmpdir(), "auditoria-"));
+    try {
+      execFileSync("node", ["scripts/build-auditoria-migraciones.mjs", tmp], {
+        cwd: RAIZ, stdio: "pipe",
+      });
+      const recien = readdirSync(tmp).filter((n) => /^auditoria_migraciones/.test(n));
+      expect(recien.sort(), "cambió el número de trozos: regenera y súbelos")
+        .toEqual([...enDisco.keys()].sort());
+      for (const f of recien) {
+        expect(readFileSync(path.join(tmp, f), "utf8"),
+          `${f} se quedó atrás: corre node scripts/build-auditoria-migraciones.mjs`)
+          .toBe(enDisco.get(f));
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("cada relación declarada en resources.ts se puede resolver", () => {
     // Un `expand` que no corresponde a ninguna referencia real no fallaba
     // mientras las expansiones se ignoraban: ahora dispara una consulta que la
@@ -738,6 +785,113 @@ describe("el importador escribe columnas que existen", () => {
  * lo comprueba LEYENDO, que es lo que corre en cada revisión sin levantar una
  * base: la migración que cometa otra vez el error no llega a mezclarse.
  */
+describe("el arranque del E2E escribe columnas que existen", () => {
+  const SETUP = path.join(ROOT, "tests/e2e/global-setup.ts");
+
+  /**
+   * POR QUÉ ESTA GUARDA ES LA QUE SOSTIENE EL E2E.
+   *
+   * El arranque del E2E siembra cuatro cuentas y una decena de filas con la llave
+   * de servicio, y **no se puede ejecutar sin una base delante**: en un entorno sin
+   * Supabase no hay forma de descubrir que una columna no existe. PostgREST rechaza
+   * el INSERT ENTERO por una sola columna equivocada, así que un nombre mal escrito
+   * no degrada el sembrado: lo anula, y el E2E entero falla con un error que habla
+   * de otra cosa.
+   *
+   * Es el mismo razonamiento que la guarda del sembrador de demostración, y usa su
+   * misma maquinaria: el esquema se reconstruye leyendo las migraciones.
+   */
+  function objectBody(text: string, from: number): { body: string; end: number } {
+    let depth = 1, i = from, quote = "";
+    while (i < text.length && depth > 0) {
+      const ch = text[i];
+      if (quote) {
+        if (ch === "\\") i++;
+        else if (ch === quote) quote = "";
+      } else if (ch === '"' || ch === "'" || ch === "`") {
+        quote = ch;
+      } else if ("{[(".includes(ch)) depth++;
+      else if ("}])".includes(ch)) depth--;
+      i++;
+    }
+    return { body: text.slice(from, i - 1), end: i };
+  }
+
+  function topLevelKeys(body: string): string[] {
+    const keys: string[] = [];
+    let depth = 0, cur = "", quote = "";
+    const flush = () => {
+      const line = cur.trim();
+      cur = "";
+      if (!line || line.startsWith("...")) return;
+      const key = /^(?:"(\w+)"|'(\w+)'|(\w+))\s*[:,}]/.exec(line + "}");
+      if (key) keys.push(key[1] ?? key[2] ?? key[3]);
+    };
+    for (let i = 0; i < body.length; i++) {
+      const ch = body[i];
+      if (quote) {
+        cur += ch;
+        if (ch === "\\") { cur += body[++i] ?? ""; }
+        else if (ch === quote) quote = "";
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") { quote = ch; cur += ch; continue; }
+      if ("{[(".includes(ch)) depth++;
+      else if ("}])".includes(ch)) depth--;
+      if (ch === "," && depth === 0) flush();
+      else cur += ch;
+    }
+    flush();
+    return keys;
+  }
+
+  it("ninguna columna inventada llega a la base", () => {
+    const source = readFileSync(SETUP, "utf8");
+    const re = /\.from\(\s*"(\w+)"\s*\)\s*\.\s*(?:insert|upsert|update)\(\s*\{/g;
+    const payloads: { table: string; keys: string[] }[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(source))) {
+      const { body, end } = objectBody(source, re.lastIndex);
+      re.lastIndex = end;
+      const keys = topLevelKeys(body);
+      if (keys.length) payloads.push({ table: m[1], keys });
+    }
+
+    // Si el extractor deja de encontrar nada, esta prueba pasaría en verde sin
+    // comprobar nada: el peor fallo posible en una guarda.
+    expect(payloads.length, "no se encontró ni un payload: la guarda no mira nada")
+      .toBeGreaterThan(8);
+
+    const broken: string[] = [];
+    for (const { table, keys } of payloads) {
+      const columns = SCHEMA.get(table);
+      if (!columns) { broken.push(`tabla desconocida: ${table}`); continue; }
+      for (const key of keys) {
+        if (!columns.has(key)) broken.push(`${table}.${key} no existe en el esquema`);
+      }
+    }
+    expect(
+      [...new Set(broken)],
+      "PostgREST rechaza el INSERT entero por una sola columna que no existe"
+    ).toEqual([]);
+  });
+
+  it("y ninguna fila se esconde del extractor detrás de una variable", () => {
+    /**
+     * `insert(fila)` no lo ve la comprobación de arriba, así que una fila pasada
+     * por variable quedaría sin comprobar EN SILENCIO — con la guarda en verde. Se
+     * prohíbe la forma, que es la única manera de que la guarda no tenga un punto
+     * ciego que nadie recuerde.
+     */
+    const codigo = readFileSync(SETUP, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/^[ \t]*\/\/.*$/gm, " ");
+    const escondidas = [...codigo.matchAll(/\.(insert|upsert|update)\(\s*([A-Za-z_$][\w$]*)\s*\)/g)]
+      .map((x) => `${x[1]}(${x[2]})`);
+    expect([...new Set(escondidas)], "payloads que la guarda del esquema no puede leer").toEqual([]);
+  });
+});
+
 describe("el enganche del token no pierde security definer", () => {
   const HOOK = "app.custom_access_token_hook";
 
@@ -1122,5 +1276,49 @@ describe("la lista blanca de la exportación del socio", () => {
       }
     }
     expect(faltan, "campos declarados que no existen en la tabla").toEqual([]);
+  });
+});
+
+/**
+ * DOS MIGRACIONES NO PUEDEN LLEVAR EL MISMO NÚMERO.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * ESTO YA HA PASADO DOS VECES
+ *
+ * `0077_membego_membership_status` chocó con `0077_partner_product`, se
+ * renumeró a 0079 — y 0079 ya estaba cogido por `0079_partner_notifications`
+ * en otra rama. El choque no se ve al fusionar: son ficheros distintos, git no
+ * tiene nada que resolver, la suite pasa y `scripts/db-test.sh` también,
+ * porque psql los aplica por orden alfabético sin quejarse.
+ *
+ * Donde revienta es en la pila de Supabase, que lleva su propia contabilidad:
+ *
+ *     Applying migration 0077_membego_membership_status.sql...
+ *     Applying migration 0077_partner_product.sql...
+ *     ERROR: duplicate key value violates unique constraint "schema_migrations_pkey"
+ *
+ * Es decir: el CI de integración y el despliegue de verdad, tarde y con un
+ * error que no dice qué número está repetido. Renumerar es seguro —el número
+ * es contabilidad de la pila, no del esquema— pero hay que ENTERARSE, y para
+ * eso sirve esto: la colisión se cuenta aquí, en un segundo, no allí.
+ */
+describe("la numeración de las migraciones", () => {
+  it("no repite ningún número", () => {
+    const porNumero = new Map<string, string[]>();
+    for (const file of readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql"))) {
+      const m = /^(\d{4})_/.exec(file);
+      // Un fichero sin número delante tampoco lo aplicaría la pila en el orden
+      // que su autor cree: es el mismo problema con otra cara.
+      expect(m, `${file}: una migración tiene que empezar por cuatro dígitos`).not.toBeNull();
+      const n = m![1];
+      porNumero.set(n, [...(porNumero.get(n) ?? []), file]);
+    }
+
+    const repetidos = [...porNumero.entries()]
+      .filter(([, files]) => files.length > 1)
+      .map(([n, files]) => `${n}: ${files.join(" y ")}`);
+
+    expect(repetidos, "la pila de Supabase no levantaría: renumera la más nueva al primer hueco libre")
+      .toEqual([]);
   });
 });

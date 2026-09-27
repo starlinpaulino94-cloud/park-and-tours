@@ -480,6 +480,59 @@ export const MIGRATION_CHECKS = [
     // parecido una garantía sin serlo.
   },
   {
+    migration: "0092 — la lista negra del cliente",
+    // `customer.status` admitía `blacklist` desde la primera migración y nadie
+    // lo leía. El motivo va en la ficha y no solo en la bitácora porque el
+    // cajero decide con el cliente delante: sin el motivo, o levanta el bloqueo
+    // —y no valía nada— o lo sostiene sin saber por qué.
+    columns: [
+      ["customer", ["blocked_reason", "blocked_at", "blocked_by"]],
+    ],
+    // El `check` que hace obligatorio el motivo NO se comprueba aquí: este
+    // verificador habla con PostgREST, que acepta la columna y solo rechazaría
+    // el valor al escribirlo. Lo comprueba
+    // `supabase/editor/0092_parte_2_verificacion.sql`, que consulta
+    // `pg_constraint` y devuelve una fila legible.
+  },
+  {
+    migration: "0090 — el manifiesto sale solo, y sale recortado",
+    // El documento no se guarda: se compone al entregar. Sin decir en la fila
+    // para quién se recorta, el despachador no sabría qué corte generar y
+    // mandaría el manifiesto ENTERO —teléfonos, habitaciones y saldos de
+    // clientes— a la empresa de transporte.
+    columns: [
+      ["message", ["attachment_scope"]],
+    ],
+    // Las dos restricciones que esta migración reescribe (`message_template.key`
+    // y `message.attachment_kind`) NO se comprueban aquí: este verificador habla
+    // con PostgREST, que acepta la columna y solo rechazaría el valor al
+    // escribirlo. Las comprueba `supabase/editor/0090_parte_2_verificacion.sql`,
+    // que consulta `pg_constraint` y devuelve una fila legible por cada una.
+    // Declararlas aquí sin comprobarlas habría parecido una garantía sin serlo.
+  },
+  {
+    migration: "0089 — el estado de cuenta del proveedor",
+    // La conformidad es la otra mitad de la disputa: sin ella, el silencio de
+    // un proveedor y su acuerdo se parecen demasiado. Y el NCF lo escribe quien
+    // tiene el papel delante, no quien lo oye por teléfono.
+    columns: [
+      ["settlement", [
+        "accepted_at", "accepted_by",
+        "supplier_invoice_number", "supplier_ncf", "supplier_ncf_type",
+        "supplier_invoice_at", "supplier_invoice_by",
+      ]],
+    ],
+  },
+  {
+    migration: "0088 — la hoja de ruta, acotada y con hora",
+    // `loadRunSheet` devolvía nombres, habitaciones y teléfonos de cualquier
+    // ruta a cualquiera con sesión. Acotarla exige saber de quién es cada
+    // parada, y eso solo se sabía uniendo con la ruta.
+    columns: [
+      ["pickup", ["supplier_id", "service_date", "marked_at", "marked_by", "marked_via"]],
+    ],
+  },
+  {
     migration: "0087 — aceptar o rechazar, con plazo y número",
     // El eje del proveedor va aparte del de la operadora: `status` dice lo que
     // sabe la casa, `acceptance` lo que contestó él. Con una sola columna,
@@ -697,7 +750,7 @@ export const MIGRATION_CHECKS = [
     // Igual que arriba: el índice lo verifica `0070_parte_2_verificacion.sql`.
   },
   {
-    migration: "0079 — el estado de la membresía en el espejo de MembeGo",
+    migration: "0098 — el estado de la membresía en el espejo de MembeGo",
     columns: [
       // Sin esta columna, cancelar o vencer una membresía en MembeGo no tenía
       // dónde escribirse: el espejo seguía diciendo «Plan Oro» de una baja de

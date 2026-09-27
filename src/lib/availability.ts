@@ -1,5 +1,6 @@
 import "server-only";
 import { tenantQuery, tenantUpdate } from "@/lib/tenant";
+import { supabaseService } from "@/lib/supabase/service";
 import type { Departure, DepartureStatus } from "@/lib/types";
 
 /**
@@ -9,10 +10,13 @@ import type { Departure, DepartureStatus } from "@/lib/types";
  * the counters can never silently drift out of sync with reality.
  */
 
-const ACTIVE_STATUSES = [
-  "pending", "pending_payment", "confirmed", "partially_paid",
-  "paid", "checked_in", "completed",
-];
+/**
+ * Las dos listas son la ÚNICA definición de qué cuenta, y viajan a la base como
+ * argumento (0094). Antes había además una tercera —`ACTIVE_STATUSES`— que era
+ * exactamente la unión de estas dos y servía de filtro de la consulta: dos
+ * copias de la misma regla, y la que se quedara vieja habría dejado reservas
+ * fuera de la suma sin que nada lo dijera.
+ */
 const CONFIRMED_STATUSES = ["confirmed", "partially_paid", "paid", "checked_in", "completed"];
 const PENDING_STATUSES = ["pending", "pending_payment"];
 
@@ -46,29 +50,80 @@ function deriveStatus(capacity: number, booked: number, current?: DepartureStatu
   return "available";
 }
 
+/**
+ * LOS PASAJEROS DE LA SALIDA, CONTADOS EN LA BASE (0094).
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * ESTO LEÍA CON `_limit: 1000`
+ *
+ * Una salida de entrada general de un parque —dos mil entradas al día— pasa de
+ * mil reservas sin nada raro. Y pasado el tope la suma salía CORTA, así que
+ * `available_pax` salía ALTA y `assertCapacity` dejaba pasar la venta que no
+ * cabía. La guarda no fallaba: aprobaba. Y los contadores escritos en la salida
+ * quedaban por debajo de la realidad, así que el despacho, la previsión de
+ * ocupación y el semáforo de «casi llena» mentían los tres a la vez y en la
+ * misma dirección.
+ *
+ * Es justo lo contrario de lo que promete la cabecera de este módulo.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ NO SE PAGINA
+ *
+ * Esto corre en CADA venta. Con una salida de cinco mil reservas, paginar
+ * traería cinco mil filas por cada entrada vendida para sumar dos números: la
+ * operadora que más vende sería la que más lento vende. Una suma es lo que una
+ * base hace mejor que nadie, y así vuelve una sola fila, exacta y sin tope.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LAS LISTAS DE ESTADOS VIAJAN COMO ARGUMENTO
+ *
+ * Y es deliberado: qué cuenta como confirmada y qué como pendiente lo decide
+ * ESTE fichero, que es donde está escrito y probado. Copiar las listas a la
+ * función de la base habría dejado dos copias de la misma regla, y de dos
+ * copias la que se queda vieja es siempre la que nadie mira.
+ */
+async function paxDeLaSalida(
+  companyId: string,
+  departureId: string
+): Promise<{ booked: number; pending: number }> {
+  const { data, error } = await supabaseService().rpc("departure_pax_totals", {
+    p_org: companyId,
+    p_departure: departureId,
+    p_confirmed: CONFIRMED_STATUSES,
+    p_pending: PENDING_STATUSES,
+  });
+
+  /**
+   * UN RECUENTO QUE NO SE PUDO HACER NO ES CERO.
+   *
+   * Devolver ceros aquí sería decir «la salida está vacía», y el efecto de eso
+   * es que cabe todo el mundo: la sobreventa entraría por el hueco de una
+   * consulta caída. Se lanza, y la venta no se registra — que es la respuesta
+   * correcta cuando no se sabe si hay sitio.
+   */
+  if (error) {
+    throw new Error(`No se pudieron contar los pasajeros de la salida ${departureId}: ${error.message}`);
+  }
+  const fila = data as { found?: boolean; booked?: number; pending?: number } | null;
+  if (!fila || fila.found !== true) throw new Error("Salida no encontrada");
+
+  return { booked: Number(fila.booked ?? 0), pending: Number(fila.pending ?? 0) };
+}
+
 /** Recomputes a departure's occupancy from its bookings and persists the counters. */
 export async function recalculateDeparture(
   companyId: string,
   departureId: string
 ): Promise<AvailabilityState> {
-  const [departures, bookings] = await Promise.all([
+  const [departures, totales] = await Promise.all([
     tenantQuery<Departure>(companyId, "departure", { _filter: { _id: departureId }, _limit: 1 }),
-    tenantQuery<{ status?: string; pax_total?: number }>(companyId, "booking", {
-      _filter: { departure: departureId, status: { in: ACTIVE_STATUSES } },
-      _limit: 1000,
-    }),
+    paxDeLaSalida(companyId, departureId),
   ]);
 
   const departure = departures[0] ?? null;
   if (!departure) throw new Error("Salida no encontrada");
 
-  let bookedPax = 0;
-  let pendingPax = 0;
-  for (const b of bookings) {
-    const pax = b.pax_total ?? 0;
-    if (CONFIRMED_STATUSES.includes(b.status || "")) bookedPax += pax;
-    else if (PENDING_STATUSES.includes(b.status || "")) pendingPax += pax;
-  }
+  const { booked: bookedPax, pending: pendingPax } = totales;
 
   const capacity = departure.capacity ?? 0;
   const availablePax = Math.max(0, capacity - bookedPax - pendingPax);

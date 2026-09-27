@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenant, TenantError, esDeSocio } from "@/lib/tenant";
+import { requireTenant, TenantError, esInterno } from "@/lib/tenant";
 import { ok, fail } from "@/lib/api-response";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { loadManifest, personName } from "@/lib/manifest-service";
@@ -22,9 +22,21 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const { id } = await params;
     const ctx = await requireTenant();
     await assertRateLimit({ key: rateLimitKey(req, "departures:manifest", ctx.userId), limit: 120, windowMs: 60_000 });
-    // Un partner vería el manifiesto de toda la salida, incluidas las reservas
-    // de la competencia: es una lista de clientes ajenos.
-    if (esDeSocio(ctx)) throw new TenantError("El manifiesto es de uso interno", 403);
+    /**
+     * INTERNO EN POSITIVO, NO «QUE NO SEA SOCIO».
+     *
+     * Decía `esDeSocio`, y mientras el socio fue el único de fuera eso quería
+     * decir «interno». Desde 0084 el proveedor tiene sesión en la empresa, y esa
+     * negación pasó a querer decir «interno O proveedor»: cualquier cuenta de
+     * una empresa de transporte podía pedir el manifiesto de CUALQUIER salida
+     * —también de las que no opera— y llevarse nombres, teléfonos, correos,
+     * habitaciones y el saldo de cada cliente.
+     *
+     * El proveedor sí recibe manifiesto: le llega por correo, recortado a lo que
+     * necesita para operar y solo de las salidas que tiene asignadas (ver
+     * `src/lib/manifiesto-envio.ts`). Lo que no tiene es esta puerta.
+     */
+    if (!esInterno(ctx)) throw new TenantError("El manifiesto es de uso interno", 403);
 
     const m = await loadManifest(ctx.companyId, id);
     const dep = m.departure;

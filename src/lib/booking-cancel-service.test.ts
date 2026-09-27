@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fakeDb, type FakeDb } from "@/test/fake-tenant";
+import { fakeDb, type FakeDb, paxTotalsDeLaBase } from "@/test/fake-tenant";
 
 /**
  * DESHACER UNA VENTA.
@@ -25,13 +25,28 @@ vi.mock("@/lib/tenant", async (importOriginal) => {
   };
 });
 
+/**
+ * El recuento de pasajeros es una función de Postgres desde 0094, y aquí no hay
+ * Postgres. Se reimplementa sobre la misma base en memoria: falsearlo con una
+ * constante haría pasar en verde la prueba de que la plaza vuelve a la salida,
+ * porque ese número ES el cupo.
+ */
+vi.mock("@/lib/supabase/service", () => ({
+  supabaseService: () => ({
+    rpc: async (nombre: string, args: Record<string, unknown>) =>
+      nombre === "departure_pax_totals" ? paxTotalsDeLaBase(db)(args) : { data: null, error: null },
+  }),
+}));
 vi.mock("@/lib/audit", () => ({ writeAudit: vi.fn() }));
 vi.mock("@/lib/notify-service", () => ({ notify: vi.fn(), notifyRoles: vi.fn() }));
 vi.mock("@/lib/messaging/events", () => ({ notifyBookingCancelled: vi.fn() }));
 // El libro diario y MembeGo hablan con sistemas que aquí no existen y que, por
 // diseño, no pueden tumbar una cancelación.
 vi.mock("@/lib/ledger-events", () => ({ postPayment: vi.fn(), postSale: vi.fn() }));
-vi.mock("@/lib/membego-redemption-service", () => ({ reverseForOrder: vi.fn(async () => []) }));
+const beneficioDevuelto = vi.fn(async () => []);
+vi.mock("@/lib/membego-redemption-service", () => ({
+  reverseForOrder: (...a: unknown[]) => beneficioDevuelto(...(a as [])),
+}));
 
 import { cancelBookingFully, TERMINAL_STATES } from "@/lib/booking-cancel-service";
 
@@ -318,5 +333,24 @@ describe("una cancelación no deja saldo, cobre lo que cobre", () => {
     expect(Number(viva.paid_amount), "la reserva viva no ha pagado nada").toBe(0);
     expect(Number(viva.balance_amount)).toBe(200);
     expect(Number(db.row("order", { _id: "ord-1" })!.balance)).toBe(200);
+  });
+});
+
+describe("el beneficio de MembeGo que llevaba esta reserva", () => {
+  it("se devuelve nombrando LA RESERVA, no solo la venta", async () => {
+    /**
+     * Una orden puede llevar tres excursiones y caerse una sola. Sin el
+     * identificador de la reserva, `reverseForOrder` barría todos los canjes de
+     * la venta: el uso volvía al cliente, la línea que sigue viva recuperaba su
+     * importe, y el total SUBÍA después de una cancelación.
+     */
+    const b = vendida();
+    beneficioDevuelto.mockClear();
+    await cancelBookingFully(ctx, b as never, { reason: "El cliente no viaja" });
+    expect(beneficioDevuelto).toHaveBeenCalledTimes(1);
+    const args = beneficioDevuelto.mock.calls[0] as unknown[];
+    expect(args[0]).toBe(ORG);
+    expect(args[1], "la venta").toBe("ord-1");
+    expect(args[4], "la reserva que se cae no viajó").toBe("res-1");
   });
 });

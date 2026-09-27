@@ -1,4 +1,5 @@
 import "server-only";
+import { leerTodoElRecurso } from "@/lib/barrido";
 import { tenantFindOne, tenantQuery } from "@/lib/tenant";
 import { round2 } from "@/lib/commission-adjustments";
 import type { Settlement, Seller } from "@/lib/types";
@@ -86,14 +87,15 @@ export async function loadSellerStatement(
     companyId, "settlement", settlementId, { seller: true }
   );
 
-  const rows = await tenantQuery<Record<string, unknown> & { _id: string }>(
-    companyId, "commission", {
+  // El estado de cuenta del vendedor, entero: de aquí sale lo devengado y lo
+  // anulado, y un total corto es una nómina corta.
+  const rows = await leerTodoElRecurso<Record<string, unknown> & { _id: string }>(
+    "commission", (limite, salto) => tenantQuery(companyId, "commission", {
       _filter: { settlement: settlementId },
-      _limit: 1000,
-      _sort: { service_date: "asc" },
+      _sort: { service_date: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
       booking: { product: true },
-    }
-  );
+    }));
 
   const lines: LineaComision[] = rows.map((row) => {
     const booking = row.booking as { booking_number?: string; product?: { name?: string } } | null;

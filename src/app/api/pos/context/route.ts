@@ -5,6 +5,7 @@ import { ok, fail } from "@/lib/api-response";
 import type { Branch, CashSession, Departure, Hotel, Partner, Product, Seller } from "@/lib/types";
 import { refId } from "@/lib/types";
 import { plazasLibres, type SalidaConCupo } from "@/lib/plazas";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 /**
  * GET /api/pos/context?date=YYYY-MM-DD
@@ -69,16 +70,28 @@ export async function GET(req: NextRequest) {
     ]);
 
     const productIds = products.map((p) => p._id);
+    /**
+     * LAS SALIDAS DE LA VENTANA, ENTERAS.
+     *
+     * Esta lista es de la que el mostrador elige al vender. Con el tope de mil,
+     * una salida que cayera fuera no se podía vender —no aparecía— y no había
+     * nada en pantalla que lo dijera: el cajero simplemente no la veía, le decía
+     * al cliente que no hay, y la plaza se quedaba sin vender.
+     *
+     * La ventana de fechas ya acota el volumen; el tope solo añadía un corte
+     * arbitrario dentro de ella.
+     */
     const departures = productIds.length
-      ? await tenantQuery<Departure>(ctx.companyId, "departure", {
-          _filter: {
-            product: { in: productIds },
-            departure_at: { gte: from.toISOString(), lte: to.toISOString() },
-            status: { nin: ["cancelled", "closed", "completed"] },
-          },
-          _sort: { departure_at: "asc" },
-          _limit: 1000,
-        })
+      ? await leerTodoElRecurso<Departure>("departure", (limite, salto) =>
+          tenantQuery(ctx.companyId, "departure", {
+            _filter: {
+              product: { in: productIds },
+              departure_at: { gte: from.toISOString(), lte: to.toISOString() },
+              status: { nin: ["cancelled", "closed", "completed"] },
+            },
+            _sort: { departure_at: "asc", _id: "asc" },
+            _limit: limite, _offset: salto,
+          }))
       : [];
 
     const byProduct = new Map<string, Departure[]>();

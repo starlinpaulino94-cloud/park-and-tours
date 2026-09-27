@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { supabaseService } from "@/lib/supabase/service";
 import { ok, fail } from "@/lib/api-response";
-import { startJobRun, finishJobRun, reportIncident } from "@/lib/system-health-service";
+import { startJobRun, finishJobRun, reportIncident, barridoVigilado } from "@/lib/system-health-service";
+import { PAGINA, type ResumenBarrido } from "@/lib/barrido";
 import { TenantError } from "@/lib/tenant";
 import { serviceStore } from "@/lib/messaging/service-store";
 import { notifyBalanceDue } from "@/lib/messaging/events";
@@ -64,20 +65,49 @@ interface ScheduleRow {
 }
 
 /** Pone al día el estado de cada cuota y el de la venta que la contiene. */
-async function refreshInstallments(now: Date): Promise<{ overdue: number; orders: number }> {
+async function refreshInstallments(now: Date): Promise<{ overdue: number; orders: number; barrido: ResumenBarrido }> {
   const today = dayOf(now)!;
-  const { data, error } = await supabaseService()
-    .from("payment_schedule")
-    .select("id, organization_id, order_id, booking_id, kind, due_date, amount, paid_amount, balance, currency, status, reminded_at")
-    .in("status", ["pending", "partially_paid", "overdue"])
-    .lte("due_date", today)
-    .limit(2000);
-  if (error) throw new Error(error.message);
-
-  const rows = (data ?? []) as ScheduleRow[];
   const touchedOrders = new Map<string, string>();
   let overdue = 0;
 
+  /**
+   * RECORRIDO, no drenaje: poner una cuota en `overdue` la deja DENTRO del
+   * filtro —`overdue` está en la lista de estados que se leen—, así que la
+   * ventana tiene que avanzar o se pedirían las mismas quinientas para
+   * siempre.
+   *
+   * Y va ordenado por vencimiento: si algún día se toca el techo, lo que se
+   * haya tratado será lo más vencido, que es lo que más urge. Antes no había
+   * orden ninguno, así que el corte caía donde quisiera el montón.
+   */
+  const barrido = await barridoVigilado<ScheduleRow>({
+    etiqueta: "cobranza:cuotas",
+    modo: "recorrido",
+    idDe: (row) => row.id,
+    leer: async (desde, hasta) => {
+      const { data, error } = await supabaseService()
+        .from("payment_schedule")
+        .select("id, organization_id, order_id, booking_id, kind, due_date, amount, paid_amount, balance, currency, status, reminded_at")
+        .in("status", ["pending", "partially_paid", "overdue"])
+        .lte("due_date", today)
+        .order("due_date", { ascending: true })
+        .order("id", { ascending: true })
+        .range(desde, hasta);
+      if (error) throw new Error(error.message);
+      return (data ?? []) as ScheduleRow[];
+    },
+    tratar: async (rows) => { await tratarCuotas(rows, now, touchedOrders, (n) => { overdue += n; }); },
+  });
+
+  await repasarEstadoDeVentas(touchedOrders, now);
+  return { overdue, orders: touchedOrders.size, barrido };
+}
+
+/** Lo que se hace con una vuelta de cuotas. */
+async function tratarCuotas(
+  rows: ScheduleRow[], now: Date,
+  touchedOrders: Map<string, string>, sumarVencida: (n: number) => void
+): Promise<void> {
   for (const row of rows) {
     const next = statusFor(
       { amount: row.amount, paid_amount: row.paid_amount, due_date: row.due_date, status: row.status },
@@ -93,14 +123,21 @@ async function refreshInstallments(now: Date): Promise<{ overdue: number; orders
         console.error(`[cron/collections] cuota ${row.id}:`, updateError.message);
         continue;
       }
-      if (next === "overdue") overdue++;
+      if (next === "overdue") sumarVencida(1);
     }
     touchedOrders.set(row.order_id, row.organization_id);
   }
+}
 
-  // El estado de cobro de la venta se recalcula con TODAS sus cuotas, no solo
-  // con las que acaban de vencer: una venta con la última cuota pagada y una
-  // intermedia vencida sigue vencida.
+/**
+ * El estado de cobro de la venta se recalcula con TODAS sus cuotas, no solo
+ * con las que acaban de vencer: una venta con la última cuota pagada y una
+ * intermedia vencida sigue vencida.
+ *
+ * Va una sola vez al final y no por vuelta: una venta con cuotas en dos
+ * páginas se repasaría dos veces, y la primera con la mitad de los datos.
+ */
+async function repasarEstadoDeVentas(touchedOrders: Map<string, string>, now: Date): Promise<void> {
   for (const [orderId, companyId] of touchedOrders) {
     const { data: all } = await supabaseService()
       .from("payment_schedule")
@@ -117,39 +154,68 @@ async function refreshInstallments(now: Date): Promise<{ overdue: number; orders
       .eq("organization_id", companyId)
       .eq("id", orderId));
   }
-
-  return { overdue, orders: touchedOrders.size };
 }
 
 /** Encola el recordatorio del saldo de lo que vence pronto o ya venció. */
-async function remindBalances(now: Date): Promise<{ reminded: number; companies: string[] }> {
+type FilaConRecordatorio = ScheduleRow & {
+  order?: { id: string; order_number?: string; customer_id?: string; status?: string } | null;
+  booking?: {
+    id: string; booking_number?: string; travel_date?: string;
+    currency?: string; customer_id?: string; product_id?: string;
+  } | null;
+};
+
+async function remindBalances(now: Date): Promise<{ reminded: number; companies: string[]; barrido: ResumenBarrido }> {
   const horizon = dayOf(new Date(now.getTime() + REMIND_WINDOW_DAYS * 86_400_000))!;
   const cooldown = new Date(now.getTime() - REMIND_COOLDOWN_DAYS * 86_400_000).toISOString();
-
-  const { data, error } = await supabaseService()
-    .from("payment_schedule")
-    .select(
-      "id, organization_id, order_id, booking_id, kind, due_date, amount, paid_amount, balance, currency, status, reminded_at, " +
-      "order:order_id (id, order_number, customer_id, status), " +
-      "booking:booking_id (id, booking_number, travel_date, currency, customer_id, product_id)"
-    )
-    .in("status", ["pending", "partially_paid", "overdue"])
-    .lte("due_date", horizon)
-    .limit(1000);
-  if (error) throw new Error(error.message);
-
-  type Row = ScheduleRow & {
-    order?: { id: string; order_number?: string; customer_id?: string; status?: string } | null;
-    booking?: {
-      id: string; booking_number?: string; travel_date?: string;
-      currency?: string; customer_id?: string; product_id?: string;
-    } | null;
-  };
 
   const companies = new Set<string>();
   let reminded = 0;
 
-  for (const row of (data ?? []) as unknown as Row[]) {
+  /**
+   * RECORRIDO: el recordatorio solo escribe `reminded_at`, así que la cuota
+   * sigue en el filtro y la ventana tiene que avanzar.
+   *
+   * Por vencimiento ascendente, que es el orden en el que importa: a quien
+   * debe desde hace más tiempo se le escribe primero. Con el tope de mil de
+   * antes y sin orden, el cliente que más debía podía no recibir jamás un
+   * recordatorio — y el sistema prometía recordar el saldo.
+   */
+  const barrido = await barridoVigilado<FilaConRecordatorio>({
+    etiqueta: "cobranza:recordatorios",
+    modo: "recorrido",
+    idDe: (row) => row.id,
+    leer: async (desde, hasta) => {
+      const { data, error } = await supabaseService()
+        .from("payment_schedule")
+        .select(
+          "id, organization_id, order_id, booking_id, kind, due_date, amount, paid_amount, balance, currency, status, reminded_at, " +
+          "order:order_id (id, order_number, customer_id, status), " +
+          "booking:booking_id (id, booking_number, travel_date, currency, customer_id, product_id)"
+        )
+        .in("status", ["pending", "partially_paid", "overdue"])
+        .lte("due_date", horizon)
+        .order("due_date", { ascending: true })
+        .order("id", { ascending: true })
+        .range(desde, hasta);
+      if (error) throw new Error(error.message);
+      return (data ?? []) as unknown as FilaConRecordatorio[];
+    },
+    tratar: async (filas) => {
+      const hechos = await recordarVuelta(filas, now, cooldown, companies);
+      reminded += hechos;
+    },
+  });
+
+  return { reminded, companies: [...companies], barrido };
+}
+
+/** Manda los recordatorios de una vuelta y devuelve cuántos salieron. */
+async function recordarVuelta(
+  filas: FilaConRecordatorio[], now: Date, cooldown: string, companies: Set<string>
+): Promise<number> {
+  let reminded = 0;
+  for (const row of filas) {
     const balance = row.balance ?? Math.max((row.amount ?? 0) - (row.paid_amount ?? 0), 0);
     if (balance <= 0.009) continue;
     // Una venta cancelada no se cobra, y escribirle al cliente por ella es
@@ -219,24 +285,60 @@ async function remindBalances(now: Date): Promise<{ reminded: number; companies:
       console.error(`[cron/collections] recordatorio de la cuota ${row.id} falló:`, err);
     }
   }
+  return reminded;
+}
 
-  return { reminded, companies: [...companies] };
+interface FilaDeCobro {
+  id: string; organization_id: string; due_date: string | null;
+  amount: number | null; paid_amount: number | null; balance: number | null;
+  status: string | null; aging_bucket: string | null;
+  currency: string | null; document_number: string | null;
 }
 
 /** Pone la antigüedad de cada cuenta por cobrar al día con su vencimiento. */
-async function syncAging(now: Date): Promise<{ updated: number; overdue: number }> {
-  const { data, error } = await supabaseService()
-    .from("receivable")
-    .select("id, organization_id, due_date, amount, paid_amount, balance, status, aging_bucket, currency, document_number")
-    .not("status", "in", "(paid,written_off)")
-    .limit(2000);
-  if (error) throw new Error(error.message);
-
+async function syncAging(now: Date): Promise<{ updated: number; overdue: number; barrido: ResumenBarrido }> {
   let updated = 0;
   let overdue = 0;
   const today = dayOf(now)!;
 
-  for (const row of data ?? []) {
+  /**
+   * RECORRIDO: pasar una cuenta a `overdue` la deja dentro del filtro, que
+   * solo excluye `paid` y `written_off`. Y la mayoría de las vueltas no
+   * escriben nada —`continue` cuando el tramo y el estado ya están bien—, así
+   * que en drenaje esto no bajaría nunca.
+   */
+  const barrido = await barridoVigilado<FilaDeCobro>({
+    etiqueta: "cobranza:antiguedad",
+    modo: "recorrido",
+    idDe: (row) => row.id,
+    leer: async (desde, hasta) => {
+      const { data, error } = await supabaseService()
+        .from("receivable")
+        .select("id, organization_id, due_date, amount, paid_amount, balance, status, aging_bucket, currency, document_number")
+        .not("status", "in", "(paid,written_off)")
+        .order("due_date", { ascending: true })
+        .order("id", { ascending: true })
+        .range(desde, hasta);
+      if (error) throw new Error(error.message);
+      return (data ?? []) as unknown as FilaDeCobro[];
+    },
+    tratar: async (filas) => {
+      const hecho = await envejecerVuelta(filas, now, today);
+      updated += hecho.updated;
+      overdue += hecho.overdue;
+    },
+  });
+
+  return { updated, overdue, barrido };
+}
+
+/** Pone al día la antigüedad de una vuelta. */
+async function envejecerVuelta(
+  filas: FilaDeCobro[], now: Date, today: string
+): Promise<{ updated: number; overdue: number }> {
+  let updated = 0;
+  let overdue = 0;
+  for (const row of filas) {
     const balance = Number(row.balance ?? Math.max(Number(row.amount ?? 0) - Number(row.paid_amount ?? 0), 0));
     const bucket = agingBucketFor(row.due_date as string | null, now);
     const due = dayOf(row.due_date as string | null);
@@ -279,19 +381,53 @@ async function syncAging(now: Date): Promise<{ updated: number; overdue: number 
   return { updated, overdue };
 }
 
-/** Libera el cupo de las ventas cuya retención expiró, empresa por empresa. */
-async function releaseHolds(now: Date): Promise<{ released: number }> {
-  const { data, error } = await supabaseService()
-    .from("sales_order")
-    .select("organization_id")
-    .eq("status", "pending_payment")
-    .not("hold_until", "is", null)
-    .lt("hold_until", now.toISOString())
-    .limit(1000);
-  if (error) throw new Error(error.message);
+/**
+ * Libera el cupo de las ventas cuya retención expiró, empresa por empresa.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * ESTE ERA EL PEOR DE LOS CUATRO
+ *
+ * Aquí solo se leen los identificadores de empresa para saber a quién hay que
+ * repasar; el trabajo lo hace `releaseExpiredHolds` por dentro. Pero el tope
+ * de mil caía sobre las FILAS, no sobre las empresas: bastaba con que mil
+ * retenciones vencidas salieran antes en el montón para que una operadora
+ * entera no apareciera en la lista y no se le liberara ni una plaza. Y como el
+ * montón no cambia entre pasadas, era la MISMA operadora todos los días.
+ *
+ * Medido con 2 500 retenciones vencidas y el tope de mil: las mil filas que
+ * salían eran idénticas en dos pasadas seguidas, y de las 1 500 restantes no
+ * se tocaba ninguna. Las plazas se quedaban apartadas para siempre, sin error
+ * en ninguna pantalla — el cliente llamando porque la salida «está llena» y la
+ * salida con la mitad de los asientos retenidos por ventas muertas.
+ *
+ * Se lee ENTERO, por orden de vencimiento, y se recorre (no se drena: aquí se
+ * juntan primero todas las empresas y se trata después, porque tratar una
+ * empresa saca del filtro filas de cualquier página).
+ */
+async function releaseHolds(now: Date): Promise<{ released: number; barrido: ResumenBarrido }> {
+  const empresas = new Set<string>();
+  const barrido = await barridoVigilado<{ id: string; organization_id: string }>({
+    etiqueta: "cobranza:retenciones",
+    modo: "recorrido",
+    idDe: (row) => row.id,
+    leer: async (desde, hasta) => {
+      const { data, error } = await supabaseService()
+        .from("sales_order")
+        .select("id, organization_id")
+        .eq("status", "pending_payment")
+        .not("hold_until", "is", null)
+        .lt("hold_until", now.toISOString())
+        .order("hold_until", { ascending: true })
+        .order("id", { ascending: true })
+        .range(desde, hasta);
+      if (error) throw new Error(error.message);
+      return (data ?? []) as { id: string; organization_id: string }[];
+    },
+    tratar: async (filas) => { for (const f of filas) empresas.add(f.organization_id); },
+  });
 
   let released = 0;
-  for (const companyId of new Set((data ?? []).map((r) => r.organization_id as string))) {
+  for (const companyId of empresas) {
     try {
       /**
        * Las retenciones de OTA se MARCAN vencidas antes de soltarlas.
@@ -344,7 +480,7 @@ async function releaseHolds(now: Date): Promise<{ released: number }> {
       console.error(`[cron/collections] liberación de cupo de ${companyId} falló:`, err);
     }
   }
-  return { released };
+  return { released, barrido };
 }
 
 export async function GET(req: NextRequest) {
@@ -378,6 +514,23 @@ export async function GET(req: NextRequest) {
       failed: results
         .map((result, index) => (result.status === "rejected" ? ["cuotas", "recordatorios", "antigüedad", "cupo"][index] : null))
         .filter(Boolean),
+      /**
+       * QUÉ BARRIDOS NO LLEGARON AL FINAL.
+       *
+       * Va en el resumen del trabajo, que es lo que lee la pantalla de salud.
+       * El incidente ya se levantó dentro de `barridoVigilado`; esto es para
+       * quien abre la ejecución concreta y quiere saber cuál de los cuatro se
+       * quedó corto sin tener que cruzar dos pantallas.
+       */
+      truncados: [
+        ["cuotas", installments], ["recordatorios", reminders],
+        ["antigüedad", aging], ["cupo", holds],
+      ]
+        .filter(([, r]) => {
+          const v = (r as PromiseSettledResult<{ barrido?: ResumenBarrido }>);
+          return v.status === "fulfilled" && (v.value.barrido?.truncado || v.value.barrido?.atascado);
+        })
+        .map(([nombre]) => nombre as string),
       ranAt: now.toISOString(),
     };
 

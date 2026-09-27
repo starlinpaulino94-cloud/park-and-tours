@@ -66,7 +66,7 @@ Se mantienen los nombres del informe anterior para poder compararlos.
 | **G** Pruebas | FALLA | **PARCIAL** | 2 300 unitarias y SQL contra Postgres; E2E casi inexistente (ver T-001) |
 | **H** Fiabilidad | FALLA | **PARCIAL** | Reintentos y compensación sí; restauración sin probar (ver DR-001) |
 | **I** Observabilidad | FALLA | **PARCIAL** | Sentry conectado y `job_run`/`system_incident` en uso; sin alertas verificadas |
-| **J** Rendimiento | FALLA | **FALLA** | Sin `EXPLAIN` ni pruebas de carga (ver P-001) |
+| **J** Rendimiento | FALLA | **PARCIAL** | Panel medido con 120 000 reservas y corregido (800→450 ms); escritura medida (0,76→0,66 ms por reserva); sin pruebas de carga concurrente (ver P-001) |
 | **K** Despliegue | PARCIAL | **PARCIAL** | CI en cada PR, `main` protegido; reversión sin probar |
 
 ---
@@ -102,7 +102,7 @@ Además, cerrados en este ciclo y no listados antes:
 | **BL-002** sin transacciones | Medio | PostgREST no da transacciones multi-sentencia. La venta usa una saga con compensación (`compensateOrder`), probada. Lo que no se puede garantizar es atomicidad estricta: un fallo del proceso entre dos pasos deja un estado que la compensación repara *después* |
 | **T-001** E2E casi inexistente | **Alto** | Dos ficheros de Playwright. Nada recorre vender→cobrar→cancelar en un navegador |
 | **F-001** módulos fiscales sin pruebas | **Alto** | `invoice-service` (NCF), `dgii-service` (606/607) y `supplier-settlement-service` suman 1 090 líneas sin una sola prueba. Un NCF mal emitido no se corrige: se nota de crédito |
-| **P-001** rendimiento desconocido | Medio | Sin `EXPLAIN` sobre las consultas del panel ni pruebas de carga |
+| **P-001** rendimiento desconocido | Medio | **Medido** (9.17). Con 120 000 reservas y 60 000 cobros de un inquilino: el panel a 365 días tardaba ~800 ms y a 30 días ~104 ms. `EXPLAIN` señaló `select b.*` materializando 150 MB y releyéndolos seis veces; 0096 lo corrige a ~450 y ~72 ms con la salida idéntica. La escritura también: 0,76 ms de disparadores por reserva, 0,66 tras 0097. Queda **abierto** lo que no se ha hecho: pruebas de carga con concurrencia, y el panel a 365 días sigue en ~450 ms —bajarlo más exige una pasada única con `grouping sets` o una tabla de instantáneas |
 | **DR-001** restauración sin probar | **Alto** | Supabase hace copias; que se pueda volver de una no lo ha verificado nadie |
 | ~~**CI-001** el E2E corre contra el proyecto de producción~~ | **CERRADA** | Cada corrida levanta **su propia pila de Supabase** (`supabase/config.toml`), aplica las migraciones desde cero y la destruye al terminar. El fichero del CI ya no contiene **ni una sola** referencia a `secrets.*`: no hay llave de servicio sobre la operación real que pueda usarse mal. De regalo, el E2E comprueba ahora que las migraciones levantan un sistema utilizable **desde cero**, que no lo comprobaba nadie. Ver AUD-M27 |
 

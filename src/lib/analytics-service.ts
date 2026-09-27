@@ -43,6 +43,20 @@ export interface CohortReport {
   repeatRatePct: number;
   averageCustomerValue: number;
   customers: number;
+  /**
+   * Verdadero cuando la consulta llegó al tope y el informe está RECORTADO.
+   *
+   * Sin esto, la operadora grande —la que más necesita esto— recibía una tasa
+   * de repetición calculada sobre las cinco mil reservas más antiguas del
+   * período y presentada como si fuera la de todas. Y es el peor sesgo posible
+   * para lo que este informe mide: al quedarse con el principio del rango, las
+   * segundas compras de esos mismos clientes son justo las que se quedan fuera,
+   * así que la retención sale baja y parece un problema de negocio.
+   *
+   * Se dice en vez de adivinar: quien lo pinta puede avisar de que el dato está
+   * cortado, que es lo que hace el embudo de la red comercial desde la fase 3.
+   */
+  truncated: boolean;
 }
 
 /** Cohortes de clientes por mes de primera compra. */
@@ -51,7 +65,7 @@ export async function cohortReport(input: AnalyticsInput): Promise<CohortReport>
   const months = Math.max(3, Math.min(36, input.months ?? DEFAULT_COHORT_MONTHS));
   const since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months + 1, 1)).toISOString();
 
-  const { data } = await supabaseService()
+  const { data, error } = await supabaseService()
     .from("booking")
     .select("customer_id,booking_date,total_amount")
     .eq("organization_id", input.companyId)
@@ -60,6 +74,11 @@ export async function cohortReport(input: AnalyticsInput): Promise<CohortReport>
     .gte("booking_date", since)
     .order("booking_date", { ascending: true })
     .limit(MAX_ROWS);
+
+  // Un informe vacío por una lectura fallida se lee como «esta operadora no
+  // tiene clientes que repitan», que es una conclusión de negocio sacada de un
+  // hipo de la base.
+  if (error) throw new Error(`No se pudieron leer las reservas para las cohortes: ${error.message}`);
 
   const rows: PurchaseRow[] = (data ?? []).map((row) => ({
     customerId: String(row.customer_id),
@@ -72,6 +91,7 @@ export async function cohortReport(input: AnalyticsInput): Promise<CohortReport>
     repeatRatePct: repeatRate(rows),
     averageCustomerValue: averageCustomerValue(rows),
     customers: new Set(rows.map((r) => r.customerId)).size,
+    truncated: rows.length >= MAX_ROWS,
   };
 }
 

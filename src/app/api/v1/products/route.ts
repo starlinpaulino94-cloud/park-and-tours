@@ -4,6 +4,7 @@ import { tenantQuery } from "@/lib/tenant";
 import { toPublicCard, isPublishable, type PublicProductRow } from "@/lib/public-booking";
 import { autorizadosDe, type AutorizacionSocio } from "@/lib/catalogo-socio";
 import { tarifarioDeSocio } from "@/lib/tarifario";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 /**
  * GET /api/v1/products — el catálogo que un socio puede vender.
@@ -27,10 +28,16 @@ export async function GET(req: NextRequest) {
      * quedado fuera: le enseñaba productos que su propia reserva iba a
      * rechazar.
      */
+    // El catálogo del socio, ENTERO. Con el tope de mil, un producto que sí
+    // tiene firmado desaparecía de la lista que él consulta antes de reservar —
+    // y siempre el mismo, porque el orden no cambia.
     const autorizados = caller.partnerId
-      ? [...autorizadosDe(await tenantQuery<Record<string, unknown>>(caller.companyId, "partner_product", {
-          _filter: { partner: caller.partnerId, status: "active" }, _limit: 1000,
-        }) as AutorizacionSocio[])]
+      ? [...autorizadosDe(await leerTodoElRecurso<Record<string, unknown>>("partner_product", (limite, salto) =>
+          tenantQuery(caller.companyId, "partner_product", {
+          _filter: { partner: caller.partnerId, status: "active" },
+          _sort: { created_at: "asc", _id: "asc" },
+          _limit: limite, _offset: salto,
+          })) as AutorizacionSocio[])]
       : null;
 
     // Sin nada autorizado, nada que devolver; y explícito, no fiándolo a que

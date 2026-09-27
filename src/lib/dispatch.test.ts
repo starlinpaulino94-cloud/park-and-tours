@@ -5,7 +5,8 @@ import {
   assignmentIsLive, resourceConflicts,
   vehicleBlock, vehicleWarnings, vehicleLabel,
   pickupOffsetMin, plannedPickupTime, pickupDiscrepancy,
-  type ResourceUse,
+  routeWindow, usesOfDeparture,
+  type ResourceUse, type Window,
 } from "@/lib/dispatch";
 
 /**
@@ -557,5 +558,137 @@ describe("armar el día es repetible", () => {
     const vuelta = armar({ ...base, pickups: [recogida("p2", "b", 3), recogida("p1", "a", 3)] });
     expect(ida.routes.map((r) => r.autoKey)).toEqual(vuelta.routes.map((r) => r.autoKey));
     expect(ida.routes[0].stops.map((s) => s.pickupId)).toEqual(vuelta.routes[0].stops.map((s) => s.pickupId));
+  });
+});
+
+describe("la ventana de una ruta de recogida", () => {
+  /**
+   * `pickup_route` tiene `start_time` y NO tiene `end_time`: la tabla nunca lo
+   * tuvo, así que el final hay que razonarlo.
+   */
+  const salida: Window = {
+    start: Date.parse("2026-03-10T12:00:00Z"), // 08:00 en Santo Domingo
+    end: Date.parse("2026-03-10T20:00:00Z"),
+  };
+  const TZ = "America/Santo_Domingo";
+
+  it("acaba cuando arranca la salida: recoge, deja en el punto y queda libre", () => {
+    const w = routeWindow({ start_time: "06:00" }, salida, TZ);
+    expect(new Date(w.start).toISOString()).toBe("2026-03-10T10:00:00.000Z");
+    expect(w.end).toBe(salida.start);
+  });
+
+  it("NO se alarga hasta el final de la excursión, y eso es deliberado", () => {
+    /**
+     * Habría sido «más prudente» y es justo lo que no se puede hacer: si la misma
+     * guagua hace además la excursión, eso es una fila de `departure_resource` de
+     * ESA salida, cuya ventana ya cubre el tour. Contarlo dos veces no protege de
+     * nada e inventa ocupación — y con ocupación inventada, el traslado de vuelta
+     * de las cuatro sale marcado como choque todos los días.
+     */
+    const w = routeWindow({ start_time: "06:00" }, salida, TZ);
+    expect(w.end).toBeLessThan(salida.end);
+  });
+
+  it("sin hora de inicio, la salida entera", () => {
+    // Es lo que de verdad pasa cuando nadie ha planificado la recogida todavía.
+    expect(routeWindow({ start_time: null }, salida, TZ)).toEqual(salida);
+    expect(routeWindow({}, salida, TZ)).toEqual(salida);
+  });
+
+  it("una hora que no se entiende tampoco inventa nada", () => {
+    expect(routeWindow({ start_time: "por la mañana" }, salida, TZ)).toEqual(salida);
+  });
+
+  it("y una que empieza a la hora de la salida o después NO produce una ventana de ancho cero", () => {
+    /**
+     * Una ventana de ancho cero —o invertida— no solapa con nada, así que el
+     * recurso desaparecería en silencio de la detección de choques. Ser
+     * conservador es peor que dejar de mirar.
+     */
+    for (const hora of ["08:00", "10:00", "23:00"]) {
+      const w = routeWindow({ start_time: hora }, salida, TZ);
+      expect(w.end, hora).toBeGreaterThan(w.start);
+    }
+  });
+});
+
+describe("los recursos que ocupa una salida, en un solo sitio", () => {
+  const TZ = "America/Santo_Domingo";
+  const guagua = { _id: "v1", name: "Coaster", plate: "A123456" };
+  const chofer = { _id: "s1", full_name: "Pedro Chofer" };
+
+  const salida = (over: Record<string, unknown> = {}) => ({
+    _id: "dep-1",
+    departure_at: "2026-03-10T12:00:00Z",
+    duration_hours: 8,
+    product: { name: "Isla Saona" },
+    departure_resource: [],
+    pickup_route: [],
+    ...over,
+  });
+
+  it("LAS RUTAS DE RECOGIDA CUENTAN, y antes no contaban", () => {
+    /**
+     * La mesa de despacho construía sus usos leyendo SOLO `departure_resource`.
+     * La misma guagua puesta en la recogida de la excursión de las seis y como
+     * vehículo de la salida de las siete no aparecía como choque en ninguna
+     * pantalla — y es el choque más fácil de cometer, porque son dos formularios
+     * distintos.
+     */
+    const usos = usesOfDeparture(
+      salida({ pickup_route: [{ _id: "pr1", start_time: "06:00", vehicle: guagua, driver: chofer }] }),
+      TZ
+    );
+    expect(usos.map((u) => `${u.kind}:${u.resourceId}`).sort()).toEqual(["staff:s1", "vehicle:v1"]);
+  });
+
+  it("y el conductor y el guía de la ruta son personal, igual que el del recurso", () => {
+    const guia = { _id: "s2", full_name: "Ana Guía" };
+    const usos = usesOfDeparture(
+      salida({ pickup_route: [{ _id: "pr1", vehicle: null, driver: chofer, guide: guia }] }),
+      TZ
+    );
+    expect(usos.filter((u) => u.kind === "staff").map((u) => u.resourceId).sort()).toEqual(["s1", "s2"]);
+  });
+
+  it("una asignación cancelada no ocupa a nadie", () => {
+    // Bloquear por ella sería dejar la guagua reservada por una fila que nadie va
+    // a usar.
+    const usos = usesOfDeparture(
+      salida({
+        departure_resource: [{ _id: "dr1", status: "cancelled", vehicle: guagua }],
+        pickup_route: [{ _id: "pr1", status: "cancelled", vehicle: guagua, driver: chofer }],
+      }),
+      TZ
+    );
+    expect(usos).toEqual([]);
+  });
+
+  it("una salida sin fecha no ocupa nada", () => {
+    // Sin ventana no se puede afirmar que dos cosas se pisen.
+    const usos = usesOfDeparture(
+      salida({ departure_at: null, departure_resource: [{ _id: "dr1", vehicle: guagua }] }),
+      TZ
+    );
+    expect(usos).toEqual([]);
+  });
+
+  it("el uso lleva el nombre del recurso y la etiqueta de la salida, para poder contarlo", () => {
+    // «Hay un choque» sin decir qué guagua ni con qué salida obliga a abrir cinco
+    // fichas para saber qué mover.
+    const [uso] = usesOfDeparture(salida({ departure_resource: [{ _id: "dr1", vehicle: guagua }] }), TZ);
+    expect(uso.resourceName).toBe("Coaster (A123456)");
+    expect(uso.departureLabel).toBe("Isla Saona 08:00");
+    expect(uso.departureId).toBe("dep-1");
+  });
+
+  it("y las horas propias del recurso mandan sobre las de la salida", () => {
+    // «El fotógrafo solo la primera hora» no ocupa el día entero.
+    const [uso] = usesOfDeparture(
+      salida({ departure_resource: [{ _id: "dr1", start_time: "08:00", end_time: "09:00", staff: chofer }] }),
+      TZ
+    );
+    expect(uso.window.end - uso.window.start).toBe(3_600_000);
   });
 });

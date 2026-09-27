@@ -1,13 +1,19 @@
 import "server-only";
-import { requireAtLeast, tenantCreate, tenantQuery, tenantUpdate, type TenantContext } from "@/lib/tenant";
+import {
+  requireAtLeast, tenantCreate, tenantQuery, tenantUpdate,
+  TenantError, esDeProveedor, esInterno, type TenantContext,
+} from "@/lib/tenant";
+import { hojaAbierta, ordenarParadas } from "@/lib/hoja-de-ruta";
+import { writeAudit } from "@/lib/audit";
 import { companyTimeZone, dayBounds, wallTimeOf } from "@/lib/time";
 import { assignmentBlock, certificationsToRenew, dayOf, type CertificationLike } from "@/lib/hr";
 import {
-  buildRoutes, departureWindow, resourceWindow, resourceConflicts, assignmentIsLive,
-  vehicleBlock, vehicleWarnings, vehicleLabel,
+  buildRoutes, departureWindow, resourceConflicts, assignmentIsLive, usesOfDeparture,
+  vehicleBlock, vehicleWarnings,
   type DispatchConflict, type PlannedRoute, type ResourceUse,
 } from "@/lib/dispatch";
 import { refId, BOOKING_TERMINAL_STATES } from "@/lib/types";
+import { leerTodoElRecurso } from "@/lib/barrido";
 
 /**
  * El despacho, fuera de la ruta HTTP.
@@ -82,10 +88,28 @@ export async function loadDispatch(
   const { start: from, end: to } = dayBounds(reference, timeZone);
   const day = dayOf(from.toISOString()) ?? new Date().toISOString().slice(0, 10);
 
-  // Las acreditaciones del equipo, para el mismo día: el despacho es donde se
-  // decide quién sale, y enseñar aquí la licencia vencida evita descubrirla en
-  // el muelle. La lista entera cabe de sobra en una consulta.
-  const certificaciones = await tenantQuery<CertificationLike>(ctx.companyId, "certification", { _limit: 2000 });
+  /**
+   * Las acreditaciones del equipo: el despacho es donde se decide quién sale, y
+   * enseñar aquí la licencia vencida evita descubrirla en el muelle.
+   *
+   * ──────────────────────────────────────────────────────────────────────────
+   * AQUÍ DECÍA «LA LISTA ENTERA CABE DE SOBRA EN UNA CONSULTA»
+   *
+   * Y leía con `_limit: 2000`. Era una suposición escrita y nunca comprobada:
+   * cuatrocientas personas con seis acreditaciones cada una ya no caben. Y lo
+   * que se queda fuera no es una fila de una lista — es la licencia vencida que
+   * esta pantalla existe para enseñar. La guarda no falla: **aprueba**, y el
+   * chofer sube a la guagua.
+   *
+   * Por eso se lee entero y se lanza si no se puede: un despacho que no carga
+   * se arregla recargando; un despacho que da por bueno a quien no puede
+   * conducir se arregla en el muelle, o no se arregla.
+   */
+  const certificaciones = await leerTodoElRecurso<CertificationLike>("certification", (limite, salto) =>
+    tenantQuery(ctx.companyId, "certification", {
+      _sort: { expires_at: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+    }));
   const certsPorPersona = new Map<string, CertificationLike[]>();
   for (const c of certificaciones) {
     const sid = refId(c.staff);
@@ -107,6 +131,15 @@ export async function loadDispatch(
     pickup_route: { _limit: 40, vehicle: true, driver: true, guide: true, zone: true },
   });
 
+  /**
+   * Los usos salen del DOMINIO, en una sola llamada por salida.
+   *
+   * Antes se construían aquí a mano leyendo solo `departure_resource`: las rutas
+   * de recogida —que llevan vehículo, conductor y guía— no entraban, así que la
+   * misma guagua puesta en la recogida de las seis y como vehículo de la salida
+   * de las siete no salía marcada en ninguna pantalla. Y es el choque más fácil
+   * de cometer, porque son dos formularios distintos.
+   */
   const usos: ResourceUse[] = [];
 
   const items: DispatchItem[] = departures.map((d) => {
@@ -122,12 +155,10 @@ export async function loadDispatch(
       }
     }
 
-    const ventana = departureWindow(d as never);
     const productName = (d.product && typeof d.product === "object"
       ? String((d.product as { name?: string }).name ?? "Salida")
       : "Salida");
     const horaLocal = d.departure_at ? wallTimeOf(new Date(String(d.departure_at)), timeZone) : null;
-    const etiqueta = `${productName}${horaLocal ? ` ${horaLocal}` : ""}`;
 
     const resources = asArray(d.departure_resource);
 
@@ -135,20 +166,10 @@ export async function loadDispatch(
     const staff: DispatchStaff[] = [];
 
     for (const r of resources) {
-      const vivo = assignmentIsLive(r as never);
-
       if (r.vehicle && typeof r.vehicle === "object") {
         const v = r.vehicle as Record<string, unknown>;
         const bloqueo = vehicleBlock(v as never, day);
         vehicles.push({ ...v, blocked_reason: bloqueo?.reason ?? null, warnings: vehicleWarnings(v as never, day) });
-        const vid = String(v._id ?? "");
-        if (vid && vivo && ventana) {
-          usos.push({
-            kind: "vehicle", resourceId: vid, resourceName: vehicleLabel(v as never),
-            departureId, departureLabel: etiqueta,
-            window: resourceWindow(r as never, ventana, timeZone),
-          });
-        }
       }
 
       if (r.staff && typeof r.staff === "object") {
@@ -163,15 +184,10 @@ export async function loadDispatch(
           certification_note: bloqueo?.reason ?? null,
           certifications_to_renew: certificationsToRenew(misCerts, day).length,
         });
-        if (sid && vivo && ventana) {
-          usos.push({
-            kind: "staff", resourceId: sid, resourceName: String(s.full_name || "Personal"),
-            departureId, departureLabel: etiqueta,
-            window: resourceWindow(r as never, ventana, timeZone),
-          });
-        }
       }
     }
+
+    usos.push(...usesOfDeparture(d as never, timeZone));
 
     const guides = staff.filter((s) => s.role === "guide" || s.staff_type === "guide");
     const vehicleCapacity = vehicles.reduce((s, v) => s + (Number(v.capacity) || 0), 0);
@@ -417,6 +433,8 @@ export async function buildDayRoutes(
 /* ═════════════════════════════════════════════════════════ hoja de ruta ══ */
 
 export interface RunSheetStop {
+  /** La parada, para poder marcarla. Sin esto la hoja es solo de lectura. */
+  id: string;
   sequence: number;
   time: string | null;
   planned_time: string | null;
@@ -428,6 +446,9 @@ export interface RunSheetStop {
   phone: string | null;
   status: string | null;
   note: string | null;
+  /** Cuándo y por dónde se marcó el estado actual (0088). */
+  marked_at: string | null;
+  marked_via: string | null;
 }
 
 export interface RunSheet {
@@ -445,7 +466,12 @@ export interface RunSheet {
  * desordenada obliga a decidir el recorrido en la calle, que es justo lo que
  * esta pantalla existe para evitar.
  */
-export async function loadRunSheet(companyId: string, routeId: string): Promise<RunSheet> {
+export async function loadRunSheet(
+  ctx: TenantContext & { companyId: string },
+  routeId: string,
+  ahora: Date = new Date()
+): Promise<RunSheet> {
+  const companyId = ctx.companyId;
   const rutas = await tenantQuery<Record<string, unknown>>(companyId, "pickup_route", {
     _filter: { _id: routeId }, _limit: 1,
     vehicle: true, driver: true, guide: true, zone: true,
@@ -453,6 +479,47 @@ export async function loadRunSheet(companyId: string, routeId: string): Promise<
   });
   const route = rutas[0];
   if (!route) throw Object.assign(new Error("Ruta no encontrada"), { status: 404 });
+
+  /**
+   * EL ÁMBITO SE COMPRUEBA AQUÍ, NO EN LA RUTA HTTP.
+   *
+   * Esta función recibía `companyId` a secas y devolvía nombres, habitaciones y
+   * teléfonos de cualquier ruta que se le pidiera. Mientras los únicos con
+   * sesión eran empleados, eso era un permiso que faltaba; desde 0084 hay
+   * proveedores con cuenta, y pasó a ser la lista de clientes de la operadora a
+   * un identificador de distancia.
+   *
+   * Va aquí y no en el `route.ts` porque la hoja se lee desde tres sitios —la
+   * pantalla interna, el portal del proveedor y el PDF— y una comprobación por
+   * llamante es una comprobación que alguien se deja.
+   */
+  if (esDeProveedor(ctx)) {
+    if (!ctx.supplierId || refId(route.supplier) !== ctx.supplierId) {
+      throw new TenantError("Esta ruta no es tuya", 403);
+    }
+    /**
+     * Y solo alrededor del servicio. Sin ventana, la hoja de ruta es un
+     * histórico de clientes con teléfono que el transportista puede sacar
+     * cuando quiera.
+     */
+    if (!hojaAbierta(route.service_date as string | null, ahora)) {
+      throw new TenantError("Esta hoja de ruta ya no está disponible", 403);
+    }
+    // Es una lectura de datos personales de gente que no es suya: queda
+    // anotada SIEMPRE, no solo cuando falla.
+    await writeAudit({
+      companyId,
+      userId: ctx.userId,
+      action: "supplier.runsheet.open",
+      entityType: "pickup_route",
+      entityId: routeId,
+      description: "El proveedor abrió la hoja de ruta",
+      metadata: { supplier_id: ctx.supplierId },
+    });
+  } else if (!esInterno(ctx)) {
+    // Ni proveedor ni interno —un socio, por ejemplo—: esto no es suyo.
+    throw new TenantError("No tienes acceso a este recurso", 403);
+  }
 
   const pickups = await tenantQuery<Record<string, unknown>>(companyId, "pickup", {
     _filter: { route: routeId }, _limit: 300,
@@ -471,6 +538,7 @@ export async function loadRunSheet(companyId: string, routeId: string): Promise<
         : null;
       const hotelName = String(hotel?.name || "Sin hotel");
       return {
+        id: String(p._id ?? ""),
         sequence: Number(p.sequence) || 0,
         time: (p.pickup_time as string) || (p.planned_time as string) || null,
         planned_time: (p.planned_time as string) || null,
@@ -482,18 +550,16 @@ export async function loadRunSheet(companyId: string, routeId: string): Promise<
         phone: (customer?.phone as string) || (customer?.whatsapp as string) || null,
         status: (p.status as string) ?? null,
         note: (p.notes as string) || null,
+        marked_at: (p.marked_at as string) ?? null,
+        marked_via: (p.marked_via as string) ?? null,
       };
-    })
-    .sort((a, b) => {
-      if (a.sequence && b.sequence && a.sequence !== b.sequence) return a.sequence - b.sequence;
-      if (a.sequence !== b.sequence) return (a.sequence || 9999) - (b.sequence || 9999);
-      return String(a.time ?? "99:99").localeCompare(String(b.time ?? "99:99"));
     });
 
+  const enOrden = ordenarParadas(stops);
   return {
     route,
     departure: (route.departure as Record<string, unknown>) ?? null,
-    stops,
-    paxTotal: stops.reduce((s, x) => s + x.pax, 0),
+    stops: enOrden,
+    paxTotal: enOrden.reduce((s, x) => s + x.pax, 0),
   };
 }

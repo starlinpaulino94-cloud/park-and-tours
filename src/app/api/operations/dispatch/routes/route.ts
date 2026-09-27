@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireTenantWrite } from "@/lib/tenant";
+import { requireTenantWrite, requireAtLeast, TenantError, esInterno } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { writeAudit } from "@/lib/audit";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -16,11 +16,18 @@ import { buildDayRoutes } from "@/lib/dispatch-service";
  *
  * Queda auditado porque mueve a gente: cambia por qué ruta y a qué hora pasa el
  * transporte a buscar a un cliente.
+ *
+ * Y por eso mismo exige RANGO, que es lo que le faltaba: rehacer las rutas del
+ * día cambia a qué hora pasan a buscar a cada cliente y con qué chofer. Con
+ * solo la sesión, cualquiera con cuenta en la empresa —un vendedor, un
+ * proveedor— podía reorganizarle la mañana a la operación.
  */
 export async function POST(req: NextRequest) {
   try {
     assertSameOriginMutation(req);
     const ctx = await requireTenantWrite();
+    if (!esInterno(ctx)) throw new TenantError("No tienes acceso a este recurso", 403);
+    requireAtLeast(ctx, "operations");
     await assertRateLimit({
       key: rateLimitKey(req, "dispatch:routes", ctx.userId),
       limit: 30, windowMs: 60_000,

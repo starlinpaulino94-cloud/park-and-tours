@@ -55,14 +55,29 @@ export interface PublicPage {
   acceptsRequests: boolean;
 }
 
-/** La empresa por su slug. Solo inquilinos: un partner no tiene página. */
+/**
+ * La empresa por su slug. Solo inquilinos: un partner no tiene página.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * Y SI LA CONSULTA FALLA, NO ES QUE LA EMPRESA NO EXISTA
+ *
+ * PostgREST no lanza: devuelve `{ data: null, error }`. Descartando el error,
+ * un fallo de lectura salía de aquí como `null`, `publicPageState` lo leía como
+ * `not_found` y la página pública de una operadora viva contestaba «Página no
+ * encontrada» —404— por un hipo de la base. Es la respuesta más caras de las
+ * posibles: el cliente que hizo clic en el anuncio cree que el negocio cerró, y
+ * un 404 es lo que se queda en los índices.
+ *
+ * Un 500 con «vuelve a intentarlo» es la verdad y se recupera solo.
+ */
 async function loadOrgBySlug(slug: string) {
-  const { data } = await supabaseService()
+  const { data, error } = await supabaseService()
     .from("organizations")
     .select("*")
     .eq("slug", slug)
     .eq("kind", "tenant")
     .maybeSingle();
+  if (error) throw new Error(`No se pudo leer la empresa de «${slug}»: ${error.message}`);
   return data;
 }
 
@@ -85,7 +100,15 @@ export async function loadPublicPage(slug: string, options: LoadPageOptions = {}
     : publicPageState(org);
   if (state !== "ok" || !org) return { state, org: null, products: [], acceptsRequests: false };
 
-  const { data: rows } = await supabaseService()
+  /**
+   * EL CATÁLOGO VACÍO TIENE QUE SER UNA DECISIÓN, NO UN FALLO DE LECTURA.
+   *
+   * `rows ?? []` convertía cualquier error de la consulta en «esta operadora no
+   * tiene excursiones»: la página se dibujaba entera, con su logo y su
+   * teléfono, y sin nada que comprar. Nadie se enteraba —ni un log— y el
+   * `Cache-Control` de la ruta lo servía otros treinta segundos.
+   */
+  const { data: rows, error: errorDelCatalogo } = await supabaseService()
     .from("product")
     .select(
       // Lista blanca también en la CONSULTA: lo que no se pide no puede
@@ -99,6 +122,9 @@ export async function loadPublicPage(slug: string, options: LoadPageOptions = {}
     .order("featured", { ascending: false })
     .order("sort_order", { ascending: true })
     .limit(100);
+  if (errorDelCatalogo) {
+    throw new Error(`No se pudo leer el catálogo de ${org.name}: ${errorDelCatalogo.message}`);
+  }
 
   const products = ((rows ?? []) as unknown as Record<string, unknown>[])
     .map((row) => ({ ...row, _id: row.id }) as PublicProductRow)
@@ -148,7 +174,9 @@ export async function loadPublicDepartures(
   productId: string,
   limit = 60
 ): Promise<PublicDeparture[]> {
-  const { data } = await supabaseService()
+  // Y aquí igual: sin salidas por un error de lectura, el formulario dice «no
+  // hay fechas disponibles» sobre una excursión que sale todos los días.
+  const { data, error } = await supabaseService()
     .from("departure")
     .select("id,departure_at,capacity,available_pax,status,meeting_point")
     .eq("organization_id", orgId)
@@ -157,6 +185,7 @@ export async function loadPublicDepartures(
     .in("status", ["available", "almost_full"])
     .order("departure_at", { ascending: true })
     .limit(limit);
+  if (error) throw new Error(`No se pudieron leer las salidas: ${error.message}`);
 
   return (data ?? [])
     .map((row) => ({
@@ -186,9 +215,23 @@ async function findOrCreateCustomer(
   const sb = supabaseService();
   if (request.email || request.phone) {
     const query = sb.from("customer").select("id").eq("organization_id", orgId).limit(1);
-    const { data } = request.email
+    /**
+     * SI NO SE PUDO BUSCAR, NO SE DA POR HECHO QUE NO EXISTE.
+     *
+     * Descartando el error, un fallo de lectura caía de largo hasta el `insert`
+     * y creaba una ficha nueva para un cliente que ya tenía la suya. Y no es
+     * solo una ficha duplicada: `created` es lo que distingue «cliente captado»
+     * de «cliente que vuelve», y esta misma función lo dice en su cabecera. Un
+     * repetidor contado como captación le apunta al conserje del hotel una
+     * captación que no hizo —y las captaciones se pagan—.
+     *
+     * Lanzar deja al cliente reintentando el formulario, que es molesto y
+     * reversible. Lo otro deja una comisión pagada de más, que no se ve.
+     */
+    const { data, error } = request.email
       ? await query.eq("email", request.email)
       : await query.eq("phone", request.phone);
+    if (error) throw new Error(`No se pudo buscar la ficha del cliente: ${error.message}`);
     if (data && data[0]) {
       /**
        * El idioma de la ficha se refresca con el de esta reserva.

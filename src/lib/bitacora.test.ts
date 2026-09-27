@@ -98,12 +98,68 @@ describe("las etiquetas", () => {
       for (const file of walk(path.join(ROOT, dir))) {
         if (!/\.tsx?$/.test(file) || file.endsWith(".test.ts")) continue;
         const src = readFileSync(file, "utf8");
-        // Solo lo que va DENTRO de un writeAudit: `action:` también es el
-        // nombre de un campo en otras tablas (una acción correctiva de una
-        // incidencia, por ejemplo), y ésas no salen en la bitácora.
-        for (const llamada of src.matchAll(/writeAudit\(\{[\s\S]{0,600}?\}\)/g)) {
-          const m = /action:\s*"([a-z0-9_]+)"/.exec(llamada[0]);
-          if (m) acciones.add(m[1]);
+        /**
+         * Solo lo que va DENTRO de un writeAudit: `action:` también es el nombre
+         * de un campo en otras tablas (una acción correctiva de una incidencia,
+         * por ejemplo), y ésas no salen en la bitácora.
+         *
+         * SE RECORRE LA LLAMADA CONTANDO LLAVES, y no con una ventana de 600
+         * caracteres como antes. La ventana era un agujero silencioso: una
+         * llamada más larga —la del manifiesto de 8.8 lo es, porque lleva su
+         * `metadata` con el recorte de cada destinatario— no casaba con el patrón,
+         * así que su acción no entraba en el conjunto y la guarda daba por
+         * traducido algo que no lo estaba. Un fallo de guarda que ACUSA de nada y
+         * tapa lo que no se comprobó.
+         */
+        let i = src.indexOf("writeAudit({");
+        while (i !== -1) {
+          let nivel = 0;
+          let fin = i;
+          for (let j = src.indexOf("{", i); j < src.length; j++) {
+            if (src[j] === "{") nivel++;
+            else if (src[j] === "}") {
+              nivel--;
+              if (nivel === 0) { fin = j; break; }
+            }
+          }
+          const llamada = src.slice(i, fin + 1);
+          /**
+           * TODAS las acciones LITERALES de esa llamada, no la primera.
+           *
+           * `action: enabled ? "mfa_enabled" : "mfa_disabled"` escribe una de dos
+           * según lo que pase, y las DOS salen en el papel. Quedándose con la
+           * primera, la segunda podía no estar traducida sin que nada lo dijera.
+           *
+           * Se lee hasta la siguiente propiedad, esté en otra línea o en la
+           * misma: leyendo solo hasta el fin de línea, un ternario partido en tres
+           * —«disputada o confirmada», en la conformidad de una liquidación—
+           * dejaba las dos ramas fuera; exigiendo un salto de línea, las llamadas
+           * de una sola línea no casaban con nada.
+           *
+           * Y con PUNTO en el nombre, que es por lo que `dispatch.routes.build`
+           * nunca se comprobó. No estaba traducida.
+           *
+           * LO QUE ESTO SIGUE SIN VER, y está medido: las acciones que se
+           * COMPONEN en tiempo de ejecución (`quote_${decision}`,
+           * `commissions_${status}`, `payroll_${…}`, `period_${…}`) y la que
+           * `gift-card-service` recibe por parámetro. Son cinco sitios y unas
+           * cuarenta acciones, ninguna traducida: sale en el papel con su nombre
+           * técnico. Enumerarlas aquí es trabajo aparte —hay que escribir las
+           * cuarenta etiquetas— y está apuntado como tal; lo que NO puede volver
+           * a pasar es que una acción literal se escape, que es lo que arregla
+           * este bloque.
+           */
+          const expresion = /action:\s*([\s\S]*?)(?:\n\s*\w+:|,\s*\w+:)/.exec(llamada);
+          const nombres = expresion
+            ? [...expresion[1].matchAll(/"([a-z0-9_.]+)"/g)]
+                .map((x) => x[1])
+                // Lo que está a la derecha de una comparación es la CONDICIÓN, no
+                // la acción: `action === "in" ? …` no escribe ninguna acción
+                // llamada «in».
+                .filter((n) => !new RegExp(`[=!]==?\\s*"${n}"`).test(expresion[1]))
+            : [];
+          for (const nombre of nombres) acciones.add(nombre);
+          i = src.indexOf("writeAudit({", fin);
         }
       }
     }
