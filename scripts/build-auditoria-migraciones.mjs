@@ -299,6 +299,246 @@ trozosFn.forEach((trozo, i) => {
   );
 });
 
+/* ═══════════════════════════════════ «que me falta»: un veredicto por migracion */
+
+/**
+ * LO ÚLTIMO QUE CADA FICHERO ESCRIBE, Y NADA MÁS.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ HACÍA FALTA OTRO
+ *
+ * Para contestar «¿qué me falta por ejecutar?» había que pegar diez consultas
+ * —siete de columnas y tres de funciones— y cruzar los resultados a ojo. Y el
+ * resumen de columnas lo avisa él mismo: de 0077 en adelante lo que cada
+ * migración aporta son funciones y disparadores, que van al FINAL del fichero,
+ * mientras la columna la crea la primera línea. Una migración de cinco partes
+ * de la que solo se ejecutó la primera salía en verde.
+ *
+ * Aquí se elige, por cada migración, el objeto que aparece MÁS TARDE en su
+ * texto —que en un script lineal es lo último que se ejecuta— y se comprueba
+ * ese. Si está, la migración llegó al final; si no, no.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * SOLO CUENTA LO QUE ESTA MIGRACIÓN ESTRENA
+ *
+ * Un `create or replace function` sobre una función que ya existía, o un
+ * `create trigger` que rehace uno de antes, se ven en el catálogo aunque esta
+ * migración no se haya ejecutado nunca. Usarlos daría «OK» a ciegas, que es
+ * peor que no mirar. Se descartan, y si a una migración no le queda nada que
+ * estrene, lo DICE en vez de callarse: «no se puede comprobar así».
+ */
+const ESTRENA_TIPO = { fn: 'funcion', trg: 'disparador', tbl: 'tabla', col: 'columna', idx: 'indice' };
+
+const ultimoDe = new Map();      // numero -> [tipo, nombre] | null
+const porMigracion = new Map();  // numero -> candidatos que estrena
+const primeraVezGlobal = new Map();
+
+for (const archivo of [...ficheros].sort()) {
+  const numero = archivo.slice(0, 4);
+  const texto = fs.readFileSync(path.join(MIGRACIONES_DIR, archivo), "utf8")
+    .replace(/^\s*--.*$/gm, "");
+
+  const candidatos = [];
+  const anota = (tipo, nombre, pos) => {
+    const clave = `${tipo}:${nombre}`;
+    const estrena = !primeraVezGlobal.has(clave);
+    if (estrena) primeraVezGlobal.set(clave, numero);
+    candidatos.push({ tipo, nombre, pos, estrena });
+  };
+
+  for (const m of texto.matchAll(/^create (?:or replace )?function\s+([a-z_]+)\.([a-z_0-9]+)/gm)) {
+    anota("fn", `${m[1]}.${m[2]}`, m.index);
+  }
+  for (const m of texto.matchAll(/^create trigger\s+([a-z_0-9]+)/gm)) anota("trg", m[1], m.index);
+  for (const m of texto.matchAll(/^create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?([a-z_0-9]+)/gim)) {
+    anota("tbl", m[1], m.index);
+  }
+  for (const m of texto.matchAll(/^create\s+(?:unique\s+)?index\s+(?:concurrently\s+)?(?:if\s+not\s+exists\s+)?([a-z_0-9]+)/gim)) {
+    anota("idx", m[1], m.index);
+  }
+  for (const m of texto.matchAll(/^alter\s+table\s+(?:if\s+exists\s+)?(?:public\.)?([a-z_0-9]+)\s+add\s+column\s+(?:if\s+not\s+exists\s+)?([a-z_0-9]+)/gim)) {
+    anota("col", `${m[1]}.${m[2]}`, m.index);
+  }
+
+  if (Number(numero) < 21) continue;
+  porMigracion.set(numero, candidatos.filter((c) => c.estrena));
+}
+
+/**
+ * Y LO QUE UNA MIGRACIÓN POSTERIOR BORRA YA NO PRUEBA NADA.
+ *
+ * Medido contra una base con las 98 aplicadas: 0038 y 0081 salían FALTA. Y era
+ * cierto que sus disparadores no estaban —`ledger_entry_cash_session_same_tenant`
+ * y `cash_session_same_tenant` los borra 0095 para rehacerlos con otro nombre—,
+ * pero la conclusión era falsa: esas dos migraciones SÍ se habían ejecutado.
+ *
+ * Un falso «FALTA» es tan malo como un falso «OK»: manda a ejecutar otra vez
+ * algo que ya está y, sobre todo, enseña a desconfiar de la consulta, que es la
+ * forma de que la próxima vez nadie la mire. Así que un objeto que cualquier
+ * migración posterior borra se descarta como prueba, y si a una migración no le
+ * queda ninguno, lo dice.
+ */
+const borradoDespues = new Map();   // nombre -> primera migración que lo borra
+for (const archivo of [...ficheros].sort()) {
+  const numero = archivo.slice(0, 4);
+  const texto = fs.readFileSync(path.join(MIGRACIONES_DIR, archivo), "utf8")
+    .replace(/^\s*--.*$/gm, "");
+  const anotaBorrado = (clave) => {
+    if (!borradoDespues.has(clave)) borradoDespues.set(clave, numero);
+  };
+  for (const m of texto.matchAll(/drop\s+trigger\s+(?:if\s+exists\s+)?([a-z_0-9]+)/gi)) {
+    anotaBorrado(`trg:${m[1]}`);
+  }
+  for (const m of texto.matchAll(/drop\s+function\s+(?:if\s+exists\s+)?([a-z_]+)\.([a-z_0-9]+)/gi)) {
+    anotaBorrado(`fn:${m[1]}.${m[2]}`);
+  }
+  for (const m of texto.matchAll(/drop\s+index\s+(?:if\s+exists\s+)?([a-z_0-9]+)/gi)) {
+    anotaBorrado(`idx:${m[1]}`);
+  }
+  for (const m of texto.matchAll(/drop\s+table\s+(?:if\s+exists\s+)?(?:public\.)?([a-z_0-9]+)/gi)) {
+    anotaBorrado(`tbl:${m[1]}`);
+  }
+  for (const m of texto.matchAll(/alter\s+table\s+(?:if\s+exists\s+)?(?:public\.)?([a-z_0-9]+)\s+drop\s+column\s+(?:if\s+exists\s+)?([a-z_0-9]+)/gi)) {
+    anotaBorrado(`col:${m[1]}.${m[2]}`);
+  }
+}
+
+for (const [numero, candidatos] of [...porMigracion.entries()].sort()) {
+  const vivos = candidatos.filter((c) => {
+    const quienLoBorra = borradoDespues.get(`${c.tipo}:${c.nombre}`);
+    // Se borra en ESTA o en una posterior: en ambos casos deja de servir.
+    return quienLoBorra === undefined || quienLoBorra < numero;
+  });
+  if (vivos.length === 0) { ultimoDe.set(numero, null); continue; }
+  vivos.sort((a, b) => a.pos - b.pos);
+  const ultimo = vivos[vivos.length - 1];
+  ultimoDe.set(numero, [ultimo.tipo, ultimo.nombre]);
+}
+
+/**
+ * LA HUELLA DE LAS QUE SOLO REEMPLAZAN.
+ *
+ * Una migración que no estrena nada —`create or replace function` sobre algo
+ * que ya existía— no se puede comprobar mirando SI el objeto está: está desde
+ * antes. Pero sí mirando QUÉ DICE: cada una de estas deja en el cuerpo de la
+ * función una frase que antes no estaba, y `pg_get_functiondef` la devuelve.
+ *
+ * Es la misma comprobación que hace la propia migración al final de su fichero
+ * y la que hace su `NNNN_parte_N_verificacion.sql`. Aquí se repite para que la
+ * respuesta a «¿qué me falta?» no tenga huecos justo en las más nuevas, que son
+ * las que uno está a punto de ejecutar.
+ *
+ * Se escribe a mano porque la frase distintiva la elige quien entiende el
+ * cambio, no una expresión regular. Lo que NO queda a mano es acordarse de
+ * añadirla: `schema-contract.test.ts` exige que toda migración sin objeto
+ * propio tenga huella aquí o un fichero de verificación en `supabase/editor/`.
+ *
+ * SIEMPRE EN POSITIVO, NUNCA «ya no dice».
+ *
+ * 0097 llevaba «ya no dice `exists(select 1 from`», y contra una base parada en
+ * la 0087 daba OK: la versión vieja tampoco lo decía. La ausencia de algo no
+ * distingue «ya lo quité» de «nunca lo tuve», así que la huella tiene que ser
+ * una frase que esta migración AÑADE.
+ *
+ *   [migración, objeto, 'dice', frase]
+ *
+ * La consulta busca la frase con `position`, no con `like`: la huella de 0097
+ * es `select %I, true from %s` y en un patrón de `like` cada `%` es un comodín,
+ * así que casaba con cualquier cosa y daba OK a ciegas. Es el mismo fallo que
+ * el `ilike` sin escapar de `membego-service`, en otra ventana.
+ */
+const HUELLAS = [
+  ["0028", "public.dashboard_summary", "dice", "'otros', 'otros'"],
+  ["0093", "app.custom_access_token_hook", "dice", "user_active_workspace"],
+  ["0095", "app.enforce_same_tenant_refs", "dice", "tenant_org_id"],
+  ["0096", "public.dashboard_summary", "dice", "b.status, b.booking_date, b.channel"],
+  ["0097", "app.enforce_same_tenant_refs", "dice", "select %I, true from %s"],
+];
+const conHuella = new Map(HUELLAS.map((h) => [h[0], h]));
+
+const filasFalta = [...ultimoDe.entries()].sort().map(([numero, ultimo]) =>
+  ultimo !== null
+    ? `  (${comilla(numero)},${comilla(ultimo[0])},${comilla(ultimo[1])},'')`
+    : conHuella.has(numero)
+      ? `  (${comilla(numero)},'src',` +
+        `${comilla(conHuella.get(numero)[1])},${comilla(conHuella.get(numero)[3])})`
+      : `  (${comilla(numero)},'?','','')`
+);
+
+const PIE_FALTA = `
+), v as (
+  select u.mig,
+         case u.tipo
+           when '?' then 'NO SE PUEDE COMPROBAR ASI'
+           when 'src' then case when position(u.huella in coalesce((
+                  select pg_get_functiondef(p.oid) from pg_proc p
+                    join pg_namespace n on n.oid = p.pronamespace
+                   where n.nspname = split_part(u.nom, '.', 1)
+                     and p.proname = split_part(u.nom, '.', 2)), '')) > 0
+                then 'OK' else 'FALTA' end
+           when 'fn' then case when exists (
+                  select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                   where n.nspname = split_part(u.nom, '.', 1)
+                     and p.proname = split_part(u.nom, '.', 2))
+                then 'OK' else 'FALTA' end
+           when 'trg' then case when exists (
+                  select 1 from pg_trigger g where g.tgname = u.nom and not g.tgisinternal)
+                then 'OK' else 'FALTA' end
+           when 'idx' then case when exists (
+                  select 1 from pg_indexes i where i.schemaname = 'public' and i.indexname = u.nom)
+                then 'OK' else 'FALTA' end
+           when 'tbl' then case when to_regclass('public.' || u.nom) is not null
+                then 'OK' else 'FALTA' end
+           else case when exists (
+                  select 1 from information_schema.columns c
+                   where c.table_schema = 'public'
+                     and c.table_name = split_part(u.nom, '.', 1)
+                     and c.column_name = split_part(u.nom, '.', 2))
+                then 'OK' else 'FALTA' end
+         end as estado,
+         case u.tipo when 'fn' then 'funcion ' when 'trg' then 'disparador '
+                     when 'idx' then 'indice ' when 'tbl' then 'tabla '
+                     when 'src' then 'en el cuerpo de '
+                     when '?' then '' else 'columna ' end || u.nom
+         || case when u.tipo = 'src' then ': ' || u.huella else '' end as ultimo
+    from u
+)
+select v.mig as migracion, v.estado,
+       case when v.estado = 'NO SE PUEDE COMPROBAR ASI'
+            then 'solo reemplaza cosas que ya existian: mirala con su fichero de verificacion'
+            else 'lo ultimo que escribe: ' || v.ultimo end as detalle
+  from v
+ order by case v.estado when 'FALTA' then 0 when 'NO SE PUEDE COMPROBAR ASI' then 1 else 2 end,
+          v.mig;
+
+-- Si el pegado llego entero, la consulta termina en "v.mig;".
+--
+-- COMO SE LEE. Las que FALTAN salen arriba. De cada migracion se comprueba lo
+-- ULTIMO que su fichero escribe: si eso esta, la migracion llego al final.
+-- Es lo que el resumen de columnas no podia ver, porque miraba una columna que
+-- crea la PRIMERA linea y daba OK a una migracion ejecutada a medias.
+--
+-- "NO SE PUEDE COMPROBAR ASI" no quiere decir que este. Quiere decir que esa
+-- migracion solo REEMPLAZA cosas que ya existian, asi que verlas en el
+-- catalogo no prueba nada. Cada una tiene su fichero NNNN_parte_N_verificacion
+-- en supabase/editor/: ese si lo dice.
+--
+-- Todas aguantan ejecutarse dos veces, asi que ante la duda, vuelve a correrla.
+`;
+
+const trozosFalta = trocear(filasFalta, 2400);
+for (const archivo of fs.readdirSync(SALIDA)) {
+  if (/^que_me_falta_\d+\.sql$/.test(archivo)) fs.unlinkSync(path.join(SALIDA, archivo));
+}
+trozosFalta.forEach((trozo, i) => {
+  fs.writeFileSync(
+    path.join(SALIDA, `que_me_falta_${i + 1}.sql`),
+    `-- QUE MIGRACIONES ME FALTAN POR EJECUTAR, parte ${i + 1} de ${trozosFalta.length}.\n` +
+      `-- GENERADO: no lo edites. Pegalo ENTERO en el editor SQL. Solo lee.\n\n` +
+      "with u(mig,tipo,nom,huella) as (values\n" + trozo.join(",\n") + PIE_FALTA
+  );
+});
+
 /* ═══════════════════════════════════ el detalle: todo, en trozos */
 
 /** El final de la consulta del detalle. Cada trozo lo lleva entero. */

@@ -4991,3 +4991,72 @@ Baja de **FALLA** a **PARCIAL**, no a cerrado:
 - **No hay pruebas de carga con concurrencia.** Todo lo medido aquí es un solo
   cliente contra una base sin nadie más.
 - T-001 sigue bloqueado aquí: no hay demonio de docker.
+
+---
+
+## Ola 9.18 · «¿Qué migraciones me faltan?», en un pegado y sin huecos
+
+La pregunta ya tenía respuesta: `auditoria_migraciones_N.sql` (siete pegados) y
+`auditoria_funciones_N.sql` (tres). Diez pegados, y cruzar los resultados a ojo.
+Peor: el resumen de columnas **lo avisa él mismo** — de 0077 en adelante lo que
+cada migración aporta son funciones y disparadores, que van al final del
+fichero, mientras la columna la crea la primera línea. Una migración de cinco
+partes de la que solo se ejecutó la primera salía en verde. Y las que ahora
+mismo hacen falta —0091, 0093, 0094, 0095, 0096, 0097— ni siquiera aparecían: el
+pie las listaba como «no hay nada que preguntar por catálogo de tablas».
+
+**`que_me_falta_N.sql`** (dos pegados) elige, por cada migración, el objeto que
+aparece **más tarde en su texto** —que en un script lineal es lo último que se
+ejecuta— y comprueba ese. Si está, la migración llegó al final. Se genera de los
+propios ficheros de migración, como el resto.
+
+### Tres cosas que solo se vieron midiendo
+
+Probado contra dos bases efímeras construidas a propósito: una con las 98
+migraciones y otra parada en la 0087.
+
+- **Un objeto que una migración posterior BORRA no prueba nada.** Con las 98
+  aplicadas, 0038 y 0081 salían FALTA. Y era cierto que sus disparadores no
+  estaban —`ledger_entry_cash_session_same_tenant` y `cash_session_same_tenant`
+  los borra 0095 para rehacerlos con otro nombre— pero la conclusión era falsa:
+  esas dos migraciones sí se habían ejecutado. **Un falso «FALTA» hace tanto
+  daño como un falso «OK»**: manda a repetir lo hecho y, sobre todo, enseña a
+  desconfiar de la consulta, que es la forma de que la próxima vez nadie la
+  mire. Ahora se descarta como prueba cualquier objeto que se borre después.
+- **Una huella en negativo no distingue «ya lo quité» de «nunca lo tuve».** Las
+  migraciones que solo reemplazan una función no se pueden comprobar por
+  existencia —la función está desde antes—, así que se comprueba **qué dice** su
+  cuerpo. A 0097 le puse «ya no dice `exists(select 1 from`» y contra la base
+  parada en 0087 daba **OK**: la versión vieja tampoco lo decía. Huella siempre
+  en positivo, una frase que esa migración **añade**.
+- **Y el `%` otra vez.** La huella de 0097 es `select %I, true from %s`. Con
+  `like '%' || huella || '%'` cada `%` es un comodín y casaba con cualquier
+  cosa: **OK a ciegas para todo**. Es el mismo fallo que el `ilike` sin escapar
+  de `membego-service`, en otra ventana. Se busca con `position`, que es
+  literal.
+
+### Medido, en las dos direcciones
+
+| base | resultado |
+| --- | --- |
+| las 98 aplicadas | 72 OK, 6 declaradas no comprobables, **cero FALTA** |
+| parada en 0087 | las **once** posteriores, todas |
+| parada en 0094 | 0095, 0096, 0097 y 0098, exactamente |
+
+Las seis no comprobables (0024, 0026, 0027, 0029, 0063, 0072) son anteriores a
+que existieran los ficheros de verificación y todas están superadas por una
+posterior que sí se comprueba.
+
+### Las guardas, y las tres que sobrevivieron a la primera
+
+- La comprobación de frescura de la auditoría generada miraba solo
+  `auditoria_migraciones*`: **`auditoria_funciones_N.sql` podía quedarse atrás
+  en silencio** —justo la que ve lo que la otra no puede ver— y contestar con la
+  foto de hace diez migraciones. Ahora cubre las tres familias.
+- **Mutación: 4 de 4, pero solo tras arreglar la guarda dos veces.** Quitarle la
+  huella a 0096 y a 0097 no rompía nada, porque yo había aceptado «tiene huella
+  O tiene fichero de verificación». Y la verificación es OTRO pegado: si la
+  migración no está en el resultado consolidado, para quien pregunta no está. La
+  escapatoria fuera. La tercera superviviente era no descartar lo borrado
+  después —el falso FALTA de arriba— y ahora hay una guarda que lo comprueba
+  leyendo los `drop` de las migraciones posteriores.
