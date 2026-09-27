@@ -28,7 +28,7 @@ begin
     insert into notification (organization_id, title, notification_type, event_key, dedupe_key)
     values ('11111111-1111-1111-1111-111111111111', 'Cobro vencido', 'payment',
             'receivable_overdue', 'receivable_overdue:r1:-:-');
-    fallos := fallos || 'el mismo aviso se escribió dos veces';
+    fallos := fallos || 'el mismo aviso se escribió dos veces'::text;
   exception when unique_violation then
     null;  -- es lo que tiene que pasar
   end;
@@ -55,7 +55,7 @@ begin
   begin
     insert into notification (organization_id, title, notification_type, audience_role)
     values ('11111111-1111-1111-1111-111111111111', 'Rol inventado', 'info', 'jefe_supremo');
-    fallos := fallos || 'se aceptó un rol de destino que no existe';
+    fallos := fallos || 'se aceptó un rol de destino que no existe'::text;
   exception when check_violation then
     null;
   end;

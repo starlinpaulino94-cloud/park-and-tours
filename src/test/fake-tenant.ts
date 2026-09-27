@@ -298,9 +298,84 @@ export function paxTotalsDeLaBase(db: FakeDb) {
       else if (pendientes.includes(estado)) pending += pax;
     }
 
+    /**
+     * Y LAS RETENCIONES VIVAS TAMBIÉN OCUPAN (0099).
+     *
+     * El doble las devolvía siempre a cero. Con eso, una prueba de que una
+     * plaza retenida por otra venta NO se puede volver a vender pasaba sola,
+     * midiera lo que midiera el código: el doble perdonaba justo el fallo que
+     * la prueba existe para cazar. La caducidad se respeta igual que en la
+     * base — una retención vencida no ocupa.
+     */
+    const hasta = existe.hold_until ? new Date(String(existe.hold_until)).getTime() : 0;
+    const held = hasta > Date.now() ? Number(existe.hold_pax ?? 0) : 0;
+
     return {
-      data: { found: true, capacity: Number(existe.capacity ?? 0), booked, pending },
+      data: { found: true, capacity: Number(existe.capacity ?? 0), booked, pending, held },
       error: null,
     };
+  };
+}
+
+/**
+ * La reserva atómica de plaza, con el mismo criterio que `reserve_departure_capacity`.
+ *
+ * Se modela aquí porque `assertCapacity` ya no decide: llama. Un doble que
+ * dijera «sí» siempre haría pasar cualquier prueba de sobreventa.
+ */
+export function reservarPlazaDeLaBase(db: FakeDb) {
+  return (args: Record<string, unknown>) => {
+    const salida = String(args.p_departure_id ?? "");
+    const pax = Number(args.p_pax ?? 0);
+    const override = args.p_override === true;
+    const fila = db.rows("departure").find((d) => String(d._id) === salida);
+    if (!fila) return { data: null, error: { message: `departure ${salida} not found` } };
+
+    const hasta = fila.hold_until ? new Date(String(fila.hold_until)).getTime() : 0;
+    const retenidas = hasta > Date.now() ? Number(fila.hold_pax ?? 0) : 0;
+    const capacidad = Number(fila.capacity ?? 0);
+
+    let booked = 0;
+    let pending = 0;
+    for (const b of db.rows("booking")) {
+      if (String(ref(b.departure) ?? b.departure_id ?? "") !== salida) continue;
+      const estado = String(b.status ?? "");
+      const n = Number(b.pax_total ?? 0);
+      if (["confirmed", "partially_paid", "paid", "checked_in", "completed"].includes(estado)) booked += n;
+      else if (["pending", "pending_payment"].includes(estado)) pending += n;
+    }
+
+    if (capacidad > 0 && !override && booked + pending + retenidas + pax > capacidad) {
+      return { data: false, error: null };
+    }
+    /**
+     * Se escribe por `tenantUpdate`, no tocando la fila de `rows()`.
+     *
+     * `rows()` devuelve CLONES: mutarlos no persiste nada, y un doble que no
+     * persiste la retención la deja siempre en cero — con lo cual la prueba de
+     * que una plaza retenida no se revende pasaría sin que el código retuviera
+     * nada. Lo descubrió esa misma prueba al escribirla.
+     */
+    void db.tenantUpdate(String(fila.organization_id ?? ""), "departure", String(fila._id), {
+      hold_pax: retenidas + pax,
+      hold_until: new Date(Date.now() + 120_000).toISOString(),
+    });
+    return { data: true, error: null };
+  };
+}
+
+/** El espejo: suelta lo retenido, como `release_departure_capacity`. */
+export function soltarPlazaDeLaBase(db: FakeDb) {
+  return (args: Record<string, unknown>) => {
+    const salida = String(args.p_departure_id ?? "");
+    const pax = Number(args.p_pax ?? 0);
+    const fila = db.rows("departure").find((d) => String(d._id) === salida);
+    if (!fila) return { data: null, error: { message: `departure ${salida} not found` } };
+    const hasta = fila.hold_until ? new Date(String(fila.hold_until)).getTime() : 0;
+    const retenidas = hasta > Date.now() ? Number(fila.hold_pax ?? 0) : 0;
+    void db.tenantUpdate(String(fila.organization_id ?? ""), "departure", String(fila._id), {
+      hold_pax: Math.max(0, retenidas - pax),
+    });
+    return { data: null, error: null };
   };
 }

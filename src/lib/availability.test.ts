@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fakeDb, paxTotalsDeLaBase, type FakeDb } from "@/test/fake-tenant";
+import { fakeDb, paxTotalsDeLaBase, reservarPlazaDeLaBase, soltarPlazaDeLaBase, type FakeDb } from "@/test/fake-tenant";
 
 /**
  * LA ÚNICA GUARDA CONTRA LA SOBREVENTA, PROBADA.
@@ -38,13 +38,21 @@ vi.mock("@/lib/tenant", async (importOriginal) => {
  * la venta, así que una respuesta fija haría pasar en verde la prueba de que el
  * cupo se respeta — que es la única que importa aquí.
  */
-const rpc = vi.fn(async (nombre: string, args: Record<string, unknown>) => {
+const rpcNormal = async (nombre: string, args: Record<string, unknown>) => {
   if (nombre === "departure_pax_totals") return paxTotalsDeLaBase(db)(args);
+  /**
+   * La retención de plaza (0099) se modela de verdad: `assertCapacity` ya no
+   * compara un número, coge la plaza. Una respuesta fija haría pasar en verde
+   * la prueba de que el cupo se respeta.
+   */
+  if (nombre === "reserve_departure_capacity") return reservarPlazaDeLaBase(db)(args);
+  if (nombre === "release_departure_capacity") return soltarPlazaDeLaBase(db)(args);
   return { data: null, error: null };
-});
+};
+const rpc = vi.fn(rpcNormal);
 vi.mock("@/lib/supabase/service", () => ({ supabaseService: () => ({ rpc }) }));
 
-import { recalculateDeparture, assertCapacity, OversellError } from "@/lib/availability";
+import { recalculateDeparture, assertCapacity, liberarRetencion, OversellError } from "@/lib/availability";
 
 const ORG = "org-1";
 const SALIDA = "sal-1";
@@ -70,6 +78,14 @@ function reservas(cuantas: number, status: string, pax: number) {
 
 beforeEach(() => {
   rpc.mockClear();
+  /**
+   * Y el reparto vuelve al normal.
+   *
+   * Una prueba que cambia el `rpc` para simular una caída se lo dejaba puesto a
+   * las siguientes, y entonces fallaban por el mock de otra. Es la lección de
+   * 9.13 otra vez: un doble que se queda pegado no prueba lo que dice probar.
+   */
+  rpc.mockImplementation(rpcNormal);
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -177,12 +193,82 @@ describe("una salida con más de mil reservas", () => {
     await expect(assertCapacity(ORG, SALIDA, 1)).rejects.toThrow(OversellError);
   });
 
-  it("y si de verdad cabe, pasa", async () => {
+  it("y si de verdad cabe, pasa — y se queda con las plazas (0099)", async () => {
     db = conCapacidad(3010);
     db.seed("booking", reservas(1500, "paid", 2));
 
+    /**
+     * El estado que vuelve es el de DESPUÉS de coger la plaza, no el de antes.
+     * Es el cambio de 0099: esto ya no opina sobre si cabe, la reserva la coge.
+     * De las 10 libres quedan 0, y las 10 están retenidas a nombre de esta
+     * venta hasta que escriba su fila o se caiga.
+     */
     const estado = await assertCapacity(ORG, SALIDA, 10);
-    expect(estado.availablePax).toBe(10);
+    expect(estado.heldPax).toBe(10);
+    expect(estado.availablePax).toBe(0);
+
+    // Y la retención OCUPA: la siguiente venta de una plaza ya no cabe. Sin
+    // esto, la prueba no distinguiría «cogió la plaza» de «dijo que sí».
+    await expect(assertCapacity(ORG, SALIDA, 1)).rejects.toThrow(OversellError);
+  });
+
+  it("soltar la retención devuelve la plaza al mostrador", async () => {
+    db = conCapacidad(3002);
+    db.seed("booking", reservas(1500, "paid", 2));
+
+    await assertCapacity(ORG, SALIDA, 2);
+    await expect(assertCapacity(ORG, SALIDA, 1)).rejects.toThrow(OversellError);
+
+    await liberarRetencion(SALIDA, 2);
+    const estado = await assertCapacity(ORG, SALIDA, 2);
+    expect(estado.availablePax).toBe(0);
+  });
+
+  it("si la reserva de plaza FALLA, la venta no sigue a ciegas", async () => {
+    /**
+     * La dirección peligrosa. Si la llamada revienta no se sabe si la plaza
+     * está: seguir sería vender sin saber, que es exactamente el fallo del que
+     * viene esta ola. Se lanza, y la venta no se registra.
+     */
+    db = conCapacidad(100);
+    rpc.mockImplementation(async (nombre: string, args: Record<string, unknown>) => {
+      if (nombre === "departure_pax_totals") return paxTotalsDeLaBase(db)(args);
+      if (nombre === "reserve_departure_capacity") {
+        return { data: null, error: { message: "no hay conexión" } };
+      }
+      return { data: null, error: null };
+    });
+    await expect(assertCapacity(ORG, SALIDA, 1)).rejects.toThrow(/No se pudo reservar la plaza/);
+  });
+
+  it("el recálculo CUENTA las retenciones vivas como ocupadas", async () => {
+    /**
+     * Si no las contara, la pantalla ofrecería una plaza que la reserva va a
+     * rechazar: el vendedor ve «queda 1» y al pulsar le sale un error. Peor,
+     * la lista de espera creería que hay hueco y llamaría a alguien.
+     */
+    db = conCapacidad(10);
+    db.seed("booking", reservas(4, "paid", 1));
+    db.rows("departure"); // fuerza la lectura inicial
+    await db.tenantUpdate(ORG, "departure", SALIDA, {
+      hold_pax: 3, hold_until: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    const estado = await recalculateDeparture(ORG, SALIDA);
+    expect(estado.heldPax).toBe(3);
+    expect(estado.availablePax).toBe(3);  // 10 − 4 reservadas − 3 retenidas
+  });
+
+  it("una retención caducada deja de ocupar sola", async () => {
+    // Nadie la suelta y el proceso que la cogió está muerto: la plaza no puede
+    // quedarse bloqueada para siempre por una venta que ya no existe.
+    db = conCapacidad(3002);
+    db.seed("booking", reservas(1500, "paid", 2));
+    db.rows("departure")[0].hold_pax = 2;
+    db.rows("departure")[0].hold_until = new Date(Date.now() - 1000).toISOString();
+
+    const estado = await assertCapacity(ORG, SALIDA, 2);
+    expect(estado.heldPax).toBe(2);
   });
 
   it("el semáforo de «casi llena» también salía mal, y en la misma dirección", async () => {

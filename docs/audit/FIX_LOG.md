@@ -5060,3 +5060,102 @@ posterior que sí se comprueba.
   escapatoria fuera. La tercera superviviente era no descartar lo borrado
   después —el falso FALTA de arriba— y ahora hay una guarda que lo comprueba
   leyendo los `drop` de las migraciones posteriores.
+
+---
+
+## Ola 9.19 · La plaza se coge antes de venderla (F-001)
+
+De la matriz de preparación ya no quedaba ninguna fila en FALLA. La más floja
+era **F, concurrencia**, con una frase que llevaba meses ahí: «sin pruebas de
+carrera reales». Y eso antes no se podía atacar; ahora sí, porque en este
+entorno hay Postgres de verdad y se pueden lanzar treinta sesiones a la vez.
+
+### Lo medido
+
+Treinta ventas simultáneas de una plaza contra una salida de capacidad **10**,
+por el camino exacto que usa la aplicación —leer `departure_pax_totals`,
+decidir en el cliente, insertar después—:
+
+```
+vendidas: 19  /  capacidad: 10
+```
+
+**Nueve pasajeros con asiento que no existe**, y el mostrador enterándose el
+día de la excursión. No es una sutileza del planificador: es comprobar-y-actuar
+sin nada que serialice. Entre la lectura y la inserción cabe todo lo que quepa
+en ese milisegundo.
+
+### Y la reparación ya estaba escrita
+
+`reserve_departure_capacity` está en **0008**, con su cerrojo de fila, escrita
+literalmente para cerrar esto («closes AUD-B01 overbooking»). Endurecida en
+0017 y en 0019. Citada como precedente por 0083 y por 0091. Con su envoltorio
+`spReserveCapacity` en el proveedor de datos.
+
+**No la llamaba nadie.** La misma carrera contra ella da exactamente 10.
+
+Es el hallazgo de 9.16 otra vez, y esta vez sobre la sobreventa: la reparación
+existía, estaba documentada, se había endurecido dos veces, y nada la ejecutaba.
+
+### Por qué no bastaba con llamarla
+
+Porque había **dos autoridades sobre el mismo número**. `reserve_...`
+incrementaba `booked_pax`; `recalculateDeparture` lo reescribe contando las
+reservas vivas. Entre que una venta reserva y escribe su fila, cualquier
+recálculo de otra venta le borraba la reserva — y la carrera volvía por la
+puerta de al lado. Fue la mutación la que lo dejó claro: «que el recálculo
+BORRE la retención» es una de las diez, y mata.
+
+Así que la reserva deja de ser un incremento del contador y pasa a ser lo que
+de verdad es: una **retención con caducidad**, en su propia columna
+(**0099**). El recálculo cuenta filas y no la toca; la retención se suelta en
+cuanto la fila existe o si la venta se cae, y caduca sola a los dos minutos
+para que un proceso muerto no cierre la salida para siempre.
+
+El sesgo, ante la duda, es a **rechazar**: una retención que sobra deja una
+plaza sin vender dos minutos; una que falta vende una plaza que no existe. Lo
+primero se arregla solo.
+
+### La guarda: una carrera de verdad, en CI
+
+Una prueba SQL corre en UNA sesión, y una carrera necesita dos. Va en
+`scripts/db-test.sh`: treinta procesos contra una salida de diez, y se
+comprueban **las dos direcciones** —que no venda de más y que no venda de
+menos—, porque un cerrojo que lo rechaza todo también evitaría la sobreventa.
+Un tope de milisegundos habría sido inestable; esto es determinista y es el
+fallo exacto.
+
+### Mutación: 10 de 10, y cuatro supervivientes por el camino
+
+A la primera vuelta sobrevivieron cuatro, y las cuatro eran huecos reales:
+
+- **Tragarse el error al reservar.** La dirección peligrosa: si la llamada
+  revienta no se sabe si la plaza está, y seguir es vender a ciegas.
+- **Que el recálculo ignore las retenciones.** La pantalla ofrecería una plaza
+  que la reserva va a rechazar — y la lista de espera llamaría a alguien.
+- **No soltar las retenciones al compensar.** Caducan solas, pero dos minutos
+  son eternos con un cliente delante.
+- **Que el doble no vea las retenciones.** La tercera vez que el doble está a
+  punto de perdonar el fallo bajo prueba (9.12, 9.13): con `held` fijo a cero,
+  la prueba de que una plaza retenida no se revende pasaba midiera lo que
+  midiera el código. `fake-tenant.test.ts` lo prueba ahora aparte.
+
+### Tres cosas más que salieron al hacerlo
+
+- **El doble escribía sobre clones.** `db.rows()` devuelve copias, así que mi
+  primera versión de la retención no persistía nada. Lo cazó la prueba nueva al
+  escribirla, no la lectura.
+- **Un mock que se quedaba pegado.** La prueba de la caída de la RPC le dejaba
+  el mock puesto a las siguientes. Es la lección de 9.13; ahora
+  `availability.test.ts` reinstaura el reparto normal en cada prueba.
+- **37 aserciones SQL que no podían ni reportarse.** En cinco ficheros,
+  `fallos := fallos || 'texto'` sin `::text`: Postgres lo resuelve como
+  concatenación de arrays y revienta con «malformed array literal» **en vez de
+  decir qué falló**. Salió porque una de ellas se disparó de verdad. Una prueba
+  que no sabe contar lo que encontró no es media prueba: es ninguna.
+
+### Qué queda abierto
+
+F sigue en **PARCIAL**. Lo cerrado es la carrera de la sobreventa, que es la
+más cara. Sin medir siguen: la apertura simultánea de caja, el gasto del
+monedero prepago y el cupo del socio. Cada una necesita su propia carrera.

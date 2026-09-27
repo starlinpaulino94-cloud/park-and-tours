@@ -25,6 +25,8 @@ export interface AvailabilityState {
   capacity: number;
   bookedPax: number;
   pendingPax: number;
+  /** Plazas retenidas por ventas en curso que aún no escribieron su reserva (0099). */
+  heldPax: number;
   availablePax: number;
   status: DepartureStatus;
   departureAt: string | null;
@@ -85,7 +87,7 @@ function deriveStatus(capacity: number, booked: number, current?: DepartureStatu
 async function paxDeLaSalida(
   companyId: string,
   departureId: string
-): Promise<{ booked: number; pending: number }> {
+): Promise<{ booked: number; pending: number; held: number }> {
   const { data, error } = await supabaseService().rpc("departure_pax_totals", {
     p_org: companyId,
     p_departure: departureId,
@@ -104,10 +106,14 @@ async function paxDeLaSalida(
   if (error) {
     throw new Error(`No se pudieron contar los pasajeros de la salida ${departureId}: ${error.message}`);
   }
-  const fila = data as { found?: boolean; booked?: number; pending?: number } | null;
+   const fila = data as { found?: boolean; booked?: number; pending?: number; held?: number } | null;
   if (!fila || fila.found !== true) throw new Error("Salida no encontrada");
 
-  return { booked: Number(fila.booked ?? 0), pending: Number(fila.pending ?? 0) };
+  return {
+    booked: Number(fila.booked ?? 0),
+    pending: Number(fila.pending ?? 0),
+    held: Number(fila.held ?? 0),
+  };
 }
 
 /** Recomputes a departure's occupancy from its bookings and persists the counters. */
@@ -123,12 +129,25 @@ export async function recalculateDeparture(
   const departure = departures[0] ?? null;
   if (!departure) throw new Error("Salida no encontrada");
 
-  const { booked: bookedPax, pending: pendingPax } = totales;
+  const { booked: bookedPax, pending: pendingPax, held: heldPax } = totales;
 
   const capacity = departure.capacity ?? 0;
-  const availablePax = Math.max(0, capacity - bookedPax - pendingPax);
-  const status = deriveStatus(capacity, bookedPax + pendingPax, departure.status);
+  const ocupadas = bookedPax + pendingPax + heldPax;
+  const availablePax = Math.max(0, capacity - ocupadas);
+  const status = deriveStatus(capacity, ocupadas, departure.status);
 
+  /**
+   * LO QUE ESTE RECÁLCULO NO ESCRIBE: `hold_pax`.
+   *
+   * Es deliberado y es la mitad del arreglo de 0099. Las retenciones las lleva
+   * la base —`reserve_departure_capacity` las pone, `release_...` las suelta y
+   * caducan solas—, porque son las plazas de ventas que TODAVÍA no tienen fila
+   * y este recálculo cuenta filas: escribirlas desde aquí sería borrarlas.
+   *
+   * Esa era exactamente la puerta por la que la carrera volvía a entrar: una
+   * venta retiene, otra recalcula y le borra la retención, y las dos venden la
+   * misma plaza. Medido: 19 reservas en una salida de 10.
+   */
   await tenantUpdate(companyId, "departure", departureId, {
     booked_pax: bookedPax,
     pending_pax: pendingPax,
@@ -137,11 +156,11 @@ export async function recalculateDeparture(
   });
 
   console.log(
-    `[Availability] salida ${departureId}: cap=${capacity} conf=${bookedPax} pend=${pendingPax} libre=${availablePax} (${status})`
+    `[Availability] salida ${departureId}: cap=${capacity} conf=${bookedPax} pend=${pendingPax} ret=${heldPax} libre=${availablePax} (${status})`
   );
 
   return {
-    departureId, capacity, bookedPax, pendingPax, availablePax, status,
+    departureId, capacity, bookedPax, pendingPax, heldPax, availablePax, status,
     departureAt: departure.departure_at ?? null,
     cutoffHours: departure.cutoff_hours ?? 0,
   };
@@ -180,9 +199,77 @@ export async function assertCapacity(
     }
   }
 
-  if (state.capacity > 0 && pax > state.availablePax && !override) {
-    console.warn(`[Availability] intento de sobreventa en ${departureId}: ${pax} > ${state.availablePax}`);
-    throw new OversellError(state.availablePax, pax);
+  /**
+   * AQUÍ SE RETIENE LA PLAZA, NO SE OPINA SOBRE ELLA (0099, F-001).
+   *
+   * ──────────────────────────────────────────────────────────────────────────
+   * LO QUE HABÍA, Y LO QUE COSTABA
+   *
+   * Esto comparaba `pax > state.availablePax` — un número leído arriba — y
+   * dejaba que la venta insertara sus filas después. Entre la lectura y la
+   * escritura no había NADA, así que dos ventas de la última plaza pasaban las
+   * dos. Medido con treinta ventas simultáneas contra una salida de diez:
+   * **19 reservas**. Nueve pasajeros con asiento que no existe.
+   *
+   * La reserva atómica que cierra esto —`reserve_departure_capacity`, con su
+   * cerrojo de fila— existe desde 0008, se escribió para esto, se endureció en
+   * 0017 y en 0019, y otras tres migraciones la citan como el modo correcto de
+   * hacerlo. No la llamaba nadie. La misma carrera contra ella da diez.
+   *
+   * ──────────────────────────────────────────────────────────────────────────
+   * POR QUÉ ES UNA RETENCIÓN Y NO UNA COMPROBACIÓN
+   *
+   * Porque PostgREST no da transacciones de varias sentencias: el cerrojo se
+   * suelta cuando la función vuelve, así que «comprobar dentro del cerrojo» no
+   * protege la inserción que viene después. Lo único que cruza esa frontera es
+   * dejar la plaza COGIDA. Quien la coge la suelta —`liberarRetencion`— cuando
+   * la reserva ya está escrita o cuando la venta se cae, y si nadie la suelta
+   * caduca sola en dos minutos.
+   *
+   * El `false` no es un error de la base: es la respuesta «no cabe», y se
+   * traduce al mismo `OversellError` de siempre para que quien lo captura
+   * —el POS, el portal, la API— no tenga que aprender nada nuevo.
+   */
+  if (state.capacity > 0 && !override) {
+    const { data, error } = await supabaseService().rpc("reserve_departure_capacity", {
+      p_departure_id: departureId,
+      p_pax: pax,
+      p_override: false,
+    });
+    /**
+     * Y UN FALLO AL RETENER NO ES UN «SÍ».
+     *
+     * Si la llamada revienta no se sabe si la plaza está: tragarse el error y
+     * seguir sería vender a ciegas, que es el fallo del que venimos.
+     */
+    if (error) throw new Error(`No se pudo reservar la plaza: ${error.message}`);
+    if (data !== true) {
+      console.warn(`[Availability] intento de sobreventa en ${departureId}: ${pax} > ${state.availablePax}`);
+      throw new OversellError(state.availablePax, pax);
+    }
+    return { ...state, heldPax: state.heldPax + pax, availablePax: Math.max(0, state.availablePax - pax) };
   }
   return state;
+}
+
+/**
+ * Suelta las plazas retenidas por `assertCapacity`.
+ *
+ * Se llama en dos momentos y por el mismo motivo: la retención ya no hace
+ * falta. Con la reserva escrita, quien cuenta es el recálculo; con la venta
+ * caída, la plaza tiene que volver al mostrador YA y no dentro de dos minutos.
+ *
+ * No lanza. Una retención que no se suelta caduca sola, así que convertir esto
+ * en un error rompería una venta que por lo demás salió bien — y dejaría la
+ * plaza igual de cogida.
+ */
+export async function liberarRetencion(departureId: string, pax: number): Promise<void> {
+  if (!departureId || pax < 1) return;
+  const { error } = await supabaseService().rpc("release_departure_capacity", {
+    p_departure_id: departureId,
+    p_pax: pax,
+  });
+  if (error) {
+    console.error(`[Availability] no se pudo soltar la retención de ${departureId}: ${error.message}`);
+  }
 }

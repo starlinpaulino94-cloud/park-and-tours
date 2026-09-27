@@ -11243,3 +11243,90 @@ describe("panel ejecutivo: lo que costaba y lo que no puede volver", () => {
     expect(sql).toMatch(/0097: enforce_same_tenant_refs no quedó security definer/);
   });
 });
+
+/**
+ * LA PLAZA SE COGE, NO SE OPINA SOBRE ELLA (ola 9.19, F-001).
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LO MEDIDO, Y ES LO QUE JUSTIFICA TODO LO DEMÁS
+ *
+ * Treinta ventas simultáneas de una plaza contra una salida de capacidad diez,
+ * por el camino que usaba la aplicación —leer `departure_pax_totals`, decidir
+ * fuera, insertar después—: **19 reservas**. Nueve pasajeros con asiento que no
+ * existe. Contra `reserve_departure_capacity`: exactamente diez.
+ *
+ * Esa función está en 0008, escrita para esto, con su cerrojo de fila;
+ * endurecida en 0017 y 0019; citada como precedente por 0083 y 0091. No la
+ * llamaba NADIE. Es el mismo hallazgo que `reconcileStaleDrafts` en 9.16: la
+ * reparación existía, estaba documentada, y nada la ejecutaba.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LO QUE ESTAS GUARDAS SOSTIENEN
+ *
+ * Que la venta siga llamándola, que el recálculo NO le borre la retención —esa
+ * era la puerta por la que la carrera volvía a entrar— y que la carrera de
+ * verdad siga corriendo en CI. Un tope de milisegundos sería inestable; treinta
+ * procesos contra una salida de diez es determinista y es el fallo exacto.
+ */
+describe("el cupo se toma con cerrojo, no se consulta", () => {
+  const AVAIL = "src/lib/availability.ts";
+  const VENTA = "src/lib/booking-service.ts";
+  const MIG = "supabase/migrations/0099_retencion_de_plaza.sql";
+
+  it("assertCapacity LLAMA a la reserva atómica", () => {
+    const src = readCodigo(AVAIL);
+    // La llamada, no el nombre: un import que sobrevive no prueba nada (9.16).
+    expect(src).toMatch(/rpc\("reserve_departure_capacity"/);
+    // Y su «no» tiene que rechazar la venta.
+    expect(src).toMatch(/if \(data !== true\)/);
+    expect(src).toMatch(/throw new OversellError/);
+    // Un fallo al reservar tampoco puede seguir adelante.
+    expect(src).toMatch(/No se pudo reservar la plaza/);
+  });
+
+  it("el recálculo NO escribe hold_pax: borrarlo reabre la carrera", () => {
+    /**
+     * Es la mitad menos obvia del arreglo. `recalculateDeparture` cuenta filas
+     * de `booking`; la retención es de una venta que TODAVÍA no tiene fila. Si
+     * este recálculo la escribiera, la borraría — y dos ventas volverían a
+     * quedarse con la misma plaza.
+     */
+    const src = readCodigo(AVAIL);
+    const escritura = src.slice(src.indexOf('tenantUpdate(companyId, "departure"'));
+    const bloque = escritura.slice(0, escritura.indexOf("});"));
+    expect(bloque, "el recálculo volvió a escribir hold_pax").not.toMatch(/hold_pax/);
+    // Pero sí tiene que CONTARLA como ocupada, o la pantalla ofrecería una
+    // plaza que la reserva va a rechazar.
+    expect(src).toMatch(/bookedPax \+ pendingPax \+ heldPax/);
+  });
+
+  it("la venta suelta lo que retuvo, salga bien o salga mal", () => {
+    const src = readCodigo(VENTA);
+    expect(src).toMatch(/await liberarRetencion\(/);
+    // Dos sitios: tras escribir la reserva y al compensar. Con uno solo, una
+    // venta caída deja la plaza cogida hasta que caduque.
+    expect((src.match(/liberarRetencion\(/g) ?? []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("la migración conserva el cerrojo y la caducidad", () => {
+    const sql = readSql(MIG);
+    expect(sql).toMatch(/for update/);
+    expect(sql).toMatch(/hold_until = now\(\) \+ RETENCION/);
+    // Una retención sin caducidad cierra la salida para siempre si el proceso
+    // que la cogió muere.
+    expect(sql).toMatch(/hold_until is null or d\.hold_until <= now\(\)/);
+  });
+
+  it("la carrera de verdad corre en CI", () => {
+    const sh = read("scripts/db-test.sh");
+    expect(sh).toMatch(/carrera: 30 ventas simultáneas/);
+    // Las dos direcciones: que no venda de más y que no venda de menos. Un
+    // cerrojo que lo rechaza todo también evitaría la sobreventa.
+    expect(sh).toMatch(/SOBREVENTA/);
+    expect(sh).toMatch(/dejó plazas sin vender/);
+    // Y en paralelo de verdad: sin `&` y `wait` esto sería una prueba secuencial
+    // que pasaría con el código roto.
+    expect(sh).toMatch(/>\/dev\/null 2>&1 &/);
+    expect(sh).toMatch(/^\s*wait$/m);
+  });
+});

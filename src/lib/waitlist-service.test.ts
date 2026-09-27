@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fakeDb, type FakeDb, paxTotalsDeLaBase } from "@/test/fake-tenant";
+import { fakeDb, type FakeDb, paxTotalsDeLaBase, reservarPlazaDeLaBase, soltarPlazaDeLaBase } from "@/test/fake-tenant";
 
 /**
  * LA LISTA DE ESPERA, DE PUNTA A PUNTA.
@@ -31,7 +31,12 @@ vi.mock("@/lib/tenant", async (importOriginal) => {
 vi.mock("@/lib/supabase/service", () => ({
   supabaseService: () => ({
     rpc: async (nombre: string, args: Record<string, unknown>) =>
-      nombre === "departure_pax_totals" ? paxTotalsDeLaBase(db)(args) : { data: null, error: null },
+      // 0099: la retención de plaza se modela de verdad; una respuesta fija
+      // haría pasar en verde la prueba de que el cupo se respeta.
+      nombre === "departure_pax_totals" ? paxTotalsDeLaBase(db)(args)
+      : nombre === "reserve_departure_capacity" ? reservarPlazaDeLaBase(db)(args)
+      : nombre === "release_departure_capacity" ? soltarPlazaDeLaBase(db)(args)
+      : { data: null, error: null },
   }),
 }));
 vi.mock("@/lib/audit", () => ({ writeAudit: vi.fn() }));

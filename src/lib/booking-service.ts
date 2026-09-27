@@ -6,7 +6,7 @@ import { desajusteDeAtribucion } from "@/lib/atribucion-coherente";
 import { autorizadosDe, noAutorizados, mensajeNoAutorizado, type AutorizacionSocio } from "@/lib/catalogo-socio";
 import { devengaComision } from "@/lib/modelo-comercial";
 import { resolvePrice, resolveCost, billablePax } from "@/lib/pricing";
-import { assertCapacity, recalculateDeparture, OversellError } from "@/lib/availability";
+import { assertCapacity, recalculateDeparture, liberarRetencion, OversellError } from "@/lib/availability";
 import { resolveExchangeRate } from "@/lib/currency";
 import { uniqueCode } from "@/lib/unique";
 import { resolveCommissions, type BeneficiaryDescriptor } from "@/lib/commission-engine";
@@ -639,8 +639,19 @@ export async function createOrderWithBookings(
     const pax = toCount(item.adults) + toCount(item.children) + toCount(item.infants);
     paxByDeparture.set(item.departure_id, (paxByDeparture.get(item.departure_id) ?? 0) + pax);
   }
+  /**
+   * LO QUE SE RETIENE HAY QUE APUNTARLO PARA PODER SOLTARLO (0099).
+   *
+   * `assertCapacity` ya no opina sobre la plaza: la COGE, con cerrojo de fila,
+   * y así dos ventas de la última no pasan las dos. Pero una plaza cogida y no
+   * soltada es una plaza que nadie puede comprar hasta que caduque, así que
+   * quien la coge se queda con la cuenta y la suelta — al escribir la reserva
+   * o al caerse la venta.
+   */
+  const retenidas = new Map<string, number>();
   for (const [departureId, pax] of paxByDeparture) {
     await assertCapacity(companyId, departureId, pax, input.capacity_override === true);
+    if (input.capacity_override !== true) retenidas.set(departureId, pax);
   }
 
   // ---- el cupo del socio (0054) ------------------------------------------
@@ -1157,6 +1168,17 @@ export async function createOrderWithBookings(
     // is now oversold, roll THIS booking back so concurrent sales resolve to a
     // single winner instead of silently double-selling the seat.
     if (item.departure_id) {
+      /**
+       * La reserva ya existe: su plaza la cuenta ahora el recálculo, así que la
+       * retención sobra. Soltarla ANTES de recalcular evita que la plaza se
+       * cuente dos veces —como retenida y como reservada— y deje la salida
+       * pareciendo más llena de lo que está.
+       */
+      const retenido = retenidas.get(item.departure_id) ?? 0;
+      if (retenido > 0) {
+        await liberarRetencion(item.departure_id, retenido);
+        retenidas.delete(item.departure_id);
+      }
       const state = await recalculateDeparture(companyId, item.departure_id);
       const overrideAllowed = input.capacity_override === true;
       if (!overrideAllowed && state.capacity > 0 && state.bookedPax + state.pendingPax > state.capacity) {
@@ -1214,6 +1236,17 @@ export async function createOrderWithBookings(
   });
 
   } catch (err) {
+    /**
+     * Y una venta que se cae devuelve las plazas que había cogido AL INSTANTE.
+     *
+     * Caducan solas en dos minutos, así que esto no es corrección sino cortesía
+     * con quien está en el mostrador: sin soltarlas, el siguiente cliente oye
+     * «no queda sitio» por una venta que ya no existe.
+     */
+    for (const [departureId, pax] of retenidas) {
+      await liberarRetencion(departureId, pax);
+    }
+    retenidas.clear();
     await compensateOrder(companyId, order._id, order.order_number, bookings);
     throw err;
   }

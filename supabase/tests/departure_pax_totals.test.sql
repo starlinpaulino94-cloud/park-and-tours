@@ -58,7 +58,7 @@ begin
   res := public.departure_pax_totals(v_org, v_dep, confirm, pend);
 
   if (res ->> 'found')::boolean is not true then
-    fallos := fallos || 'la salida existe y dice que no';
+    fallos := fallos || 'la salida existe y dice que no'::text;
   end if;
   if (res ->> 'booked')::integer is distinct from 3000 then
     fallos := fallos || format('confirmadas: esperaba 3000 y dio %s (¿volvió el tope?)', res ->> 'booked');
@@ -77,7 +77,7 @@ begin
     values (v_org, v_dep, v_prod, 'cancelled', 40, now(), 'X-1', v_ord);
   res := public.departure_pax_totals(v_org, v_dep, confirm, pend);
   if (res ->> 'booked')::integer is distinct from 3000 then
-    fallos := fallos || 'una cancelada entró en la suma de confirmadas';
+    fallos := fallos || 'una cancelada entró en la suma de confirmadas'::text;
   end if;
 
   -- ── LA FUNCIÓN NO SABE QUÉ ES «CONFIRMADA» ────────────────────────────────
@@ -87,7 +87,7 @@ begin
   res := public.departure_pax_totals(v_org, v_dep, pend, confirm);
   if (res ->> 'booked')::integer is distinct from 300
      or (res ->> 'pending')::integer is distinct from 3000 then
-    fallos := fallos || 'la función tiene su propia idea de qué estado cuenta: la regla está duplicada';
+    fallos := fallos || 'la función tiene su propia idea de qué estado cuenta: la regla está duplicada'::text;
   end if;
 
   -- ── POR QUÉ LA SUMA NO PUEDE PERDER UNA FILA ──────────────────────────────
@@ -103,7 +103,7 @@ begin
      where table_schema = 'public' and table_name = 'booking'
        and column_name = 'pax_total' and is_nullable = 'YES'
   ) then
-    fallos := fallos || 'booking.pax_total admite nulos: revisa que el coalesce de la función siga puesto';
+    fallos := fallos || 'booking.pax_total admite nulos: revisa que el coalesce de la función siga puesto'::text;
   end if;
 
   -- Y una salida con dos reservas pequeñas suma lo que suman, no lo que cabe.
@@ -121,7 +121,7 @@ begin
   -- ── UNA SALIDA VACÍA DE VERDAD ────────────────────────────────────────────
   if (public.departure_pax_totals(v_org, gen_random_uuid(), confirm, pend) ->> 'found')::boolean
      is not false then
-    fallos := fallos || 'una salida que no existe se declara encontrada: devolver ceros diría «caben todos»';
+    fallos := fallos || 'una salida que no existe se declara encontrada: devolver ceros diría «caben todos»'::text;
   end if;
 
   -- ── LA SALIDA DE OTRA EMPRESA NO SE VE ────────────────────────────────────
@@ -129,7 +129,7 @@ begin
   -- de la empresa A diciendo que eres la B no puede devolver sus pasajeros.
   res := public.departure_pax_totals(v_org2, v_dep, confirm, pend);
   if (res ->> 'found')::boolean is not false then
-    fallos := fallos || 'la salida de otra empresa se lee con solo cambiar el argumento';
+    fallos := fallos || 'la salida de otra empresa se lee con solo cambiar el argumento'::text;
   end if;
 
   if array_length(fallos, 1) is null then

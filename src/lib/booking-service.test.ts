@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fakeDb, paxTotalsDeLaBase, type FakeDb } from "@/test/fake-tenant";
+import { fakeDb, paxTotalsDeLaBase, reservarPlazaDeLaBase, soltarPlazaDeLaBase, type FakeDb } from "@/test/fake-tenant";
 
 /**
  * EL CAMINO DEL DINERO.
@@ -78,6 +78,16 @@ const MONEDERO = {
 /** El reparto normal: el recuento de verdad, y el monedero con saldo de sobra. */
 const rpcNormal = async (nombre: string, args: Record<string, unknown>) => {
   if (nombre === "departure_pax_totals") return paxTotalsDeLaBase(db)(args);
+  /**
+   * Y la RETENCIÓN de plaza (0099) tampoco puede ser una constante.
+   *
+   * `assertCapacity` ya no compara un número: coge la plaza con cerrojo. Un
+   * «sí» fijo aquí dejaría pasar la venta que no cabe —la prueba del cupo
+   * pasaría sin cupo— y un «no» fijo tumbaría todas las ventas. Se reimplementa
+   * sobre la misma base en memoria, con el mismo criterio que la función.
+   */
+  if (nombre === "reserve_departure_capacity") return reservarPlazaDeLaBase(db)(args);
+  if (nombre === "release_departure_capacity") return soltarPlazaDeLaBase(db)(args);
   return MONEDERO;
 };
 const rpc = vi.fn(rpcNormal);
@@ -514,6 +524,23 @@ describe("cuando algo falla a mitad de la venta", () => {
     const salida = db.row("departure", { _id: "sal-saona" })!;
     expect(Number(salida.booked_pax)).toBe(0);
     expect(Number(salida.pending_pax)).toBe(0);
+  });
+
+  it("tampoco con plazas RETENIDAS por una venta que no existió (0099)", async () => {
+    /**
+     * La retención es la otra mitad del sitio ocupado, y no se ve en
+     * `booked_pax`. Si la venta se cae y nadie la suelta, la salida sigue
+     * pareciendo más llena de lo que está hasta que caduque, y el siguiente
+     * cliente del mostrador oye «no queda sitio» por una venta que ya no
+     * existe. Caduca sola en dos minutos, pero dos minutos son eternos con
+     * alguien delante.
+     */
+    db = rompeEnLaSegunda();
+    await expect(venta()).rejects.toThrow();
+    for (const id of ["sal-saona", "sal-buggy"]) {
+      const salida = db.row("departure", { _id: id })!;
+      expect(Number(salida.hold_pax ?? 0), `${id} se quedó con plazas retenidas`).toBe(0);
+    }
   });
 
   it("la orden no se queda en «pendiente de pago»", async () => {
@@ -1228,6 +1255,8 @@ describe("la venta de un socio prepago", () => {
      */
     rpc.mockImplementation(async (nombre, args) => {
       if (nombre === "departure_pax_totals") return paxTotalsDeLaBase(db)(args);
+      if (nombre === "reserve_departure_capacity") return reservarPlazaDeLaBase(db)(args);
+      if (nombre === "release_departure_capacity") return soltarPlazaDeLaBase(db)(args);
       return {
         data: {
           movement_id: "mov-2", amount: 200, currency: "usd",

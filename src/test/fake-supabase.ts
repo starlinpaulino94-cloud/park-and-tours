@@ -29,7 +29,7 @@
  * están `supabase/tests/*.test.sql`.
  */
 
-import { paxTotalsDeLaBase, type FakeDb } from "@/test/fake-tenant";
+import { paxTotalsDeLaBase, reservarPlazaDeLaBase, soltarPlazaDeLaBase, type FakeDb } from "@/test/fake-tenant";
 
 type Fila = Record<string, unknown>;
 
@@ -400,7 +400,13 @@ export interface FakeSupabase {
    * decide si cabe la venta: una respuesta fija haría pasar en verde la prueba
    * de que el cupo se respeta con la guarda apagada.
    */
-  rpc(nombre: string, args?: Record<string, unknown>): Promise<{ data: unknown; error: null }>;
+  /**
+   * El error NO es `null` siempre: una RPC puede fallar, y el código que la
+   * llama tiene que poder probarse contra ese caso. Declararlo `null` obligaba
+   * a que el doble fuera incapaz de simular una caída — justo lo que hace falta
+   * para probar que un fallo al reservar la plaza no se traga.
+   */
+  rpc(nombre: string, args?: Record<string, unknown>): Promise<{ data: unknown; error: { message: string } | null }>;
   /**
    * Hace que TODA escritura sobre esa tabla falle, para probar qué pasa cuando
    * la base dice no. Es la forma de comprobar que un servicio no se traga sus
@@ -438,6 +444,16 @@ export function fakeSupabase(db: FakeDb): FakeSupabase {
   return {
     async rpc(nombre: string, args: Record<string, unknown> = {}) {
       if (nombre === "departure_pax_totals") return paxTotalsDeLaBase(db)(args);
+      /**
+       * La reserva de plaza se modela de verdad (0099).
+       *
+       * Sin esto caía en el `data: null` de abajo, que `assertCapacity` lee
+       * como «no cabe»: cualquier venta fallaría en las pruebas. Y con un «sí»
+       * fijo pasaría la venta que NO cabe, que es peor: el doble perdonando el
+       * fallo que estas pruebas existen para cazar.
+       */
+      if (nombre === "reserve_departure_capacity") return reservarPlazaDeLaBase(db)(args);
+      if (nombre === "release_departure_capacity") return soltarPlazaDeLaBase(db)(args);
       return { data: null, error: null };
     },
     from(tabla: string) {

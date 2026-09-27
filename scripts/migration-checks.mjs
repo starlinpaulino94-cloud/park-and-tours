@@ -760,4 +760,15 @@ export const MIGRATION_CHECKS = [
       ["membego_customer", ["membership_status"]],
     ],
   },
+  {
+    migration: "0099 — la plaza se retiene antes de venderla",
+    columns: [
+      // Sin estas dos, `reserve_departure_capacity` no tiene dónde apuntar la
+      // plaza cogida y la venta vuelve a comprobar-y-actuar: medido, treinta
+      // ventas simultáneas de la última plaza en una salida de diez dejaban
+      // DIECINUEVE reservas. Es la comprobación que hay que hacer ANTES de dar
+      // un despliegue por bueno, no después de la excursión.
+      ["departure", ["hold_pax", "hold_until"]],
+    ],
+  },
 ];

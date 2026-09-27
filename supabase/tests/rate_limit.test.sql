@@ -18,21 +18,21 @@ declare
 begin
   -- ── cuenta dentro de la ventana ──────────────────────────────────────────
   select * into r from public.rate_limit_hit('prueba:a', 2, 60000);
-  if not r.allowed or r.hits <> 1 then fallos := fallos || 'el primer intento debería pasar'; end if;
+  if not r.allowed or r.hits <> 1 then fallos := fallos || 'el primer intento debería pasar'::text; end if;
 
   select * into r from public.rate_limit_hit('prueba:a', 2, 60000);
-  if not r.allowed or r.hits <> 2 then fallos := fallos || 'el segundo intento (el del tope) debería pasar'; end if;
+  if not r.allowed or r.hits <> 2 then fallos := fallos || 'el segundo intento (el del tope) debería pasar'::text; end if;
 
   -- El tope es «hasta N», no «más de N»: el tercero con límite 2 se rechaza.
   select * into r from public.rate_limit_hit('prueba:a', 2, 60000);
-  if r.allowed then fallos := fallos || 'el tercer intento pasó: el límite no frena nada'; end if;
-  if r.retry_after < 1 then fallos := fallos || 'retry_after en 0 invita a reintentar al instante'; end if;
-  if r.retry_after > 60 then fallos := fallos || 'retry_after mayor que la ventana'; end if;
+  if r.allowed then fallos := fallos || 'el tercer intento pasó: el límite no frena nada'::text; end if;
+  if r.retry_after < 1 then fallos := fallos || 'retry_after en 0 invita a reintentar al instante'::text; end if;
+  if r.retry_after > 60 then fallos := fallos || 'retry_after mayor que la ventana'::text; end if;
 
   -- ── cada clave lleva su cuenta ───────────────────────────────────────────
   -- Sin esto, el intento fallido de una persona bloquearía a toda la empresa.
   select * into r from public.rate_limit_hit('prueba:b', 2, 60000);
-  if not r.allowed or r.hits <> 1 then fallos := fallos || 'una clave distinta arrastró el contador de otra'; end if;
+  if not r.allowed or r.hits <> 1 then fallos := fallos || 'una clave distinta arrastró el contador de otra'::text; end if;
 
   -- ── la ventana se reinicia sola ──────────────────────────────────────────
   -- Se envejece la fila a mano en vez de esperar: la alternativa es una prueba
@@ -40,17 +40,17 @@ begin
   update app.rate_limit_bucket set reset_at = now() - interval '1 second' where key = 'prueba:a';
   select * into r from public.rate_limit_hit('prueba:a', 2, 60000);
   if not r.allowed or r.hits <> 1 then
-    fallos := fallos || 'la ventana no se reinició: la clave quedaría bloqueada para siempre';
+    fallos := fallos || 'la ventana no se reinició: la clave quedaría bloqueada para siempre'::text;
   end if;
 
   -- ── un límite de 1 rechaza el segundo ────────────────────────────────────
   perform public.rate_limit_hit('prueba:c', 1, 60000);
   select * into r from public.rate_limit_hit('prueba:c', 1, 60000);
-  if r.allowed then fallos := fallos || 'con límite 1 pasó el segundo intento'; end if;
+  if r.allowed then fallos := fallos || 'con límite 1 pasó el segundo intento'::text; end if;
 
   -- ── una ventana diminuta no rompe la función ─────────────────────────────
   select * into r from public.rate_limit_hit('prueba:d', 5, 0);
-  if not r.allowed then fallos := fallos || 'una ventana de 0 ms debería seguir dejando pasar el primero'; end if;
+  if not r.allowed then fallos := fallos || 'una ventana de 0 ms debería seguir dejando pasar el primero'::text; end if;
 
   if array_length(fallos, 1) is null then
     raise notice 'rate_limit: TODAS LAS ASERCIONES PASARON';
