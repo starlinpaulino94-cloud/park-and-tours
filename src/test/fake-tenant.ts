@@ -379,3 +379,48 @@ export function soltarPlazaDeLaBase(db: FakeDb) {
     return { data: null, error: null };
   };
 }
+
+/**
+ * EL RECLAMO DEL CUPO DEL SOCIO, SOBRE LA BASE EN MEMORIA (0100).
+ *
+ * Mismo criterio que `reservarPlazaDeLaBase` y por el mismo motivo: un «sí»
+ * fijo dejaría pasar la venta que se pasa del contrato —la prueba del cupo
+ * pasaría sin cupo— y un «no» fijo tumbaría todas. Y el contador tiene que
+ * PERSISTIR: la mitad del fallo que esto corrige es justamente que se perdía,
+ * así que un doble que no escriba lo perdonaría entero.
+ *
+ * Se escribe por `tenantUpdate` porque `rows()` devuelve clones.
+ */
+export function reclamarCupoDeLaBase(db: FakeDb) {
+  return async (args: Record<string, unknown>) => {
+    const id = String(args.p_allotment ?? "");
+    const pax = Number(args.p_pax ?? 0);
+    if (!id || !(pax > 0)) return { data: false, error: null };
+    const fila = db.rows("allotment").find((a) => String(a._id) === id);
+    if (!fila) return { data: false, error: null };
+
+    const seats = Number(fila.seats ?? 0);
+    const used = Number(fila.seats_used ?? 0);
+    const released = Number(fila.seats_released ?? 0);
+    if (seats - used - released < pax) return { data: false, error: null };
+
+    await db.tenantUpdate(String(fila.organization_id ?? ""), "allotment", id, { seats_used: used + pax });
+    return { data: true, error: null };
+  };
+}
+
+/** Y la devolución, que dice cuántas plazas devolvió DE VERDAD. */
+export function soltarCupoDeLaBase(db: FakeDb) {
+  return async (args: Record<string, unknown>) => {
+    const id = String(args.p_allotment ?? "");
+    const pax = Number(args.p_pax ?? 0);
+    if (!id || !(pax > 0)) return { data: 0, error: null };
+    const fila = db.rows("allotment").find((a) => String(a._id) === id);
+    if (!fila) return { data: 0, error: null };
+
+    const used = Number(fila.seats_used ?? 0);
+    const devueltas = Math.min(pax, used);
+    await db.tenantUpdate(String(fila.organization_id ?? ""), "allotment", id, { seats_used: used - devueltas });
+    return { data: devueltas, error: null };
+  };
+}

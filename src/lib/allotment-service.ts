@@ -1,5 +1,6 @@
 import "server-only";
 import { tenantQuery, tenantUpdate, TenantError } from "@/lib/tenant";
+import { supabaseService } from "@/lib/supabase/service";
 import { refId } from "@/lib/types";
 import { leerTodoElRecurso } from "@/lib/barrido";
 import {
@@ -78,13 +79,43 @@ export async function assertAllotment(
 }
 
 /**
- * Apunta el consumo de plazas en el cupo.
+ * RECLAMA plazas del cupo. No las apunta: las coge (0100).
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LO QUE HACÍA ANTES, Y LO QUE COSTABA
+ *
+ * Escribía `seats_used = <lo que leyó `assertAllotment` al empezar la venta> +
+ * pax`. Un valor ABSOLUTO calculado sobre una lectura vieja, con la venta
+ * entera de por medio —precio, capacidad de la salida, reservas, cobro,
+ * monedero—.
+ *
+ * Medido: treinta ventas simultáneas de una plaza contra un cupo garantizado
+ * de 10 dejaban `seats_used` en **2**, y las treinta pasaban. No es que se
+ * pasara del tope: es que el contador se PERDÍA. El socio vendía 30 plazas de
+ * un contrato de 10 y la matriz enseñaba «2 usadas, 8 libres», así que el
+ * comercial volvía a vender el mismo hueco. Ni siquiera hace falta
+ * concurrencia: dos ventas que se solapen un instante ya se pisan.
+ *
+ * Ahora es una sola sentencia en la base que incrementa SI CABE y dice si
+ * cupo. Sin lectura previa, no hay ventana.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * Y SÍ TUMBA LA VENTA, QUE ES EL CAMBIO
+ *
+ * Antes no: «un contador mal puesto no puede dejar a un cliente sin su
+ * reserva». Pero eso convertía el cupo en un adorno —la única comprobación
+ * real era la lectura vieja de `assertAllotment`— y el contrato con la agencia
+ * en una sugerencia.
+ *
+ * Que no quepa aquí significa que otra venta se llevó las plazas mientras ésta
+ * se armaba, que es exactamente lo que `assertAllotment` rechaza con un 409 y
+ * el mismo mensaje. Por eso se reclama ANTES de escribir la venta, y quien
+ * reclama suelta si la venta se cae.
  *
  * Solo los cupos que APARTAN plazas llevan cuenta: en venta libre `seats_used`
- * sería un contador sin significado que además hay que mantener.
- *
- * Nunca tumba la venta: un cupo mal configurado no puede dejar a un cliente sin
- * su reserva, y la diferencia se ve en la matriz al día siguiente.
+ * sería un contador sin significado que además hay que mantener. Esa regla se
+ * queda aquí y no baja a la base, para no tener dos sitios donde se decide lo
+ * mismo.
  */
 export async function consumeAllotment(
   companyId: string,
@@ -96,13 +127,33 @@ export async function consumeAllotment(
   const id = String(row._id || row.id || "");
   if (!id) return null;
 
-  try {
-    await tenantUpdate(companyId, "allotment", id, { seats_used: state.used + int(pax) });
-    return { allotmentId: id, seats: int(pax) };
-  } catch (err) {
-    console.error(`[cupo] no se pudo apuntar el consumo en ${id}:`, err);
-    return null;
+  const { data, error } = await supabaseService().rpc("claim_allotment_seats", {
+    p_allotment: id,
+    p_pax: int(pax),
+  });
+
+  /**
+   * Un fallo de lectura NO deja pasar la venta.
+   *
+   * Antes se escribía en la consola y se seguía, que es vender contra un
+   * contrato sin saber si queda sitio. Misma decisión que `assertCapacity`:
+   * ante la duda, se rechaza. Lo que se pierde es una venta; lo que se evitaba
+   * perder era el contrato.
+   */
+  if (error) {
+    throw Object.assign(
+      new TenantError(`No se pudo reclamar el cupo del socio: ${error.message}`, 409),
+      { code: "ALLOTMENT_UNAVAILABLE" }
+    );
   }
+  if (data !== true) {
+    throw Object.assign(new TenantError(SALE_BLOCK_MESSAGE.no_seats, 409), {
+      code: "ALLOTMENT_NO_SEATS",
+      remaining: Number.isFinite(state.remaining) ? state.remaining : null,
+    });
+  }
+
+  return { allotmentId: id, seats: int(pax) };
 }
 
 /**
@@ -120,14 +171,28 @@ export async function releaseBookingAllotment(
   const seats = int(booking.allotment_seats);
   if (!id || seats <= 0) return 0;
 
+  /**
+   * También en una sola sentencia, y por lo mismo (0100).
+   *
+   * Leía la fila y escribía `max(0, leído - plazas)`. Dos cancelaciones a la
+   * vez devolvían UNA sola plaza, y el socio se quedaba sin cupo que sí había
+   * pagado — el error que nadie reclama, porque nadie mira un contador que va
+   * de menos.
+   *
+   * Al revés que el reclamo, un fallo aquí no tumba nada: no devolver una
+   * plaza deja un cupo corto y eso se arregla; tumbar la cancelación de un
+   * cliente porque el contador no respondió, no.
+   */
   try {
-    const rows = await tenantQuery<AllotmentRow>(companyId, "allotment", { _filter: { _id: id }, _limit: 1 });
-    const row = rows[0];
-    if (!row) return 0;
-    await tenantUpdate(companyId, "allotment", id, {
-      seats_used: Math.max(0, int(row.seats_used) - seats),
+    const { data, error } = await supabaseService().rpc("release_allotment_seats", {
+      p_allotment: id,
+      p_pax: seats,
     });
-    return seats;
+    if (error) {
+      console.error(`[cupo] no se pudieron devolver las plazas al cupo ${id}:`, error.message);
+      return 0;
+    }
+    return int(data);
   } catch (err) {
     console.error(`[cupo] no se pudieron devolver las plazas al cupo ${id}:`, err);
     return 0;

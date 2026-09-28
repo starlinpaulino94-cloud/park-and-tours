@@ -3986,12 +3986,45 @@ describe("distribución: el cupo del socio acota de verdad", () => {
     expect(src.indexOf("await assertCapacity(")).toBeLessThan(src.indexOf("await assertAllotment("));
   });
 
-  it("el consumo se apunta DESPUÉS de que la venta exista", () => {
-    // Apuntarlo antes y que la saga se compensara dejaría el cupo consumido por
-    // una venta que no llegó a haber.
+  it("el cupo se RECLAMA antes de escribir la venta, y se suelta si se cae", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * ESTA GUARDA DECÍA LO CONTRARIO, Y LO QUE DECÍA COSTABA EL CONTRATO
+     *
+     * «El consumo se apunta DESPUÉS de que la venta exista», porque «apuntarlo
+     * antes y que la saga se compensara dejaría el cupo consumido por una venta
+     * que no llegó a haber». El razonamiento era bueno; la consecuencia, no.
+     *
+     * `consumeAllotment` escribía `seats_used = <lo que se leyó al EMPEZAR> +
+     * pax` —un valor absoluto sobre una lectura vieja— con toda la venta de por
+     * medio. Medido: 30 ventas simultáneas de una plaza contra un cupo
+     * garantizado de 10 dejaban el contador en **2**, y las 30 pasaban. El
+     * socio vendía treinta plazas de un contrato de diez y la matriz enseñaba
+     * «2 usadas, 8 libres».
+     *
+     * La objeción original no se ignora: se resuelve del otro lado. Se reclama
+     * antes —la base incrementa si cabe, en una sentencia— y lo reclamado se
+     * SUELTA en la compensación. Misma pareja que la retención de plaza (0099).
+     */
     const src = read("src/lib/booking-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
-    expect(src.indexOf("await consumeAllotment(")).toBeGreaterThan(src.indexOf("const aviso"));
-    expect(src.indexOf("await consumeAllotment(")).toBeLessThan(src.lastIndexOf("return { order:"));
+
+    const reclama = src.indexOf("await consumeAllotment(");
+    const escribeLaOrden = src.indexOf("await tenantCreate<Order>");
+    expect(reclama, "ya no se reclama el cupo").toBeGreaterThan(-1);
+    expect(escribeLaOrden).toBeGreaterThan(-1);
+    expect(reclama, "reclama el cupo cuando la venta ya está escrita")
+      .toBeLessThan(escribeLaOrden);
+
+    // Y lo reclamado se apunta para poder devolverlo: una plaza de cupo que se
+    // queda quitada por una venta que se cayó no caduca sola como las de la
+    // salida — se queda quitada para siempre.
+    expect(src).toMatch(/cupoReclamado\.set\(/);
+    const suelta = src.indexOf("for (const [allotmentId, seats] of cupoReclamado)");
+    expect(suelta, "lo reclamado no se suelta en la compensación").toBeGreaterThan(-1);
+    expect(suelta, "lo suelta fuera del camino de fallo")
+      .toBeGreaterThan(src.indexOf("await compensateOrder(") - 4000);
+    expect(src.slice(suelta), "no llama a la devolución")
+      .toMatch(/releaseBookingAllotment\(companyId, \{ allotment: allotmentId/);
   });
 
   it("cancelar devuelve las plazas a SU cupo", () => {

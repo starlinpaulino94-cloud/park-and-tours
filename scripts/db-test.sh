@@ -197,6 +197,66 @@ fi
 # Se comprueban las dos cosas, y las dos importan: que no se venda de más
 # —sobreventa— y que no se venda de menos —el cerrojo dejando plazas sin
 # vender—. Un cerrojo que rechaza todo también pasaría la mitad de la prueba.
+# ── La carrera del CUPO DEL SOCIO ───────────────────────────────────────────
+#
+# El informe de preparación deja abierta la dimensión F con «quedan sin medir
+# las demás carreras (caja, monedero, cupo del socio)». El monedero ya se
+# serializa con un cerrojo sobre la fila del socio (0091). Éste no.
+#
+# LO QUE HACE LA APLICACIÓN, TAL CUAL
+#
+# `assertAllotment` lee la fila al EMPEZAR la venta y comprueba las plazas que
+# quedan. `consumeAllotment` escribe, al TERMINARLA, `seats_used = <lo que
+# leyó> + pax`. Entre las dos pasa la venta entera: precio, cupo de la salida,
+# reservas, cobro. Y la escritura no es un incremento, es un valor absoluto
+# calculado sobre una lectura vieja.
+#
+# Esto reproduce ese par con N procesos a la vez. Cada uno lee, espera un poco
+# —la venta— y escribe lo que leyó más uno. Si el contador fuera correcto, 30
+# ventas de una plaza dejarían `seats_used` en el tope del cupo y ni una más.
+echo "→ carrera: 30 ventas del socio contra un cupo de 10 plazas"
+CUPO_SQL="$WORK/cupo.sql"
+cat > "$CUPO_SQL" <<'EOSQL'
+insert into organizations (id, name, kind)
+  values ('cccccccc-0000-0000-0000-0000000000c0', 'Carrera cupo', 'tenant')
+  on conflict (id) do nothing;
+insert into organizations (id, name, kind, tenant_org_id)
+  values ('cccccccc-0000-0000-0000-0000000000c1', 'Socio de la carrera', 'partner',
+          'cccccccc-0000-0000-0000-0000000000c0')
+  on conflict (id) do nothing;
+insert into product (id, organization_id, name, base_price)
+  values ('cccccccc-0000-0000-0000-0000000000c2', 'cccccccc-0000-0000-0000-0000000000c0', 'Tour con cupo', 50)
+  on conflict (id) do nothing;
+insert into allotment (id, organization_id, partner_id, product_id, allotment_type, seats, seats_used, status)
+  values ('cccccccc-0000-0000-0000-0000000000c3', 'cccccccc-0000-0000-0000-0000000000c0',
+          'cccccccc-0000-0000-0000-0000000000c1', 'cccccccc-0000-0000-0000-0000000000c2',
+          'guaranteed', 10, 0, 'active')
+  on conflict (id) do nothing;
+update allotment set seats_used = 0 where id = 'cccccccc-0000-0000-0000-0000000000c3';
+EOSQL
+[ "$(id -u)" = "0" ] && chown postgres "$CUPO_SQL"
+if ! psql_run -f "$CUPO_SQL" >/dev/null; then
+  echo "✘ no se pudo preparar la carrera del cupo"; fail=1
+else
+  CUPO=cccccccc-0000-0000-0000-0000000000c3
+  for i in $(seq 1 30); do
+    "${RUN[@]}" psql -h "$PGHOST" -p "$PGPORT" -d appdb -At -c "
+      select public.claim_allotment_seats('$CUPO'::uuid, 1);" >/dev/null 2>&1 &
+  done
+  wait
+  USADAS=$(psql_run -At -c "select seats_used from allotment where id = '$CUPO';" | tr -d '[:space:]')
+  if [ "${USADAS:-0}" != "10" ]; then
+    if [ "${USADAS:-0}" -gt 10 ] 2>/dev/null; then
+      echo "✘ EL SOCIO PASÓ SU CONTRATO: $USADAS plazas consumidas de un cupo de 10"
+    else
+      echo "✘ el contador del cupo se perdió escrituras: $USADAS de 10 tras 30 ventas de una plaza"
+    fi
+    fail=1
+  else
+    echo "  30 ventas simultáneas del socio, cupo de 10, 10 plazas consumidas"
+  fi
+fi
+
 echo "→ carrera: 30 ventas simultáneas de la última plaza"
 CARRERA_SQL="$WORK/carrera.sql"
 cat > "$CARRERA_SQL" <<'EOSQL'

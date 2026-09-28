@@ -5580,3 +5580,96 @@ la guarda de orden de `assertGerenciaOVendedorDe`.
 Los espejos de MembeGo y de Stripe. Son integraciones externas: vacíos sin una
 cuenta conectada es su estado correcto. **Con esto se acaban los módulos vacíos
 que sí dependían de nosotros.**
+
+---
+
+## Dimensión F · El cupo del socio: 30 ventas de un contrato de 10, y el contador en 2
+
+Con los módulos vacíos cerrados, lo siguiente pendiente y alcanzable desde aquí
+era la dimensión **F**, que el informe dejaba así: «quedan sin medir las demás
+carreras (caja, monedero, cupo del socio)».
+
+### Lo medido, antes de tocar nada
+
+- **Monedero:** ya estaba cerrado. `spend_partner_wallet` (0091) bloquea la fila
+  del socio con `for update` antes de sumar. Comprobado, no cambiado.
+- **Cupo del socio:** roto. Treinta ventas simultáneas de una plaza contra un
+  cupo garantizado de 10 dejaron `seats_used` en **2**, y **las treinta
+  pasaron**.
+
+### Por qué es peor que la sobreventa de plazas
+
+En la sobreventa de 9.19 el contador al menos **enseñaba** el exceso: 19
+reservas en una salida de 10. Aquí el socio vendió 30 plazas de un contrato de
+10 y la matriz de cupos dice **«2 usadas, 8 libres»**. El comercial ve hueco
+donde ya no lo hay y lo vuelve a vender. El error no se ve por ningún lado.
+
+Y no hace falta concurrencia real: `assertAllotment` lee la fila al EMPEZAR la
+venta y `consumeAllotment` escribía al TERMINARLA `seats_used = <lo que leyó> +
+pax` —un valor **absoluto** sobre una lectura vieja, no un incremento— con la
+venta entera de por medio. Dos ventas que se solapen un instante ya se pisan.
+
+### Lo que lo tapaba: un comentario razonable
+
+El consumo estaba al final, con este motivo escrito: «apuntarlo antes y que la
+saga se compensara dejaría el cupo consumido por una venta que no llegó a
+haber». El razonamiento es bueno. La consecuencia era que la única defensa real
+del contrato fuera una lectura vieja.
+
+Se resuelve por el otro lado, igual que la retención de plaza de 0099: se
+reclama **antes** de escribir nada, y lo reclamado se **suelta** si la venta se
+cae. La objeción original queda atendida y el contrato, defendido.
+
+### Hecho (migración 0100)
+
+- `claim_allotment_seats` — incremento condicional en **una sola sentencia**:
+  sin `select` previo no hay ventana. El tope es el mismo que calcula
+  `allotments.ts`, dicho una vez: `seats - seats_used - seats_released`.
+- `release_allotment_seats` — la devolución tenía el mismo fallo por el otro
+  lado (dos cancelaciones a la vez devolvían **una** plaza, y el socio se
+  quedaba sin cupo que sí había pagado). Ahora dice cuántas devolvió **de
+  verdad**, que puede ser menos de las pedidas.
+- Qué tipos de cupo apartan plazas se queda en `allotments.ts`, que es puro y
+  está probado: repetir la regla en la base crearía un segundo sitio donde se
+  decide lo mismo.
+- **Y ahora tumba la venta.** Antes no, a propósito. Pero eso convertía el
+  contrato en una sugerencia. Como el reclamo va antes de escribir, rechazar no
+  deja nada a medias.
+- Un fallo de lectura tampoco deja pasar: vender contra un contrato sin saber si
+  queda sitio es lo mismo que no comprobarlo. Misma decisión que
+  `assertCapacity`.
+
+Resultado de la misma carrera: **10 de 10**.
+
+### Mutación: 8, con un superviviente que era un hueco real
+
+Hacer que el doble dijera **siempre «cabe»** no rompía nada: ninguna prueba
+recorría la venta entera con el cupo agotado **por otra venta**. La garantía de
+la que va todo esto estaba probada en el servicio y no en la venta.
+
+La prueba obvia no servía: con el cupo lleno de antemano, quien rechaza es
+`assertAllotment` y el reclamo ni se ejecuta. Hizo falta simular la carrera de
+verdad —la primera lectura ve sitio y el cupo se agota justo después— que es
+exactamente lo que pasa en producción. Con ella, muere.
+
+### Dos guardas mías que decían lo contrario, y por qué se invirtieron
+
+- `«el consumo se apunta DESPUÉS de que la venta exista»` fijaba el orden que
+  causaba el fallo. Reescrita al orden nuevo, con el motivo del cambio dentro.
+- `«si el apunte falla, la venta no se entera»` fijaba que el cupo se pudiera
+  ignorar. Reescrita a lo contrario, explicando qué costaba la versión vieja.
+
+No se borraron: una guarda que se invierte tiene que decir por qué, o el
+siguiente que lea el fichero pensará que alguien aflojó el listón.
+
+### El informe de preparación, al día
+
+- **F** pasa a «dos carreras medidas y cerradas, las dos en CI; queda la caja».
+- **F-001** («módulos fiscales sin pruebas») se cierra: medido, los **20**
+  servicios que ese informe listaba sin una sola prueba tienen hoy su fichero.
+
+`tsc`, `eslint`, **4140/4140**, `db-test` y `build` en verde.
+
+### Qué queda de F
+
+La **caja**: `cash_session` y sus totales. No está medida.

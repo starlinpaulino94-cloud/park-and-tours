@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fakeDb, paxTotalsDeLaBase, reservarPlazaDeLaBase, soltarPlazaDeLaBase, type FakeDb } from "@/test/fake-tenant";
+import { fakeDb, paxTotalsDeLaBase, reservarPlazaDeLaBase, soltarPlazaDeLaBase, reclamarCupoDeLaBase, soltarCupoDeLaBase, type FakeDb } from "@/test/fake-tenant";
 import { fakeSupabase } from "@/test/fake-supabase";
 
 /**
@@ -89,6 +89,10 @@ const rpcNormal = async (nombre: string, args: Record<string, unknown>) => {
    */
   if (nombre === "reserve_departure_capacity") return reservarPlazaDeLaBase(db)(args);
   if (nombre === "release_departure_capacity") return soltarPlazaDeLaBase(db)(args);
+  // Y el cupo del socio (0100), por lo mismo: el contador tiene que persistir
+  // o la prueba de que dos ventas no se pisan pasaría sin que nada sumara.
+  if (nombre === "claim_allotment_seats") return reclamarCupoDeLaBase(db)(args);
+  if (nombre === "release_allotment_seats") return soltarCupoDeLaBase(db)(args);
   return MONEDERO;
 };
 const rpc = vi.fn(rpcNormal);
@@ -306,6 +310,101 @@ describe("el cupo del socio", () => {
       items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
     });
     expect(Number(db.row("allotment", { _id: "cupo-saona" })!.seats_used)).toBe(2);
+  });
+
+  it("una venta que se pasa del contrato NO se escribe", async () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * ESTA PRUEBA NACIÓ DE UNA MUTACIÓN QUE SOBREVIVIÓ
+     *
+     * Hacer que el doble dijera SIEMPRE «cabe» no rompía nada: ninguna prueba
+     * recorría la venta entera con el cupo agotado. Es decir, la garantía de la
+     * que va todo esto —que el socio no vende más de lo que contrató— estaba
+     * probada en el servicio del cupo y NO en la venta, que es donde se aplica.
+     *
+     * Con 9 de 10 plazas usadas, una venta de 2 no cabe. Y no puede quedarse a
+     * medias: ni orden, ni reserva, ni plaza de la salida retenida.
+     */
+    db = conCupo();
+    await db.tenantUpdate("org-1", "allotment", "cupo-saona", { seats_used: 9 });
+
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow(/cupo/i);
+
+    expect(db.rows("booking"), "quedó una reserva de una venta rechazada").toHaveLength(0);
+    expect(Number(db.row("allotment", { _id: "cupo-saona" })!.seats_used),
+      "el rechazo movió el contador").toBe(9);
+  });
+
+  it("si el cupo se agota MIENTRAS se arma la venta, no pasa", async () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * LA CARRERA, SIMULADA — Y NACIDA DE UNA MUTACIÓN QUE SOBREVIVÍA
+     *
+     * La prueba de arriba la caza `assertAllotment`, que lee al empezar: ahí el
+     * cupo ya estaba lleno antes de vender. Pero el fallo que mide esta tanda
+     * es el otro: el cupo está LIBRE cuando se comprueba y se AGOTA mientras la
+     * venta se arma —otro tour center vendiendo lo mismo en ese instante—.
+     *
+     * Hacer que el doble dijera siempre «cabe» no rompía ninguna prueba, porque
+     * ninguna llegaba hasta el reclamo con el cupo ya gastado. Aquí la lectura
+     * del principio devuelve la fila vieja —con sitio— y la de verdad ya está
+     * llena, que es exactamente lo que pasa en producción.
+     *
+     * Medido contra Postgres: 30 ventas simultáneas de una plaza contra un cupo
+     * de 10 dejaban `seats_used` en 2 y pasaban las 30.
+     */
+    db = conCupo();
+    const consulta = db.tenantQuery.bind(db);
+    let yaLeyo = false;
+    db.tenantQuery = (async (org: string, tabla: string, opciones?: Record<string, unknown>) => {
+      const filas = await consulta(org, tabla, opciones);
+      // La PRIMERA lectura del cupo es la de `assertAllotment`: ve sitio. Justo
+      // después, otra venta se lo lleva entero.
+      if (tabla === "allotment" && !yaLeyo) {
+        yaLeyo = true;
+        await db.tenantUpdate("org-1", "allotment", "cupo-saona", { seats_used: 10 });
+      }
+      return filas;
+    }) as typeof db.tenantQuery;
+
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow(/cupo/i);
+
+    expect(db.rows("booking"), "se escribió una reserva que se pasa del contrato").toHaveLength(0);
+    expect(Number(db.row("allotment", { _id: "cupo-saona" })!.seats_used),
+      "el contador se pasó del cupo contratado").toBe(10);
+  });
+
+  it("y si la venta se cae DESPUÉS de reclamar, el cupo se devuelve", async () => {
+    /**
+     * Una plaza de cupo no caduca sola como la de la salida: se queda quitada
+     * para siempre, y el socio acaba con menos contrato del que pagó sin nada
+     * que lo delate. Es el error que nadie reclama, porque nadie mira un
+     * contador que va de menos.
+     */
+    db = conCupo();
+    const original = db.tenantCreate.bind(db);
+    let cayo = false;
+    db.tenantCreate = (async (org: string, tabla: string, data: Record<string, unknown>) => {
+      if (tabla === "booking" && !cayo) { cayo = true; throw new Error("se cayó al escribir la reserva"); }
+      return original(org, tabla, data);
+    }) as typeof db.tenantCreate;
+
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow();
+
+    expect(Number(db.row("allotment", { _id: "cupo-saona" })!.seats_used),
+      "la venta caída se quedó con las plazas del socio").toBe(0);
   });
 
   it("la reserva guarda de qué cupo salieron sus plazas", async () => {
