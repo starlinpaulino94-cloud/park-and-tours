@@ -98,6 +98,90 @@ for doc in "$ROOT"/docs/operaciones/DESDE_EL_EDITOR_SQL.md; do
   fi
 done
 
+# ── Ningún módulo puede quedarse vacío en silencio ──────────────────────────
+#
+# De dónde sale esto: se reportó «hay varios módulos que se crearon y están
+# totalmente vacíos». Medido sobre la base recién sembrada, era cierto —y el
+# código estaba: lo que faltaba eran los DATOS—. `organizations` con
+# `kind='partner'` tenía cero filas, y con ella se quedaban vacías las cuatro
+# tablas del socio, o sea las fases 4, 5 y 6 enteras sin nada con que verse.
+#
+# Un módulo sin datos no se puede ni mirar: desde la pantalla no se distingue
+# «no hay nada» de «no funciona». Así que a partir de aquí eso es un fallo de
+# construcción, no un descubrimiento en mitad de una demostración.
+#
+# La lista crece según se van cubriendo bloques. Lo que NO está aquí, no está
+# cubierto — y se dice, en vez de dejarlo en blanco.
+echo "→ cobertura de datos de demostración"
+COBERTURA="organizations organization_relationships partner_product allotment partner_wallet_movement price_rule product departure booking sales_order payment commission invoice customer seller supplier seller_attribution commission_adjustment"
+for tabla in $COBERTURA; do
+  n=$(psql_run -At -c "select count(*) from public.$tabla;" 2>/dev/null | tr -d '[:space:]')
+  if [ "${n:-0}" = "0" ]; then
+    echo "✘ el módulo $tabla se quedó SIN datos de demostración: su pantalla saldrá vacía"; fail=1
+  fi
+done
+# Y el socio, con lo suyo: dos formas de trabajar que el sistema declara
+# excluyentes. Con una sola no se ve la diferencia, que es de lo que va el módulo.
+MODELOS=$(psql_run -At -c "select count(distinct pricing_model) from organization_relationships;" 2>/dev/null | tr -d '[:space:]')
+if [ "${MODELOS:-0}" -lt 2 ] 2>/dev/null; then
+  echo "✘ la demo solo enseña un modelo de precio de socio: comisión y neto tienen que verse los dos"; fail=1
+else
+  echo "  18 módulos con datos; socio a comisión y a neto, los dos"
+fi
+
+# ── El embudo tiene que ESTRECHARSE ────────────────────────────────────────
+#
+# Filas no es lo mismo que datos útiles. El informe cuenta PERSONAS por etapa,
+# así que un sembrador que pusiera las cuatro etapas con el mismo reparto daría
+# un embudo recto: cuatro cifras iguales y ninguna conversión que mirar. Se
+# comprueba la forma, no el recuento.
+VISITAS=$(psql_run -At -c "select count(distinct visitor_id) from seller_attribution where stage = 'visit';" 2>/dev/null | tr -d '[:space:]')
+COMPRAS=$(psql_run -At -c "select count(distinct customer_id) from seller_attribution where stage = 'purchase';" 2>/dev/null | tr -d '[:space:]')
+ETAPAS=$(psql_run -At -c "select count(distinct stage) from seller_attribution;" 2>/dev/null | tr -d '[:space:]')
+if [ "${ETAPAS:-0}" -lt 4 ] 2>/dev/null; then
+  echo "✘ el embudo de demostración no tiene las cuatro etapas: no se ve ninguna conversión"; fail=1
+elif [ "${VISITAS:-0}" -le "${COMPRAS:-0}" ] 2>/dev/null; then
+  echo "✘ el embudo de demostración no se estrecha: $VISITAS visitas y $COMPRAS compras"; fail=1
+else
+  echo "  embudo de $VISITAS visitantes a $COMPRAS compradores, con sus cuatro etapas"
+fi
+
+# Y «compra» quiere decir COBRADA. La regla no me la invento: `recordPurchaseOnce`
+# solo se llama cuando la orden queda en `paid`, y el comentario de ese sitio dice
+# por qué —contar una reserva que nadie pagó infla el cierre de quien las deja
+# colgadas por encima del que cobra—. Si el sembrador no respeta esa regla, la demo
+# enseña un embudo que el producto nunca produciría.
+#
+# Esto lo escribo porque una mutación SOBREVIVIÓ: sembrar la compra de TODAS las
+# órdenes deja el embudo estrechándose igual (120 → 40) y la guarda de forma lo
+# daba por bueno. La forma no basta; hace falta el invariante.
+FANTASMAS=$(psql_run -At -c "select count(*) from seller_attribution a join sales_order o on o.id = a.order_id where a.stage = 'purchase' and o.status not in ('paid','completed');" 2>/dev/null | tr -d '[:space:]')
+if [ "${FANTASMAS:-0}" != "0" ] 2>/dev/null; then
+  echo "✘ $FANTASMAS paso(s) de «compra» sobre órdenes que nadie pagó: el embudo miente"; fail=1
+fi
+
+# ── Y el ajuste tiene que haber movido el neto ─────────────────────────────
+#
+# Un ajuste escrito junto a un neto que no se enteró es justo el descuadre que
+# este bloque corrige en el código: la liquidación transfiere el neto y la
+# pantalla enseñaría el bruto. Si la demo lo reprodujera, enseñaría el fallo.
+DESCUADRE=$(psql_run -At -c "select count(*) from commission c where c.adjustment_total <> 0 and c.net_amount is distinct from greatest(0, round(c.amount + c.adjustment_total, 2));" 2>/dev/null | tr -d '[:space:]')
+CONAJUSTE=$(psql_run -At -c "select count(*) from commission where adjustment_total <> 0;" 2>/dev/null | tr -d '[:space:]')
+if [ "${CONAJUSTE:-0}" = "0" ]; then
+  echo "✘ ninguna comisión de demostración tiene ajuste: el módulo sigue sin poder verse"; fail=1
+elif [ "${DESCUADRE:-0}" != "0" ]; then
+  echo "✘ $DESCUADRE comisión(es) con ajuste y el neto sin actualizar: la demo enseñaría el descuadre"; fail=1
+else
+  echo "  $CONAJUSTE comisiones ajustadas, con su neto al día y su liquidación"
+fi
+
+# Y enganchados a la liquidación que se los llevó: la columna existe desde 0059
+# y hasta este bloque no la escribía nadie.
+SUELTOS=$(psql_run -At -c "select count(*) from commission_adjustment where settlement_id is null;" 2>/dev/null | tr -d '[:space:]')
+if [ "${SUELTOS:-0}" != "0" ] 2>/dev/null; then
+  echo "✘ $SUELTOS ajuste(s) sin liquidación: no se puede decir qué cierre se llevó el descuento"; fail=1
+fi
+
 # ── La carrera de verdad (F-001) ────────────────────────────────────────────
 #
 # Una prueba SQL corre en UNA sesión, y una carrera necesita dos. Esto lanza N

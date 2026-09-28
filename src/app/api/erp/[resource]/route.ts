@@ -14,6 +14,7 @@ import { branchStampFor } from "@/lib/branch-scope";
 import { sellerStampFor } from "@/lib/seller-scope";
 import { protectedFieldChanges, protectedFieldMessage } from "@/lib/field-write-role";
 import { assertSellerUserLinkable } from "@/lib/seller-identity";
+import { assertSupplierUserLinkable } from "@/lib/supplier-identity";
 import { assertPayloadAssignable } from "@/lib/hr-service";
 import { assertPayloadVehicleUsable } from "@/lib/flota-service";
 import { puertaEquivocada } from "@/lib/lista-negra";
@@ -146,6 +147,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ res
     // La llave de identidad, validada contra la base: que la cuenta sea de esta
     // empresa y que no esté ya en otra ficha.
     await assertSellerUserLinkable(ctx.companyId, sellado);
+    // Y la del proveedor, por el mismo camino: el campo es editable desde
+    // aquí, así que la comprobación tiene que estar aquí también.
+    if (resource === "supplier") await assertSupplierUserLinkable(ctx.companyId, sellado);
 
     // 0051 — asignar trabajo a quien tiene una certificación obligatoria
     // vencida se para AQUÍ. La pantalla puede pintarlo en rojo; lo que impide

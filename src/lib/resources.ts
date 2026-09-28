@@ -616,6 +616,19 @@ export const RESOURCES: Record<string, ResourceDef> = {
       // son lo que hace falta para transferirle.
       "tax_regime", "retention_isr_pct", "retention_itbis_pct", "tax_rate",
       "bank_name", "bank_account",
+      /**
+       * LA CUENTA CON LA QUE ENTRA EL PROVEEDOR (0084).
+       *
+       * Sin esta columna no hay portal del proveedor: el enganche de
+       * autenticación busca la ficha por ella para publicar `supplier_id` en el
+       * token. No estaba aquí, así que NADA en el producto podía escribirla y
+       * toda la fase 8 era inalcanzable salvo con un `update` a mano.
+       *
+       * `field-write-role.ts` la reserva a administración, y
+       * `assertSupplierUserLinkable` comprueba que la cuenta sea de esta
+       * empresa y no esté ya en otra ficha.
+       */
+      "user",
     ],
     numeric: ["payment_terms_days", "retention_isr_pct", "retention_itbis_pct", "tax_rate"],
     writeRole: "manager",
@@ -1678,6 +1691,27 @@ const READ_ROLE: Partial<Record<string, AppRole>> = {
   payment: "cashier", cash_session: "cashier", cash_movement: "cashier", cash_count: "cashier",
   // Commercial/accounting figures, costs and margins — managers and up.
   commission: "manager", settlement: "manager", receivable: "manager", payable: "manager",
+  /**
+   * Y EL DETALLE DE ESAS TRES, QUE NO LO TENÍA.
+   *
+   * `assertCanReadTable` deja pasar lo que no tiene entrada aquí. Así que la
+   * CABECERA estaba reservada a gerencia y el DETALLE lo leía cualquier usuario
+   * del inquilino —un vendedor, un cajero, alguien de operaciones— entero y sin
+   * acotar, porque estas tres tampoco están en `SELLER_SCOPED`:
+   *
+   *  · `commission_adjustment` dice cuánto se le descontó a una persona
+   *    concreta y POR QUÉ, en texto libre. Es MÁS sensible que la comisión, no
+   *    menos: la comisión es una cifra; el ajuste es la cifra y el motivo.
+   *  · `seller_bonus` es el premio de cada compañero. Al vendedor sí lo acotaba
+   *    el ámbito por fila; al cajero y a operaciones, nada.
+   *  · `invoice_line` es lo que se le facturó a cada cliente, concepto a
+   *    concepto, con `invoice` reservada a gerencia justo encima.
+   *
+   * Se vio tarde porque `commission_adjustment` tiene cero filas: una puerta
+   * abierta a una habitación vacía no la abre nadie. Las tres las encontró un
+   * barrido del catálogo, no la lectura de una.
+   */
+  commission_adjustment: "manager", seller_bonus: "manager", invoice_line: "manager",
   // `payment_schedule` estaba en `seller`, y esa tabla NO tiene columna de
   // vendedor —el suyo está en la orden, tabla unida, que la capa de consulta no
   // sabe filtrar—. Es decir: cualquier vendedor leía el calendario de cobros de

@@ -1,4 +1,4 @@
--- SEMBRADOR DEMO - TROZO 07 de 13. Ejecutar EN ORDEN del 01 al 13.
+-- SEMBRADOR DEMO - TROZO 07 de 15. Ejecutar EN ORDEN del 01 al 15.
 -- Pegar entero (Ctrl+A, Run). Requiere la migracion 0067 aplicada.
 
 insert into commission (id, organization_id, booking_id, order_id, seller_id, beneficiary_type,

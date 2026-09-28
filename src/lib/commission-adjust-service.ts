@@ -57,6 +57,46 @@ export async function syncCommissionNet(companyId: string, commissionId: string)
   return net;
 }
 
+/**
+ * ENGANCHA LOS AJUSTES DE UNA COMISIÓN A LA LIQUIDACIÓN QUE SE LOS LLEVA.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LA COLUMNA EXISTÍA Y NADIE LA ESCRIBÍA
+ *
+ * `commission_adjustment.settlement_id` está en 0059 con su índice, y el
+ * disparador de esa misma migración permite exactamente UNA edición sobre un
+ * ajuste ya escrito: engancharlo a una liquidación. Es una excepción escrita a
+ * propósito en una tabla que por lo demás no se puede tocar.
+ *
+ * Y nada la usaba. La liquidación descontaba el dinero del ajuste —suma
+ * `net_amount`— pero no dejaba constancia de QUÉ liquidación se lo llevó. Sin
+ * eso no se puede responder «qué recuperamos en el pago de octubre», ni el
+ * estado de cuenta puede explicar su propia cifra sin recalcularla con las
+ * reglas de hoy.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * SOLO LOS QUE NO TIENEN DUEÑO
+ *
+ * Se filtra por `settlement: null`. Un ajuste ya enganchado pertenece a la
+ * liquidación que se lo llevó, y reapuntarlo movería dinero de un cierre a
+ * otro —además de que el disparador rechaza cambiar un enganche existente—.
+ * Así un reintento de la generación no toca nada.
+ */
+export async function attachAdjustmentsToSettlement(
+  companyId: string,
+  commissionId: string,
+  settlementId: string
+): Promise<number> {
+  const sueltos = await tenantQuery<AdjustmentRow>(companyId, "commission_adjustment", {
+    _filter: { commission: commissionId, settlement: null },
+    _limit: 200,
+  });
+  for (const a of sueltos) {
+    await tenantUpdate(companyId, "commission_adjustment", a._id, { settlement: settlementId });
+  }
+  return sueltos.length;
+}
+
 export interface AdjustInput {
   commissionId: string;
   /** CON SIGNO: negativo descuenta, positivo añade. */

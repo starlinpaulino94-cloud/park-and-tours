@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { assertCanReadTable, readRoleFor, sellerCanReadTable } from "@/lib/resources";
+import { assertCanReadTable, readRoleFor, sellerCanReadTable, RESOURCES } from "@/lib/resources";
 import { isSellerScoped, esEstricta } from "@/lib/seller-scope";
 import { assertGerenciaOVendedorDe } from "@/lib/seller-identity";
 
@@ -22,6 +22,81 @@ const ROOT = path.resolve(__dirname, "../..");
 const vendedor = (sellerId: string | null = "v1") => ({ role: "seller" as const, sellerId });
 const gerente = { role: "manager" as const, sellerId: null };
 const cajero = { role: "cashier" as const, sellerId: null };
+
+/**
+ * NINGUNA TABLA DE DETALLE ES MÁS ABIERTA QUE SU CABECERA.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * DE DÓNDE SALE ESTO
+ *
+ * `commission` está reservada a gerencia. `commission_adjustment` —la fila que
+ * dice cuánto se le descontó a una persona concreta y POR QUÉ, en texto
+ * libre— no estaba en `READ_ROLE`, y `assertCanReadTable` deja pasar lo que no
+ * tiene entrada. Cualquier usuario del inquilino podía pedir
+ * `/api/erp/commission_adjustment` y leer los ajustes de TODA la empresa.
+ *
+ * Tampoco está en `SELLER_SCOPED`, así que ni siquiera se acotaba por fila: no
+ * era «cada uno los suyos», era todo.
+ *
+ * Y no estaba sola. Medido sobre el catálogo entero, eran tres, las tres con la
+ * misma forma: la cabecera con compuerta y el detalle sin ella.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ SE VIO TAN TARDE
+ *
+ * Porque la tabla tenía CERO FILAS. Una puerta abierta a una habitación vacía
+ * no la abre nadie, y el día que se llena ya nadie se acuerda de la puerta.
+ */
+describe("el detalle no puede ser más abierto que la cabecera", () => {
+  const RANGO: Record<string, number> = {
+    seller: 1, cashier: 2, operations: 3, manager: 4, admin: 5,
+  };
+
+  it("ningún recurso expande una tabla con compuerta sin tener la suya", () => {
+    const flojas: string[] = [];
+    for (const def of Object.values(RESOURCES)) {
+      const propia = readRoleFor(def.table);
+      for (const padre of Object.keys(def.expand ?? {})) {
+        const delPadre = readRoleFor(padre);
+        if (!delPadre) continue;
+        if (!propia || RANGO[propia] < RANGO[delPadre]) {
+          flojas.push(
+            `${def.table} expande ${padre} (${delPadre}) y su compuerta es ${propia ?? "NINGUNA"}`
+          );
+        }
+      }
+    }
+    expect(flojas).toEqual([]);
+  });
+
+  it("y las tres que lo incumplían siguen cerradas, uno por uno", () => {
+    // Nombradas a mano además del barrido: el barrido se cumple también
+    // quitando la compuerta de la CABECERA, que sería el arreglo al revés.
+    for (const tabla of ["commission_adjustment", "seller_bonus", "invoice_line"]) {
+      expect(readRoleFor(tabla), tabla).toBe("manager");
+      expect(() => assertCanReadTable(cajero, tabla), `${tabla}: el cajero entra`).toThrow();
+      expect(() => assertCanReadTable(vendedor(), tabla), `${tabla}: el vendedor entra`).toThrow();
+    }
+    // Y sus cabeceras, que es la otra mitad del barrido.
+    for (const tabla of ["commission", "settlement", "invoice"]) {
+      expect(readRoleFor(tabla), tabla).toBe("manager");
+    }
+  });
+
+  it("el ajuste no se le abre al vendedor por la puerta del ámbito", () => {
+    /**
+     * `commission_adjustment` no tiene columna de vendedor —cuelga de la
+     * comisión—, así que el ámbito por fila no sabría acotarlo y abrirlo le
+     * enseñaría los ajustes de sus compañeros con el motivo escrito.
+     *
+     * Lo suyo lo ve por donde corresponde: el neto de SU comisión, que sí está
+     * acotada, y el motivo en su estado de cuenta, que comprueba que la
+     * liquidación es suya antes de servirla.
+     */
+    expect(sellerCanReadTable("commission_adjustment")).toBe(false);
+    expect(isSellerScoped("commission_adjustment")).toBe(false);
+  });
+});
 
 describe("qué se le abre al vendedor", () => {
   it("su dinero: comisiones, liquidaciones y lo que se le debe", () => {

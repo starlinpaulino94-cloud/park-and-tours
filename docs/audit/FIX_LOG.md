@@ -5250,3 +5250,333 @@ aparece también en los contadores de pasajeros — así que vaciar el
 seguía en verde. Ahora se afirma la llamada **con** la elección.
 
 **Sin migración.** Todo esto es aplicación: nada nuevo que ejecutar en la base.
+
+---
+
+## Bloque 1 de los módulos vacíos · El socio
+
+Reportado, y con razón: «hay varios módulos que se crearon y están totalmente
+vacíos». Antes de tocar nada se midió, porque la explicación importaba.
+
+### Lo que NO era
+
+Las pantallas no están vacías de código. Barrido de las 136 del panel: solo 8
+no tenían nada que leyera o escribiera, y al abrirlas las 8 delegaban en
+componentes reales (`SimpleResource`, `AgingReport`, `BandejaDeAvisos`).
+Falsos positivos del barrido.
+
+### Lo que era
+
+Se levantó la base con las 99 migraciones **y el sembrador de demostración**, y
+se contaron las 118 tablas: **18 vacías**. Y no cualquiera:
+
+| Medido tras sembrar | |
+| --- | --- |
+| Socios (`organizations` kind=partner) | **0** |
+| `organization_relationships` | 0 |
+| `partner_product` · `allotment` · `partner_wallet_movement` | 0 |
+| Vendedores con cuenta enlazada | **0 de 4** |
+| Proveedores con usuario | **0** |
+
+El sembrador **no crea ni un socio**: la palabra «partner» aparece una vez en
+1 809 líneas. Así que las fases 4, 5 y 6 enteras —portal del tour center,
+contrato socio-producto, tarifario neto, cupos garantizados, monedero
+prepago— estaban construidas y **sin un solo dato con el que verse**.
+
+Desde la pantalla eso no se distingue de «no funciona», y por eso el reporte
+era correcto aunque el código estuviera.
+
+### Lo hecho
+
+`demo_partes/demo_14.sql` —y su copia en dos pegados para el editor— da de alta
+**dos socios que trabajan de las dos formas que el sistema declara
+excluyentes**, porque con uno solo la diferencia no se ve:
+
+- **Caribe Tours Bávaro** — tour center, a **comisión** (18%) y a **crédito**
+  (5 000 USD / 15 días), la operadora cobra al turista. 6 de 12 productos
+  contratados, cupo garantizado de 10 plazas en Saona y otro bajo petición.
+- **Punta Cana Excursions** — agencia, a **neto** (22% por debajo del público)
+  y **prepago**, cobra ella en su POS. 4 productos, tarifario neto real y un
+  monedero con una recarga y tres consumos: saldo 2 536,68 USD.
+
+El neto sale de `price_rule` con `partner_id` + canal `b2b_portal`, que es el
+**mismo** camino que usa la reserva: así el tarifario que se descarga y lo que
+se cobra no pueden divergir.
+
+### Un falso hallazgo, anotado porque enseña
+
+Mi primer sembrador insertaba `partner_product` y reventó con clave duplicada:
+había **24 filas donde yo pedía 6**. Parecía un fallo gordo —el contrato que
+debe LIMITAR, autollenado con todo—. No lo era: la **0077** le da a cada socio
+nuevo el catálogo de hoy a propósito, porque un tour center que no pueda vender
+nada hasta que alguien le autorice producto a producto parece un alta rota.
+
+El equivocado era el sembrador. Ahora **desactiva** lo que cada socio no tiene
+contratado, que además es lo que había que poder enseñar: que el contrato acota.
+
+### La guarda: un módulo vacío pasa a ser un fallo de construcción
+
+Lo que dura de esta entrega no son los datos: es que `scripts/db-test.sh`
+comprueba ahora, tras sembrar, que **16 módulos tengan filas** y que el socio
+se vea **en sus dos modelos de precio**. Un bloque que se quede sin datos rompe
+la construcción en vez de descubrirse en mitad de una demostración.
+
+Mutada por los dos lados: sin el sembrador del socio, la guarda nombra las
+cuatro tablas que se quedan vacías; con un solo modelo de precio, lo dice.
+
+**La lista de módulos cubiertos crece según se van cubriendo bloques. Lo que no
+está en ella, no está cubierto** — y se dice, en vez de dejarlo en blanco.
+
+### Qué sigue vacío, sin adornos
+
+- **Vendedores con cuenta enlazada: 0 de 4.** Es lo que deja «Mi espacio»
+  vacío. No se puede sembrar: enlazar una ficha a una cuenta necesita un
+  usuario real de `auth`, que el sembrador no puede crear.
+- **Proveedores con usuario: 0.** El portal del proveedor (fase 8) tampoco se
+  puede abrir por el mismo motivo.
+- `seller_attribution`, `commission_adjustment` y los espejos de MembeGo y
+  Stripe siguen a cero.
+
+---
+
+## Bloque 2 de los módulos vacíos · La cuenta que abre el portal
+
+Segundo bloque de los módulos que salían vacíos. El diagnóstico era «0 de 4
+vendedores con cuenta enlazada, 0 proveedores con usuario», y la hipótesis de
+partida —que el paso era manual y estaba sin guiar— resultó cierta solo a
+medias. Lo del proveedor era mucho peor.
+
+### El vendedor: existía entero
+
+`POST /api/sellers/invite` crea la cuenta, la invita y la vincula en una sola
+operación, con su botón en la fila y su rastro en la bitácora. No faltaba nada.
+
+Lo que faltaba era **decirlo**: que una ficha no tuviera cuenta no se veía en
+ningún sitio. Se descubría cuando la persona entraba y encontraba su panel
+vacío —que es exactamente la captura con la que se reportó—. La lista lo dice
+ahora de frente, con una columna «Cuenta · Sin cuenta».
+
+### El proveedor: la fase 8 no tenía puerta
+
+`supplier.user_id` es el **único** camino hacia el portal del proveedor: el
+enganche de autenticación (0084, restaurado en 0093) busca la ficha por esa
+columna y publica `supplier_id` en el token; de ahí sale `ctx.supplierId`, y de
+ahí **todo** —ver sus servicios, aceptarlos o rechazarlos con su plazo, la hoja
+de ruta del chofer, su estado de cuenta, facturar con NCF, el manifiesto—.
+
+Y **nada en el producto podía escribir esa columna**. Comprobado sobre el
+código:
+
+- `user` no estaba entre los campos editables del recurso `supplier`;
+- no existía ninguna ruta que la pusiera (`/api/suppliers/` no existía);
+- el formulario de proveedores no la ofrecía.
+
+Es decir: la fase 8 entera —ocho subfases de trabajo— estaba construida,
+probada y **era inalcanzable** salvo con un `update` a mano contra la base.
+
+Es el mismo hallazgo que `reconcileStaleDrafts` (9.16) y que
+`reserve_departure_capacity` (9.19), y ya van tres: **lo que faltaba no era
+construirlo, era enchufarlo**. Vale la pena decirlo en voz alta como patrón:
+en este sistema, lo que más veces está roto no es el código que falta sino el
+cable que nadie conectó.
+
+### Lo hecho
+
+Espejo exacto de lo del vendedor, y a propósito —son el mismo problema, y
+resolverlos de dos maneras distintas dejaría dos caminos que envejecen por
+separado—:
+
+- `supplier-identity.ts` — `assertSupplierUserLinkable`: la cuenta tiene que
+  ser de esta empresa y no estar ya en otra ficha. Un fallo al leer la
+  membresía **se lanza**: tomarlo por «no tiene acceso» manda a invitar a quien
+  ya está invitado, y por «sí lo tiene» vincula sin comprobar.
+- `POST /api/suppliers/invite` — crea la cuenta, la vincula y lo audita. Rango
+  de administración: esa columna abre los datos de la operación a otra empresa.
+- El campo `user` pasa a editable con `field-write-role: admin`, y la
+  validación se llama **también** en el CRUD genérico: tenerla solo en la ruta
+  de invitación dejaría el formulario vinculando cuentas de otra empresa.
+- Las dos pantallas dicen quién no tiene cuenta.
+
+### Mutación: 10 de 10, y dos guardas mías mal escritas
+
+- Una medía el `import` de `tenantUpdate` en vez de la llamada, así que daba
+  por bueno cualquier orden entre invitar y vincular. **Es la lección de 9.16
+  otra vez**, y van dos veces que la repito.
+- Otra cortaba el bloque del recurso `supplier` hasta `payable`… que está
+  **antes** en el fichero, así que el corte salía vacío y la guarda no miraba
+  nada.
+
+Y una guarda que ya existía cazó una omisión: `bitacora.test.ts` exige que toda
+acción que el código escribe tenga su texto en castellano, y
+`supplier_account_linked` salía con su nombre técnico en el papel.
+
+### Qué sigue vacío
+
+`seller_attribution`, `commission_adjustment` y los espejos de MembeGo y
+Stripe. Los dos últimos son integraciones externas: vacíos sin una cuenta
+conectada es su estado correcto.
+
+---
+
+## Bloque 2 (corrección) · La columna que añadí ya estaba ahí
+
+Revisando lo que acababa de empujar, en Vendedores hay **dos columnas con la
+misma clave** diciendo lo mismo con distintas palabras: «Acceso →
+Vinculada / Sin vincular», que existía desde la fase 1.4, y «Cuenta →
+Activo / Sin cuenta», que añadí yo ayer.
+
+### Por qué no lo vi
+
+Mi guarda pedía que el texto «Sin cuenta» **apareciera en el fichero**. Añadir
+una columna de más la cumple igual de bien que arreglar la que ya estaba. Es
+la misma forma de fallo que el `import` medido en vez de la llamada: la guarda
+comprueba que algo se nombra, no que algo pase.
+
+### Qué rompe de verdad
+
+`DataTable` pinta cabecera y celda con `key={c.key}`. Dos columnas con la misma
+clave son dos claves repetidas en la misma lista de React: avisa por consola y,
+al repintar, puede emparejar la celda de una con la cabecera de la otra.
+
+### Hecho
+
+- Fuera la columna duplicada. Queda **una**, la que ya existía.
+- Se ve en el móvil (`hideOn: "sm"` y no `"md"`): quien da de alta desde el
+  mostrador lo hace en el teléfono, y esa columna es lo primero que hay que
+  arreglar de una ficha.
+- **«Sin vincular», no «sin cuenta», en las dos pantallas.** La cuenta puede
+  existir en el equipo y no estar puesta en la ficha; decir que no existe es
+  afirmar algo que la columna no sabe. Y el mismo estado en dos listados
+  seguidos no puede leerse de dos maneras.
+- En Proveedores, el estado positivo deja de ser una insignia `active`: se
+  imprimía **«Activo»**, que es literalmente lo que ya dice la columna de al
+  lado sobre otra cosa.
+- **Guarda estructural nueva**: ninguna tabla del producto repite la clave de
+  una columna. Recorta cada `columns={[…]}` por corchetes emparejados y nombra
+  el fichero y la clave. Medido al escribirla: **una sola repetición en todo el
+  producto, la mía**.
+
+### Mutación: 6 de 6
+
+Duplicar la columna otra vez, volver a decirlo con otras palabras, esconderla
+en el móvil en cualquiera de las dos pantallas, dejar la columna sin decir nada
+y desenchufar el botón de invitar — todas mueren, y la primera nombrando el
+fichero y la columna.
+
+`tsc`, `eslint`, **4110/4110** y `build` en verde.
+
+---
+
+## Bloque 3 · El embudo y los ajustes: una puerta abierta a una habitación vacía
+
+Tercer bloque de los módulos vacíos. El diagnóstico medido era «`seller_attribution`
+y `commission_adjustment`, cero filas». A diferencia de los bloques 1 y 2, **el
+código estaba entero Y enchufado**: el enlace corto escribe la visita, la venta
+escribe el paso de reserva, el cobro completo escribe la compra, la cancelación
+de una venta ya pagada escribe el ajuste en negativo, y las cuatro pantallas
+existen. Vacías porque el sembrador escribe SQL directo y no pasa por el
+servicio.
+
+Y ahí estaba lo interesante: **un camino que nunca ha tenido datos es un camino
+que nadie ha probado.**
+
+### 1 · La compuerta que no existía (seguridad)
+
+`assertCanReadTable` deja pasar toda tabla que no esté en `READ_ROLE`.
+`commission` está reservada a gerencia; **`commission_adjustment` no estaba en
+la lista**, y tampoco en `SELLER_SCOPED`. Es decir: cualquier usuario del
+inquilino —un vendedor, un cajero, alguien de operaciones— podía pedir
+`/api/erp/commission_adjustment` y leer **los ajustes de toda la empresa, sin
+acotar, con el motivo en texto libre**. Es más sensible que la comisión, no
+menos: la comisión es una cifra, el ajuste es la cifra Y el porqué.
+
+**No estaba sola.** Un barrido del catálogo encontró tres, todas con la misma
+forma —la cabecera con compuerta y el detalle sin ella—:
+
+| cabecera | rango | detalle | rango |
+|---|---|---|---|
+| `commission` | manager | `commission_adjustment` | **ninguno** |
+| `settlement` | manager | `seller_bonus` | **ninguno** |
+| `invoice` | manager | `invoice_line` | **ninguno** |
+
+Las tres cerradas, y una guarda estructural que las habría encontrado sola:
+**ningún recurso que expanda una tabla con compuerta puede tener menos
+compuerta que ella**. Las dos pantallas afectadas ya pedían `manager` en el
+menú; ahora la API dice lo mismo que el menú.
+
+### 2 · La empresa transfiere el neto y el papel decía el bruto (dinero)
+
+`/api/settlements/generate` suma `net_amount ?? amount`, con un comentario que
+lo explica: «SE LIQUIDA EL NETO, NO EL IMPORTE». Los **dos** sitios que le
+enseñan a esa misma persona lo que se le debe sumaban `amount`:
+
+- `loadSellerStatement` — el estado de cuenta, el documento con el que se
+  discute una nómina.
+- `/dashboard/mi-espacio/comisiones` — su propia pantalla.
+
+Con un solo ajuste, la diferencia aparece en el banco y en ninguna pantalla. No
+podía saltar antes: las dos fórmulas llevan desde 0059 sin una sola fila con la
+que discrepar.
+
+**Hecho.** El estado de cuenta lleva por línea el bruto, lo ajustado y el neto,
+con el MOTIVO; y totaliza `devengado + ajustes`. Lo anulado no lleva su ajuste
+—ya está fuera del devengado, y restarlo lo contaría dos veces—. Los ajustes se
+leen de **esta** liquidación y no del neto vivo: un ajuste firmado la semana que
+viene no reescribe un papel ya entregado, que es la misma decisión que el
+porcentaje congelado.
+
+La pantalla del vendedor cobra el neto con **el mismo respaldo y en el mismo
+orden** que la liquidación, enseña el ajuste en su columna en cuanto existe, y
+el motivo se pide por `GET /api/commissions/:id/adjustments` —una puerta
+estrecha que comprueba que la comisión sea suya— y no por la tabla, que está
+cerrada por lo de arriba.
+
+### 3 · La columna que el disparador permitía escribir y nadie escribía
+
+`commission_adjustment.settlement_id` está en 0059 con su índice, y el
+disparador de solo-lectura de esa migración permite **exactamente una** edición
+sobre un ajuste ya escrito: engancharlo a una liquidación. Una excepción
+escrita a propósito. **Nada la usaba.** La liquidación descontaba el dinero del
+ajuste y no dejaba constancia de qué cierre se lo llevó.
+
+Es el mismo hallazgo que `reconcileStaleDrafts` (9.16), `reserve_departure_capacity`
+(9.19) y `supplier.user_id` (bloque 2). **Van cuatro.**
+
+### 4 · Los datos (`demo_15.sql`, y `demo_embudo_1/2.sql` para pegar)
+
+120 visitas anónimas sobre los cuatro enlaces que ya existían, 40 altas, 60
+reservas y las compras **solo de las órdenes cobradas** —la misma regla que
+`recordPurchaseOnce`—. Y los dos arquetipos de ajuste: una recuperación por
+venta caída después de pagarse (la comisión sigue en `paid`, porque se pagó) y
+una corrección de porcentaje, las dos enganchadas a LIQ-0002 y con el
+`net_amount` al día.
+
+`COBERTURA` de `db-test.sh` pasa de 16 a 18 módulos.
+
+### Mutación: 18, con un superviviente que sí era un hueco
+
+Las 17 primeras mueren. La 18 —sembrar la compra de **todas** las órdenes,
+incluidas las que nadie pagó— **sobrevivió**: el embudo sigue estrechándose
+(120 → 40) y mi guarda comprobaba la FORMA. La forma no basta. Se añadió el
+invariante que el propio producto respeta: ningún paso de «compra» sobre una
+orden sin cobrar. Con él, muere.
+
+Y una guarda nueva que faltaba desde el bloque 1: **las copias de
+`supabase/editor/` tienen que decir lo mismo que el trozo del sembrador del que
+salieron** —el que corre en CI es el del sembrador; el que se PEGA contra una
+base real es el de `editor/`, y nadie lo comprobaba—.
+
+### Un fallo mío por el camino
+
+Mi propio guion de mutación hacía copia de seguridad con `basename`, y
+`adjustments/route.ts` y `generate/route.ts` tienen el mismo nombre: la segunda
+copia pisó a la primera y restauró un fichero con el contenido del otro. Lo cazó
+la guarda de orden de `assertGerenciaOVendedorDe`.
+
+`tsc`, `eslint`, **4129/4129**, `db-test` y `build` en verde.
+
+### Qué sigue vacío
+
+Los espejos de MembeGo y de Stripe. Son integraciones externas: vacíos sin una
+cuenta conectada es su estado correcto. **Con esto se acaban los módulos vacíos
+que sí dependían de nosotros.**

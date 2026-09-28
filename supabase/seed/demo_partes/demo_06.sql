@@ -1,4 +1,4 @@
--- SEMBRADOR DEMO - TROZO 06 de 13. Ejecutar EN ORDEN del 01 al 13.
+-- SEMBRADOR DEMO - TROZO 06 de 15. Ejecutar EN ORDEN del 01 al 15.
 -- Pegar entero (Ctrl+A, Run). Requiere la migracion 0067 aplicada.
 
 create table demo_seed_rows as

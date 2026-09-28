@@ -92,10 +92,20 @@ export default function SellersPage() {
         { key: "goal", header: "Meta mensual", align: "right", hideOn: "md",
           render: (s: any) => (s.monthly_goal == null ? "—" : formatMoney(s.monthly_goal, s.currency || "usd")) },
         {
-          // Sin cuenta vinculada, esta persona entra al sistema y no ve NINGUNA
-          // de sus ventas: el sistema no sabe cuáles son suyas. Se enseña en el
-          // listado porque es lo primero que hay que arreglar de una ficha.
-          key: "acceso", header: "Acceso", hideOn: "md",
+          /**
+           * Sin cuenta vinculada, esta persona entra al sistema y no ve NINGUNA
+           * de sus ventas: el sistema no sabe cuáles son suyas. Se enseña en el
+           * listado porque es lo primero que hay que arreglar de una ficha.
+           *
+           * Se ve también en el móvil (`sm` y no `md`): medido sobre la base
+           * sembrada, CERO de cuatro vendedores tenían cuenta enlazada, y quien
+           * da de alta desde el mostrador lo hace en el teléfono.
+           *
+           * Dice «sin vincular» y no «sin cuenta» porque eso es lo único que
+           * esta columna sabe: la cuenta puede existir en el equipo y no estar
+           * puesta en la ficha, que es el caso que el campo de abajo arregla.
+           */
+          key: "acceso", header: "Acceso", hideOn: "sm",
           render: (s: any) => (s.user || s.user_id
             ? <span className="text-xs text-muted-foreground">Vinculada</span>
             : <span className="text-xs font-semibold text-amber-600">Sin vincular</span>),

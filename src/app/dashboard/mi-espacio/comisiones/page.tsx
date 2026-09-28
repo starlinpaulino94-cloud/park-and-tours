@@ -14,8 +14,27 @@ import { SinFicha } from "../_components/sin-ficha";
 interface Comision {
   _id: string;
   amount?: number; base_amount?: number; percentage?: number; currency?: string;
+  /**
+   * Lo ajustado y lo que queda (0059). Sin estos dos, esta pantalla enseñaba
+   * el BRUTO mientras la liquidación transfería el neto.
+   */
+  adjustment_total?: number | null; net_amount?: number | null;
   status?: string; service_date?: string | null; generated_at?: string | null;
   booking?: { booking_number?: string; product?: { name?: string } } | string | null;
+}
+
+/**
+ * Lo que se cobra por esta comisión: el neto si lo tiene, el bruto si no.
+ *
+ * El respaldo cubre las comisiones anteriores a 0059, que nacieron sin neto
+ * guardado. Es el mismo respaldo, y en el mismo orden, que usa la ruta que
+ * genera la liquidación: si las dos no leen igual, el papel y la transferencia
+ * dicen cifras distintas, que es exactamente el fallo que esto corrige.
+ */
+const cobrable = (c: Comision) => Number(c.net_amount ?? c.amount ?? 0);
+
+interface Ajuste {
+  _id: string; amount: number; reason?: string | null; created_at?: string | null;
 }
 
 /** Los estados que NO se cobran: se marcan, no se esconden ni se suman. */
@@ -58,6 +77,21 @@ export default function MisComisionesPage() {
   const [filas, setFilas] = useState<Comision[]>([]);
   const [cargando, setCargando] = useState(true);
   const [periodo, setPeriodo] = useState("90");
+  /**
+   * El porqué del descuento, pedido solo cuando se pincha.
+   *
+   * No viene en el listado: el motivo vive en `commission_adjustment`, que está
+   * reservada a gerencia porque no se puede acotar por vendedor. La puerta
+   * estrecha es `/api/commissions/:id/adjustments`, que comprueba que esa
+   * comisión sea suya antes de contestar.
+   */
+  const [motivos, setMotivos] = useState<Record<string, Ajuste[]>>({});
+
+  const verPorQue = async (c: Comision) => {
+    if (motivos[c._id]) { setMotivos((m) => { const { [c._id]: _, ...resto } = m; return resto; }); return; }
+    const res = await api.get<Ajuste[]>(`/api/commissions/${c._id}/adjustments`);
+    if (res.ok) setMotivos((m) => ({ ...m, [c._id]: res.data || [] }));
+  };
 
   useEffect(() => {
     let vivo = true;
@@ -116,12 +150,13 @@ export default function MisComisionesPage() {
   }
 
   const moneda = filas[0]?.currency || "usd";
-  let devengada = 0, pagada = 0, anulada = 0;
+  let devengada = 0, pagada = 0, anulada = 0, ajustes = 0;
   for (const c of filas) {
-    const importe = c.amount ?? 0;
+    const importe = cobrable(c);
     const estado = String(c.status ?? "");
-    if (ANULADAS.has(estado)) anulada += importe;
-    else if (PAGADAS.has(estado)) { pagada += importe; devengada += importe; }
+    if (ANULADAS.has(estado)) { anulada += importe; continue; }
+    ajustes += Number(c.adjustment_total ?? 0);
+    if (PAGADAS.has(estado)) { pagada += importe; devengada += importe; }
     else devengada += importe;
   }
   const pendiente = devengada - pagada;
@@ -148,8 +183,14 @@ export default function MisComisionesPage() {
         <KpiCard
           label="Devengada" icon="TrendingUp" tone="primary"
           value={formatMoney(devengada, moneda)}
-          hint="Todo lo que has generado en el período"
-          definition="No incluye lo anulado por cancelación o no-show."
+          hint={ajustes !== 0
+            ? `Ya descontados ${formatMoney(Math.abs(ajustes), moneda)} en ajustes`
+            : "Todo lo que has generado en el período"}
+          definition={
+            "No incluye lo anulado por cancelación o no-show. Es el NETO: si una " +
+            "venta se cayó después de pagarte su comisión, el descuento ya está " +
+            "aplicado aquí, con su motivo en la línea."
+          }
         />
         <KpiCard
           label="Pendiente de cobro" icon="Clock" tone="amber"
@@ -211,12 +252,61 @@ export default function MisComisionesPage() {
             },
           },
           {
+            /**
+             * EL AJUSTE, DICHO EN SU PROPIA COLUMNA.
+             *
+             * La liquidación transfiere el neto. Si esta pantalla enseña el
+             * bruto, la persona descubre el descuento cuando le llega menos
+             * dinero del que pone aquí, sin nada que se lo explique. Se enseña
+             * en cuanto existe, y se calla cuando no —una columna de guiones no
+             * informa de nada—.
+             */
+            key: "ajuste", header: "Ajuste", align: "right", hideOn: "md",
+            render: (c: Comision) => {
+              const a = Number(c.adjustment_total ?? 0);
+              if (!a) return <span className="text-xs text-muted-foreground">—</span>;
+              const detalle = motivos[c._id];
+              return (
+                <div className="text-right">
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); void verPorQue(c); }}
+                    className={`text-xs font-semibold underline decoration-dotted underline-offset-2 ${a < 0 ? "text-amber-600" : "text-emerald-600"}`}
+                    title="Ver por qué"
+                  >
+                    {a > 0 ? "+" : ""}{formatMoney(a, c.currency || moneda)}
+                  </button>
+                  {detalle && (
+                    <ul className="mt-1 space-y-0.5 text-[11px] text-muted-foreground">
+                      {detalle.length === 0 && <li>Sin detalle</li>}
+                      {detalle.map((d) => (
+                        <li key={d._id}>
+                          {formatMoney(d.amount, c.currency || moneda)} · {d.reason || "Sin motivo"}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              );
+            },
+          },
+          {
             key: "importe", header: "Comisión", align: "right",
-            render: (c: Comision) => (
-              <span className={ANULADAS.has(String(c.status ?? "")) ? "text-muted-foreground line-through" : "font-semibold"}>
-                {formatMoney(c.amount ?? 0, c.currency || moneda)}
-              </span>
-            ),
+            render: (c: Comision) => {
+              const bruto = Number(c.amount ?? 0);
+              const neto = cobrable(c);
+              return (
+                <div className={ANULADAS.has(String(c.status ?? "")) ? "text-muted-foreground line-through" : ""}>
+                  <p className="font-semibold">{formatMoney(neto, c.currency || moneda)}</p>
+                  {/* El bruto solo cuando difiere: si no, es la misma cifra dos veces. */}
+                  {Math.abs(neto - bruto) > 0.009 && (
+                    <p className="text-[11px] text-muted-foreground">
+                      de {formatMoney(bruto, c.currency || moneda)}
+                    </p>
+                  )}
+                </div>
+              );
+            },
           },
         ]}
       />

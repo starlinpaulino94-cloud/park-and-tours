@@ -144,7 +144,8 @@ describe("la guarda", () => {
 describe("las comisiones anuladas se marcan, no se esconden ni se suman", () => {
   const linea = (amount: number, status: string) => ({
     _id: status, booking_number: null, product: null, sold_at: null, service_date: null,
-    base_amount: 0, percentage: 0, amount, currency: "usd", status, anulada: esAnulada(status),
+    base_amount: 0, percentage: 0, amount, ajustes: 0, neto: amount, motivos: [],
+    currency: "usd", status, anulada: esAnulada(status),
   });
 
   it("cancelada, retenida y en disputa cuentan aparte", () => {
