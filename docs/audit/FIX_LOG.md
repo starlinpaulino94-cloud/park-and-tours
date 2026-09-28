@@ -5962,3 +5962,89 @@ sobre esta rama es quien lo dirá.
 
 `tsc`, `eslint`, **4153/4153**, `playwright --list` (18 recorridos), `db-test` y
 `build` en verde.
+
+---
+
+## BL-002 · Lo que una venta muerta a mitad se lleva puesto
+
+### La premisa no se toca
+
+«PostgREST no da transacciones multi-sentencia» es cierto y no se arregla desde
+aquí. La venta toca dieciséis tablas; reescribirla entera como una función de
+base sería cambiar un riesgo conocido por uno nuevo y mayor. **No lo hice.**
+
+Lo que sí se puede hacer es que la ausencia de transacción deje de ser una
+excusa: medir qué queda huérfano de verdad, cerrarlo, y hacer que el deshacer
+sea imposible de olvidar.
+
+### Hallazgo 1 · El cobro al monedero se tragaba su error, fuera de la saga
+
+`gastarDelMonedero` capturaba **todo** y devolvía `null`. Quien llamaba lo
+asignaba a una variable y solo miraba `consumo?.descubierto`, así que «no se
+pudo cobrar» y «se cobró sin descubierto» eran **indistinguibles**. Y la llamada
+estaba **después del `catch`**, sin envolver en nada.
+
+Medido: si esa llamada fallaba, **la venta se daba por buena**. El tour center se
+llevaba su excursión confirmada, su saldo intacto, y el mostrador veía «venta
+registrada». Ni un error, ni una fila pendiente, ni nada que reclamar — una línea
+en la consola del servidor. **No hace falta que se muera el proceso: basta que
+falle la llamada.**
+
+El código lo justificaba así: «revertir todo sería cambiar un descuadre —visible
+en el listado al día siguiente— por una reserva perdida con el turista delante».
+El razonamiento es bueno y **la premisa era falsa**: no había descuadre visible.
+No existía ninguna fila. Lo que se cambiaba no era una cosa por otra, era una
+pérdida **invisible** por nada.
+
+Y la objeción se resuelve donde estaba el problema: **el cobro se movió dentro de
+la saga, antes de promover la orden**. Ahí la orden sigue en borrador — no hay
+reserva confirmada ni voucher que perder, que es exactamente donde `assertSaldo`
+ya rechazaba por saldo corto. Lo cobrado se apunta y **se devuelve** si la venta
+se cae después.
+
+### Hallazgo 2 · La compensación se quedaba con el cupo del socio
+
+El `catch` sí devolvía el cupo — lo lleva apuntado en un mapa. Pero ese mapa vive
+en la memoria del proceso que vendía. Cuando quien compensa es el **barrido**
+—otro proceso, media hora después— el mapa no existe, y `compensateOrder`
+cancelaba las reservas **sin tocar el cupo**.
+
+Y a diferencia de la plaza de la salida, **el cupo no caduca**: 0099 le puso
+caducidad a la retención precisamente porque un proceso muerto no suelta nada. El
+contrato del socio se quedaba corto **para siempre**, y un contador que va de
+menos no lo reclama nadie.
+
+Era además una incoherencia entre dos caminos: cancelar a mano sí lo devuelve. El
+que no lo hacía era el que corre **sin testigos**.
+
+### El entregable de verdad: el inventario con guarda
+
+Ocho efectos de la venta, cada uno con quién lo deshace, y una prueba por
+efecto. Añadir una escritura a la saga sin decir qué la deshace pone la prueba en
+rojo. Más lo que aprendí midiendo: **la compensación sola no basta** — hay tres
+formas de deshacer y cada efecto necesita una que no dependa de la memoria del
+proceso que murió (la plaza caduca; el cupo se lee de la propia reserva).
+
+### Mutación: 6, con dos supervivientes sobre la mitad difícil
+
+Las dos eran sobre **deshacer dos veces**, que es donde se rompen los sistemas de
+compensación:
+
+- devolver el cupo de una reserva ya cancelada **sobrevivía**: la compensación
+  corre dos veces con facilidad (el `catch` y el barrido, o dos barridos), y
+  devolver dos veces le **regala** plazas al socio.
+- devolver el consumo de un **reintento** también sobrevivía: ese dinero es de la
+  venta original, que sigue en pie.
+
+Y al escribir la primera prueba me salió mal: partía de 3 plazas y devolvía 3, así
+que las dos devoluciones acababan en cero —la segunda topa ahí— y **el daño
+quedaba escondido justo debajo del suelo**. Con otras plazas consumidas por
+detrás, se ve.
+
+### Qué sigue abierto, con su tamaño
+
+Entre dos escrituras **no hay atomicidad**, y eso no lo cierra nada de esto. Lo
+que hay es compensación + barrido + caducidad, que reparan *después*. La ventana
+existe y ahora está inventariada.
+
+`tsc`, `eslint`, **4169/4169**, `db-test` y `build` en verde.

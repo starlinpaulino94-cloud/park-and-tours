@@ -7197,6 +7197,27 @@ describe("el socio que integra por API", () => {
     expect(iCobro, "no se descuenta la venta").toBeGreaterThan(iOrden);
     expect(servicio.slice(iCobro, iCobro + 400), "se cobra la estimación, no el total")
       .toMatch(/importe: totals\.total/);
+    /**
+     * Y AHORA TAMBIÉN: DENTRO DE LA SAGA, ANTES DE PROMOVER (BL-002).
+     *
+     * El cobro estaba después del `catch`, sin envolver, y la función se tragaba
+     * su error devolviendo `null`. Si fallaba, la venta se daba por buena con el
+     * saldo del socio intacto — y no quedaba ni una fila que lo dijera.
+     */
+    /**
+     * La PROMOCIÓN, no cualquier `pending_payment`: la cadena aparece antes en
+     * el estado con el que nace una reserva, y anclar ahí medía otra cosa.
+     * Lo que identifica a la promoción es que escribe los totales y el estado
+     * juntos.
+     */
+    const iPromocion = servicio.search(/\.\.\.totals,\s*\n\s*status: "pending_payment",/);
+    // El `catch` DE LA SAGA, que es el que compensa: hay varios `catch (err)`
+    // en el fichero y el primero no es éste.
+    const iCatch = servicio.indexOf("await compensateOrder(companyId, order._id");
+    expect(iPromocion, "no se encuentra la promoción de la orden").toBeGreaterThan(-1);
+    expect(iCobro, "se cobra después de promover la orden: un fallo ya no compensa")
+      .toBeLessThan(iPromocion);
+    expect(iCobro, "el cobro quedó fuera de la saga").toBeLessThan(iCatch);
   });
 
   it("la cancelación mira el LIBRO, no el contrato de hoy", () => {
@@ -11964,5 +11985,96 @@ describe("lo que busca el E2E de la venta existe en la pantalla", () => {
       .toMatch(/from\("booking"\)\.delete\(\)\.in\("id", ids\)/);
     expect(setup, "no devuelve los contadores de la salida a cero")
       .toMatch(/booked_pax: 0, pending_pax: 0, hold_pax: 0/);
+  });
+});
+
+/**
+ * SIN TRANSACCIONES, EL DESHACER NO PUEDE SER OPCIONAL (BL-002).
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * QUÉ ES BL-002 Y QUÉ SE PUEDE HACER CON ÉL
+ *
+ * «PostgREST no da transacciones multi-sentencia.» Es cierto y no se arregla:
+ * la venta toca dieciséis tablas y reescribirla entera como una función de
+ * base sería cambiar un riesgo conocido por uno nuevo y mayor.
+ *
+ * Lo que sí se puede hacer es que la ausencia de transacción sea IMPOSIBLE DE
+ * OLVIDAR. Cada efecto que la venta produce tiene que tener escrito quién lo
+ * deshace, y este inventario es ese contrato: si mañana alguien añade una
+ * escritura a la saga sin decir qué la deshace, esta prueba se pone roja.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * TRES FORMAS DE DESHACER, Y UNA DE ELLAS NO VALE SOLA
+ *
+ *   · COMPENSACIÓN — el `catch` de la venta. Cubre el fallo que se ATRAPA.
+ *   · BARRIDO — `reconcileStaleDrafts`, desde otro proceso. Cubre el fallo que
+ *     NO se atrapa: el proceso que se muere y nunca ejecuta su `catch`.
+ *   · CADUCIDAD — la retención de plaza (0099), que se suelta sola.
+ *
+ * La compensación sola NO basta, y ese fue el hallazgo: el cupo del socio se
+ * devolvía en el `catch` —con un mapa en memoria— y el barrido no lo devolvía,
+ * porque ese mapa muere con el proceso. Un contador que va de menos no lo
+ * reclama nadie.
+ */
+describe("cada efecto de la venta tiene escrito quién lo deshace", () => {
+  const SERVICIO = "src/lib/booking-service.ts";
+
+  /** Efecto → lo que tiene que aparecer en `compensateOrder` para deshacerlo. */
+  const DESHACE: { efecto: string; enCompensacion: RegExp }[] = [
+    { efecto: "las reservas", enCompensacion: /status: "cancelled"/ },
+    { efecto: "los costes del proveedor", enCompensacion: /cancelBookingCosts\(/ },
+    { efecto: "los contadores de la salida", enCompensacion: /recalculateDeparture\(/ },
+    { efecto: "los vouchers", enCompensacion: /"voucher"/ },
+    { efecto: "las comisiones", enCompensacion: /"commission"/ },
+    { efecto: "las cuentas por cobrar", enCompensacion: /"receivable"/ },
+    // El que faltaba: el barrido cancelaba la reserva y se quedaba con el cupo.
+    { efecto: "el cupo del socio", enCompensacion: /releaseBookingAllotment\(/ },
+    { efecto: "la orden", enCompensacion: /"order", orderId, \{/ },
+  ];
+
+  /** El cuerpo de `compensateOrder`, que es quien corre cuando no hay nadie. */
+  function compensacion(): string {
+    const src = cuerpoDe(SERVICIO);
+    const ini = src.indexOf("export async function compensateOrder(");
+    expect(ini, "ya no existe compensateOrder").toBeGreaterThan(-1);
+    const fin = src.indexOf("\nexport async function", ini + 10);
+    return src.slice(ini, fin > 0 ? fin : undefined);
+  }
+
+  it.each(DESHACE)("$efecto", ({ efecto, enCompensacion }) => {
+    expect(compensacion(), `la compensación no deshace ${efecto}`).toMatch(enCompensacion);
+  });
+
+  it("y lo que se coge en memoria se suelta TAMBIÉN desde el barrido", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * LA TRAMPA, Y POR QUÉ ESTA PRUEBA EXISTE
+     *
+     * El `catch` de la venta suelta la plaza y el cupo desde dos mapas
+     * (`retenidas`, `cupoReclamado`) y el monedero desde una variable. Los tres
+     * viven en la memoria del proceso que vendía. Cuando quien compensa es el
+     * BARRIDO —otro proceso, media hora después— no existe ninguno de los tres.
+     *
+     * Así que cada uno necesita, además, una forma de deshacerse SIN esa
+     * memoria: la plaza caduca sola (0099), el cupo se lee de la propia reserva
+     * (`allotment_seats`), y el monedero queda pendiente —está declarado abajo
+     * como el hueco que sigue abierto, con su tamaño—.
+     */
+    const src = cuerpoDe(SERVICIO);
+    // La plaza: caduca sola, así que el barrido no tiene que hacer nada.
+    expect(src, "la retención dejó de tener caducidad").toMatch(/hold_until/);
+    // El cupo: la reserva guarda de qué contrato salió y cuántas plazas.
+    expect(compensacion(), "la compensación no puede saber qué cupo devolver")
+      .toMatch(/allotment_seats/);
+  });
+
+  it("el barrido de borradores existe y corre desde algún sitio", () => {
+    // Una compensación que solo vive en el `catch` no cubre el caso que de
+    // verdad importa: el proceso que se muere y nunca llega a su `catch`.
+    expect(cuerpoDe(SERVICIO)).toMatch(/export async function reconcileStaleDrafts/);
+    expect(
+      read("src/app/api/cron/reconcile-drafts/route.ts"),
+      "el barrido existe y no lo ejecuta nadie"
+    ).toMatch(/reconcileStaleDrafts\(/);
   });
 });

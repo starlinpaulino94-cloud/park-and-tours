@@ -252,20 +252,29 @@ describe("apuntar un movimiento", () => {
 });
 
 describe("descontar y devolver, que NO pueden tumbar la operación", () => {
-  it("un descuento que falla deja la venta en pie", async () => {
+  it("un descuento que falla LANZA, y esta prueba decía lo contrario", async () => {
     /**
-     * En este punto el cliente ya tiene su reserva y su voucher: revertir todo por
-     * no poder escribir una fila de saldo sería cambiar un descuadre —visible en el
-     * listado al día siguiente— por una reserva perdida con el turista delante.
+     * ────────────────────────────────────────────────────────────────────────
+     * LO QUE ESTA PRUEBA AFIRMABA, Y POR QUÉ SE DA LA VUELTA
+     *
+     * Decía «un descuento que falla deja la venta en pie», con este motivo: «el
+     * cliente ya tiene su reserva y su voucher; revertir todo sería cambiar un
+     * descuadre —visible en el listado al día siguiente— por una reserva perdida
+     * con el turista delante».
+     *
+     * El razonamiento es bueno. La premisa era falsa: **no había descuadre
+     * visible**. Al fallar, la función devolvía `null`, quien llamaba solo
+     * miraba `descubierto`, y la venta se daba por buena. El socio se llevaba la
+     * excursión con el saldo intacto y no quedaba ni una fila que lo dijera.
+     *
+     * Y la objeción se resuelve donde estaba el problema de verdad: el cobro se
+     * movió DENTRO de la saga, antes de promover la orden. Ahí no hay reserva
+     * confirmada ni voucher que perder.
      */
     rpc.mockResolvedValueOnce({ data: null, error: { message: "el monedero está en USD" } });
-    const aviso = vi.spyOn(console, "error").mockImplementation(() => {});
-    const r = await descontarVenta("c1", {
+    await expect(descontarVenta("c1", {
       partnerId: SOCIO, tipo: "consumption", importe: 100, moneda: "dop",
-    }, "usd");
-    expect(r).toBeNull();
-    expect(aviso).toHaveBeenCalled();
-    aviso.mockRestore();
+    }, "usd")).rejects.toThrow(/No se pudo descontar/);
   });
 
   it("y uno que va bien manda la venta ENTERA a la función con cerrojo", async () => {

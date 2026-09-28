@@ -281,9 +281,30 @@ export async function descontarVenta(
  * un libro que se niega a anotar dinero gastado es un libro que miente— pero se
  * grita, que es justo lo que no pasaba.
  *
- * SIGUE SIN TUMBAR LA VENTA si falla. Es la excepción de siempre y tiene el
- * mismo motivo: en este punto el cliente ya tiene su reserva y su voucher, y
- * cambiar un descuadre por una reserva perdida con el turista delante es peor.
+ * ────────────────────────────────────────────────────────────────────────────
+ * Y AHORA SÍ TUMBA LA VENTA. LO QUE CAMBIÓ Y POR QUÉ
+ *
+ * Esto decía: «sigue sin tumbar la venta si falla; en este punto el cliente ya
+ * tiene su reserva y su voucher, y cambiar un descuadre por una reserva perdida
+ * con el turista delante es peor».
+ *
+ * El razonamiento era bueno y la premisa, falsa. **No había descuadre.** Al
+ * fallar, esta función devolvía `null`, quien llamaba solo miraba
+ * `consumo?.descubierto`, y el resultado medido era una venta dada por buena:
+ * el tour center con su excursión confirmada, su saldo intacto, y el mostrador
+ * viendo «venta registrada». Ni una fila pendiente ni nada que reclamar — solo
+ * una línea en una consola. Lo que se cambiaba no era «un descuadre visible»
+ * por «una reserva perdida»: era una pérdida INVISIBLE por nada.
+ *
+ * Y la objeción se resuelve sola donde de verdad estaba el problema: el cobro
+ * se movió DENTRO de la saga, antes de promover la orden. Ahí todavía no hay
+ * reserva confirmada ni voucher que perder, así que rechazar no le quita nada a
+ * nadie — es exactamente lo que ya hacía `assertSaldo` cuando el saldo no
+ * llegaba.
+ *
+ * La DEVOLUCIÓN de más abajo sí sigue sin tumbar nada, y la asimetría es
+ * deliberada: no cobrar es perder dinero; no poder devolver no puede tumbar la
+ * cancelación de un cliente.
  */
 export async function gastarDelMonedero(
   companyId: string,
@@ -331,8 +352,32 @@ export async function gastarDelMonedero(
     }
     return hecho;
   } catch (err) {
-    console.error(`[monedero] no se pudo descontar la venta de ${movimiento.partnerId}:`, err);
-    return null;
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * ESTO SE TRAGABA EL ERROR, Y ERA EL PEOR SITIO POSIBLE (BL-002)
+     *
+     * Devolvía `null` y seguía. Quien llama lo asigna a una variable y solo
+     * mira `consumo?.descubierto`, así que un `null` —o sea, «no se pudo
+     * cobrar»— era indistinguible de «se cobró y no hubo descubierto».
+     *
+     * Resultado medido: si la llamada fallaba, **la venta se daba por buena**.
+     * El tour center se llevaba la excursión confirmada, su saldo quedaba
+     * intacto, y el mostrador veía un «venta registrada». Ni un error, ni una
+     * fila pendiente, ni nada que reclamar: solo una línea en la consola del
+     * servidor que nadie lee.
+     *
+     * Es la misma forma que ya se corrigió treinta veces en 9.4 («las
+     * escrituras que se tragan su error»), en el único sitio donde el error
+     * significa que alguien se llevó algo sin pagarlo.
+     *
+     * Ahora se lanza y decide quien llama. La DEVOLUCIÓN de abajo sigue sin
+     * lanzar, y la asimetría es deliberada: no cobrar es perder dinero; no
+     * poder devolver no puede tumbar la cancelación de un cliente.
+     */
+    throw new Error(
+      `No se pudo descontar la venta del monedero del socio ${movimiento.partnerId}: ` +
+      `${err instanceof Error ? err.message : String(err)}`
+    );
   }
 }
 
