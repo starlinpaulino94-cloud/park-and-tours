@@ -5869,3 +5869,96 @@ Baja de **Alto** a **Medio**: el procedimiento y la comprobación están probado
 con seis controles negativos; lo que falta es ejecutarlo una vez.
 
 `tsc`, `eslint`, **4149/4149**, `db-test`, `restore-drill` y `build` en verde.
+
+---
+
+## T-001 · El recorrido que ninguna prueba hacía: vender, cobrar y cancelar
+
+### Lo primero, corregir el propio informe
+
+T-001 decía «**dos** ficheros de Playwright». Medido: hay **cinco**, con
+`global-setup.ts` provisionando usuarios, organizaciones, socios y proveedores.
+Esa mitad del hallazgo llevaba tiempo siendo falsa.
+
+La otra mitad era exacta, y peor de lo que suena: **las cinco specs son de
+aislamiento**. Entran, miran, y afirman que no se ve lo ajeno. **Ninguna escribe
+nada.** El camino que ninguna recorre es justo el que ha concentrado casi todos
+los hallazgos de esta auditoría —la retención de plaza, el cupo del socio, la
+comisión, el monedero, el arqueo—: cada pieza con sus pruebas unitarias, y cero
+pruebas de que las piezas ENCAJEN con una sesión real, la RLS puesta y el
+enganche del token metiendo el rol.
+
+### Hecho: `venta-completa.spec.ts`
+
+Dos recorridos.
+
+**El primero** hace la venta con el ratón —buscar la excursión, añadirla,
+elegir el cliente, confirmar, cobrar— y después **cancela desde Reservas**. Cada
+paso se afirma **contra la API con la misma sesión del navegador**, porque una
+pantalla puede decir «cobrado» sin haber escrito nada y ahí el verde sería
+mentira. Lo que se comprueba:
+
+- la orden quedó escrita, con importe mayor que cero;
+- vender **bajó las plazas libres** de la salida (es la mitad de 0099 y 0100);
+- cobrar dejó el saldo en **0** y el estado en `paid`;
+- cancelar dejó la reserva en `cancelled`;
+- y **la plaza volvió exactamente a donde estaba**.
+
+**El segundo** pide mil pasajeros en una salida de cuarenta **por la API**, con
+la sesión de una persona real. Es la única comprobación de la casa que ejerce el
+camino entero —sesión, rol en el token, RLS, ruta, reserva de plaza— contra la
+base: la carrera de `db-test.sh` prueba la función; esto prueba que la ruta la
+llama y que la llamada manda.
+
+### Dos cosas que el sembrador no daba, y sin las cuales el verde era vacío
+
+- **El producto no tenía precio.** La venta entera costaba cero, y «cobrar»
+  sobre cero deja el saldo en cero hiciera lo que hiciera el cobro. Se le pone
+  precio —y se le **refresca** en cada ejecución, porque un proyecto de CI que ya
+  corrió tiene el producto viejo sin precio y ahí la prueba pasaría sobre cero.
+- **La salida no quedaba limpia.** Es la primera spec que escribe: si una corrida
+  se cae a mitad, la plaza se queda cogida, y a las cuarenta el CI empieza a
+  fallar por capacidad agotada con un fallo que no se parece en nada a su causa.
+  Ahora `global-setup` borra las reservas de esa salida y devuelve sus contadores
+  a cero en cada ejecución.
+
+### Un fallo mío que habría dado verde para siempre
+
+La segunda prueba afirmaba `status >= 400`. **Un 404 también es ≥ 400**: si me
+hubiera equivocado en la ruta, la prueba habría dado verde sin ejercer nada. Un
+rechazo por «no existe» y uno por «no caben» se parecen mucho en un número y no
+se parecen en nada en lo que prueban. Ahora exige que la ruta exista y que la
+negativa **hable de plazas**.
+
+### Lo que NO se pudo hacer, dicho sin adornos
+
+**Esa spec no se ha ejecutado nunca.** Este entorno no tiene demonio de Docker, y
+sin él no hay pila de Supabase —ni autenticación ni PostgREST—, así que no hay
+contra qué correrla. Lo que sí se hizo desde aquí:
+
+- `tsc` y `eslint` sobre ella;
+- **Playwright la analiza y la recoge** (`--list`): 18 recorridos en 6 ficheros,
+  o sea que el fichero está bien formado y los `import` resuelven;
+- y —esto es lo que de verdad reduce el riesgo— **una guarda que comprueba que
+  cada texto que la prueba busca existe en la pantalla que conduce**. Una prueba
+  de navegador que nadie ha visto pasar falla, cuando falla, por la razón más
+  tonta: un botón que ya no se llama así. Eso sí se puede comprobar sin
+  ejecutarla, y **sigue comprobándose después**: el día que alguien renombre el
+  botón, el E2E se pondría rojo en el CI sin decir por qué, y esto lo dice en la
+  compilación.
+
+### Mutación: 8 de 8
+
+Renombrar cada botón del punto de venta, quitarle a la prueba la lectura de lo
+escrito, quitarle la afirmación de que el cobro salda, la de que cancelar
+devuelve la plaza, dejar el producto sin precio, no refrescarlo, y quitar la
+limpieza entre ejecuciones. Todas mueren.
+
+### Qué queda de T-001
+
+Baja de **Alto** a **Medio**. El recorrido existe, está sujeto y corre en el CI.
+**Mientras nadie lo haya visto pasar en verde, no está cerrado** — y el primer CI
+sobre esta rama es quien lo dirá.
+
+`tsc`, `eslint`, **4153/4153**, `playwright --list` (18 recorridos), `db-test` y
+`build` en verde.

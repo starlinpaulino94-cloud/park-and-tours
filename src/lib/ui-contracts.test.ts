@@ -11871,3 +11871,98 @@ describe("la caja no se abre, cierra ni aprueba dos veces", () => {
       .toMatch(/movement_type = 'closing'/);
   });
 });
+
+/**
+ * EL RECORRIDO DE LA VENTA, SUJETO DESDE FUERA (T-001).
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ ESTA GUARDA EXISTE, DICHO SIN ADORNOS
+ *
+ * `tests/e2e/venta-completa.spec.ts` **no se ha ejecutado nunca**. El entorno
+ * donde se escribió no tiene demonio de Docker, y sin él no hay pila de Supabase
+ * —ni autenticación ni PostgREST—, así que no hay contra qué correrla. Corre en
+ * el CI, que sí la levanta.
+ *
+ * Una prueba de navegador que nadie ha visto pasar falla, cuando falla, por la
+ * razón más tonta: un botón que ya no se llama así. Eso sí se puede comprobar
+ * desde aquí, y además sigue comprobándose después — que es lo que de verdad
+ * hace falta, porque el día que alguien reescriba el botón el E2E se pondrá rojo
+ * en el CI sin decir por qué, y esto lo dice en la compilación.
+ */
+describe("lo que busca el E2E de la venta existe en la pantalla", () => {
+  const SPEC = "tests/e2e/venta-completa.spec.ts";
+  /** Qué pantallas conduce el recorrido. Los textos tienen que salir de éstas. */
+  const PANTALLAS = [
+    "src/app/dashboard/pos/page.tsx",
+    "src/app/dashboard/reservas/page.tsx",
+  ];
+
+  it("cada texto que la prueba busca sale de una de las pantallas que conduce", () => {
+    const spec = read(SPEC);
+    const pantallas = PANTALLAS.map((p) => read(p)).join("\n");
+
+    const literales = new Set<string>();
+    const patrones = [
+      /getByRole\(\s*"button",\s*\{\s*name:\s*"([^"]+)"/g,
+      /getByPlaceholder\(\s*"([^"]+)"/g,
+      /getByText\(\s*"([^"]+)"/g,
+      /hasText:\s*"([^"]+)"/g,
+      // Y los que van por expresión regular, que son los que más se escapan:
+      // `/Confirmar venta/` no se parece a una cadena y nadie lo busca al
+      // renombrar el botón.
+      /getByRole\(\s*"button",\s*\{\s*name:\s*\/([^/\\]+)\//g,
+    ];
+    for (const patron of patrones) {
+      for (const m of spec.matchAll(patron)) literales.add(m[1]);
+    }
+
+    expect(literales.size, "la prueba dejó de buscar textos: ¿sigue conduciendo la pantalla?")
+      .toBeGreaterThanOrEqual(6);
+
+    const huerfanos = [...literales].filter((t) => !pantallas.includes(t)).sort();
+    expect(huerfanos, `${SPEC} busca textos que ya no están en ${PANTALLAS.join(" ni ")}`)
+      .toEqual([]);
+  });
+
+  it("y la prueba afirma sobre lo ESCRITO, no sobre lo que pinta la pantalla", () => {
+    /**
+     * Una pantalla puede decir «cobrado» sin haber escrito nada, y ahí el verde
+     * sería mentira. Cada paso se hace con el ratón y se comprueba contra la
+     * API con la misma sesión: lo que se afirma es lo que quedó en la base.
+     */
+    const spec = readCodigo(SPEC);
+    expect(spec, "no comprueba la orden contra la API").toMatch(/\/api\/erp\/order/);
+    expect(spec, "no comprueba la reserva contra la API").toMatch(/\/api\/erp\/booking/);
+    // Las tres afirmaciones que son el recorrido entero.
+    // `[\s\S]` y no la bandera `s`: el objetivo de compilación de este
+    // repositorio es anterior a es2018 y `tsc` la rechaza.
+    expect(spec, "no comprueba que el cobro salde la orden").toMatch(/balance[\s\S]*?\)\.toBe\(0\)/);
+    expect(spec, "no comprueba que vender TOME la plaza").toMatch(/toBeLessThan\(libresAntes\)/);
+    expect(spec, "no comprueba que cancelar DEVUELVA la plaza").toMatch(/\.toBe\(libresAntes\)/);
+  });
+
+  it("y el sembrador le da un producto con precio: vender cero no prueba nada", () => {
+    // Con `base_price` sin poner, la venta entera cuesta 0 y «cobrar» deja el
+    // saldo en 0 hiciera lo que hiciera el cobro. El verde sería vacío.
+    const setup = readCodigo("tests/e2e/global-setup.ts");
+    expect(setup).toMatch(/export const PRECIO_E2E = \d+/);
+    expect(setup, "el precio no se escribe en el producto").toMatch(/base_price: PRECIO_E2E/);
+    // Y se refresca en cada ejecución: un proyecto de CI que ya corrió tiene el
+    // producto viejo, sin precio, y ahí la prueba pasaría sobre cero.
+    expect(setup, "solo pone el precio al crear el producto, no al reencontrarlo")
+      .toMatch(/\.update\(\{ base_price: PRECIO_E2E/);
+  });
+
+  it("y la salida queda limpia entre ejecuciones", () => {
+    /**
+     * Es la primera spec que ESCRIBE. Si una corrida se cae a mitad, la plaza se
+     * queda cogida; a las cuarenta, el CI empieza a fallar por capacidad y el
+     * fallo no se parece en nada a su causa.
+     */
+    const setup = readCodigo("tests/e2e/global-setup.ts");
+    expect(setup, "no borra las reservas de la salida del E2E")
+      .toMatch(/from\("booking"\)\.delete\(\)\.in\("id", ids\)/);
+    expect(setup, "no devuelve los contadores de la salida a cero")
+      .toMatch(/booked_pax: 0, pending_pax: 0, hold_pax: 0/);
+  });
+});
