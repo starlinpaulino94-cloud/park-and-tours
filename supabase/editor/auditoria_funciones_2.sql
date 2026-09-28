@@ -46,7 +46,6 @@ with o(mig,tipo,nom,propio) as (values
   ('0081','fn','app.cash_movement_matches_session',true),
   ('0081','trg','cash_session_owner_frozen',true),
   ('0081','trg','cash_movement_matches_session',true),
-  ('0081','trg','cash_session_same_tenant',true),
   ('0083','fn','public.retain_seller_commission',true),
   ('0084','fn','app.current_supplier_id',true),
   ('0084','fn','app.can_read_supplier',true),

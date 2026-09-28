@@ -1433,7 +1433,23 @@ describe("la consulta de «qué migraciones me faltan»", () => {
     for (const f of readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql")).sort()) {
       const n = f.slice(0, 4);
       const sql = readFileSync(path.join(MIGRATIONS, f), "utf8").replace(/^\s*--.*$/gm, "");
+      /**
+       * UN `drop trigger if exists` SEGUIDO DE SU `create` NO BORRA NADA.
+       *
+       * Es la forma de escribir un registro que se puede repetir, y la usan
+       * todas las migraciones de disparadores de inquilino. Contarlo como
+       * borrado dejaba a 0102 —25 disparadores, todos «borrados» por ella
+       * misma— sin ningún objeto en el que apoyarse, y la consulta consolidada
+       * la daba por no comprobable.
+       *
+       * Lo que sigue siendo un borrado de verdad es el de 0095: deja caer
+       * `ledger_entry_cash_session_same_tenant` y crea OTRO con otro nombre.
+       */
+      const rehechoAqui = new Set(
+        [...sql.matchAll(/^create trigger\s+([a-z_0-9]+)/gm)].map((m) => m[1])
+      );
       for (const m of sql.matchAll(/drop\s+trigger\s+(?:if\s+exists\s+)?([a-z_0-9]+)/gi)) {
+        if (rehechoAqui.has(m[1])) continue;
         if (!borraEn.has(m[1])) borraEn.set(m[1], n);
       }
       for (const m of sql.matchAll(/drop\s+(?:table|index)\s+(?:if\s+exists\s+)?(?:public\.)?([a-z_0-9]+)/gi)) {

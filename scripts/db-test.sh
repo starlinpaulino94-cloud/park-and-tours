@@ -98,6 +98,79 @@ for doc in "$ROOT"/docs/operaciones/DESDE_EL_EDITOR_SQL.md; do
   fi
 done
 
+# ── Lo que se PEGA, ejecutado y leído ───────────────────────────────────────
+#
+# Las copias de `supabase/editor/` son lo que alguien pega contra SU base de
+# producción. Que digan lo mismo que la migración se comprueba en
+# `editor-sql.test.ts`; lo que aquí se comprueba es que CORREN, y que su
+# verificación sabe decir que algo va mal.
+#
+# Se eligen las de 0102 porque son idempotentes por construcción —cada trozo
+# empieza por `drop trigger if exists`— así que volver a pegarlas sobre una base
+# que ya las tiene es exactamente lo que hará quien las repita.
+echo "→ las copias de 0102 que se pegan en el editor"
+for pf in "$ROOT"/supabase/editor/0102_parte_[123].sql; do
+  [ -e "$pf" ] || { echo "✘ falta $pf"; fail=1; continue; }
+  [ "$(id -u)" = "0" ] && chown postgres "$pf" 2>/dev/null
+  if ! psql_run -f "$pf" >/dev/null; then
+    echo "✘ $(basename "$pf") no corre contra el esquema actual"; fail=1
+  fi
+done
+VERIF="$ROOT/supabase/editor/0102_parte_4_verificacion.sql"
+if [ -e "$VERIF" ]; then
+  [ "$(id -u)" = "0" ] && chown postgres "$VERIF" 2>/dev/null
+  SALIDA=$(psql_run -At -f "$VERIF" 2>&1 || true)
+  # La verificación devuelve filas legibles; ninguna puede decir que falta algo.
+  if echo "$SALIDA" | grep -q 'FALTA'; then
+    echo "✘ la verificación de 0102 dice que falta algo:"; echo "$SALIDA" | grep 'FALTA'; fail=1
+  elif echo "$SALIDA" | grep -q 'HAY sin comprobar'; then
+    echo "✘ la verificación de 0102 encontró referencias a una persona sin comprobar:"
+    echo "$SALIDA" | grep 'HAY sin comprobar'; fail=1
+  elif [ -z "$SALIDA" ]; then
+    echo "✘ la verificación de 0102 no devolvió ninguna fila: no verificó nada"; fail=1
+  else
+    echo "  las 4 filas de la verificación de 0102 se leen y ninguna acusa"
+  fi
+else
+  echo "✘ falta la verificación de 0102"; fail=1
+fi
+
+# ── «¿Qué migraciones me faltan?», contra una base que NO le falta ninguna ──
+#
+# `que_me_falta_*.sql` y `auditoria_*.sql` son la respuesta que alguien lee
+# antes de tocar su producción. Se generan, así que no se quedan atrás; lo que
+# no comprobaba nadie es que ACIERTEN. Aquí se corren contra la base efímera,
+# que tiene TODAS las migraciones aplicadas: ni una sola fila puede decir FALTA.
+#
+# Un falso «FALTA» manda a ejecutar otra vez algo que ya está, y enseña a
+# desconfiar de la consulta — que es la forma de que la próxima vez nadie la
+# mire. Es el mismo fallo que ya apareció una vez con 0038 y 0081.
+echo "→ la consulta de «qué migraciones me faltan», contra todo aplicado"
+consultas=0; consultas_mal=0
+for cf in "$ROOT"/supabase/editor/que_me_falta_*.sql \
+          "$ROOT"/supabase/editor/auditoria_migraciones*.sql \
+          "$ROOT"/supabase/editor/auditoria_funciones_*.sql; do
+  [ -e "$cf" ] || continue
+  [ "$(id -u)" = "0" ] && chown postgres "$cf" 2>/dev/null
+  SAL=$(psql_run -At -f "$cf" 2>&1 || true)
+  if [ -z "$SAL" ]; then
+    echo "✘ $(basename "$cf") no devolvió ninguna fila: no comprueba nada"; fail=1
+    consultas_mal=1
+  elif echo "$SAL" | grep -q 'FALTA'; then
+    echo "✘ $(basename "$cf") dice que faltan migraciones que SÍ están aplicadas:"
+    echo "$SAL" | grep 'FALTA' | head -5; fail=1
+    consultas_mal=1
+  fi
+  consultas=$((consultas + 1))
+done
+# Cero consultas corridas también es un fallo: el `for` sobre un patrón que no
+# casa con nada deja el bucle vacío y el mensaje de abajo diría que todo bien.
+if [ "${consultas:-0}" -lt 5 ]; then
+  echo "✘ solo se corrieron ${consultas:-0} consultas de auditoría: faltan ficheros"; fail=1
+elif [ "${consultas_mal:-0}" = "0" ]; then
+  echo "  ${consultas} consultas de auditoría y ninguna acusa de falta lo que está puesto"
+fi
+
 # ── Ningún módulo puede quedarse vacío en silencio ──────────────────────────
 #
 # De dónde sale esto: se reportó «hay varios módulos que se crearon y están

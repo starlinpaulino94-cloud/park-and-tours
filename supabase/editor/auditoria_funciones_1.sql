@@ -30,7 +30,6 @@ with o(mig,tipo,nom,propio) as (values
   ('0037','trg','invoice_same_tenant_refs',true),
   ('0038','trg','cash_count_touch',true),
   ('0038','trg','cash_count_same_tenant_refs',true),
-  ('0038','trg','ledger_entry_cash_session_same_tenant',true),
   ('0039','trg','payment_schedule_touch',true),
   ('0039','trg','payment_schedule_same_tenant_refs',true),
   ('0039','trg','payment_schedule_same_tenant',true),

@@ -138,9 +138,14 @@ with e(mig,obj,col) as (values
 ${resumen.join(",\n")}
 )
 select e.mig as migracion,
-       case when to_regclass('public.' || e.obj) is null
+       -- Esta rama va PRIMERA a propósito. Con el orden al revés,
+       -- \`to_regclass('public.' || '')\` es nulo y una migración sin
+       -- comprobación automática —hoy 0072— salía como 'FALTA - no existe ',
+       -- con el nombre vacío detrás. Medido contra una base con TODAS
+       -- aplicadas: decía que faltaba una que estaba.
+       case when e.obj = '' then 'SIN COMPROBACION AUTOMATICA - mirala a mano'
+            when to_regclass('public.' || e.obj) is null
               then 'FALTA - no existe ' || e.obj
-            when e.obj = '' then 'SIN COMPROBACION AUTOMATICA - mirala a mano'
             when e.col <> '' and not exists (
               select 1 from information_schema.columns c
                where c.table_schema = 'public' and c.table_name = e.obj
@@ -198,6 +203,62 @@ function trocear(filas, tope) {
   return trozos;
 }
 
+/**
+ * Y LO QUE UNA MIGRACIÓN POSTERIOR BORRA YA NO PRUEBA NADA.
+ *
+ * Medido contra una base con las 98 aplicadas: 0038 y 0081 salían FALTA. Y era
+ * cierto que sus disparadores no estaban —`ledger_entry_cash_session_same_tenant`
+ * y `cash_session_same_tenant` los borra 0095 para rehacerlos con otro nombre—,
+ * pero la conclusión era falsa: esas dos migraciones SÍ se habían ejecutado.
+ *
+ * Un falso «FALTA» es tan malo como un falso «OK»: manda a ejecutar otra vez
+ * algo que ya está y, sobre todo, enseña a desconfiar de la consulta, que es la
+ * forma de que la próxima vez nadie la mire. Así que un objeto que cualquier
+ * migración posterior borra se descarta como prueba, y si a una migración no le
+ * queda ninguno, lo dice.
+ */
+const borradoDespues = new Map();   // nombre -> primera migración que lo borra
+for (const archivo of [...ficheros].sort()) {
+  const numero = archivo.slice(0, 4);
+  const texto = fs.readFileSync(path.join(MIGRACIONES_DIR, archivo), "utf8")
+    .replace(/^\s*--.*$/gm, "");
+  const anotaBorrado = (clave) => {
+    if (!borradoDespues.has(clave)) borradoDespues.set(clave, numero);
+  };
+  /**
+   * UN `drop … if exists` SEGUIDO DE SU `create` NO BORRA NADA.
+   *
+   * Es la forma de escribir un registro que se puede repetir, y todas las
+   * migraciones de disparadores de inquilino la usan. Contarlo como borrado
+   * dejaba a 0102 —25 disparadores, ninguno superviviente según esta cuenta—
+   * sin ninguna forma de comprobarse, y salía «no se puede comprobar» cuando
+   * hay veinticinco objetos que preguntar por catálogo.
+   *
+   * Lo que sigue siendo un borrado de verdad es el de 0095: deja caer
+   * `ledger_entry_cash_session_same_tenant` y crea OTRO con otro nombre. Ése no
+   * se rehace, y por eso 0038 y 0081 seguirían sin poder probarse con él.
+   */
+  const rehechoAqui = new Set(
+    [...texto.matchAll(/^create trigger\s+([a-z_0-9]+)/gm)].map((m) => m[1])
+  );
+  for (const m of texto.matchAll(/drop\s+trigger\s+(?:if\s+exists\s+)?([a-z_0-9]+)/gi)) {
+    if (rehechoAqui.has(m[1])) continue;
+    anotaBorrado(`trg:${m[1]}`);
+  }
+  for (const m of texto.matchAll(/drop\s+function\s+(?:if\s+exists\s+)?([a-z_]+)\.([a-z_0-9]+)/gi)) {
+    anotaBorrado(`fn:${m[1]}.${m[2]}`);
+  }
+  for (const m of texto.matchAll(/drop\s+index\s+(?:if\s+exists\s+)?([a-z_0-9]+)/gi)) {
+    anotaBorrado(`idx:${m[1]}`);
+  }
+  for (const m of texto.matchAll(/drop\s+table\s+(?:if\s+exists\s+)?(?:public\.)?([a-z_0-9]+)/gi)) {
+    anotaBorrado(`tbl:${m[1]}`);
+  }
+  for (const m of texto.matchAll(/alter\s+table\s+(?:if\s+exists\s+)?(?:public\.)?([a-z_0-9]+)\s+drop\s+column\s+(?:if\s+exists\s+)?([a-z_0-9]+)/gi)) {
+    anotaBorrado(`col:${m[1]}.${m[2]}`);
+  }
+}
+
 /* ═══════════════════════════════════ funciones y disparadores */
 
 /**
@@ -240,7 +301,23 @@ for (const archivo of [...ficheros].sort()) {
     if (!definidoEn.has(clave)) definidoEn.set(clave, numero);
     // Y se comprueban las de 0021 en adelante, que son las que se aplican a
     // mano; lo anterior a eso vino con la base.
-    if (Number(numero) >= 21) {
+    /**
+     * Y NO SE PREGUNTA POR LO QUE UNA MIGRACIÓN POSTERIOR SE LLEVÓ.
+     *
+     * Medido contra la base efímera, con las 102 aplicadas, esta consulta decía
+     * FALTA de dos: el `ledger_entry_cash_session_same_tenant` de 0038 y el
+     * `cash_session_same_tenant` de 0081. Los dos los borra 0095 para rehacerlos
+     * con otro nombre, así que era cierto que no están y falso que esas
+     * migraciones faltaran.
+     *
+     * El resumen de abajo ya descartaba esos objetos; este detalle, no. Un
+     * falso FALTA manda a ejecutar otra vez algo que ya está y enseña a
+     * desconfiar de la consulta, que es la forma de que la próxima vez nadie la
+     * mire.
+     */
+    const quienLoBorra = borradoDespues.get(clave);
+    const superviviente = quienLoBorra === undefined || quienLoBorra < numero;
+    if (Number(numero) >= 21 && superviviente) {
       objetosPorMigracion.push([numero, tipo, nombre, definidoEn.get(clave) === numero]);
     }
   }
@@ -362,45 +439,6 @@ for (const archivo of [...ficheros].sort()) {
 
   if (Number(numero) < 21) continue;
   porMigracion.set(numero, candidatos.filter((c) => c.estrena));
-}
-
-/**
- * Y LO QUE UNA MIGRACIÓN POSTERIOR BORRA YA NO PRUEBA NADA.
- *
- * Medido contra una base con las 98 aplicadas: 0038 y 0081 salían FALTA. Y era
- * cierto que sus disparadores no estaban —`ledger_entry_cash_session_same_tenant`
- * y `cash_session_same_tenant` los borra 0095 para rehacerlos con otro nombre—,
- * pero la conclusión era falsa: esas dos migraciones SÍ se habían ejecutado.
- *
- * Un falso «FALTA» es tan malo como un falso «OK»: manda a ejecutar otra vez
- * algo que ya está y, sobre todo, enseña a desconfiar de la consulta, que es la
- * forma de que la próxima vez nadie la mire. Así que un objeto que cualquier
- * migración posterior borra se descarta como prueba, y si a una migración no le
- * queda ninguno, lo dice.
- */
-const borradoDespues = new Map();   // nombre -> primera migración que lo borra
-for (const archivo of [...ficheros].sort()) {
-  const numero = archivo.slice(0, 4);
-  const texto = fs.readFileSync(path.join(MIGRACIONES_DIR, archivo), "utf8")
-    .replace(/^\s*--.*$/gm, "");
-  const anotaBorrado = (clave) => {
-    if (!borradoDespues.has(clave)) borradoDespues.set(clave, numero);
-  };
-  for (const m of texto.matchAll(/drop\s+trigger\s+(?:if\s+exists\s+)?([a-z_0-9]+)/gi)) {
-    anotaBorrado(`trg:${m[1]}`);
-  }
-  for (const m of texto.matchAll(/drop\s+function\s+(?:if\s+exists\s+)?([a-z_]+)\.([a-z_0-9]+)/gi)) {
-    anotaBorrado(`fn:${m[1]}.${m[2]}`);
-  }
-  for (const m of texto.matchAll(/drop\s+index\s+(?:if\s+exists\s+)?([a-z_0-9]+)/gi)) {
-    anotaBorrado(`idx:${m[1]}`);
-  }
-  for (const m of texto.matchAll(/drop\s+table\s+(?:if\s+exists\s+)?(?:public\.)?([a-z_0-9]+)/gi)) {
-    anotaBorrado(`tbl:${m[1]}`);
-  }
-  for (const m of texto.matchAll(/alter\s+table\s+(?:if\s+exists\s+)?(?:public\.)?([a-z_0-9]+)\s+drop\s+column\s+(?:if\s+exists\s+)?([a-z_0-9]+)/gi)) {
-    anotaBorrado(`col:${m[1]}.${m[2]}`);
-  }
 }
 
 for (const [numero, candidatos] of [...porMigracion.entries()].sort()) {

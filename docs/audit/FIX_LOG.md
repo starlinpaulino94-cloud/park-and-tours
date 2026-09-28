@@ -6048,3 +6048,134 @@ que hay es compensación + barrido + caducidad, que reparan *después*. La venta
 existe y ahora está inventariada.
 
 `tsc`, `eslint`, **4169/4169**, `db-test` y `build` en verde.
+
+---
+
+## DB-001 · Las referencias a una persona, comprobadas — y el disparador que encogió
+
+**Migración 0102**, `supabase/tests/tenant_refs.test.sql`, `scripts/db-test.sh`,
+`scripts/build-auditoria-migraciones.mjs`, `src/lib/ui-contracts.test.ts`,
+`src/lib/editor-sql.test.ts`, `src/lib/schema-contract.test.ts`,
+`supabase/editor/0102_parte_1..4`.
+
+### Lo medido primero
+
+Ninguna clave foránea de este esquema es compuesta `(organization_id, id)`, así
+que la base no impide que una fila de la empresa A apunte a una de la B. Con RLS
+puesta una sesión normal no puede; lo que queda expuesto es la escritura con la
+**llave de servicio**, que es la que usa toda la aplicación por detrás.
+
+Medido contra el esquema real: **141 referencias entre tablas de inquilino sin
+ninguna comprobación**. Cubrirlas todas no es gratis —cada una cuesta una lectura
+por fila insertada— así que hacía falta un criterio escrito en vez de un gusto:
+
+> Se comprueba toda referencia a una **PERSONA** —cliente, vendedor, proveedor—
+> o a un **DOCUMENTO SOBRE UNA PERSONA** —reserva, venta—.
+
+36 referencias en 25 tablas. **141 → 105.** Lo que queda fuera refiere cosas:
+almacén, mantenimiento, turnos, activos. Un movimiento de stock mal apuntado es
+un número que cuadrar; un caso de atención apuntando al cliente de otra operadora
+es el expediente de alguien colgando de la empresa equivocada.
+
+La más cara de la lista no es de dinero: **`supplier_response_token.supplier_id`**.
+Ese token es la llave del portal del proveedor —el enlace de un solo uso con el
+que alguien acepta o rechaza un servicio sin tener cuenta—. Apuntando a un
+proveedor de otra empresa, ese enlace **abre el portal de otro**. Es
+autenticación, no contabilidad.
+
+### El fallo que cometí, y cómo se cazó
+
+El disparador no se configura por tabla: se configura por **NOMBRE**. Todas las
+migraciones usan la convención `<tabla>_same_tenant_refs` con un
+`drop trigger if exists` delante. Registrar una tabla que **ya** tenía disparador
+no añade referencias: las **sustituye**.
+
+`pickup` lo tenía desde 0018 con `booking_id`, `hotel_id` y `route_id`. Lo
+registré con `supplier_id` a secas: **tres comprobaciones perdidas para ganar
+una**, vendido como una mejora.
+
+Lo dijo el número: la prueba esperaba 105 y dio **108**. Tres de diferencia, que
+es exactamente lo que `pickup` cubría. `db-test` entero había dado verde antes de
+bajar el techo — porque nada erroraba. Lo que caza esto no es que algo falle: es
+un número que tiene que cuadrar.
+
+### El techo dejó de ser un techo
+
+Era `sin_cubrir > TECHO` con `TECHO = 141`. **Con ese tope, 108 cabe debajo de
+141 y la pérdida de `pickup` no habría dicho nada.** Un tope se cumple subiéndolo.
+
+Ahora es un número **exacto** en las dos direcciones: si sube, alguien añadió una
+referencia sin cubrir o le quitó columnas a un disparador que ya existía; si baja,
+se cubrió más y hay que bajarlo en el mismo cambio. Y sigue viviendo en **dos
+ficheros** —la prueba SQL y `ui-contracts`— para que moverlo se cuente en voz alta
+en vez de esconderse en un dígito.
+
+Lo mismo con la regla de personas: `en_personas` exige cero sin cubrir, y
+recortando su lista de tablas padre a `('customer')` **seguía dando cero**. Ahora
+además se cuenta cuántas referencias entra a mirar —100, exacto— porque un cero
+sobre una familia recortada no prueba nada.
+
+### La guarda que impide que vuelva a pasar
+
+`ui-contracts.test.ts` lee **todas** las migraciones en orden, extrae cada
+`create trigger … enforce_same_tenant_refs(…)` y exige que la **última**
+definición de cada nombre contenga todas las columnas de las anteriores. Y que
+toda columna validada esté en el `before insert or update of`, porque una columna
+que se valida pero no dispara al actualizarla parece cubierta y no lo está: el
+cruce se cuela moviendo una fila ya escrita.
+
+Al escribir esa guarda la expresión regular **cruzaba sentencias** —lo perezoso de
+`[\s\S]*?` enganchaba el nombre de un `create trigger` con el
+`enforce_same_tenant_refs` de la sentencia siguiente— y acusó a
+`bundle_item_no_nesting` de algo que no hace. Una guarda que parsea mal es peor
+que no tenerla.
+
+### Lo que apareció de paso: tres falsos «FALTA» en la consulta que el usuario pega
+
+Al hacer que `db-test` ejecutara las consultas de auditoría **contra una base con
+todas las migraciones aplicadas**, salieron tres filas acusando de falta algo que
+estaba:
+
+- `auditoria_migraciones.sql` decía `0072 | FALTA - no existe `, con el nombre
+  vacío detrás: la rama «sin comprobación automática» iba **después** de
+  `to_regclass('public.' || '')`, que es nulo. Orden de ramas.
+- `auditoria_funciones_1/2.sql` acusaban a **0038** y **0081** por disparadores
+  que **0095 borra** para rehacerlos con otro nombre. El resumen ya descartaba
+  esos objetos; el detalle, no.
+
+Y la raíz común de que 0102 saliera «no se puede comprobar»: un
+`drop … if exists` seguido de **su propio** `create` se contaba como un borrado.
+Es la forma de escribir un registro repetible, no una eliminación.
+
+Un falso «FALTA» manda a ejecutar otra vez algo que ya está y, peor, **enseña a
+desconfiar de la consulta**, que es la forma de que la próxima vez nadie la mire.
+Ahora `db-test` corre las **13** y ninguna puede acusar.
+
+### Lo que se pega, ejecutado
+
+`supabase/editor/0102_parte_1..3` y su verificación no solo se comparan con la
+migración —`editor-sql.test.ts` exige el mismo conjunto de disparadores, que hasta
+ahora solo se comprobaba para migraciones **con función**—: `db-test` las
+**ejecuta** y lee su verificación fila a fila. Si la copia encoge `pickup`, lo
+dice al correrla.
+
+### Mutación: 16, todas mueren
+
+Las dos que sobrevivieron primero y por qué:
+
+- **aflojar mi propio recuento de 0102** (`toBe(39)` → `toBeGreaterThan(0)`) no
+  se notaba sola. Se comprobó aplicándola **junto** con el encogimiento de
+  `pickup`: la regla de superconjunto lo caza igual. Defensa en profundidad, no
+  una sola guarda.
+- **romper la expresión regular** de `editor-sql.test.ts` dejaba los dos conjuntos
+  vacíos y el `continue` se llevaba la migración entera: pasaba **sin comparar
+  nada**. Ahora exige que 0102 compare sus 25.
+
+### Lo que sigue sin cubrirse, con su número
+
+**105 referencias**, a propósito, todas fuera de las dos familias que importan
+(dinero/entrada/descargo y personas). No es un olvido: es un coste medido —0097
+dejó los disparadores de la reserva en 0,66 ms— y el número está en la prueba
+para que no crezca en silencio.
+
+`tsc`, `eslint`, **4174/4174**, `db-test`, `restore-drill` y `build` en verde.

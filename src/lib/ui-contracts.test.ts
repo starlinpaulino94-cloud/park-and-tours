@@ -11121,41 +11121,57 @@ describe("referencias entre inquilinos: las de dinero, cubiertas", () => {
     expect(read(MIG)).toMatch(/No se puede validar el inquilino de %/);
   });
 
-  it("el hueco de DB-001 está medido y con techo", () => {
+  it("el hueco de DB-001 está medido, y medido en las dos direcciones", () => {
     /**
      * DB-001 llevaba abierto desde la primera auditoría sin un número al lado.
-     * La prueba SQL lo cuenta contra el esquema real y guarda el resultado como
-     * techo: puede bajar, no subir. Así una clave foránea nueva entre tablas de
-     * inquilino sin comprobación se ve antes de llegar a producción.
+     * La prueba SQL lo cuenta contra el esquema real y compara con lo que dice
+     * haber medido.
+     *
+     * ERA UN TECHO Y AHORA ES UN NÚMERO EXACTO, y la diferencia no es de
+     * estilo: 0102 perdió tres comprobaciones de `pickup` —sustituyó por nombre
+     * el disparador que 0018 ya tenía— y el techo de 141 no habría dicho nada,
+     * porque 108 cabe debajo de 141. Lo dijo el número exacto.
      */
     const sql = read(PRUEBA);
-    expect(sql).toMatch(/if sin_cubrir > TECHO then/);
+    expect(sql).toMatch(/if sin_cubrir > MEDIDO then/);
+    expect(sql, "el hueco volvió a ser un tope: bajar de lo medido ya no se ve")
+      .toMatch(/if sin_cubrir < MEDIDO then/);
     // Y en las tablas de dinero el hueco tiene que ser CERO, no pequeño: se
     // comprueba la CONDICIÓN, no solo que el mensaje siga escrito. Una mutación
     // que dejaba el texto y apagaba el `if` sobrevivió a la primera versión.
     expect(sql).toMatch(/if en_dinero is not null then/);
     expect(sql).toMatch(/SIGUEN sin cubrir referencias de dinero\/entrada\/descargo/);
+    // Y en las referencias a una PERSONA, también cero (0102).
+    expect(sql).toMatch(/if en_personas is not null then/);
+    expect(sql, "la familia de personas dejó de contarse: recortarla da cero sola")
+      .toMatch(/if cuantas_personas <> PERSONAS then/);
   });
 
-  it("el techo del hueco no se puede subir sin que se vea", () => {
+  it("el número del hueco no se puede mover sin que se vea", () => {
     /**
      * UN UMBRAL QUE VIVE SOLO EN SU PROPIA PRUEBA NO ES UN UMBRAL.
      *
      * La prueba SQL compara contra una constante que ella misma declara, así que
      * subirla de 141 a 300 hacía pasar todo sin arreglar nada — y eso sobrevivió
      * a la mutación. No se puede hacer inmutable un número escrito en un
-     * fichero; lo que sí se puede es exigir que subirlo pase por DOS ficheros,
+     * fichero; lo que sí se puede es exigir que moverlo pase por DOS ficheros,
      * de modo que el diff lo cuente en voz alta en vez de esconderlo en un
      * dígito.
      *
-     * Este valor solo baja. Si alguien cubre más referencias, se baja aquí y
-     * allí, y el diff dice exactamente cuántas se cubrieron.
+     * 141 → 105 con 0102. Se comprueba la IGUALDAD y no un tope: con un tope,
+     * cubrir de más y no bajar el número pasa desapercibido, y entonces el
+     * número deja de medir nada.
      */
-    const TECHO_ACORDADO = 141;
-    const m = read(PRUEBA).match(/TECHO constant integer := (\d+);/);
-    expect(m, "la prueba SQL dejó de declarar su techo").not.toBeNull();
-    expect(Number(m![1]), "el techo del hueco subió: cúbrelas o explica por qué")
-      .toBeLessThanOrEqual(TECHO_ACORDADO);
+    const MEDIDO_ACORDADO = 105;
+    const m = read(PRUEBA).match(/MEDIDO constant integer := (\d+);/);
+    expect(m, "la prueba SQL dejó de declarar lo que midió").not.toBeNull();
+    expect(Number(m![1]), "el hueco de DB-001 cambió: cúbrelas, o baja el número en los dos ficheros")
+      .toBe(MEDIDO_ACORDADO);
+
+    const p = read(PRUEBA).match(/PERSONAS constant integer := (\d+);/);
+    expect(p, "la prueba SQL dejó de declarar cuántas referencias a una persona hay").not.toBeNull();
+    expect(Number(p![1]), "cambió el número de referencias a una persona: revisa que todas estén cubiertas")
+      .toBe(100);
   });
 
   it("la prueba SQL comprueba que la caja del socio VUELVE a funcionar", () => {
@@ -12076,5 +12092,127 @@ describe("cada efecto de la venta tiene escrito quién lo deshace", () => {
       read("src/app/api/cron/reconcile-drafts/route.ts"),
       "el barrido existe y no lo ejecuta nadie"
     ).toMatch(/reconcileStaleDrafts\(/);
+  });
+});
+
+describe("DB-001 · un disparador de inquilino no puede encoger", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * EL FALLO QUE ESTA GUARDA CAZA, Y QUE YA OCURRIÓ
+   *
+   * `app.enforce_same_tenant_refs` no se configura por tabla: se configura por
+   * DISPARADOR, y el disparador se identifica por NOMBRE. Todas las migraciones
+   * de este repositorio usan la misma convención —`<tabla>_same_tenant_refs`— y
+   * todas empiezan por `drop trigger if exists`, que es lo correcto para poder
+   * reaplicarlas.
+   *
+   * El efecto secundario es que escribir un `create trigger` nuevo con ese
+   * nombre no AÑADE referencias: las SUSTITUYE. 0102 registró `pickup` con una
+   * sola columna sin ver que 0018 ya lo tenía con tres, y el resultado fue
+   * perder la reserva, el hotel y la ruta a cambio de ganar el proveedor: tres
+   * comprobaciones menos vendidas como una más.
+   *
+   * Se cazó por el techo de `tenant_refs.test.sql`, que en vez de 105 dio 108.
+   * Un número que no cuadra por tres es una pista, no un diagnóstico. Esta
+   * guarda lo dice por su nombre y sin base de datos: la ÚLTIMA definición de
+   * cada disparador tiene que contener todas las columnas de las anteriores.
+   */
+  const MIGRACIONES = "supabase/migrations";
+  type Registro = { fichero: string; nombre: string; tabla: string; deColumnas: string[]; valida: string[] };
+
+  const registros: Registro[] = [];
+  for (const f of readdirSync(path.join(ROOT, MIGRACIONES)).filter((n) => n.endsWith(".sql")).sort()) {
+    const sql = readSql(`${MIGRACIONES}/${f}`);
+    /**
+     * Sin `[^;]` la expresión CRUZA sentencias: lo perezoso de `[\s\S]*?` deja
+     * que un `create trigger` de otra función enganche su nombre con el
+     * `enforce_same_tenant_refs` de la sentencia siguiente. Pasó, y el
+     * resultado fue acusar a `bundle_item_no_nesting` de algo que no hace.
+     */
+    const re =
+      /create\s+trigger\s+(\w+)\s+before\s+insert\s+or\s+update\s+of\s+([^;]*?)\s+on\s+(\w+)\s+for\s+each\s+row\s+execute\s+function\s+app\.enforce_same_tenant_refs\s*\(([^;]*?)\)\s*;/gi;
+    for (const m of sql.matchAll(re)) {
+      // Los argumentos van en pares (columna, tabla padre): las posiciones
+      // pares son las columnas que este disparador valida de verdad.
+      const args = [...m[4].matchAll(/'([^']+)'/g)].map((x) => x[1]);
+      registros.push({
+        fichero: f,
+        nombre: m[1],
+        tabla: m[3],
+        deColumnas: m[2].split(",").map((c) => c.trim()).filter(Boolean),
+        valida: args.filter((_, i) => i % 2 === 0),
+      });
+    }
+  }
+
+  it("se encontraron los disparadores: la expresión no quedó buscando nada", () => {
+    // Sin esto, romper la expresión regular dejaría cero registros y todas las
+    // comprobaciones de abajo pasarían por vacío.
+    expect(registros.length).toBeGreaterThanOrEqual(60);
+    expect(new Set(registros.map((r) => r.nombre)).size).toBeGreaterThanOrEqual(40);
+    expect(registros.some((r) => r.fichero.startsWith("0018"))).toBe(true);
+    expect(registros.some((r) => r.fichero.startsWith("0102"))).toBe(true);
+  });
+
+  it("ninguna migración posterior le quita columnas a un disparador anterior", () => {
+    const porNombre = new Map<string, Registro[]>();
+    for (const r of registros) porNombre.set(r.nombre, [...(porNombre.get(r.nombre) ?? []), r]);
+
+    const perdidas: string[] = [];
+    for (const [nombre, defs] of porNombre) {
+      const ultima = defs[defs.length - 1];
+      const cubre = new Set(ultima.valida);
+      for (const anterior of defs.slice(0, -1)) {
+        for (const col of anterior.valida) {
+          if (!cubre.has(col)) {
+            perdidas.push(`${nombre}: ${anterior.fichero} validaba ${ultima.tabla}.${col} y ${ultima.fichero} lo dejó fuera`);
+          }
+        }
+      }
+    }
+    expect(perdidas, perdidas.join(" | ")).toEqual([]);
+  });
+
+  it("toda columna validada dispara también al actualizarla", () => {
+    /**
+     * `before insert or update of <columnas>` dispara SIEMPRE en el insert, así
+     * que una columna que se valida pero no está en la lista de `of` parece
+     * cubierta y no lo está: el cruce se cuela moviendo una fila ya escrita,
+     * que es lo más fácil de hacer desde la aplicación porque no hay que crear
+     * nada.
+     */
+    const sueltas: string[] = [];
+    for (const r of registros) {
+      for (const col of r.valida) {
+        if (!r.deColumnas.includes(col)) sueltas.push(`${r.fichero} · ${r.nombre}: valida ${col} pero no dispara al actualizarla`);
+      }
+      if (!r.deColumnas.includes("organization_id")) {
+        sueltas.push(`${r.fichero} · ${r.nombre}: no dispara al cambiar organization_id`);
+      }
+    }
+    expect(sueltas, sueltas.join(" | ")).toEqual([]);
+  });
+
+  it("0102 comprueba toda referencia a una persona o a su expediente", () => {
+    /**
+     * El criterio escrito de 0102, contado: 36 referencias en 25 tablas. Si
+     * alguien recorta la migración, el techo de `tenant_refs.test.sql` sube y
+     * esta guarda dice cuántas faltan sin necesidad de base de datos.
+     */
+    const dela0102 = registros.filter((r) => r.fichero.startsWith("0102"));
+    const referencias = dela0102.reduce((n, r) => n + r.valida.length, 0);
+    expect(new Set(dela0102.map((r) => r.tabla)).size, "0102 dejó de cubrir tablas").toBe(25);
+    expect(referencias, "0102 dejó de cubrir referencias").toBe(39);
+
+    // Y las tres que más duelen, por su nombre.
+    const cubre = (tabla: string, col: string) =>
+      dela0102.some((r) => r.tabla === tabla && r.valida.includes(col));
+    // La llave del portal del proveedor: apuntando a otro proveedor, ese
+    // enlace de un solo uso abre el portal de otra empresa.
+    expect(cubre("supplier_response_token", "supplier_id")).toBe(true);
+    // El expediente de una persona colgando de la empresa equivocada.
+    expect(cubre("guest_case", "customer_id")).toBe(true);
+    // Y lo que 0018 ya cubría y 0102 llegó a tirar.
+    expect(cubre("pickup", "booking_id")).toBe(true);
   });
 });
