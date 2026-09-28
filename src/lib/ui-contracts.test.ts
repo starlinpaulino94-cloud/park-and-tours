@@ -561,12 +561,12 @@ describe("Panel ejecutivo", () => {
      * salían del WhatsApp personal de quien atendiera, y "¿se le avisó?" no
      * tenía respuesta. Ahora todo pasa por la bandeja, que es el registro.
      */
-    const files = walk(path.join(ROOT, "src")).filter((f) => !f.includes("messaging/providers"));
+    const files = walk(path.join(ROOT, "src")).filter((f) => !f.replace(/\\/g, "/").includes("messaging/providers"));
     const direct = files.filter((f) => {
       const src = readFileSync(f, "utf8");
       return /api\.resend\.com|graph\.facebook\.com/.test(src);
     });
-    expect(direct.map((f) => path.relative(ROOT, f)),
+    expect(direct.map((f) => path.relative(ROOT, f).replace(/\\/g, "/")),
       "solo providers.ts habla con el proveedor").toEqual([]);
 
     // La bandeja es un libro: se lee desde el CRUD, se escribe por su acción.
@@ -1191,7 +1191,7 @@ describe("Panel ejecutivo", () => {
     const writers = walk(path.join(ROOT, "src")).filter((file) =>
       /tenantUpdate\([^)]*"gift_card"/.test(readFileSync(file, "utf8"))
     );
-    expect(writers.map((f) => path.relative(ROOT, f)))
+    expect(writers.map((f) => path.relative(ROOT, f).replace(/\\/g, "/")))
       .toEqual(["src/lib/gift-card-service.ts"]);
     expect(service).toContain('tenantUpdate(ctx.companyId, "gift_card"');
     expect(page, "el alta pasa por la acción, no por el formulario genérico").toContain("canWrite={false}");
@@ -1326,7 +1326,7 @@ describe("Panel ejecutivo", () => {
     // acción tocan el estado (enviada, aceptada, convertida), nunca el importe.
     const libWriters = walk(path.join(ROOT, "src/lib")).filter((file) =>
       /tenantUpdate\([^)]*"quote"/.test(readFileSync(file, "utf8"))
-    ).map((f) => path.relative(ROOT, f)).sort();
+    ).map((f) => path.relative(ROOT, f).replace(/\\/g, "/")).sort();
     expect(libWriters).toEqual(["src/lib/quote-service.ts"]);
     for (const route of ["send", "decide", "revise", "convert"]) {
       const src = read(`src/app/api/quotes/[id]/${route}/route.ts`);
@@ -5178,7 +5178,7 @@ describe("cada pantalla dice cómo se crea lo que enseña", () => {
     const mudas: string[] = [];
 
     for (const file of dashboardPages(DASHBOARD)) {
-      const route = "/" + path.relative(path.join(ROOT, "src/app"), file).replace(/\/page\.tsx$/, "");
+      const route = "/" + path.relative(path.join(ROOT, "src/app"), file).replace(/\\/g, "/").replace(/\/page\.tsx$/, "");
       if (route in DERIVADAS) continue;
 
       const src = screenSource(file);
@@ -5216,7 +5216,7 @@ describe("cada pantalla dice cómo se crea lo que enseña", () => {
     // que taparía la pantalla que ocupe ese sitio mañana.
     const rutas = new Set(
       dashboardPages(DASHBOARD).map(
-        (f) => "/" + path.relative(path.join(ROOT, "src/app"), f).replace(/\/page\.tsx$/, "")
+        (f) => "/" + path.relative(path.join(ROOT, "src/app"), f).replace(/\\/g, "/").replace(/\/page\.tsx$/, "")
       )
     );
     const fantasmas = Object.keys(DERIVADAS).filter((r) => !rutas.has(r));
@@ -5335,7 +5335,7 @@ describe("el camino del dinero no se contradice a sí mismo", () => {
   it("la lista de estados de RESERVA se escribe una sola vez", () => {
     const culpables: string[] = [];
     for (const file of walk(path.join(ROOT, "src"))) {
-      const rel = path.relative(ROOT, file);
+      const rel = path.relative(ROOT, file).replace(/\\/g, "/");
       if (rel.endsWith("types.ts") || rel in AMANO || /\.test\.tsx?$/.test(rel)) continue;
       const src = readFileSync(file, "utf8");
       // Una lista de estados de reserva que nombre cancelled y refunded y se
@@ -5676,7 +5676,7 @@ describe("ninguna acción sin bitácora", () => {
       if (!MUTANTES.test(src)) continue;
 
       const ruta = path.relative(path.join(ROOT, "src/app/api"), file)
-        .replace(/\/route\.ts$/, "").replace(/\\/g, "/");
+        .replace(/\\/g, "/").replace(/\/route\.ts$/, "");
       if (ruta in SIN_BITACORA) continue;
       if (auditaPorSuCuenta(src) || delegaEnServicioQueAnota(src)) continue;
       huerfanas.push(ruta);

@@ -55,7 +55,7 @@
     "lucide-react": "^0.536.0",
     "next-themes": "^0.4.6",
     "pdf-lib": "^1.17.1",
-    "postcss": "^8.5.6",
+    "postcss": "^8.5.28",
     "qrcode": "^1.5.4",
     "react": "19.0.1",
     "react-day-picker": "^9.8.1",
@@ -78,14 +78,18 @@
     "@types/react-dom": "19.0.4",
     "cross-env": "^7.0.3",
     "eslint": "9.27.0",
-    "eslint-config-next": "15.3.9",
+    "eslint-config-next": "^15.5.26",
     "jsdom": "^25.0.1",
-    "next": "15.3.9",
+    "next": "^15.5.26",
     "tailwindcss": "^4.1.1",
     "ts-node": "^10.9.2",
     "tw-animate-css": "^1.3.6",
     "typescript": "5.8.3",
     "vitest": "^2.1.9"
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "sharp": "^0.35.5",
+    "postcss": "^8.5.28"
+  }
 }

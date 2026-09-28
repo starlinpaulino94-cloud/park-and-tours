@@ -5,7 +5,8 @@ import { describe, it, expect, vi } from "vitest";
 vi.mock("@/lib/supabase/server", () => ({ supabaseServer: vi.fn() }));
 vi.mock("@/lib/supabase/service", () => ({ supabaseService: vi.fn() }));
 
-import { decodeJwtClaims, mapClaimsToContext } from "@/lib/supabase/auth-context";
+import { decodeJwtClaims, mapClaimsToContext, getSupabaseTenantContext } from "@/lib/supabase/auth-context";
+import { supabaseServer } from "@/lib/supabase/server";
 import { ROLES, rankOf } from "@/lib/roles";
 
 function makeJwt(payload: Record<string, unknown>): string {
@@ -83,5 +84,21 @@ describe("auth-context — mapClaimsToContext", () => {
       { org_id: "org1", app_role: "supplier", status: "active" }, user, null
     );
     expect(sinFicha?.supplierId).toBeNull();
+  });
+});
+
+describe("auth-context — sin credenciales de Supabase", () => {
+  it("resuelve null y NO tumba los Server Components públicos", async () => {
+    /**
+     * `supabaseServer` lanza cuando faltan NEXT_PUBLIC_SUPABASE_URL / ANON_KEY.
+     * Ese throw salía de `getSupabaseTenantContext` sin más: la portada —que es
+     * pública y pregunta quién es el visitante— moría con un 500 en cualquier
+     * despliegue sin credenciales. El contrato ahora es el mismo del middleware:
+     * sin configuración no hay sesión (null), y la página decide qué mostrar.
+     */
+    vi.mocked(supabaseServer).mockRejectedValueOnce(
+      new Error("Supabase no configurado: falta NEXT_PUBLIC_SUPABASE_URL / ANON_KEY")
+    );
+    await expect(getSupabaseTenantContext()).resolves.toBeNull();
   });
 });
