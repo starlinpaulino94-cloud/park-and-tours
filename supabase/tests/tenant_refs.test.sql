@@ -20,7 +20,7 @@ do $$
 declare
   fallos text[] := '{}';
   a_org uuid; b_org uuid; socio uuid;
-  a_reg uuid; b_reg uuid; a_ses uuid;
+  a_reg uuid; a_reg2 uuid; b_reg uuid; a_ses uuid;
   a_cli uuid; b_cli uuid;
   a_prod uuid; b_prod uuid;
   a_ord uuid; b_ord uuid;
@@ -35,6 +35,9 @@ begin
     values ('Socio de A', 'partner', a_org) returning id into socio;
 
   insert into cash_register (organization_id, name) values (a_org, 'Mostrador A') returning id into a_reg;
+  -- Un segundo mostrador de A: desde 0101 una caja no admite dos turnos
+  -- abiertos, y esta prueba abre dos sesiones de A para comprobar OTRA cosa.
+  insert into cash_register (organization_id, name) values (a_org, 'Mostrador A2') returning id into a_reg2;
   insert into cash_register (organization_id, name) values (b_org, 'Mostrador B') returning id into b_reg;
   insert into customer (organization_id, first_name) values (a_org, 'Ana') returning id into a_cli;
   insert into customer (organization_id, first_name) values (b_org, 'Beto') returning id into b_cli;
@@ -60,7 +63,7 @@ begin
   -- Tratar ese nulo como «no se sabe» habría rechazado esto.
   begin
     insert into cash_session (organization_id, cash_register_id, status, opened_at, partner_id)
-      values (a_org, a_reg, 'open', now(), a_org);
+      values (a_org, a_reg2, 'open', now(), a_org);
   exception when others then
     fallos := fallos || format('referenciar la propia empresa se rechaza: %s', sqlerrm);
   end;

@@ -5673,3 +5673,108 @@ siguiente que lea el fichero pensará que alguien aflojó el listón.
 ### Qué queda de F
 
 La **caja**: `cash_session` y sus totales. No está medida.
+
+---
+
+## Dimensión F · La caja: 18 turnos sobre el mismo cajón y un faltante asentado 20 veces
+
+La última carrera pendiente de F. Salieron **tres**, y las tres sobre dinero.
+
+### Primero, un fallo de método que casi me hace decir que no había nada
+
+La primera medición dio **verde en las dos**. Estaba mal: la apertura la escribí
+como `insert … where not exists (…)` y el cierre como
+`with … update … returning … insert … from`. Las dos son **la versión atómica**
+—una sola sentencia—, así que estaba midiendo el arreglo y no el fallo.
+
+Reproducido como lo hace la aplicación de verdad —leer, esperar lo que tarda el
+resto del trabajo, escribir— salieron los números reales. Es la misma forma del
+error del UUID equivocado de 9.17: **una medición mal montada no da un error,
+da un verde**.
+
+### Lo medido
+
+| carrera | antes | ahora |
+| --- | --- | --- |
+| Abrir caja (20 a la vez) | **18 turnos abiertos** sobre el mismo cajón | 1 |
+| Cerrar turno (20 a la vez) | 1 — pero por accidente (ver abajo) | 1, deliberado |
+| Aprobar el descuadre (20 a la vez) | el mismo faltante **asentado 20 veces** | 1 |
+
+**Dos turnos sobre un cajón no es un número mal puesto.** Los cobros se reparten
+entre los dos según cuál lea cada petición y al final del día **ninguno de los
+dos arqueos cuadra**: el faltante de uno es el sobrante del otro, y desde la
+pantalla no hay forma de saberlo.
+
+### El cierre estaba defendido por accidente
+
+`cash_count_unique_idx` existe desde 0038 por una razón de **forma** —un conteo
+de cierre por sesión y moneda— y el conteo se escribe antes del movimiento, así
+que el segundo cierre muere ahí. Mover ese `insert` dos líneas más abajo
+reabriría el agujero sin que nada avisara, y quien cerraba segundo recibía un
+error de clave duplicada de Postgres en vez de «ya está cerrada».
+
+Importa qué se duplicaba: `recalcCashSession` **suma** el movimiento de cierre,
+así que un duplicado envenena el esperado de cualquier arqueo posterior.
+
+### Y la aprobación no tenía ninguna
+
+Leía `pending_approval`, escribía `reconciled` y asentaba la diferencia. Lo único
+que impedía el asiento doble era `alreadyPosted`, **que es una lectura**: las dos
+peticiones preguntan, las dos no encuentran nada, las dos asientan. Y el libro
+diario no tenía ni un índice único detrás. Comprobado quitando las dos defensas
+nuevas: **20 asientos del mismo faltante**.
+
+`alreadyPosted` es el guardián de idempotencia de **todas** las fuentes del
+libro, no solo de la caja: cobros y liquidaciones colgaban del mismo hilo.
+
+### Hecho (migración 0101)
+
+1. **Índice único parcial** sobre los turnos abiertos de cada caja: un segundo
+   turno abierto pasa a ser imposible, no improbable.
+2. **`claim_cash_session_status`** — transición atómica con el estado de
+   **partida** explícito, para cerrar y para aprobar. Sin él no se puede saltar
+   un paso: aprobar un turno que nadie cerró deja de ser posible.
+3. **Tres índices únicos en el libro diario** —por cobro, por liquidación y por
+   turno de caja, con `line_no` en la clave para que un asiento no choque
+   consigo mismo—. `alreadyPosted` pasa a ser una cortesía en vez de la única
+   defensa.
+
+En las rutas, el reclamo va **antes de la primera escritura**: quien pierde la
+carrera sale sin tocar el libro. El cálculo va antes del reclamo porque el estado
+final depende del conteo, y nada de lo que hay por encima escribe — así no hace
+falta un estado intermedio de «cerrando» en la máquina.
+
+**Si ya hay datos que lo incumplen, la migración se para y los nombra.** No
+elige cuál de dos turnos cerrar, a propósito: el sistema no puede decidir cuál de
+dos cajones tiene el dinero. `0101_parte_1_antes.sql` los lista sin tocar nada.
+
+### Mutación: 3 en la migración, 7 en las rutas, y dos supervivientes que enseñaron algo
+
+- Quitar el índice del turno único → **20 turnos**. Muere.
+- Hacer que la transición ignore el estado de partida → la carrera del cierre
+  seguía en 1. **Sobrevivía** porque el índice de 0038 la tapa. Hizo falta medir
+  sobre el **movimiento** de cierre, que no tiene índice, y añadir una prueba SQL
+  de la función. Con las dos, muere.
+- Quitar el índice único del libro → seguía en 1. **Sobrevivía** porque el
+  reclamo ya serializa. No era un hueco: es defensa en profundidad, y se
+  comprobó quitando **las dos** a la vez — ahí aparecen los 20 asientos.
+
+### Otro fallo mío, este del banco de pruebas
+
+Escribí un comentario SQL nombrando un índice **entre comillas invertidas**,
+dentro de un `psql -c "…"`. Bash las ejecuta antes de que psql vea nada: salió
+`command not found` por la salida de error, las pruebas siguieron en verde, y el
+SQL que llegaba a la base estaba mutilado justo en el trozo que ese comentario
+explicaba. **Un banco de pruebas que se estropea en silencio mide otra cosa y lo
+dice con la misma cara.** Hay guarda.
+
+### La dimensión F, cerrada
+
+Cinco carreras del dominio, medidas y cerradas, las cinco corriendo en CI:
+plazas, cupo del socio, apertura de caja, cierre de turno y aprobación del
+descuadre. El monedero ya se serializaba desde 0091.
+
+Lo que queda **no es una carrera** sino atomicidad estricta —BL-002, que
+PostgREST no da— y eso sigue abierto con su tamaño escrito.
+
+`tsc`, `eslint`, **4147/4147**, `db-test` y `build` en verde.

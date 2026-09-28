@@ -6,6 +6,7 @@ import {
 import { exigeRangoDeCaja, noPuedeAbrirLaCaja } from "@/lib/caja-identidad";
 import { ok, fail, readJson } from "@/lib/api-response";
 import { recalcCashSession } from "@/lib/cash";
+import { supabaseService } from "@/lib/supabase/service";
 import { loadCashClose } from "@/lib/cash-service";
 import {
   countTotal, invalidDenominations, differenceOf, classifyDifference, needsApproval,
@@ -129,6 +130,42 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const closedAt = new Date().toISOString();
     const results: { currency: string; expected: number; counted: number; difference: number }[] = [];
 
+    /**
+     * SE CALCULA TODO, SE RECLAMA EL CIERRE, Y SOLO ENTONCES SE ESCRIBE (0101).
+     *
+     * ────────────────────────────────────────────────────────────────────────
+     * LO QUE PASABA
+     *
+     * La comprobación de arriba —`session.status !== "open"`— es una lectura, y
+     * entre ella y estas escrituras cabe otro cierre entero. Dos cierres a la
+     * vez escribían los dos el conteo, el movimiento de cierre y el asiento del
+     * descuadre.
+     *
+     * Hoy no llegaba a pasar, y por accidente: `cash_count_unique_idx` existe
+     * desde 0038 por una razón de FORMA —un conteo de cierre por sesión y
+     * moneda— y el conteo se escribe antes del movimiento, así que el segundo
+     * cierre muere ahí. Mover ese `insert` dos líneas más abajo reabriría el
+     * agujero sin que nada avisara. Y quien cerraba segundo recibía un error de
+     * clave duplicada en vez de «ya está cerrada».
+     *
+     * El movimiento de cierre importa especialmente: `recalcCashSession` lo
+     * SUMA, así que duplicarlo envenena el esperado de cualquier arqueo
+     * posterior.
+     *
+     * ────────────────────────────────────────────────────────────────────────
+     * POR QUÉ EL CÁLCULO VA ANTES DEL RECLAMO
+     *
+     * El estado final depende de si el descuadre pasa la tolerancia, y eso sale
+     * del conteo. Nada de lo que hay por encima ESCRIBE —`recalcCashSession`
+     * solo recalcula derivados, y dos recálculos dan lo mismo—, así que se
+     * puede calcular sin reclamar. Así el reclamo lleva ya el estado definitivo
+     * y no hace falta un estado intermedio de «cerrando» en la máquina.
+     *
+     * Lo que esto acepta: si una escritura de las de abajo falla después del
+     * reclamo, el turno queda cerrado con sus cifras pero sin el desglose por
+     * denominación. Se pierde detalle, que se puede volver a teclear. La
+     * alternativa —quien pierde la carrera escribiendo en el libro— es dinero.
+     */
     for (const summary of arqueo.currencies) {
       const entry = byCurrency.get(summary.currency)!;
       const hasBreakdown = Array.isArray(entry.breakdown) && entry.breakdown.length > 0;
@@ -141,6 +178,38 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           ? Math.max(0, Number(body.counted_cash ?? 0))
           : 0;
       const difference = differenceOf(summary.expected, counted);
+      results.push({ currency: summary.currency, expected: summary.expected, counted, difference });
+    }
+
+    const tolerance = arqueo.tolerance;
+    const requiresApproval = needsApproval(results.map((r) => r.difference), tolerance);
+    const main = results.find((r) => r.currency === primary);
+
+    // EL RECLAMO. Quien pierde sale aquí, sin haber escrito nada.
+    const { data: reclamado, error: errorDelReclamo } = await supabaseService()
+      .rpc("claim_cash_session_status", {
+        p_session: id,
+        p_from: "open",
+        p_to: requiresApproval ? "pending_approval" : "closed",
+        p_at: closedAt,
+        p_by: ctx.userId,
+      });
+    if (errorDelReclamo) {
+      throw Object.assign(
+        new Error(`No se pudo cerrar el turno: ${errorDelReclamo.message}`),
+        { status: 409 }
+      );
+    }
+    if (reclamado !== true) {
+      throw Object.assign(new Error("La sesión de caja ya está cerrada"), { status: 409 });
+    }
+
+    for (const r of results) {
+      const entry = byCurrency.get(r.currency)!;
+      const hasBreakdown = Array.isArray(entry.breakdown) && entry.breakdown.length > 0;
+      const counted = r.counted;
+      const summary = { currency: r.currency, expected: r.expected };
+      const difference = r.difference;
 
       await tenantCreate(ctx.companyId, "cash_count", {
         cash_session: id,
@@ -161,18 +230,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         currency: summary.currency, concept: "Cierre de caja / arqueo",
         movement_at: closedAt,
       });
-
-      results.push({ currency: summary.currency, expected: summary.expected, counted, difference });
     }
 
-    const tolerance = arqueo.tolerance;
-    const requiresApproval = needsApproval(results.map((r) => r.difference), tolerance);
-    const main = results.find((r) => r.currency === primary);
-
+    // El estado, la fecha y la firma los escribió el reclamo: repetirlos aquí
+    // daría dos sitios donde se decide cuándo se cerró un turno.
     await tenantUpdate(ctx.companyId, "cash_session", id, {
-      closed_at: closedAt,
-      closed_by: ctx.userId,
-      status: requiresApproval ? "pending_approval" : "closed",
       requires_approval: requiresApproval,
       counted_cash: main?.counted ?? 0,
       difference: main?.difference ?? 0,

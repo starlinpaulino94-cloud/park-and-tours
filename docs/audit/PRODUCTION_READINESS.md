@@ -62,7 +62,7 @@ Se mantienen los nombres del informe anterior para poder compararlos.
 | **C** Base de datos | FALLA | **PARCIAL** | RLS completa y verificada; FKs sin inquilino siguen abiertas (ver DB-001) |
 | **D** Seguridad | FALLA | **PASA** | Ver abajo: los cuatro P0/P1 de seguridad, cerrados y con guarda |
 | **E** Lógica de negocio | FALLA | **PARCIAL** | Idempotencia cerrada; transacciones siguen sin existir (ver BL-002) |
-| **F** Concurrencia | FALLA | **PARCIAL** | Dos carreras medidas y cerradas, las dos corriendo en CI: sobreventa de plazas (30 ventas de 10 plazas — 19 reservas antes, 10 ahora) y **cupo del socio** (30 ventas de un cupo de 10 — el contador acababa en **2** con las 30 pasando; ahora 10). El monedero ya se serializaba con cerrojo sobre la fila del socio (0091), ahora comprobado. Queda sin medir la caja |
+| **F** Concurrencia | FALLA | **PASA** | Las cinco carreras del dominio, medidas y cerradas, las cinco corriendo en CI: sobreventa de plazas (19 reservas de 10 antes, 10 ahora), cupo del socio (el contador acababa en **2** con las 30 ventas pasando; ahora 10), apertura de caja (**18 turnos abiertos** sobre el mismo cajón; ahora 1), cierre de turno y aprobación del descuadre (el mismo faltante **asentado 20 veces** en el libro; ahora 1). El monedero ya se serializaba con cerrojo sobre la fila del socio (0091). Lo que queda no es una carrera sino atomicidad estricta: ver BL-002 |
 | **G** Pruebas | FALLA | **PARCIAL** | 2 300 unitarias y SQL contra Postgres; E2E casi inexistente (ver T-001) |
 | **H** Fiabilidad | FALLA | **PARCIAL** | Reintentos y compensación sí; restauración sin probar (ver DR-001) |
 | **I** Observabilidad | FALLA | **PARCIAL** | Sentry conectado y `job_run`/`system_incident` en uso; sin alertas verificadas |

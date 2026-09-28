@@ -28,7 +28,8 @@ with u(mig,tipo,nom,huella) as (values
   ('0097','src','app.enforce_same_tenant_refs','select %I, true from %s'),
   ('0098','col','membego_customer.membership_status',''),
   ('0099','col','departure.hold_pax',''),
-  ('0100','fn','public.release_allotment_seats','')
+  ('0100','fn','public.release_allotment_seats',''),
+  ('0101','idx','ledger_entry_una_vez_por_turno_idx','')
 ), v as (
   select u.mig,
          case u.tipo

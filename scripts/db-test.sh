@@ -197,6 +197,143 @@ fi
 # Se comprueban las dos cosas, y las dos importan: que no se venda de más
 # —sobreventa— y que no se venda de menos —el cerrojo dejando plazas sin
 # vender—. Un cerrojo que rechaza todo también pasaría la mitad de la prueba.
+# ── Las carreras de la CAJA ─────────────────────────────────────────────────
+#
+# La última de la dimensión F. Dos caminos, los dos comprobar-y-actuar:
+#
+#  · ABRIR: la ruta lee si esa caja tiene sesión abierta y, si no, crea una. Dos
+#    cajeros que abran a la vez dejan DOS turnos abiertos sobre el mismo cajón:
+#    los cobros se reparten entre los dos y ninguno de los arqueos cuadra.
+#
+#  · CERRAR: la ruta lee el estado, comprueba que sea `open` y luego escribe el
+#    conteo, el movimiento de cierre y el asiento del descuadre. Dos cierres a
+#    la vez lo escriben todo DOS VECES — y el movimiento de cierre lo suma el
+#    recálculo, así que además envenena el esperado de cualquier arqueo
+#    posterior.
+echo "→ carreras de la caja: abrir y cerrar el mismo turno a la vez"
+CAJA_SQL="$WORK/caja.sql"
+cat > "$CAJA_SQL" <<'EOSQL'
+insert into organizations (id, name, kind)
+  values ('cccccccc-0000-0000-0000-0000000000d0', 'Carrera caja', 'tenant')
+  on conflict (id) do nothing;
+insert into cash_register (id, organization_id, name, currency, status)
+  values ('cccccccc-0000-0000-0000-0000000000d1', 'cccccccc-0000-0000-0000-0000000000d0',
+          'Caja de la carrera', 'usd', 'active')
+  on conflict (id) do nothing;
+delete from cash_count    where cash_session_id in (select id from cash_session where organization_id = 'cccccccc-0000-0000-0000-0000000000d0');
+delete from cash_movement where cash_session_id in (select id from cash_session where organization_id = 'cccccccc-0000-0000-0000-0000000000d0');
+delete from cash_session  where organization_id = 'cccccccc-0000-0000-0000-0000000000d0';
+EOSQL
+[ "$(id -u)" = "0" ] && chown postgres "$CAJA_SQL"
+if ! psql_run -f "$CAJA_SQL" >/dev/null; then
+  echo "✘ no se pudo preparar la carrera de la caja"; fail=1
+else
+  ORGC=cccccccc-0000-0000-0000-0000000000d0
+  REG=cccccccc-0000-0000-0000-0000000000d1
+
+  # ABRIR: veinte a la vez, cada uno como la ruta —mirar y crear—.
+  for i in $(seq 1 20); do
+    "${RUN[@]}" psql -h "$PGHOST" -p "$PGPORT" -d appdb -At -c "
+      do \$m\$
+      begin
+        -- Fiel a la ruta: mirar si ya hay turno abierto...
+        if exists (select 1 from cash_session
+                    where organization_id = '$ORGC' and cash_register_id = '$REG'
+                      and status = 'open') then return; end if;
+        -- ...leer la caja, comprobar el rango y el dueño...
+        perform pg_sleep(0.05);
+        -- ...y crear el turno. Sin el índice de 0101 aquí entraban 18.
+        insert into cash_session (organization_id, cash_register_id, opening_amount, currency, status, code)
+          values ('$ORGC', '$REG', 100, 'usd', 'open', 'CJ-$i');
+      end \$m\$;" >/dev/null 2>&1 &
+  done
+  wait
+  ABIERTAS=$(psql_run -At -c "select count(*) from cash_session where organization_id = '$ORGC' and status = 'open';" | tr -d '[:space:]')
+  if [ "${ABIERTAS:-0}" != "1" ]; then
+    echo "✘ DOS CAJONES PARA EL MISMO DINERO: $ABIERTAS turnos abiertos sobre la misma caja"; fail=1
+  else
+    echo "  20 aperturas simultáneas, 1 turno abierto"
+  fi
+
+  # CERRAR: veinte a la vez contra el turno que quedó abierto.
+  TURNO=$(psql_run -At -c "select id from cash_session where organization_id = '$ORGC' and status = 'open' limit 1;" | tr -d '[:space:]')
+  if [ -n "${TURNO:-}" ]; then
+    for i in $(seq 1 20); do
+      "${RUN[@]}" psql -h "$PGHOST" -p "$PGPORT" -d appdb -At -c "
+        do \$m\$
+        begin
+          -- Fiel a la ruta desde 0101: recalcular y validar el conteo primero...
+          perform pg_sleep(0.05);
+          -- ...y RECLAMAR la transición antes de escribir nada. Quien pierde
+          -- sale sin tocar el libro; antes escribía el conteo, el movimiento de
+          -- cierre y el asiento del descuadre igual que el que ganaba.
+          if public.claim_cash_session_status('$TURNO', 'open', 'closed', now(), null) is not true then
+            return;
+          end if;
+          insert into cash_count (organization_id, cash_session_id, currency, kind, counted_total)
+            values ('$ORGC', '$TURNO', 'usd', 'close', 100);
+          -- El movimiento de cierre NO tiene índice único, y es el que mide de
+          -- verdad si la transición serializa: si se cuenta solo el conteo, lo
+          -- que se está midiendo es cash_count_unique_idx, que existe desde
+          -- 0038 por una razón de forma y no como defensa de esta carrera.
+          -- Además el recálculo lo SUMA, así que duplicarlo envenena el
+          -- esperado de cualquier arqueo posterior.
+          insert into cash_movement (organization_id, cash_session_id, movement_type, amount, currency, concept)
+            values ('$ORGC', '$TURNO', 'closing', 100, 'usd', 'Cierre de caja / arqueo');
+        end \$m\$;" >/dev/null 2>&1 &
+    done
+    wait
+    CIERRES=$(psql_run -At -c "select count(*) from cash_movement where cash_session_id = '$TURNO' and movement_type = 'closing';" | tr -d '[:space:]')
+    if [ "${CIERRES:-0}" != "1" ]; then
+      echo "✘ EL TURNO SE CERRÓ $CIERRES VECES: conteo, movimiento y asiento del descuadre, duplicados"; fail=1
+    else
+      echo "  20 cierres simultáneos, 1 cierre escrito"
+    fi
+
+    # ── APROBAR EL DESCUADRE ───────────────────────────────────────────────
+    #
+    # Ésta no tenía NINGUNA defensa: la ruta leía `pending_approval`, escribía
+    # `reconciled` y asentaba la diferencia en el libro diario. Lo único que lo
+    # impedía era `alreadyPosted`, que es una lectura — las dos miran, las dos no
+    # encuentran nada, las dos asientan. Un faltante de caja contabilizado dos
+    # veces no lo nota nadie hasta que no cuadra el balance.
+    psql_run -c "
+      update cash_session set status = 'pending_approval', difference = -25
+       where id = '$TURNO';
+      insert into ledger_account (organization_id, code, name, account_type)
+      select '$ORGC', c.code, c.name, c.tipo
+        from (values ('1101','Caja','asset'), ('5206','Faltantes','expense')) as c(code, name, tipo)
+       where not exists (select 1 from ledger_account
+                          where organization_id = '$ORGC' and code = c.code);" >/dev/null 2>&1
+    for i in $(seq 1 20); do
+      "${RUN[@]}" psql -h "$PGHOST" -p "$PGPORT" -d appdb -At -c "
+        do \$m\$
+        declare v_cuenta uuid;
+        begin
+          -- Fiel a la ruta desde 0101: reclamar la transición y solo entonces
+          -- asentar. Y detrás, el índice único del libro por si alguien mueve
+          -- el asiento a otro sitio.
+          if public.claim_cash_session_status('$TURNO', 'pending_approval', 'reconciled', now(), null) is not true then
+            return;
+          end if;
+          perform pg_sleep(0.05);
+          select id into v_cuenta from ledger_account
+           where organization_id = '$ORGC' and code = '5206' limit 1;
+          insert into ledger_entry (organization_id, source_type, cash_session_id, line_no,
+                                    ledger_account_id, debit, currency, posted_at)
+            values ('$ORGC', 'cash_close', '$TURNO', 1, v_cuenta, 25, 'usd', now());
+        end \$m\$;" >/dev/null 2>&1 &
+    done
+    wait
+    ASIENTOS=$(psql_run -At -c "select count(*) from ledger_entry where cash_session_id = '$TURNO' and source_type = 'cash_close';" | tr -d '[:space:]')
+    if [ "${ASIENTOS:-0}" != "1" ]; then
+      echo "✘ EL DESCUADRE SE ASENTÓ $ASIENTOS VECES en el libro diario"; fail=1
+    else
+      echo "  20 aprobaciones simultáneas, 1 asiento en el libro"
+    fi
+  fi
+fi
+
 # ── La carrera del CUPO DEL SOCIO ───────────────────────────────────────────
 #
 # El informe de preparación deja abierta la dimensión F con «quedan sin medir

@@ -11674,3 +11674,113 @@ describe("lo que se transfiere y lo que dice la pantalla", () => {
       .toMatch(/_filter: \{ commission: commissionId, settlement: null \}/);
   });
 });
+
+/**
+ * LA CAJA: TRES COMPROBAR-Y-ACTUAR SOBRE DINERO (0101, dimensión F).
+ *
+ * Medido: veinte aperturas simultáneas de la misma caja dejaban **18 turnos
+ * abiertos sobre el mismo cajón**, y aprobar el descuadre —que no tenía
+ * defensa ninguna— asentó el mismo faltante **veinte veces** en el libro
+ * diario.
+ */
+describe("la caja no se abre, cierra ni aprueba dos veces", () => {
+  const ABRIR = "src/app/api/cash/sessions/route.ts";
+  const CERRAR = "src/app/api/cash/sessions/[id]/close/route.ts";
+  const REVISAR = "src/app/api/cash/sessions/[id]/review/route.ts";
+
+  it("abrir dos veces lo impide el candado, y se dice con el mensaje bueno", () => {
+    const src = readCodigo(ABRIR);
+    /**
+     * La lectura de «¿ya hay turno abierto?» se queda —da el mensaje bueno y
+     * ahorra el trabajo de en medio— pero no es la defensa: entre ella y el
+     * `insert` cabe todo el camino. Lo que defiende es el índice único parcial.
+     */
+    expect(src, "no traduce el candado de la base al mensaje de siempre")
+      .toMatch(/cash_session_un_turno_abierto_idx/);
+    expect(src).toMatch(/Esta caja ya tiene una sesión abierta/);
+  });
+
+  it("cerrar RECLAMA la transición antes de escribir nada", () => {
+    const src = readCodigo(CERRAR);
+    const reclamo = src.indexOf('p_from: "open"');
+    const conteo = src.indexOf('tenantCreate(ctx.companyId, "cash_count"');
+    const movimiento = src.indexOf('movement_type: "closing"');
+
+    expect(reclamo, "no reclama la transición").toBeGreaterThan(-1);
+    expect(conteo).toBeGreaterThan(-1);
+    expect(reclamo, "escribe el conteo antes de reclamar el cierre").toBeLessThan(conteo);
+    expect(reclamo, "escribe el movimiento de cierre antes de reclamar").toBeLessThan(movimiento);
+    expect(src).toMatch(/claim_cash_session_status/);
+  });
+
+  it("y no vuelve a escribir el estado por su cuenta", () => {
+    /**
+     * El estado, la fecha y la firma los escribe el reclamo. Repetirlos en el
+     * `tenantUpdate` daría dos sitios donde se decide cuándo se cerró un turno,
+     * y el día que se separen no hay forma de saber cuál manda.
+     */
+    const src = readCodigo(CERRAR);
+    const patch = src.slice(src.indexOf('tenantUpdate(ctx.companyId, "cash_session", id, {'));
+    const cuerpo = patch.slice(0, patch.indexOf("});"));
+    expect(cuerpo, "el estado se escribe en dos sitios").not.toMatch(/status:/);
+    expect(cuerpo, "la fecha de cierre se escribe en dos sitios").not.toMatch(/closed_at:/);
+  });
+
+  it("aprobar RECLAMA antes de asentar en el libro", () => {
+    const src = readCodigo(REVISAR);
+    const reclamo = src.indexOf('p_from: "pending_approval"');
+    const asiento = src.indexOf("postCashDifference(ctx.companyId");
+
+    expect(reclamo, "no reclama la aprobación").toBeGreaterThan(-1);
+    expect(asiento).toBeGreaterThan(-1);
+    expect(reclamo, "asienta el descuadre antes de reclamar la aprobación")
+      .toBeLessThan(asiento);
+  });
+
+  it("el estado de PARTIDA viaja explícito en las dos", () => {
+    // Sin él, aprobar un turno que nadie cerró sería posible: la transición
+    // dejaría de ser un paso y pasaría a ser una escritura.
+    expect(readCodigo(CERRAR)).toMatch(/p_from: "open"/);
+    expect(readCodigo(REVISAR)).toMatch(/p_from: "pending_approval"/);
+  });
+
+  it("y ningún comentario SQL del banco de pruebas lleva comillas invertidas", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * ESTA GUARDA NACE DE UN FALLO MÍO
+     *
+     * Las carreras se lanzan con `psql -c "…"`, una cadena entre DOBLES
+     * comillas. Bash ejecuta las comillas invertidas que haya dentro antes de
+     * que psql vea nada, así que un comentario SQL que nombrara un índice entre
+     * comillas invertidas —como se escribe en todo este repositorio— acababa
+     * intentando ejecutar ese nombre como si fuera un comando.
+     *
+     * Salió por la salida de error («command not found») y las pruebas seguían
+     * en verde: el SQL que llegaba a la base estaba mutilado justo en el trozo
+     * que ese comentario explicaba. Un banco de pruebas que se estropea en
+     * silencio mide otra cosa y lo dice con la misma cara.
+     *
+     * En los comentarios de bash (`#`) no pasa, y ahí se dejan.
+     */
+    const lineas = read("scripts/db-test.sh").split("\n");
+    const malas = lineas
+      .map((linea, i) => ({ linea, n: i + 1 }))
+      .filter(({ linea }) => /^\s*--/.test(linea) && linea.includes("`"))
+      .map(({ n, linea }) => `${n}: ${linea.trim()}`);
+    expect(malas, "bash ejecutará lo que haya entre comillas invertidas").toEqual([]);
+  });
+
+  it("y las tres carreras corren en CI, no en un documento", () => {
+    const sh = read("scripts/db-test.sh");
+    expect(sh).toMatch(/aperturas simultáneas/);
+    expect(sh).toMatch(/cierres simultáneos/);
+    expect(sh).toMatch(/aprobaciones simultáneas/);
+    /**
+     * Y la carrera del cierre se mide sobre el MOVIMIENTO, no sobre el conteo:
+     * el conteo lo protege `cash_count_unique_idx` desde 0038 por una razón de
+     * forma, así que medirlo ahí mediría ese índice y no la transición.
+     */
+    expect(sh, "la carrera del cierre mide el conteo, que ya tenía índice")
+      .toMatch(/movement_type = 'closing'/);
+  });
+});

@@ -62,6 +62,27 @@ export async function POST(req: NextRequest) {
     const body = await readJson<{ cash_register_id?: string; opening_amount?: number; currency?: Currency; notes?: string }>(req);
     if (!body.cash_register_id) throw Object.assign(new Error("Selecciona la caja a abrir"), { status: 400 });
 
+    /**
+     * ESTA COMPROBACIÓN ES UNA CORTESÍA, NO LA DEFENSA (0101).
+     *
+     * ────────────────────────────────────────────────────────────────────────
+     * LO MEDIDO
+     *
+     * Veinte aperturas simultáneas de la misma caja, por este camino —leer,
+     * comprobar el rango y el dueño, crear el turno—: **18 turnos abiertos
+     * sobre el mismo cajón**. Entre esta lectura y el `insert` de abajo cabe
+     * todo lo que hay en medio.
+     *
+     * Dos turnos sobre un cajón no es un contador mal puesto: los cobros se
+     * reparten entre los dos según cuál lea cada petición, y al final del día
+     * NINGUNO de los dos arqueos cuadra. El faltante de uno es el sobrante del
+     * otro, y desde la pantalla no hay forma de saberlo.
+     *
+     * Lo que lo impide de verdad es `cash_session_un_turno_abierto_idx`, un
+     * índice único parcial sobre los turnos ABIERTOS de cada caja. Esto se
+     * queda porque da el mensaje bueno y ahorra el trabajo de en medio; el
+     * candado está debajo.
+     */
     const alreadyOpen = await tenantQuery<CashSession>(ctx.companyId, "cash_session", {
       _filter: { cash_register: body.cash_register_id, status: "open" }, _limit: 1,
     });
@@ -153,6 +174,25 @@ export async function POST(req: NextRequest) {
     console.log(`[cash] sesión ${session.code} abierta por ${ctx.email}`);
     return ok(session);
   } catch (err) {
+    /**
+     * Y si el candado fue el que dijo no, se dice con las mismas palabras.
+     *
+     * Quien abre una caja que otro acaba de abrir no tiene por qué leer un
+     * error de clave duplicada de Postgres: es el mismo «esta caja ya tiene una
+     * sesión abierta» de arriba, solo que decidido por la base porque las dos
+     * peticiones entraron a la vez.
+     */
+    if (esTurnoDuplicado(err)) {
+      return fail(Object.assign(new Error("Esta caja ya tiene una sesión abierta"), { status: 409 }));
+    }
     return fail(err);
   }
+}
+
+/** ¿El error viene del candado de «un solo turno abierto por caja»? */
+function esTurnoDuplicado(err: unknown): boolean {
+  const texto = err instanceof Error ? err.message : String(err ?? "");
+  // Por el nombre del índice y no solo por el código: un 23505 de otra columna
+  // —el código del turno, por ejemplo— no es «ya hay un turno abierto».
+  return /cash_session_un_turno_abierto_idx/.test(texto);
 }
