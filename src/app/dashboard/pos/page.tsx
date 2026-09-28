@@ -86,6 +86,24 @@ interface BundleBlock {
   seatsLeft: number | null;
 }
 
+/** Una salida entre las que puede elegir un componente. */
+interface BundleOption {
+  departureId: string;
+  at: string;
+  day: string;
+  time: string;
+  seatsLeft: number | null;
+  fits: boolean;
+}
+
+interface BundleChoices {
+  itemId: string;
+  productId: string;
+  productName: string;
+  isOptional: boolean;
+  options: BundleOption[];
+}
+
 interface BundlePlan {
   bundleId: string;
   bundleName: string;
@@ -93,6 +111,8 @@ interface BundlePlan {
   blocks: BundleBlock[];
   unresolved: { itemId: string; productName: string; reason: string }[];
   blocker: string | null;
+  /** Las salidas entre las que elegir, por componente. */
+  choices: BundleChoices[];
 }
 
 interface CartItem {
@@ -113,6 +133,14 @@ interface CartItem {
   /** Solo en los paquetes: el día en que empieza y el itinerario que sale. */
   bundle_start_day?: string;
   bundle_plan?: BundlePlan | null;
+  /**
+   * El itinerario ACORDADO: `componente → salida`.
+   *
+   * Viaja con la venta para que el servidor reserve exactamente lo que el
+   * vendedor repasó con el cliente. Sin esto, el servidor volvía a resolver el
+   * itinerario por su cuenta y podía apuntar a otras salidas sin avisar.
+   */
+  bundle_chosen?: Record<string, string>;
 }
 
 interface QuoteLine {
@@ -355,6 +383,51 @@ export default function PosPage() {
     toast.success(`${product.name} añadido a la venta`);
   };
 
+  /**
+   * VOLVER A ARMAR EL ITINERARIO DE UN PAQUETE QUE YA ESTÁ EN EL CARRITO.
+   *
+   * Antes esto no existía: el cartel decía «quita el paquete y vuelve a
+   * armarlo» para cambiar el día o los pasajeros, y las salidas de cada
+   * actividad no se podían tocar de ninguna manera. El motor ya sabía validar
+   * un itinerario elegido a mano —`chosen`— y la ruta ya lo aceptaba; lo que
+   * faltaba era pedírselo.
+   *
+   * Se manda SIEMPRE el itinerario entero, no solo lo que se acaba de cambiar:
+   * el servidor valida el conjunto —solapes, margen entre actividades, plazas—
+   * y una respuesta a medias no se puede validar.
+   */
+  const replanCartItem = useCallback(async (uid: string, cambios: { chosen?: Record<string, string>; pax?: number; day?: string }) => {
+    const linea = cart.find((i) => i.uid === uid);
+    if (!linea?.bundle_plan || !linea.bundle_start_day) return;
+
+    const dia = cambios.day ?? linea.bundle_start_day;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) return;
+    const pax = Math.max(1, cambios.pax ?? (linea.adults + linea.children + linea.infants));
+    /**
+     * Cambiar el DÍA invalida lo elegido: esas salidas eran de otra fecha.
+     * Mandarlas igual daría «ya no está disponible» sobre algo que el vendedor
+     * no hizo mal, así que en ese caso se vuelve a resolver desde cero.
+     */
+    const chosen = cambios.day
+      ? {}
+      : (cambios.chosen ?? Object.fromEntries(linea.bundle_plan.blocks.map((b) => [b.itemId, b.departureId])));
+
+    const query = Object.entries(chosen)
+      .map(([itemId, depId]) => `&chosen=${encodeURIComponent(`${itemId}:${depId}`)}`)
+      .join("");
+    const res = await api.get<BundlePlan>(
+      `/api/bundles?bundle=${encodeURIComponent(linea.product._id)}&day=${dia}&pax=${pax}${query}`
+    );
+    if (!res.ok || !res.data) {
+      toast.error(res.error?.message || "No se pudo rehacer el itinerario");
+      return;
+    }
+    patchItem(uid, { bundle_plan: res.data, bundle_start_day: dia });
+    // El bloqueo se dice AQUÍ, no al cobrar: el vendedor tiene al cliente
+    // delante y es ahora cuando puede ofrecerle otro día.
+    if (res.data.blocker) toast.error(res.data.blocker);
+  }, [cart]);
+
   const patchItem = (uid: string, patch: Partial<CartItem>) =>
     setCart((c) => c.map((i) => (i.uid === uid ? { ...i, ...patch } : i)));
 
@@ -381,8 +454,25 @@ export default function PosPage() {
   const confirmSale = async () => {
     if (!customerId) { toast.error("Selecciona o crea el cliente de la venta"); return; }
     if (cart.length === 0) { toast.error("Añade al menos una excursión a la venta"); return; }
-    const missingDeparture = cart.find((i) => !i.departure_id);
-    if (missingDeparture) { toast.error(`Selecciona la salida de ${missingDeparture.product.name}`); return; }
+    /**
+     * UN PAQUETE NO TIENE SALIDA PROPIA, Y EXIGÍRSELA LO HACÍA INVENDIBLE.
+     *
+     * La línea del paquete nace sin salida a propósito —las tienen sus
+     * actividades— y esta comprobación las pedía a TODAS las líneas. Resultado:
+     * añadir un combo y pulsar «cobrar» daba «Selecciona la salida de Gran
+     * Combo Punta Cana» sobre un desplegable que no existe. El combo no se
+     * podía vender por el punto de venta, y no había forma de darse cuenta
+     * desde la pantalla.
+     *
+     * Lo que sí se exige al paquete es su itinerario, que es su equivalente.
+     */
+    const sinSalida = cart.find((i) => !i.bundle_plan && !i.departure_id);
+    if (sinSalida) { toast.error(`Selecciona la salida de ${sinSalida.product.name}`); return; }
+    const comboIncompleto = cart.find((i) => i.bundle_plan && (i.bundle_plan.blocker || i.bundle_plan.blocks.length === 0));
+    if (comboIncompleto) {
+      toast.error(comboIncompleto.bundle_plan?.blocker || `El itinerario de ${comboIncompleto.product.name} está incompleto`);
+      return;
+    }
 
     setBusy(true);
     const res = await api.post<{ order: any; bookings: any[]; commissionsCreated: number }>("/api/orders", {
@@ -409,6 +499,11 @@ export default function PosPage() {
         // Sin esto el servidor rechaza el paquete con «Falta el día en que
         // empieza»: es el dato del que cuelga todo el itinerario.
         bundle_start_day: i.bundle_start_day || null,
+        // Y CON QUÉ SALIDAS. El servidor reserva estas o para la venta; antes
+        // volvía a resolver solo y podía apuntar al cliente a otro día.
+        bundle_chosen: i.bundle_plan
+          ? Object.fromEntries(i.bundle_plan.blocks.map((b) => [b.itemId, b.departureId]))
+          : null,
         // Los obligatorios los añade el servidor: aquí solo viaja lo que el
         // cliente escogió, para que retirar un extra del catálogo no deje
         // vendiéndose algo que ya no existe.
@@ -847,19 +942,85 @@ export default function PosPage() {
                     {item.bundle_plan ? (
                       <div className="space-y-1.5">
                         <Label className="text-xs">Itinerario</Label>
-                        <ul className="divide-y divide-border rounded-md border border-border text-[12.5px]">
-                          {item.bundle_plan.blocks.map((b) => (
-                            <li key={b.itemId} className="flex items-center justify-between gap-2 px-3 py-1.5">
-                              <span className="min-w-0 truncate">{b.productName}</span>
-                              <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                                {formatDate(b.at)} · {formatTime(b.at)}
-                              </span>
-                            </li>
-                          ))}
+                        {/* CADA ACTIVIDAD ELIGE SU SALIDA.
+                            El itinerario que sale solo es una propuesta, no una
+                            sentencia: el mostrador a veces sabe algo que el
+                            sistema no —que ese guía lleva a ese grupo, que el
+                            cliente tiene vuelo el jueves—. Cambiar una salida
+                            rehace el itinerario ENTERO en el servidor, que es
+                            quien comprueba los solapes y las plazas. */}
+                        <ul className="divide-y divide-border rounded-md border border-border">
+                          {item.bundle_plan.choices.map((c) => {
+                            const bloque = item.bundle_plan!.blocks.find((b) => b.itemId === c.itemId);
+                            const sinResolver = item.bundle_plan!.unresolved.find((u) => u.itemId === c.itemId);
+                            return (
+                              <li key={c.itemId} className="space-y-1 px-3 py-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="min-w-0 truncate text-[12.5px]">
+                                    {c.productName}
+                                    {c.isOptional && <span className="ml-1 text-[11px] text-muted-foreground">(opcional)</span>}
+                                  </span>
+                                  {bloque && (
+                                    <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                                      {formatDate(bloque.at)} · {formatTime(bloque.at)}
+                                    </span>
+                                  )}
+                                </div>
+                                <Select
+                                  value={bloque?.departureId || ""}
+                                  onValueChange={(v) => {
+                                    const actual = Object.fromEntries(
+                                      item.bundle_plan!.blocks.map((b) => [b.itemId, b.departureId])
+                                    );
+                                    void replanCartItem(item.uid, { chosen: { ...actual, [c.itemId]: v } });
+                                  }}
+                                >
+                                  <SelectTrigger className="h-8 text-xs">
+                                    <SelectValue placeholder="Elige la salida" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {c.options.length === 0 && (
+                                      <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                                        No hay salidas de esta actividad en esas fechas
+                                      </div>
+                                    )}
+                                    {/* Las que no caben se ENSEÑAN, marcadas: esconderlas
+                                        dejaría sin saber si la actividad no existe ese día
+                                        o si está llena, y son dos conversaciones distintas. */}
+                                    {c.options.map((o) => (
+                                      <SelectItem key={o.departureId} value={o.departureId} disabled={!o.fits}>
+                                        {formatDate(o.at)} · {o.time} · {o.seatsLeft === null
+                                          ? "cupo sin calcular"
+                                          : `${o.seatsLeft} libres`}{!o.fits && " · no caben"}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                                {sinResolver && (
+                                  <p className="text-[11px] text-destructive">{sinResolver.reason}</p>
+                                )}
+                              </li>
+                            );
+                          })}
                         </ul>
-                        <p className="text-[11px] text-muted-foreground">
-                          Para cambiar el día o los pasajeros, quita el paquete y vuelve a armarlo.
-                        </p>
+                        {item.bundle_plan.blocker && (
+                          <p className="text-[11px] text-destructive">{item.bundle_plan.blocker}</p>
+                        )}
+                        {/* EL DÍA EN QUE EMPIEZA, TAMBIÉN AQUÍ.
+                            Era el último callejón sin salida: para moverlo un
+                            día había que vaciar el paquete y volver a armarlo
+                            entero, perdiendo las salidas ya acordadas. */}
+                        <div className="space-y-1">
+                          <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                            Empieza el
+                          </Label>
+                          <Input
+                            type="date"
+                            className="h-8 text-xs"
+                            value={item.bundle_start_day || ""}
+                            onChange={(e) => void replanCartItem(item.uid, { day: e.target.value })}
+                          />
+                        </div>
                       </div>
                     ) : (
                     <div className="grid gap-3 sm:grid-cols-2">
@@ -895,10 +1056,25 @@ export default function PosPage() {
                     </div>
                     )}
 
+                    {/* EN UN PAQUETE, CAMBIAR LOS PASAJEROS REHACE EL ITINERARIO.
+                        Estos contadores ya se podían tocar, pero el itinerario
+                        se quedaba con las plazas calculadas para el grupo
+                        anterior: se enseñaban plazas de sobra para 1 y se
+                        vendía para 4. Ahora se vuelve a preguntar, y si ya no
+                        caben lo dice AQUÍ, con el cliente delante. */}
                     <div className="grid grid-cols-4 gap-2">
-                      <Counter label="Adultos" value={item.adults} onChange={(v) => patchItem(item.uid, { adults: v })} />
-                      <Counter label="Niños" value={item.children} onChange={(v) => patchItem(item.uid, { children: v })} />
-                      <Counter label="Infantes" value={item.infants} onChange={(v) => patchItem(item.uid, { infants: v })} />
+                      <Counter label="Adultos" value={item.adults} onChange={(v) => {
+                        patchItem(item.uid, { adults: v });
+                        if (item.bundle_plan) void replanCartItem(item.uid, { pax: v + item.children + item.infants });
+                      }} />
+                      <Counter label="Niños" value={item.children} onChange={(v) => {
+                        patchItem(item.uid, { children: v });
+                        if (item.bundle_plan) void replanCartItem(item.uid, { pax: item.adults + v + item.infants });
+                      }} />
+                      <Counter label="Infantes" value={item.infants} onChange={(v) => {
+                        patchItem(item.uid, { infants: v });
+                        if (item.bundle_plan) void replanCartItem(item.uid, { pax: item.adults + item.children + v });
+                      }} />
                       <div className="space-y-1">
                         <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Dto. %</Label>
                         <Input type="number" min={0} max={100} value={item.discount_pct} className="h-9 text-center"

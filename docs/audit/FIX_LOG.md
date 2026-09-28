@@ -5159,3 +5159,94 @@ A la primera vuelta sobrevivieron cuatro, y las cuatro eran huecos reales:
 F sigue en **PARCIAL**. Lo cerrado es la carrera de la sobreventa, que es la
 más cara. Sin medir siguen: la apertura simultánea de caja, el gasto del
 monedero prepago y el cupo del socio. Cada una necesita su propia carrera.
+
+---
+
+## Ola 9.20 · El combo no se podía vender (y vendía otra cosa)
+
+Reportado con dos capturas: un «Gran Combo Punta Cana» en el carrito, su
+itinerario de tres días… y ninguna forma de elegir las salidas de cada
+excursión. Al pulsar cobrar: **«Selecciona la salida de Gran Combo Punta
+Cana»**, sobre un desplegable que no existe.
+
+Mirando el módulo entero aparecieron tres fallos, y el tercero es peor que el
+que se reportó.
+
+### 1 · El paquete era invendible por el punto de venta
+
+`confirmSale` exigía salida a **todas** las líneas del carrito:
+
+```ts
+const missingDeparture = cart.find((i) => !i.departure_id);
+```
+
+Y la línea de un paquete nace sin salida **a propósito** —las tienen sus
+actividades—, cosa que el propio código explica tres pantallas más abajo. Así
+que el combo se añadía, se calculaba su precio, se enseñaba su itinerario… y no
+había manera de cobrarlo. Ni un camino alternativo: el error señalaba un campo
+que la pantalla no dibuja.
+
+Ahora la comprobación excluye los paquetes y les exige lo suyo: **su
+itinerario**. Un combo sin itinerario resoluble se rechaza aquí, con el cliente
+delante, en vez de llegar al servidor después de cobrar.
+
+### 2 · No se podía elegir la salida de cada actividad
+
+Lo que se reportó. Y lo llamativo: **el motor ya sabía hacerlo**. `planBundle`
+acepta `chosen` —`componente → salida`— desde el principio, valida lo elegido
+en vez de buscar otra cosa, y `/api/bundles` ya lo recibe por la URL. Lo que no
+devolvía nadie era **qué** se podía elegir, así que el mostrador veía el
+itinerario que salió solo y un cartel: «quita el paquete y vuelve a armarlo».
+
+`planBundle` devuelve ahora `choices`: por cada componente, las salidas reales
+de su producto con día, hora, plazas y si **caben** para este grupo. No cuesta
+otra consulta —son las mismas salidas que ya leía para resolver—.
+
+Las que no caben **se enseñan, marcadas**. Esconderlas dejaría al vendedor sin
+saber si la actividad no existe ese día o si está llena, y son dos
+conversaciones distintas con el cliente.
+
+De paso se cerraron los otros dos callejones sin salida de esa línea: **cambiar
+los pasajeros** rehace el itinerario (antes se quedaba con las plazas
+calculadas para el grupo anterior: se enseñaban plazas de sobra para 1 y se
+vendía para 4) y **el día en que empieza** se cambia en su sitio.
+
+### 3 · Y la venta reservaba lo que le daba la gana
+
+El silencioso. `expandBundles` llamaba a `planBundle` **sin** las salidas
+elegidas, así que la venta **volvía a resolver el itinerario por su cuenta**.
+Entre que el vendedor lo repasó con el cliente y pulsó «cobrar» —o simplemente
+porque otra venta llenó una salida— el sistema podía reservar **otras** salidas,
+en otro día, sin decírselo a nadie.
+
+El voucher decía una cosa y el manifiesto otra, y eso no se descubre hasta el
+lobby del hotel a las seis de la mañana.
+
+Ahora el itinerario acordado viaja con la venta (`bundle_chosen`) y el servidor
+lo **valida**: si una salida ya no está, la venta se para con su motivo. Sin
+`bundle_chosen` se sigue resolviendo solo, que es lo que una integración que no
+lo manda ya espera.
+
+Lo que llega de fuera no es peligroso: `planBundle` solo acepta una salida que
+exista, sea **de ese producto** y esté abierta. Una elección inventada no vende
+de más — hace fallar la venta.
+
+### Las pruebas, y el doble que impedía escribirlas
+
+No había **ni una** prueba de vender un paquete, y el motivo estaba a la vista:
+el doble de `supabaseService` en `booking-service.test.ts` tenía solo `rpc`, así
+que cualquier prueba que vendiera un combo moría con «from is not a function».
+Se le dio `from` sobre la **misma** base en memoria que el resto —un itinerario
+probado contra salidas inventadas no prueba nada—, y con eso entraron siete
+pruebas: que reserva exactamente lo acordado, que se para si una salida
+desapareció, que sin acuerdo sigue resolviendo sola, que el precio va entero en
+la cabecera y los componentes a cero, y que los componentes **ocupan plaza**
+(un combo no viaja gratis en el manifiesto).
+
+**Mutación: 8 de 8**, con una superviviente en la primera vuelta que era un
+fallo de mi guarda: pedía que apareciera `replanCartItem(` en el fichero, y
+aparece también en los contadores de pasajeros — así que vaciar el
+`onValueChange` del desplegable dejaba un selector que no hacía nada y la prueba
+seguía en verde. Ahora se afirma la llamada **con** la elección.
+
+**Sin migración.** Todo esto es aplicación: nada nuevo que ejecutar en la base.

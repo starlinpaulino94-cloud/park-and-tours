@@ -11330,3 +11330,80 @@ describe("el cupo se toma con cerrojo, no se consulta", () => {
     expect(sh).toMatch(/^\s*wait$/m);
   });
 });
+
+/**
+ * EL COMBO SE PUEDE VENDER, Y SE VENDE LO QUE SE ENSEÑÓ.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * TRES FALLOS, Y EL PRIMERO HACÍA EL MÓDULO INÚTIL
+ *
+ *  1. `confirmSale` exigía salida a TODAS las líneas del carrito. La línea de
+ *     un paquete nace sin salida a propósito —las tienen sus actividades—, así
+ *     que añadir un combo y pulsar «cobrar» daba «Selecciona la salida de Gran
+ *     Combo Punta Cana» sobre un desplegable que no existe. **El combo no se
+ *     podía vender por el punto de venta.**
+ *  2. No había forma de elegir la salida de cada actividad. El motor sabía
+ *     validar un itinerario a mano —`chosen`— y la ruta lo aceptaba; nadie
+ *     devolvía QUÉ se podía elegir.
+ *  3. Y la venta volvía a resolver el itinerario por su cuenta, así que podía
+ *     reservar salidas DISTINTAS de las que el vendedor repasó con el cliente.
+ *     Es el más silencioso: el voucher dice una cosa y el manifiesto otra, y se
+ *     descubre en el lobby del hotel a las seis de la mañana.
+ */
+describe("el paquete en el punto de venta", () => {
+  const POS = "src/app/dashboard/pos/page.tsx";
+  const VENTA = "src/lib/booking-service.ts";
+  const MOTOR = "src/lib/bundle-service.ts";
+
+  it("no le exige al paquete una salida que no tiene", () => {
+    const src = readCodigo(POS);
+    // La comprobación tiene que EXCLUIR las líneas de paquete.
+    expect(src).toMatch(/cart\.find\(\(i\) => !i\.bundle_plan && !i\.departure_id\)/);
+    expect(src, "volvió a exigir salida a todas las líneas")
+      .not.toMatch(/cart\.find\(\(i\) => !i\.departure_id\)/);
+  });
+
+  it("pero sí le exige su itinerario, que es su equivalente", () => {
+    // Si no, un combo sin itinerario resoluble se colaría hasta el servidor y
+    // el vendedor se enteraría después de cobrar.
+    expect(readCodigo(POS)).toMatch(/bundle_plan\.blocker \|\| .*bundle_plan\.blocks\.length === 0/);
+  });
+
+  it("cada actividad tiene su selector de salida", () => {
+    const src = readCodigo(POS);
+    expect(src).toMatch(/bundle_plan\.choices\.map/);
+    /**
+     * Y el selector tiene que REHACER el itinerario, no solo existir.
+     *
+     * La primera versión de esta guarda pedía que apareciera `replanCartItem(`
+     * en el fichero, y aparece también en los contadores de pasajeros: vaciar
+     * el `onValueChange` del desplegable dejaba un selector que no hacía nada
+     * y la prueba seguía en verde. Ahora se afirma la llamada CON la elección.
+     */
+    expect(src).toMatch(/chosen: \{ \.\.\.actual, \[c\.itemId\]: v \}/);
+    // Y el cartel que decía que no se podía tocar ya no aplica a las salidas.
+    expect(src, "sigue diciendo que hay que quitar el paquete para cambiar los pasajeros")
+      .not.toMatch(/quita el paquete y vuelve a armarlo/);
+  });
+
+  it("el motor devuelve QUÉ se puede elegir, con plazas y si caben", () => {
+    const src = readCodigo(MOTOR);
+    expect(src).toMatch(/choices: definition\.items\.map/);
+    // Las que no caben se ofrecen marcadas, no escondidas: esconderlas deja sin
+    // saber si la actividad no existe ese día o si está llena.
+    expect(src).toMatch(/fits: slotFits\(slot, options\.pax\)/);
+  });
+
+  it("la venta reserva el itinerario acordado, no el que resolvería sola", () => {
+    const src = readCodigo(VENTA);
+    expect(src).toMatch(/const chosen = itinerarioElegido\(item\.bundle_chosen\)/);
+    // Y se lo pasa al planificador: leerlo y no usarlo sería peor que no leerlo.
+    expect(src).toMatch(/\.\.\.\(chosen \? \{ chosen \} : \{\}\)/);
+    // La marca no se hereda a la fila de la reserva.
+    expect(src).toMatch(/delete clean\.bundle_chosen/);
+  });
+
+  it("y el punto de venta manda ese itinerario", () => {
+    expect(readCodigo(POS)).toMatch(/bundle_chosen: i\.bundle_plan/);
+  });
+});

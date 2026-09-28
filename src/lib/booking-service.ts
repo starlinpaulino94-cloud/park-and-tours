@@ -64,6 +64,21 @@ export interface BookingItemInput {
    */
   bundle_start_day?: string | null;
   /**
+   * EL ITINERARIO QUE SE LE ENSEÑÓ AL CLIENTE: `componente → salida`.
+   *
+   * No es una optimización: es lo que impide vender una cosa y operar otra.
+   * Sin esto la venta volvía a resolver el itinerario por su cuenta, así que
+   * entre que el vendedor lo repasó con el cliente y pulsó «cobrar» —o
+   * simplemente porque otra venta llenó una salida— el sistema podía reservar
+   * OTRAS salidas, en otro día, sin decírselo a nadie. El voucher decía una
+   * cosa y el manifiesto otra.
+   *
+   * Lo que llega de fuera no es peligroso: `planBundle` solo acepta una salida
+   * que exista, sea de ESE producto y esté abierta, y si no cabe lo dice. Una
+   * elección inventada no vende de más: hace fallar la venta.
+   */
+  bundle_chosen?: Record<string, string> | null;
+  /**
    * Marcas que pone la EXPANSIÓN del servidor, nunca el cliente.
    *
    * La ruta las borra del cuerpo antes de llegar aquí, igual que hace con
@@ -178,6 +193,25 @@ function toCount(value: unknown): number {
  * escribir nada. Vender medio paquete y descubrirlo después deja plazas
  * bloqueadas y a un cliente con la mitad de lo que compró.
  */
+/**
+ * El mapa `componente → salida`, saneado.
+ *
+ * Llega de un navegador, así que se comprueba la FORMA aquí y el CONTENIDO lo
+ * comprueba `planBundle` contra la base. Un mapa vacío o mal formado se trata
+ * como «no eligieron nada» y el itinerario se resuelve solo: es lo que hacía
+ * antes, y degradar a eso es mejor que tumbar la venta por un campo de más.
+ */
+function itinerarioElegido(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out: Record<string, string> = {};
+  for (const [itemId, departureId] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof itemId === "string" && itemId && typeof departureId === "string" && departureId) {
+      out[itemId] = departureId;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 async function expandBundles(
   ctx: TenantContext & { companyId: string },
   items: BookingItemInput[]
@@ -191,6 +225,7 @@ async function expandBundles(
     delete clean.bundle_component;
     delete clean.bundle_item_id;
     delete clean.bundle_group;
+    delete clean.bundle_chosen;
 
     const [product] = await tenantQuery<Product & { is_bundle?: boolean }>(
       ctx.companyId, "product", { _filter: { _id: item.product_id }, _limit: 1 }
@@ -221,7 +256,24 @@ async function expandBundles(
       );
     }
 
-    const plan = await planBundle(ctx, { bundleId: String(item.product_id), startDay, pax });
+    /**
+     * SE VENDE EL ITINERARIO ACORDADO, O NO SE VENDE.
+     *
+     * Con `chosen`, `planBundle` valida las salidas elegidas en vez de buscar
+     * otras: si una se llenó o se cerró entre la pantalla y el botón, devuelve
+     * «La salida elegida de X ya no está disponible» y la venta se para. Antes
+     * resolvía de nuevo en silencio y reservaba lo que encontrara, que es la
+     * peor respuesta posible: el cliente pagó por un itinerario y se le apuntó
+     * a otro.
+     *
+     * Sin `chosen` —una integración que no lo manda— se sigue resolviendo
+     * solo, que es el comportamiento que esa integración ya espera.
+     */
+    const chosen = itinerarioElegido(item.bundle_chosen);
+    const plan = await planBundle(ctx, {
+      bundleId: String(item.product_id), startDay, pax,
+      ...(chosen ? { chosen } : {}),
+    });
     if (!plan || plan.blocker) {
       throw Object.assign(
         new Error(plan?.blocker || `No se pudo armar el itinerario de «${product.name}».`),

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fakeDb, paxTotalsDeLaBase, reservarPlazaDeLaBase, soltarPlazaDeLaBase, type FakeDb } from "@/test/fake-tenant";
+import { fakeSupabase } from "@/test/fake-supabase";
 
 /**
  * EL CAMINO DEL DINERO.
@@ -91,7 +92,17 @@ const rpcNormal = async (nombre: string, args: Record<string, unknown>) => {
   return MONEDERO;
 };
 const rpc = vi.fn(rpcNormal);
-vi.mock("@/lib/supabase/service", () => ({ supabaseService: () => ({ rpc }) }));
+/**
+ * Y `from`, porque un paquete lee las salidas por el cliente de Supabase.
+ *
+ * El doble tenía solo `rpc`, así que cualquier prueba que vendiera un combo
+ * moría con «from is not a function» — motivo por el cual no había ninguna. Se
+ * apoya en la MISMA base en memoria que el resto, no en respuestas fijas: un
+ * itinerario probado contra salidas inventadas no prueba nada.
+ */
+vi.mock("@/lib/supabase/service", () => ({
+  supabaseService: () => ({ rpc, from: (tabla: string) => fakeSupabase(db).from(tabla) }),
+}));
 
 import { createOrderWithBookings, syncOrderTotals, reconcileStaleDrafts } from "@/lib/booking-service";
 
@@ -138,6 +149,10 @@ function catalogo(extra: Record<string, Record<string, unknown>[]> = {}) {
     ...extra,
   };
 }
+
+/** Dos días fijos en el futuro, para que el itinerario del combo sea estable. */
+const DIA_COMBO = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+const SIGUIENTE_COMBO = new Date(Date.now() + 4 * 86_400_000).toISOString().slice(0, 10);
 
 function futuro(dias: number): string {
   return new Date(Date.now() + dias * 86_400_000).toISOString();
@@ -1499,5 +1514,112 @@ describe("reconciliar las ventas a medias", () => {
 
     expect((await reconcileStaleDrafts(ORG, 60)).reverted).toBe(1);
     expect((await reconcileStaleDrafts(ORG, 60)).reverted).toBe(0);
+  });
+});
+
+/* ═══════════════════════════════════════════════ el paquete, al venderse ══ */
+
+/**
+ * SE VENDE EL ITINERARIO QUE SE ENSEÑÓ, O NO SE VENDE.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LO QUE PASABA
+ *
+ * `expandBundles` llamaba a `planBundle` SIN las salidas elegidas, así que la
+ * venta volvía a resolver el itinerario por su cuenta. Entre que el vendedor lo
+ * repasó con el cliente y pulsó «cobrar» —o simplemente porque otra venta llenó
+ * una salida— el sistema podía reservar OTRAS salidas, en otro día, sin
+ * decírselo a nadie. El voucher decía una cosa y el manifiesto otra, y eso no
+ * se descubre hasta el lobby del hotel a las seis de la mañana.
+ *
+ * Ahora el itinerario acordado viaja con la venta y el servidor lo valida: si
+ * una salida ya no está, la venta se para con su motivo en vez de sustituirla.
+ */
+describe("vender un paquete", () => {
+  const PAQUETE = "prod-combo";
+
+  const conPaquete = () => fakeDb(catalogo({
+    product: [
+      { _id: "prod-saona", name: "Isla Saona", base_price: 100, base_cost: 40, status: "active", duration_hours: 8 },
+      { _id: "prod-buggy", name: "Buggy", base_price: 60, base_cost: 25, status: "active", duration_hours: 3 },
+      { _id: PAQUETE, name: "Gran Combo", base_price: 279, base_cost: 90, status: "active", is_bundle: true },
+    ],
+    product_bundle_item: [
+      { _id: "it-1", bundle: PAQUETE, product: "prod-saona", day_offset: 0, sort_order: 1 },
+      { _id: "it-2", bundle: PAQUETE, product: "prod-buggy", day_offset: 1, sort_order: 2 },
+    ],
+    departure: [
+      // Con `organization_id`: estas se leen por el cliente de Supabase, que
+      // filtra por empresa, no por el doble de `tenantQuery`.
+      { _id: "sal-saona-a", organization_id: ORG, product: "prod-saona", departure_at: `${DIA_COMBO}T12:00:00.000Z`,
+        capacity: 40, booked_pax: 0, pending_pax: 0, cutoff_hours: 0, status: "available" },
+      { _id: "sal-saona-b", organization_id: ORG, product: "prod-saona", departure_at: `${DIA_COMBO}T15:00:00.000Z`,
+        capacity: 40, booked_pax: 0, pending_pax: 0, cutoff_hours: 0, status: "available" },
+      { _id: "sal-buggy", organization_id: ORG, product: "prod-buggy", departure_at: `${SIGUIENTE_COMBO}T17:00:00.000Z`,
+        capacity: 20, booked_pax: 0, pending_pax: 0, cutoff_hours: 0, status: "available" },
+    ],
+  }));
+
+  const venta = (chosen?: Record<string, string> | null) => createOrderWithBookings(ctx, {
+    customer_id: "cli-1",
+    items: [{
+      product_id: PAQUETE, adults: 2,
+      bundle_start_day: DIA_COMBO,
+      ...(chosen === undefined ? {} : { bundle_chosen: chosen }),
+    }],
+  });
+
+  it("reserva EXACTAMENTE las salidas acordadas, no las que elegiría solo", async () => {
+    db = conPaquete();
+    // El itinerario automático cogería la primera de Saona; aquí se acordó la
+    // segunda. Si la venta volviera a resolver, reservaría la otra.
+    await venta({ "it-1": "sal-saona-b", "it-2": "sal-buggy" });
+
+    const reservas = db.rows("booking");
+    const saona = reservas.find((b) => String(b.product) === "prod-saona")!;
+    expect(saona, "no se creó la reserva de Saona").toBeTruthy();
+    expect(String(saona.departure)).toBe("sal-saona-b");
+  });
+
+  it("si una salida acordada ya no está, la venta SE PARA y dice por qué", async () => {
+    db = conPaquete();
+    await expect(venta({ "it-1": "sal-borrada", "it-2": "sal-buggy" }))
+      .rejects.toThrow(/ya no está disponible/);
+    // Y no queda ninguna reserva viva de una venta que no se hizo.
+    expect(db.rows("booking").filter((b) => b.status !== "cancelled")).toEqual([]);
+  });
+
+  it("sin itinerario acordado sigue resolviendo solo: una integración vieja no se rompe", async () => {
+    db = conPaquete();
+    await venta(null);
+    const reservas = db.rows("booking");
+    // Cabecera + dos componentes.
+    expect(reservas).toHaveLength(3);
+    expect(reservas.filter((b) => b.bundle_booking).length).toBe(2);
+  });
+
+  it("el precio va ENTERO en la cabecera y los componentes valen cero", async () => {
+    db = conPaquete();
+    await venta({ "it-1": "sal-saona-a", "it-2": "sal-buggy" });
+    const cabecera = db.rows("booking").find((b) => String(b.product) === PAQUETE)!;
+    const componentes = db.rows("booking").filter((b) => b.bundle_booking);
+    expect(Number(cabecera.total_amount)).toBeGreaterThan(0);
+    for (const c of componentes) expect(Number(c.total_amount)).toBe(0);
+  });
+
+  it("los componentes OCUPAN plaza: un combo no viaja gratis en el manifiesto", async () => {
+    db = conPaquete();
+    await venta({ "it-1": "sal-saona-a", "it-2": "sal-buggy" });
+    const componentes = db.rows("booking").filter((b) => b.bundle_booking);
+    expect(componentes.map((c) => Number(c.pax_total))).toEqual([2, 2]);
+  });
+
+  it("un paquete sin día de inicio se rechaza antes de escribir nada", async () => {
+    db = conPaquete();
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      items: [{ product_id: PAQUETE, adults: 2 }],
+    })).rejects.toThrow(/día en que empieza/);
+    expect(db.rows("booking")).toEqual([]);
   });
 });
