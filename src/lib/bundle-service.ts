@@ -2,7 +2,7 @@ import "server-only";
 import { supabaseService } from "@/lib/supabase/service";
 import { tenantQuery, type TenantContext } from "@/lib/tenant";
 import {
-  autoResolve, validateItinerary, blockOf, dayOf, addDays, sellBlocker,
+  autoResolve, validateItinerary, blockOf, dayOf, addDays, sellBlocker, slotFits,
   byDay, spanDays, tightestSeats, startsAt,
   type BundleItem, type Slot, type Block, type AutoResolveResult,
 } from "@/lib/bundles";
@@ -180,6 +180,27 @@ export interface PlanInput {
   chosen?: Record<string, string>;
 }
 
+/** Una salida concreta que un componente PODRÍA usar, lista para un desplegable. */
+export interface ItemOption {
+  departureId: string;
+  at: string;
+  day: string;
+  time: string;
+  /** `null` = aforo sin declarar, o sea sin techo. */
+  seatsLeft: number | null;
+  /** Si caben los pasajeros de esta venta. Se ofrece igual, pero marcada. */
+  fits: boolean;
+}
+
+/** Un componente del paquete y las salidas entre las que se puede elegir. */
+export interface ItemOptions {
+  itemId: string;
+  productId: string;
+  productName: string;
+  isOptional: boolean;
+  options: ItemOption[];
+}
+
 export interface BundlePlan extends AutoResolveResult {
   bundleId: string;
   bundleName: string;
@@ -191,6 +212,21 @@ export interface BundlePlan extends AutoResolveResult {
   travelAt: string | null;
   /** Lo que impide venderlo, en la voz en que se le dice al cliente. */
   blocker: string | null;
+  /**
+   * LAS SALIDAS ENTRE LAS QUE ELEGIR, POR COMPONENTE.
+   *
+   * El motor ya sabía resolver un itinerario a mano —`chosen`— y la ruta ya lo
+   * aceptaba, pero nadie devolvía QUÉ se podía elegir: el mostrador solo veía
+   * el itinerario que salió solo y un cartel que decía «quita el paquete y
+   * vuelve a armarlo». Podía cambiar el día del combo entero y nada más.
+   *
+   * Son las salidas reales leídas para resolver, así que no cuestan otra
+   * consulta. Se ofrecen TODAS las del horizonte, también las que no tienen
+   * plazas para este grupo, marcadas con `fits: false`: esconderlas dejaría al
+   * vendedor sin saber si la actividad existe ese día o si es que está llena, y
+   * son dos conversaciones distintas con el cliente.
+   */
+  choices: ItemOptions[];
 }
 
 /**
@@ -271,6 +307,22 @@ export async function planBundle(
     seatsLeft: tightestSeats(result.blocks),
     travelAt: startsAt(result.blocks),
     blocker: sellBlocker(result, options.pax),
+    choices: definition.items.map((item) => ({
+      itemId: item.id,
+      productId: item.productId,
+      productName: item.productName,
+      isOptional: item.isOptional,
+      options: slots
+        .filter((slot) => slot.productId === item.productId)
+        .map((slot) => ({
+          departureId: slot.departureId,
+          at: slot.at,
+          day: slot.localDay,
+          time: slot.localTime,
+          seatsLeft: slot.seatsLeft,
+          fits: slotFits(slot, options.pax),
+        })),
+    })),
   };
 }
 

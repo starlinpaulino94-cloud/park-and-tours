@@ -20,7 +20,8 @@ with e(mig,tipo,obj,det) as (values
   ('0089 — el estado de cuenta del proveedor','col','settlement','accepted_at,accepted_by,supplier_invoice_number,supplier_ncf,supplier_ncf_type,supplier_invoice_at,supplier_invoice_by'),
   ('0090 — el manifiesto sale solo, y sale recortado','col','message','attachment_scope'),
   ('0092 — la lista negra del cliente','col','customer','blocked_reason,blocked_at,blocked_by'),
-  ('0098 — el estado de la membresía en el espejo de MembeGo','col','membego_customer','membership_status')
+  ('0098 — el estado de la membresía en el espejo de MembeGo','col','membego_customer','membership_status'),
+  ('0099 — la plaza se retiene antes de venderla','col','departure','hold_pax,hold_until')
 ), obj as (
   select e.mig, e.tipo, e.obj, nullif(trim(both from c), '') as col
     from e left join lateral unnest(

@@ -69,7 +69,7 @@ begin
   begin
     insert into cash_session (organization_id, cash_register_id, status, opened_at)
       values (a_org, b_reg, 'open', now());
-    fallos := fallos || 'una sesión de A se abrió en el mostrador de B';
+    fallos := fallos || 'una sesión de A se abrió en el mostrador de B'::text;
   exception when sqlstate '23514' then null;
   end;
 
@@ -77,13 +77,13 @@ begin
   begin
     insert into cash_session (organization_id, cash_register_id, status, opened_at, partner_id)
       values (b_org, b_reg, 'open', now(), socio);
-    fallos := fallos || 'la caja de B se abrió a nombre de un socio de A';
+    fallos := fallos || 'la caja de B se abrió a nombre de un socio de A'::text;
   exception when sqlstate '23514' then null;
   end;
 
   if a_ses is null then
     -- Sin sesión de A no se pueden probar los movimientos; se apunta y se sigue.
-    fallos := fallos || 'no se pudo abrir la sesión de A para seguir probando';
+    fallos := fallos || 'no se pudo abrir la sesión de A para seguir probando'::text;
   end if;
 
   -- ── EL ASIENTO CONTABLE ──────────────────────────────────────────────────
@@ -104,7 +104,7 @@ begin
   begin
     insert into ledger_entry (organization_id, ledger_account_id, posted_at, debit, credit)
       values (a_org, b_cuenta, now(), 100, 0);
-    fallos := fallos || 'un asiento de A se escribió contra una cuenta de B';
+    fallos := fallos || 'un asiento de A se escribió contra una cuenta de B'::text;
   exception when sqlstate '23514' then null;
   end;
 
@@ -112,7 +112,7 @@ begin
   begin
     insert into ledger_entry (organization_id, ledger_account_id, order_id, posted_at, debit, credit)
       values (a_org, a_cuenta, b_ord, now(), 100, 0);
-    fallos := fallos || 'un asiento de A citó la venta de B';
+    fallos := fallos || 'un asiento de A citó la venta de B'::text;
   exception when sqlstate '23514' then null;
   end;
 
@@ -123,7 +123,7 @@ begin
   begin
     insert into gift_card (organization_id, code, initial_amount, balance, currency, customer_id)
       values (a_org, 'GC-A-2', 500, 500, 'usd', b_cli);
-    fallos := fallos || 'una tarjeta de A se emitió al cliente de B';
+    fallos := fallos || 'una tarjeta de A se emitió al cliente de B'::text;
   exception when sqlstate '23514' then null;
   end;
 
@@ -131,7 +131,7 @@ begin
   begin
     insert into gift_card_movement (organization_id, gift_card_id, amount, movement_type, order_id)
       values (a_org, a_tarjeta, -50, 'redeem', b_ord);
-    fallos := fallos || 'un saldo de A se canjeó contra la venta de B';
+    fallos := fallos || 'un saldo de A se canjeó contra la venta de B'::text;
   exception when sqlstate '23514' then null;
   end;
 
@@ -139,7 +139,7 @@ begin
   begin
     insert into commission_rule (organization_id, name, beneficiary_type, calc_type, value, product_id)
       values (a_org, 'Regla cruzada', 'seller', 'percentage', 10, b_prod);
-    fallos := fallos || 'una regla de comisión de A se acotó al producto de B';
+    fallos := fallos || 'una regla de comisión de A se acotó al producto de B'::text;
   exception when sqlstate '23514' then null;
   end;
 
@@ -161,21 +161,21 @@ begin
   if a_ses is not null then
     begin
       update cash_session set cash_register_id = b_reg where id = a_ses;
-      fallos := fallos || 'una sesión de A se MOVIÓ al mostrador de B por update';
+      fallos := fallos || 'una sesión de A se MOVIÓ al mostrador de B por update'::text;
     exception when sqlstate '23514' then null;
     end;
   end if;
 
   begin
     update gift_card set customer_id = b_cli where organization_id = a_org and code = 'GC-A-1';
-    fallos := fallos || 'una tarjeta de A se MOVIÓ al cliente de B por update';
+    fallos := fallos || 'una tarjeta de A se MOVIÓ al cliente de B por update'::text;
   exception when sqlstate '23514' then null;
   end;
 
   begin
     update commission_rule set product_id = b_prod
      where organization_id = a_org and name = 'Regla propia';
-    fallos := fallos || 'una regla de A se MOVIÓ al producto de B por update';
+    fallos := fallos || 'una regla de A se MOVIÓ al producto de B por update'::text;
   exception when sqlstate '23514' then null;
   end;
 

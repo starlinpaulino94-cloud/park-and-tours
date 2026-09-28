@@ -11243,3 +11243,167 @@ describe("panel ejecutivo: lo que costaba y lo que no puede volver", () => {
     expect(sql).toMatch(/0097: enforce_same_tenant_refs no quedó security definer/);
   });
 });
+
+/**
+ * LA PLAZA SE COGE, NO SE OPINA SOBRE ELLA (ola 9.19, F-001).
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LO MEDIDO, Y ES LO QUE JUSTIFICA TODO LO DEMÁS
+ *
+ * Treinta ventas simultáneas de una plaza contra una salida de capacidad diez,
+ * por el camino que usaba la aplicación —leer `departure_pax_totals`, decidir
+ * fuera, insertar después—: **19 reservas**. Nueve pasajeros con asiento que no
+ * existe. Contra `reserve_departure_capacity`: exactamente diez.
+ *
+ * Esa función está en 0008, escrita para esto, con su cerrojo de fila;
+ * endurecida en 0017 y 0019; citada como precedente por 0083 y 0091. No la
+ * llamaba NADIE. Es el mismo hallazgo que `reconcileStaleDrafts` en 9.16: la
+ * reparación existía, estaba documentada, y nada la ejecutaba.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LO QUE ESTAS GUARDAS SOSTIENEN
+ *
+ * Que la venta siga llamándola, que el recálculo NO le borre la retención —esa
+ * era la puerta por la que la carrera volvía a entrar— y que la carrera de
+ * verdad siga corriendo en CI. Un tope de milisegundos sería inestable; treinta
+ * procesos contra una salida de diez es determinista y es el fallo exacto.
+ */
+describe("el cupo se toma con cerrojo, no se consulta", () => {
+  const AVAIL = "src/lib/availability.ts";
+  const VENTA = "src/lib/booking-service.ts";
+  const MIG = "supabase/migrations/0099_retencion_de_plaza.sql";
+
+  it("assertCapacity LLAMA a la reserva atómica", () => {
+    const src = readCodigo(AVAIL);
+    // La llamada, no el nombre: un import que sobrevive no prueba nada (9.16).
+    expect(src).toMatch(/rpc\("reserve_departure_capacity"/);
+    // Y su «no» tiene que rechazar la venta.
+    expect(src).toMatch(/if \(data !== true\)/);
+    expect(src).toMatch(/throw new OversellError/);
+    // Un fallo al reservar tampoco puede seguir adelante.
+    expect(src).toMatch(/No se pudo reservar la plaza/);
+  });
+
+  it("el recálculo NO escribe hold_pax: borrarlo reabre la carrera", () => {
+    /**
+     * Es la mitad menos obvia del arreglo. `recalculateDeparture` cuenta filas
+     * de `booking`; la retención es de una venta que TODAVÍA no tiene fila. Si
+     * este recálculo la escribiera, la borraría — y dos ventas volverían a
+     * quedarse con la misma plaza.
+     */
+    const src = readCodigo(AVAIL);
+    const escritura = src.slice(src.indexOf('tenantUpdate(companyId, "departure"'));
+    const bloque = escritura.slice(0, escritura.indexOf("});"));
+    expect(bloque, "el recálculo volvió a escribir hold_pax").not.toMatch(/hold_pax/);
+    // Pero sí tiene que CONTARLA como ocupada, o la pantalla ofrecería una
+    // plaza que la reserva va a rechazar.
+    expect(src).toMatch(/bookedPax \+ pendingPax \+ heldPax/);
+  });
+
+  it("la venta suelta lo que retuvo, salga bien o salga mal", () => {
+    const src = readCodigo(VENTA);
+    expect(src).toMatch(/await liberarRetencion\(/);
+    // Dos sitios: tras escribir la reserva y al compensar. Con uno solo, una
+    // venta caída deja la plaza cogida hasta que caduque.
+    expect((src.match(/liberarRetencion\(/g) ?? []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("la migración conserva el cerrojo y la caducidad", () => {
+    const sql = readSql(MIG);
+    expect(sql).toMatch(/for update/);
+    expect(sql).toMatch(/hold_until = now\(\) \+ RETENCION/);
+    // Una retención sin caducidad cierra la salida para siempre si el proceso
+    // que la cogió muere.
+    expect(sql).toMatch(/hold_until is null or d\.hold_until <= now\(\)/);
+  });
+
+  it("la carrera de verdad corre en CI", () => {
+    const sh = read("scripts/db-test.sh");
+    expect(sh).toMatch(/carrera: 30 ventas simultáneas/);
+    // Las dos direcciones: que no venda de más y que no venda de menos. Un
+    // cerrojo que lo rechaza todo también evitaría la sobreventa.
+    expect(sh).toMatch(/SOBREVENTA/);
+    expect(sh).toMatch(/dejó plazas sin vender/);
+    // Y en paralelo de verdad: sin `&` y `wait` esto sería una prueba secuencial
+    // que pasaría con el código roto.
+    expect(sh).toMatch(/>\/dev\/null 2>&1 &/);
+    expect(sh).toMatch(/^\s*wait$/m);
+  });
+});
+
+/**
+ * EL COMBO SE PUEDE VENDER, Y SE VENDE LO QUE SE ENSEÑÓ.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * TRES FALLOS, Y EL PRIMERO HACÍA EL MÓDULO INÚTIL
+ *
+ *  1. `confirmSale` exigía salida a TODAS las líneas del carrito. La línea de
+ *     un paquete nace sin salida a propósito —las tienen sus actividades—, así
+ *     que añadir un combo y pulsar «cobrar» daba «Selecciona la salida de Gran
+ *     Combo Punta Cana» sobre un desplegable que no existe. **El combo no se
+ *     podía vender por el punto de venta.**
+ *  2. No había forma de elegir la salida de cada actividad. El motor sabía
+ *     validar un itinerario a mano —`chosen`— y la ruta lo aceptaba; nadie
+ *     devolvía QUÉ se podía elegir.
+ *  3. Y la venta volvía a resolver el itinerario por su cuenta, así que podía
+ *     reservar salidas DISTINTAS de las que el vendedor repasó con el cliente.
+ *     Es el más silencioso: el voucher dice una cosa y el manifiesto otra, y se
+ *     descubre en el lobby del hotel a las seis de la mañana.
+ */
+describe("el paquete en el punto de venta", () => {
+  const POS = "src/app/dashboard/pos/page.tsx";
+  const VENTA = "src/lib/booking-service.ts";
+  const MOTOR = "src/lib/bundle-service.ts";
+
+  it("no le exige al paquete una salida que no tiene", () => {
+    const src = readCodigo(POS);
+    // La comprobación tiene que EXCLUIR las líneas de paquete.
+    expect(src).toMatch(/cart\.find\(\(i\) => !i\.bundle_plan && !i\.departure_id\)/);
+    expect(src, "volvió a exigir salida a todas las líneas")
+      .not.toMatch(/cart\.find\(\(i\) => !i\.departure_id\)/);
+  });
+
+  it("pero sí le exige su itinerario, que es su equivalente", () => {
+    // Si no, un combo sin itinerario resoluble se colaría hasta el servidor y
+    // el vendedor se enteraría después de cobrar.
+    expect(readCodigo(POS)).toMatch(/bundle_plan\.blocker \|\| .*bundle_plan\.blocks\.length === 0/);
+  });
+
+  it("cada actividad tiene su selector de salida", () => {
+    const src = readCodigo(POS);
+    expect(src).toMatch(/bundle_plan\.choices\.map/);
+    /**
+     * Y el selector tiene que REHACER el itinerario, no solo existir.
+     *
+     * La primera versión de esta guarda pedía que apareciera `replanCartItem(`
+     * en el fichero, y aparece también en los contadores de pasajeros: vaciar
+     * el `onValueChange` del desplegable dejaba un selector que no hacía nada
+     * y la prueba seguía en verde. Ahora se afirma la llamada CON la elección.
+     */
+    expect(src).toMatch(/chosen: \{ \.\.\.actual, \[c\.itemId\]: v \}/);
+    // Y el cartel que decía que no se podía tocar ya no aplica a las salidas.
+    expect(src, "sigue diciendo que hay que quitar el paquete para cambiar los pasajeros")
+      .not.toMatch(/quita el paquete y vuelve a armarlo/);
+  });
+
+  it("el motor devuelve QUÉ se puede elegir, con plazas y si caben", () => {
+    const src = readCodigo(MOTOR);
+    expect(src).toMatch(/choices: definition\.items\.map/);
+    // Las que no caben se ofrecen marcadas, no escondidas: esconderlas deja sin
+    // saber si la actividad no existe ese día o si está llena.
+    expect(src).toMatch(/fits: slotFits\(slot, options\.pax\)/);
+  });
+
+  it("la venta reserva el itinerario acordado, no el que resolvería sola", () => {
+    const src = readCodigo(VENTA);
+    expect(src).toMatch(/const chosen = itinerarioElegido\(item\.bundle_chosen\)/);
+    // Y se lo pasa al planificador: leerlo y no usarlo sería peor que no leerlo.
+    expect(src).toMatch(/\.\.\.\(chosen \? \{ chosen \} : \{\}\)/);
+    // La marca no se hereda a la fila de la reserva.
+    expect(src).toMatch(/delete clean\.bundle_chosen/);
+  });
+
+  it("y el punto de venta manda ese itinerario", () => {
+    expect(readCodigo(POS)).toMatch(/bundle_chosen: i\.bundle_plan/);
+  });
+});

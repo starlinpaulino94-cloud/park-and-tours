@@ -192,6 +192,97 @@ describe("armar el itinerario", () => {
   it("un paquete que no existe devuelve null", async () => {
     expect(await planBundle(ctx(), { bundleId: "no-existe", startDay: DIA, pax: 1 })).toBeNull();
   });
+
+  /**
+   * LAS SALIDAS ENTRE LAS QUE ELEGIR.
+   *
+   * El motor sabía validar un itinerario elegido a mano desde el principio, y
+   * la ruta lo aceptaba. Lo que no devolvía nadie era QUÉ se podía elegir, así
+   * que el mostrador veía el itinerario que salió solo y un cartel que decía
+   * «quita el paquete y vuelve a armarlo». El combo no se podía ajustar.
+   */
+  describe("las salidas entre las que elegir", () => {
+    it("ofrece TODAS las salidas reales de cada actividad", async () => {
+      db.seed("departure", [
+        salida("d-saona-1", SAONA, `${DIA}T12:00:00.000Z`),
+        salida("d-saona-2", SAONA, `${DIA}T15:00:00.000Z`),
+        salida("d-buggy", BUGGY, "2026-10-02T17:00:00.000Z"),
+      ]);
+      const plan = await planBundle(ctx(), { bundleId: PAQUETE, startDay: DIA, pax: 2 });
+      const saona = plan!.choices.find((c) => c.productId === SAONA)!;
+      expect(saona.options.map((o) => o.departureId).sort()).toEqual(["d-saona-1", "d-saona-2"]);
+      expect(plan!.choices.find((c) => c.productId === BUGGY)!.options).toHaveLength(1);
+    });
+
+    it("la que NO cabe se ofrece marcada, no escondida", async () => {
+      /**
+       * Esconderla dejaría al vendedor sin saber si la actividad no existe ese
+       * día o si está llena, y son dos conversaciones distintas con el cliente.
+       */
+      db.seed("departure", [
+        salida("d-saona-llena", SAONA, `${DIA}T12:00:00.000Z`, { capacity: 10, booked_pax: 9 }),
+        salida("d-saona-libre", SAONA, `${DIA}T15:00:00.000Z`),
+        salida("d-buggy", BUGGY, "2026-10-02T17:00:00.000Z"),
+      ]);
+      const plan = await planBundle(ctx(), { bundleId: PAQUETE, startDay: DIA, pax: 4 });
+      const saona = plan!.choices.find((c) => c.productId === SAONA)!;
+      expect(saona.options.find((o) => o.departureId === "d-saona-llena")!.fits).toBe(false);
+      expect(saona.options.find((o) => o.departureId === "d-saona-libre")!.fits).toBe(true);
+    });
+
+    it("una actividad sin ninguna salida lo dice con una lista vacía, no desaparece", async () => {
+      db.seed("departure", [salida("d-saona", SAONA, `${DIA}T12:00:00.000Z`)]);
+      const plan = await planBundle(ctx(), { bundleId: PAQUETE, startDay: DIA, pax: 1 });
+      const buggy = plan!.choices.find((c) => c.productId === BUGGY)!;
+      expect(buggy.options).toEqual([]);
+      // Y el paquete no se puede vender, que es lo que importa.
+      expect(plan!.blocker).toBeTruthy();
+    });
+
+    it("elegir a mano se respeta: se valida lo elegido, no se busca otra cosa", async () => {
+      db.seed("departure", [
+        salida("d-saona-1", SAONA, `${DIA}T08:00:00.000Z`),
+        salida("d-saona-2", SAONA, `${DIA}T15:00:00.000Z`),
+        salida("d-buggy", BUGGY, "2026-10-02T17:00:00.000Z"),
+      ]);
+      const plan = await planBundle(ctx(), {
+        bundleId: PAQUETE, startDay: DIA, pax: 2,
+        chosen: { "it-1": "d-saona-2", "it-2": "d-buggy" },
+      });
+      expect(plan!.blocker).toBeNull();
+      expect(plan!.blocks.find((b) => b.productId === SAONA)!.departureId).toBe("d-saona-2");
+    });
+
+    it("y una salida elegida que ya no está PARA la venta, no la sustituye", async () => {
+      /**
+       * La dirección peligrosa. Si el sistema buscara otra, el cliente pagaría
+       * por el itinerario que repasó y viajaría en otro distinto.
+       */
+      db.seed("departure", [
+        salida("d-saona-1", SAONA, `${DIA}T08:00:00.000Z`),
+        salida("d-buggy", BUGGY, "2026-10-02T17:00:00.000Z"),
+      ]);
+      const plan = await planBundle(ctx(), {
+        bundleId: PAQUETE, startDay: DIA, pax: 2,
+        chosen: { "it-1": "d-saona-borrada", "it-2": "d-buggy" },
+      });
+      expect(plan!.blocker).toMatch(/ya no está disponible/);
+      expect(plan!.blocks.some((b) => b.productId === SAONA)).toBe(false);
+    });
+
+    it("una salida de OTRO producto no cuela como salida de la actividad", async () => {
+      db.seed("departure", [
+        salida("d-saona", SAONA, `${DIA}T08:00:00.000Z`),
+        salida("d-buggy", BUGGY, "2026-10-02T17:00:00.000Z"),
+      ]);
+      const plan = await planBundle(ctx(), {
+        bundleId: PAQUETE, startDay: DIA, pax: 2,
+        // El buggy, puesto donde va Saona.
+        chosen: { "it-1": "d-buggy", "it-2": "d-buggy" },
+      });
+      expect(plan!.blocker).toBeTruthy();
+    });
+  });
 });
 
 describe("el paquete no se ofrece donde no se puede vender", () => {

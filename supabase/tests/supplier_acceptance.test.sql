@@ -93,7 +93,7 @@ begin
 
   select revoked_at is not null as revocado into r from supplier_response_token where id = v_tok;
   if not r.revocado then
-    fallos := fallos || 'reasignar NO revocó el enlace: el proveedor viejo puede aceptar lo que ya no es suyo';
+    fallos := fallos || 'reasignar NO revocó el enlace: el proveedor viejo puede aceptar lo que ya no es suyo'::text;
   end if;
 
   -- Y la respuesta anterior se borra al reasignar: conservar «aceptado»
@@ -106,7 +106,7 @@ begin
   select acceptance, confirmation_number is null as sin_numero into r
     from departure_resource where id = v_rec;
   if r.acceptance is distinct from 'pending' or not r.sin_numero then
-    fallos := fallos || 'reasignar conservó la respuesta del proveedor anterior';
+    fallos := fallos || 'reasignar conservó la respuesta del proveedor anterior'::text;
   end if;
 
   -- ── contestar: una sola escritura ─────────────────────────────────────────
@@ -123,16 +123,16 @@ begin
   select acceptance, confirmation_number, responded_via into r
     from departure_resource where id = v_rec;
   if r.acceptance is distinct from 'accepted' then
-    fallos := fallos || 'el enlace se gastó y la respuesta no se escribió';
+    fallos := fallos || 'el enlace se gastó y la respuesta no se escribió'::text;
   end if;
   if r.confirmation_number is distinct from 'CNF-PRUEBA-2' then
-    fallos := fallos || 'se aceptó sin número de confirmación';
+    fallos := fallos || 'se aceptó sin número de confirmación'::text;
   end if;
   if r.responded_via is distinct from 'enlace' then
-    fallos := fallos || 'no consta por dónde contestó';
+    fallos := fallos || 'no consta por dónde contestó'::text;
   end if;
   if (select used_at from supplier_response_token where id = v_tok) is null then
-    fallos := fallos || 'la respuesta se escribió y el enlace sigue vivo: no es de un solo uso';
+    fallos := fallos || 'la respuesta se escribió y el enlace sigue vivo: no es de un solo uso'::text;
   end if;
 
   -- ── y una segunda vez, no ─────────────────────────────────────────────────
@@ -141,7 +141,7 @@ begin
     fallos := fallos || format('el enlace se pudo usar dos veces (%s)', res::text);
   end if;
   if (select acceptance from departure_resource where id = v_rec) is distinct from 'accepted' then
-    fallos := fallos || 'el segundo uso cambió la respuesta';
+    fallos := fallos || 'el segundo uso cambió la respuesta'::text;
   end if;
 
   -- ── un enlace caducado no vale ────────────────────────────────────────────
@@ -156,7 +156,7 @@ begin
   -- ── y uno que no existe ───────────────────────────────────────────────────
   res := public.respond_to_supplier_service('no-existe', 'accepted', null, 'CNF-PRUEBA-5');
   if (res ->> 'reason') is distinct from 'not_found' then
-    fallos := fallos || 'un enlace inexistente no se rechaza';
+    fallos := fallos || 'un enlace inexistente no se rechaza'::text;
   end if;
 
   -- ── sin proveedor no hay nada que preguntar ───────────────────────────────
@@ -164,7 +164,7 @@ begin
   select acceptance, acceptance_deadline is null as sin_plazo into r
     from departure_resource where id = v_rec;
   if r.acceptance is distinct from 'not_required' or not r.sin_plazo then
-    fallos := fallos || 'un servicio que vuelve a ser de la casa sigue esperando respuesta';
+    fallos := fallos || 'un servicio que vuelve a ser de la casa sigue esperando respuesta'::text;
   end if;
 
   if array_length(fallos, 1) is null then

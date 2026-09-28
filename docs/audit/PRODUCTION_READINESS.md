@@ -62,7 +62,7 @@ Se mantienen los nombres del informe anterior para poder compararlos.
 | **C** Base de datos | FALLA | **PARCIAL** | RLS completa y verificada; FKs sin inquilino siguen abiertas (ver DB-001) |
 | **D** Seguridad | FALLA | **PASA** | Ver abajo: los cuatro P0/P1 de seguridad, cerrados y con guarda |
 | **E** Lógica de negocio | FALLA | **PARCIAL** | Idempotencia cerrada; transacciones siguen sin existir (ver BL-002) |
-| **F** Concurrencia | FALLA | **PARCIAL** | Retenciones, cupo y compensación probados; sin pruebas de carrera reales |
+| **F** Concurrencia | FALLA | **PARCIAL** | Carrera de sobreventa medida y cerrada (30 ventas simultáneas de 10 plazas: 19 reservas antes, 10 ahora) y corriendo en CI; quedan sin medir las demás carreras (caja, monedero, cupo del socio) |
 | **G** Pruebas | FALLA | **PARCIAL** | 2 300 unitarias y SQL contra Postgres; E2E casi inexistente (ver T-001) |
 | **H** Fiabilidad | FALLA | **PARCIAL** | Reintentos y compensación sí; restauración sin probar (ver DR-001) |
 | **I** Observabilidad | FALLA | **PARCIAL** | Sentry conectado y `job_run`/`system_incident` en uso; sin alertas verificadas |

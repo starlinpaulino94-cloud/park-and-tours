@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fakeDb, paxTotalsDeLaBase } from "@/test/fake-tenant";
+import { fakeDb, paxTotalsDeLaBase, reservarPlazaDeLaBase, soltarPlazaDeLaBase } from "@/test/fake-tenant";
 
 /**
  * EL DOBLE, PROBADO.
@@ -161,5 +161,69 @@ describe("paxTotalsDeLaBase", () => {
       data: { found: boolean };
     };
     expect(data.found).toBe(false);
+  });
+});
+
+/**
+ * EL DOBLE DE LA RETENCIÓN, PROBADO APARTE (0099).
+ *
+ * Es la lección de 9.12 y 9.13 por tercera vez: el doble es código, y un doble
+ * que perdona el fallo bajo prueba deja toda una familia de pruebas en verde
+ * sin haber comprobado nada. Aquí el riesgo es literal — con `held` devuelto
+ * siempre a cero, la prueba de que una plaza retenida no se revende pasaba
+ * midiera lo que midiera el código. Lo comprobó la mutación, no la lectura.
+ */
+describe("reservarPlazaDeLaBase", () => {
+  const base = () => fakeDb({
+    departure: [{ _id: "sal-1", organization_id: "org-1", capacity: 10, status: "available" }],
+    booking: [{ _id: "b1", organization_id: "org-1", departure: "sal-1", status: "paid", pax_total: 6 }],
+  });
+  const totales = (db: ReturnType<typeof fakeDb>) =>
+    (paxTotalsDeLaBase(db)({
+      p_org: "org-1", p_departure: "sal-1",
+      p_confirmed: ["paid"], p_pending: ["pending"],
+    }) as { data: { held: number; booked: number } }).data;
+
+  it("la retención PERSISTE: `rows()` devuelve clones y mutarlos no escribe nada", () => {
+    const db = base();
+    expect(reservarPlazaDeLaBase(db)({ p_departure_id: "sal-1", p_pax: 3 })).toEqual({ data: true, error: null });
+    expect(totales(db).held).toBe(3);
+  });
+
+  it("y OCUPA: con 6 reservadas y 3 retenidas, la undécima plaza no cabe", () => {
+    const db = base();
+    reservarPlazaDeLaBase(db)({ p_departure_id: "sal-1", p_pax: 3 });
+    expect(reservarPlazaDeLaBase(db)({ p_departure_id: "sal-1", p_pax: 2 })).toEqual({ data: false, error: null });
+    // Y la que sí cabe, cabe: un doble que dijera «no» a todo también pasaría
+    // la mitad de esta prueba.
+    expect(reservarPlazaDeLaBase(db)({ p_departure_id: "sal-1", p_pax: 1 })).toEqual({ data: true, error: null });
+  });
+
+  it("una retención caducada no ocupa", () => {
+    const db = base();
+    void db.tenantUpdate("org-1", "departure", "sal-1", {
+      hold_pax: 4, hold_until: new Date(Date.now() - 1000).toISOString(),
+    });
+    expect(totales(db).held).toBe(0);
+    expect(reservarPlazaDeLaBase(db)({ p_departure_id: "sal-1", p_pax: 4 })).toEqual({ data: true, error: null });
+  });
+
+  it("soltarla devuelve la plaza", () => {
+    const db = base();
+    reservarPlazaDeLaBase(db)({ p_departure_id: "sal-1", p_pax: 4 });
+    soltarPlazaDeLaBase(db)({ p_departure_id: "sal-1", p_pax: 4 });
+    expect(totales(db).held).toBe(0);
+  });
+
+  it("el override se salta la capacidad, que es lo que significa", () => {
+    const db = base();
+    expect(reservarPlazaDeLaBase(db)({ p_departure_id: "sal-1", p_pax: 99, p_override: true }))
+      .toEqual({ data: true, error: null });
+  });
+
+  it("una salida que no existe es un error, no un «sí»", () => {
+    const db = base();
+    const r = reservarPlazaDeLaBase(db)({ p_departure_id: "no-existe", p_pax: 1 }) as { data: unknown };
+    expect(r.data).toBeNull();
   });
 });

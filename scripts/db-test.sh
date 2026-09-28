@@ -98,4 +98,64 @@ for doc in "$ROOT"/docs/operaciones/DESDE_EL_EDITOR_SQL.md; do
   fi
 done
 
+# ── La carrera de verdad (F-001) ────────────────────────────────────────────
+#
+# Una prueba SQL corre en UNA sesión, y una carrera necesita dos. Esto lanza N
+# ventas de la misma plaza en paralelo y cuenta lo que quedó escrito.
+#
+# POR QUÉ ESTÁ AQUÍ Y NO EN supabase/tests/
+#
+# Porque sin concurrencia real no prueba nada. Medido con el camino que usaba la
+# aplicación —leer `departure_pax_totals`, decidir fuera, insertar después—:
+# 30 ventas simultáneas de una plaza contra una salida de 10 dejaban DIECINUEVE
+# reservas. Por `reserve_departure_capacity`, exactamente 10.
+#
+# Se comprueban las dos cosas, y las dos importan: que no se venda de más
+# —sobreventa— y que no se venda de menos —el cerrojo dejando plazas sin
+# vender—. Un cerrojo que rechaza todo también pasaría la mitad de la prueba.
+echo "→ carrera: 30 ventas simultáneas de la última plaza"
+CARRERA_SQL="$WORK/carrera.sql"
+cat > "$CARRERA_SQL" <<'EOSQL'
+insert into organizations (id, name, kind)
+  values ('cccccccc-0000-0000-0000-00000000000f', 'Carrera F-001', 'tenant')
+  on conflict (id) do nothing;
+insert into product (id, organization_id, name, base_price)
+  values ('cccccccc-0000-0000-0000-0000000000f1', 'cccccccc-0000-0000-0000-00000000000f', 'Tour', 50)
+  on conflict (id) do nothing;
+insert into departure (id, organization_id, product_id, departure_at, capacity, status)
+  values ('cccccccc-0000-0000-0000-0000000000f2', 'cccccccc-0000-0000-0000-00000000000f',
+          'cccccccc-0000-0000-0000-0000000000f1', now() + interval '10 days', 10, 'available')
+  on conflict (id) do nothing;
+insert into sales_order (id, organization_id, order_number, status)
+  values ('cccccccc-0000-0000-0000-0000000000f3', 'cccccccc-0000-0000-0000-00000000000f', 'ORD-F001', 'pending_payment')
+  on conflict (id) do nothing;
+EOSQL
+[ "$(id -u)" = "0" ] && chown postgres "$CARRERA_SQL"
+if ! psql_run -f "$CARRERA_SQL" >/dev/null; then
+  echo "✘ no se pudo preparar la carrera"; fail=1
+else
+  DEP=cccccccc-0000-0000-0000-0000000000f2
+  for i in $(seq 1 30); do
+    "${RUN[@]}" psql -h "$PGHOST" -p "$PGPORT" -d appdb -At -c "
+      insert into booking (organization_id, departure_id, product_id, order_id, booking_number,
+                           status, pax_total, total_amount, currency, booking_date)
+      select 'cccccccc-0000-0000-0000-00000000000f','$DEP',
+             'cccccccc-0000-0000-0000-0000000000f1','cccccccc-0000-0000-0000-0000000000f3',
+             'F-$i','confirmed',1,100,'dop',now()
+       where public.reserve_departure_capacity('$DEP'::uuid, 1) = true;" >/dev/null 2>&1 &
+  done
+  wait
+  VENDIDAS=$(psql_run -At -c "select count(*) from booking where departure_id = '$DEP';" | tr -d '[:space:]')
+  if [ "$VENDIDAS" != "10" ]; then
+    if [ "${VENDIDAS:-0}" -gt 10 ] 2>/dev/null; then
+      echo "✘ SOBREVENTA: $VENDIDAS reservas en una salida de 10 plazas"
+    else
+      echo "✘ el cerrojo dejó plazas sin vender: $VENDIDAS de 10"
+    fi
+    fail=1
+  else
+    echo "  30 ventas simultáneas, 10 plazas, 10 reservas"
+  fi
+fi
+
 [ "$fail" = "0" ] && echo "✔ pruebas de base de datos en verde" || { echo "✘ fallaron pruebas de base de datos"; exit 1; }

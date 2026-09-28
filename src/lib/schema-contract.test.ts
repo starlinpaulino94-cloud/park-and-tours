@@ -624,7 +624,16 @@ describe("el esquema cubre todo lo que la aplicación escribe", () => {
     const EDITOR = path.join(RAIZ, "supabase/editor");
 
     const enDisco = new Map<string, string>();
-    for (const f of readdirSync(EDITOR).filter((n) => /^auditoria_migraciones/.test(n))) {
+    /**
+     * TODO lo que el generador escribe, no solo una familia.
+     *
+     * Esto miraba `auditoria_migraciones*` y nada más, así que
+     * `auditoria_funciones_N.sql` —que es justo la que ve lo que la otra no
+     * puede ver— podía quedarse atrás sin que nadie se enterara, y contestar
+     * «¿qué me falta?» con la foto de hace diez migraciones.
+     */
+    const GENERADOS = /^(auditoria_(migraciones|funciones)|que_me_falta)/;
+    for (const f of readdirSync(EDITOR).filter((n) => GENERADOS.test(n))) {
       enDisco.set(f, readFileSync(path.join(EDITOR, f), "utf8"));
     }
     expect(enDisco.size, "no hay auditoría generada").toBeGreaterThan(0);
@@ -640,7 +649,7 @@ describe("el esquema cubre todo lo que la aplicación escribe", () => {
       execFileSync("node", ["scripts/build-auditoria-migraciones.mjs", tmp], {
         cwd: RAIZ, stdio: "pipe",
       });
-      const recien = readdirSync(tmp).filter((n) => /^auditoria_migraciones/.test(n));
+      const recien = readdirSync(tmp).filter((n) => GENERADOS.test(n));
       expect(recien.sort(), "cambió el número de trozos: regenera y súbelos")
         .toEqual([...enDisco.keys()].sort());
       for (const f of recien) {
@@ -1319,6 +1328,130 @@ describe("la numeración de las migraciones", () => {
       .map(([n, files]) => `${n}: ${files.join(" y ")}`);
 
     expect(repetidos, "la pila de Supabase no levantaría: renumera la más nueva al primer hueco libre")
+      .toEqual([]);
+  });
+});
+
+/**
+ * «¿QUÉ MIGRACIONES ME FALTAN?» TIENE QUE PODER CONTESTARSE.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * La consulta consolidada (`que_me_falta_N.sql`) comprueba, de cada migración,
+ * lo ÚLTIMO que su fichero escribe: si eso está, la migración llegó al final.
+ * Medida contra una base parada en la 0087, delata las once posteriores; contra
+ * una con las 98 aplicadas, no acusa a ninguna.
+ *
+ * Dos cosas tienen que seguir siendo verdad, y las dos se aprendieron midiendo:
+ *
+ *  1. UNA MIGRACIÓN QUE NO ESTRENA NADA NO PUEDE QUEDARSE EN EL LIMBO. Si solo
+ *     reemplaza una función, verla en el catálogo no prueba nada — así que o
+ *     tiene HUELLA (una frase que esa migración añade al cuerpo) o tiene su
+ *     fichero de verificación en `supabase/editor/`. Sin ninguna de las dos, la
+ *     respuesta a «¿qué me falta?» tendría un hueco justo donde más duele.
+ *
+ *  2. LA HUELLA SE BUSCA CON `position`, NUNCA CON `like`. La de 0097 es
+ *     `select %I, true from %s`: en un patrón de `like` cada `%` es un comodín
+ *     y casa con cualquier cosa, así que daba OK a ciegas. Mismo fallo que el
+ *     `ilike` sin escapar de `membego-service`, en otra ventana.
+ */
+describe("la consulta de «qué migraciones me faltan»", () => {
+  const EDITOR_DIR = path.join(ROOT, "supabase/editor");
+  const partes = () =>
+    readdirSync(EDITOR_DIR)
+      .filter((f) => /^que_me_falta_\d+\.sql$/.test(f))
+      .sort();
+
+  it("existe y cabe en un pegado del editor", () => {
+    const fs_ = partes();
+    expect(fs_.length, "no está generada: corre node scripts/build-auditoria-migraciones.mjs")
+      .toBeGreaterThan(0);
+    for (const f of fs_) {
+      const bruto = readFileSync(path.join(EDITOR_DIR, f), "utf8");
+      // El editor truncó un pegado de 7,3 kB en su día; 8000 es el tope que ya
+      // aplica `editor-sql.test.ts` al resto de copias.
+      expect(bruto.length, `${f}: ${bruto.length} bytes, el editor lo truncaría`)
+        .toBeLessThanOrEqual(8000);
+      expect(bruto, `${f}: tiene que ser solo lectura`).not.toMatch(/\b(insert|update|delete|drop|alter)\s/i);
+    }
+  });
+
+  it("busca la huella con position, no con like", () => {
+    for (const f of partes()) {
+      const sql = readFileSync(path.join(EDITOR_DIR, f), "utf8");
+      if (!sql.includes("u.huella")) continue;
+      expect(sql, `${f}: la huella lleva % y con like casaría con cualquier cosa`)
+        .not.toMatch(/like\s+'%'\s*\|\|\s*u\.huella/);
+      expect(sql).toMatch(/position\(u\.huella in/);
+    }
+  });
+
+  it("ninguna migración se queda sin forma de comprobarse", () => {
+    const todas = readdirSync(MIGRATIONS)
+      .filter((f) => f.endsWith(".sql") && Number(f.slice(0, 4)) >= 21)
+      .map((f) => f.slice(0, 4));
+
+    const sql = partes().map((f) => readFileSync(path.join(EDITOR_DIR, f), "utf8")).join("\n");
+    // Las que la consulta declara no comprobables por catálogo: salen con '?'.
+    const sinObjeto = [...sql.matchAll(/\('(\d{4})','\?'/g)].map((m) => m[1]);
+
+    /**
+     * UN FICHERO DE VERIFICACIÓN NO SUSTITUYE A LA HUELLA.
+     *
+     * La primera versión de esta guarda daba por buena una migración sin huella
+     * si tenía su `NNNN_parte_N_verificacion.sql`. Mutándola se vio el fallo:
+     * quitarle la huella a 0096 y a 0097 no rompía nada, y esas dos salían del
+     * resultado consolidado sin que nadie lo notara. Pero la verificación es
+     * OTRO pegado, y lo que esta consulta existe para dar es UNA respuesta
+     * completa. Si no está aquí, para quien pregunta no está.
+     *
+     * Las seis heredadas son anteriores a que esto existiera, y todas están
+     * superadas por una posterior que sí se comprueba (0024/0026/0027 las
+     * reemplaza 0028, y a 0028 la reemplaza 0096). Se listan una a una a
+     * propósito: una migración NUEVA en el limbo rompe la prueba.
+     */
+    const HEREDADAS = ["0024", "0026", "0027", "0029", "0063", "0072"];
+    expect(sinObjeto.filter((n) => !HEREDADAS.includes(n)),
+      "migración sin objeto propio y sin huella: la consulta consolidada no podría decir si está aplicada")
+      .toEqual([]);
+
+    // Y que las heredadas no crezcan ni se queden obsoletas.
+    expect(HEREDADAS.filter((n) => !todas.includes(n)),
+      "la lista de heredadas nombra migraciones que ya no existen").toEqual([]);
+  });
+
+  /**
+   * LO QUE UNA MIGRACIÓN POSTERIOR BORRA NO PRUEBA NADA.
+   *
+   * Medido contra una base con las 98 aplicadas, 0038 y 0081 salían FALTA: sus
+   * disparadores no estaban porque 0095 los borra para rehacerlos con otro
+   * nombre, pero las dos migraciones SÍ se habían ejecutado. Un falso «FALTA»
+   * es tan dañino como un falso «OK» —manda a repetir lo hecho y, peor, enseña
+   * a desconfiar de la consulta, que es la forma de que nadie vuelva a mirarla.
+   */
+  it("no se apoya en nada que una migración posterior borre", () => {
+    const borraEn = new Map<string, string>();
+    for (const f of readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql")).sort()) {
+      const n = f.slice(0, 4);
+      const sql = readFileSync(path.join(MIGRATIONS, f), "utf8").replace(/^\s*--.*$/gm, "");
+      for (const m of sql.matchAll(/drop\s+trigger\s+(?:if\s+exists\s+)?([a-z_0-9]+)/gi)) {
+        if (!borraEn.has(m[1])) borraEn.set(m[1], n);
+      }
+      for (const m of sql.matchAll(/drop\s+(?:table|index)\s+(?:if\s+exists\s+)?(?:public\.)?([a-z_0-9]+)/gi)) {
+        if (!borraEn.has(m[1])) borraEn.set(m[1], n);
+      }
+    }
+
+    const sql = partes().map((f) => readFileSync(path.join(EDITOR_DIR, f), "utf8")).join("\n");
+    const apoyos = [...sql.matchAll(/\('(\d{4})','(trg|tbl|idx)','([a-z_0-9.]+)'/g)]
+      .map((m) => ({ mig: m[1], nom: m[3] }));
+    expect(apoyos.length, "la consulta no se apoya en ningún objeto: algo se rompió al generarla")
+      .toBeGreaterThan(0);
+
+    const muertos = apoyos
+      .filter((a) => { const q = borraEn.get(a.nom); return q !== undefined && q >= a.mig; })
+      .map((a) => `${a.mig} se apoya en ${a.nom}, que borra ${borraEn.get(a.nom)}`);
+
+    expect(muertos, "falso FALTA: esa migracion sí se ejecutó, lo que pasa es que otra borró su rastro")
       .toEqual([]);
   });
 });

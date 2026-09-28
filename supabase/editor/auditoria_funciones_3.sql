@@ -35,7 +35,10 @@ with o(mig,tipo,nom,propio) as (values
   ('0095','trg','waiver_same_tenant_refs',true),
   ('0095','trg','commission_rule_same_tenant_refs',true),
   ('0096','fn','public.dashboard_summary',false),
-  ('0097','fn','app.enforce_same_tenant_refs',false)
+  ('0097','fn','app.enforce_same_tenant_refs',false),
+  ('0099','fn','public.reserve_departure_capacity',false),
+  ('0099','fn','public.release_departure_capacity',false),
+  ('0099','fn','public.departure_pax_totals',false)
 )
 select o.mig as migracion,
        case when o.tipo = 'fn' then 'funcion ' else 'disparador ' end || o.nom as objeto,

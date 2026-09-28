@@ -4991,3 +4991,262 @@ Baja de **FALLA** a **PARCIAL**, no a cerrado:
 - **No hay pruebas de carga con concurrencia.** Todo lo medido aquí es un solo
   cliente contra una base sin nadie más.
 - T-001 sigue bloqueado aquí: no hay demonio de docker.
+
+---
+
+## Ola 9.18 · «¿Qué migraciones me faltan?», en un pegado y sin huecos
+
+La pregunta ya tenía respuesta: `auditoria_migraciones_N.sql` (siete pegados) y
+`auditoria_funciones_N.sql` (tres). Diez pegados, y cruzar los resultados a ojo.
+Peor: el resumen de columnas **lo avisa él mismo** — de 0077 en adelante lo que
+cada migración aporta son funciones y disparadores, que van al final del
+fichero, mientras la columna la crea la primera línea. Una migración de cinco
+partes de la que solo se ejecutó la primera salía en verde. Y las que ahora
+mismo hacen falta —0091, 0093, 0094, 0095, 0096, 0097— ni siquiera aparecían: el
+pie las listaba como «no hay nada que preguntar por catálogo de tablas».
+
+**`que_me_falta_N.sql`** (dos pegados) elige, por cada migración, el objeto que
+aparece **más tarde en su texto** —que en un script lineal es lo último que se
+ejecuta— y comprueba ese. Si está, la migración llegó al final. Se genera de los
+propios ficheros de migración, como el resto.
+
+### Tres cosas que solo se vieron midiendo
+
+Probado contra dos bases efímeras construidas a propósito: una con las 98
+migraciones y otra parada en la 0087.
+
+- **Un objeto que una migración posterior BORRA no prueba nada.** Con las 98
+  aplicadas, 0038 y 0081 salían FALTA. Y era cierto que sus disparadores no
+  estaban —`ledger_entry_cash_session_same_tenant` y `cash_session_same_tenant`
+  los borra 0095 para rehacerlos con otro nombre— pero la conclusión era falsa:
+  esas dos migraciones sí se habían ejecutado. **Un falso «FALTA» hace tanto
+  daño como un falso «OK»**: manda a repetir lo hecho y, sobre todo, enseña a
+  desconfiar de la consulta, que es la forma de que la próxima vez nadie la
+  mire. Ahora se descarta como prueba cualquier objeto que se borre después.
+- **Una huella en negativo no distingue «ya lo quité» de «nunca lo tuve».** Las
+  migraciones que solo reemplazan una función no se pueden comprobar por
+  existencia —la función está desde antes—, así que se comprueba **qué dice** su
+  cuerpo. A 0097 le puse «ya no dice `exists(select 1 from`» y contra la base
+  parada en 0087 daba **OK**: la versión vieja tampoco lo decía. Huella siempre
+  en positivo, una frase que esa migración **añade**.
+- **Y el `%` otra vez.** La huella de 0097 es `select %I, true from %s`. Con
+  `like '%' || huella || '%'` cada `%` es un comodín y casaba con cualquier
+  cosa: **OK a ciegas para todo**. Es el mismo fallo que el `ilike` sin escapar
+  de `membego-service`, en otra ventana. Se busca con `position`, que es
+  literal.
+
+### Medido, en las dos direcciones
+
+| base | resultado |
+| --- | --- |
+| las 98 aplicadas | 72 OK, 6 declaradas no comprobables, **cero FALTA** |
+| parada en 0087 | las **once** posteriores, todas |
+| parada en 0094 | 0095, 0096, 0097 y 0098, exactamente |
+
+Las seis no comprobables (0024, 0026, 0027, 0029, 0063, 0072) son anteriores a
+que existieran los ficheros de verificación y todas están superadas por una
+posterior que sí se comprueba.
+
+### Las guardas, y las tres que sobrevivieron a la primera
+
+- La comprobación de frescura de la auditoría generada miraba solo
+  `auditoria_migraciones*`: **`auditoria_funciones_N.sql` podía quedarse atrás
+  en silencio** —justo la que ve lo que la otra no puede ver— y contestar con la
+  foto de hace diez migraciones. Ahora cubre las tres familias.
+- **Mutación: 4 de 4, pero solo tras arreglar la guarda dos veces.** Quitarle la
+  huella a 0096 y a 0097 no rompía nada, porque yo había aceptado «tiene huella
+  O tiene fichero de verificación». Y la verificación es OTRO pegado: si la
+  migración no está en el resultado consolidado, para quien pregunta no está. La
+  escapatoria fuera. La tercera superviviente era no descartar lo borrado
+  después —el falso FALTA de arriba— y ahora hay una guarda que lo comprueba
+  leyendo los `drop` de las migraciones posteriores.
+
+---
+
+## Ola 9.19 · La plaza se coge antes de venderla (F-001)
+
+De la matriz de preparación ya no quedaba ninguna fila en FALLA. La más floja
+era **F, concurrencia**, con una frase que llevaba meses ahí: «sin pruebas de
+carrera reales». Y eso antes no se podía atacar; ahora sí, porque en este
+entorno hay Postgres de verdad y se pueden lanzar treinta sesiones a la vez.
+
+### Lo medido
+
+Treinta ventas simultáneas de una plaza contra una salida de capacidad **10**,
+por el camino exacto que usa la aplicación —leer `departure_pax_totals`,
+decidir en el cliente, insertar después—:
+
+```
+vendidas: 19  /  capacidad: 10
+```
+
+**Nueve pasajeros con asiento que no existe**, y el mostrador enterándose el
+día de la excursión. No es una sutileza del planificador: es comprobar-y-actuar
+sin nada que serialice. Entre la lectura y la inserción cabe todo lo que quepa
+en ese milisegundo.
+
+### Y la reparación ya estaba escrita
+
+`reserve_departure_capacity` está en **0008**, con su cerrojo de fila, escrita
+literalmente para cerrar esto («closes AUD-B01 overbooking»). Endurecida en
+0017 y en 0019. Citada como precedente por 0083 y por 0091. Con su envoltorio
+`spReserveCapacity` en el proveedor de datos.
+
+**No la llamaba nadie.** La misma carrera contra ella da exactamente 10.
+
+Es el hallazgo de 9.16 otra vez, y esta vez sobre la sobreventa: la reparación
+existía, estaba documentada, se había endurecido dos veces, y nada la ejecutaba.
+
+### Por qué no bastaba con llamarla
+
+Porque había **dos autoridades sobre el mismo número**. `reserve_...`
+incrementaba `booked_pax`; `recalculateDeparture` lo reescribe contando las
+reservas vivas. Entre que una venta reserva y escribe su fila, cualquier
+recálculo de otra venta le borraba la reserva — y la carrera volvía por la
+puerta de al lado. Fue la mutación la que lo dejó claro: «que el recálculo
+BORRE la retención» es una de las diez, y mata.
+
+Así que la reserva deja de ser un incremento del contador y pasa a ser lo que
+de verdad es: una **retención con caducidad**, en su propia columna
+(**0099**). El recálculo cuenta filas y no la toca; la retención se suelta en
+cuanto la fila existe o si la venta se cae, y caduca sola a los dos minutos
+para que un proceso muerto no cierre la salida para siempre.
+
+El sesgo, ante la duda, es a **rechazar**: una retención que sobra deja una
+plaza sin vender dos minutos; una que falta vende una plaza que no existe. Lo
+primero se arregla solo.
+
+### La guarda: una carrera de verdad, en CI
+
+Una prueba SQL corre en UNA sesión, y una carrera necesita dos. Va en
+`scripts/db-test.sh`: treinta procesos contra una salida de diez, y se
+comprueban **las dos direcciones** —que no venda de más y que no venda de
+menos—, porque un cerrojo que lo rechaza todo también evitaría la sobreventa.
+Un tope de milisegundos habría sido inestable; esto es determinista y es el
+fallo exacto.
+
+### Mutación: 10 de 10, y cuatro supervivientes por el camino
+
+A la primera vuelta sobrevivieron cuatro, y las cuatro eran huecos reales:
+
+- **Tragarse el error al reservar.** La dirección peligrosa: si la llamada
+  revienta no se sabe si la plaza está, y seguir es vender a ciegas.
+- **Que el recálculo ignore las retenciones.** La pantalla ofrecería una plaza
+  que la reserva va a rechazar — y la lista de espera llamaría a alguien.
+- **No soltar las retenciones al compensar.** Caducan solas, pero dos minutos
+  son eternos con un cliente delante.
+- **Que el doble no vea las retenciones.** La tercera vez que el doble está a
+  punto de perdonar el fallo bajo prueba (9.12, 9.13): con `held` fijo a cero,
+  la prueba de que una plaza retenida no se revende pasaba midiera lo que
+  midiera el código. `fake-tenant.test.ts` lo prueba ahora aparte.
+
+### Tres cosas más que salieron al hacerlo
+
+- **El doble escribía sobre clones.** `db.rows()` devuelve copias, así que mi
+  primera versión de la retención no persistía nada. Lo cazó la prueba nueva al
+  escribirla, no la lectura.
+- **Un mock que se quedaba pegado.** La prueba de la caída de la RPC le dejaba
+  el mock puesto a las siguientes. Es la lección de 9.13; ahora
+  `availability.test.ts` reinstaura el reparto normal en cada prueba.
+- **37 aserciones SQL que no podían ni reportarse.** En cinco ficheros,
+  `fallos := fallos || 'texto'` sin `::text`: Postgres lo resuelve como
+  concatenación de arrays y revienta con «malformed array literal» **en vez de
+  decir qué falló**. Salió porque una de ellas se disparó de verdad. Una prueba
+  que no sabe contar lo que encontró no es media prueba: es ninguna.
+
+### Qué queda abierto
+
+F sigue en **PARCIAL**. Lo cerrado es la carrera de la sobreventa, que es la
+más cara. Sin medir siguen: la apertura simultánea de caja, el gasto del
+monedero prepago y el cupo del socio. Cada una necesita su propia carrera.
+
+---
+
+## Ola 9.20 · El combo no se podía vender (y vendía otra cosa)
+
+Reportado con dos capturas: un «Gran Combo Punta Cana» en el carrito, su
+itinerario de tres días… y ninguna forma de elegir las salidas de cada
+excursión. Al pulsar cobrar: **«Selecciona la salida de Gran Combo Punta
+Cana»**, sobre un desplegable que no existe.
+
+Mirando el módulo entero aparecieron tres fallos, y el tercero es peor que el
+que se reportó.
+
+### 1 · El paquete era invendible por el punto de venta
+
+`confirmSale` exigía salida a **todas** las líneas del carrito:
+
+```ts
+const missingDeparture = cart.find((i) => !i.departure_id);
+```
+
+Y la línea de un paquete nace sin salida **a propósito** —las tienen sus
+actividades—, cosa que el propio código explica tres pantallas más abajo. Así
+que el combo se añadía, se calculaba su precio, se enseñaba su itinerario… y no
+había manera de cobrarlo. Ni un camino alternativo: el error señalaba un campo
+que la pantalla no dibuja.
+
+Ahora la comprobación excluye los paquetes y les exige lo suyo: **su
+itinerario**. Un combo sin itinerario resoluble se rechaza aquí, con el cliente
+delante, en vez de llegar al servidor después de cobrar.
+
+### 2 · No se podía elegir la salida de cada actividad
+
+Lo que se reportó. Y lo llamativo: **el motor ya sabía hacerlo**. `planBundle`
+acepta `chosen` —`componente → salida`— desde el principio, valida lo elegido
+en vez de buscar otra cosa, y `/api/bundles` ya lo recibe por la URL. Lo que no
+devolvía nadie era **qué** se podía elegir, así que el mostrador veía el
+itinerario que salió solo y un cartel: «quita el paquete y vuelve a armarlo».
+
+`planBundle` devuelve ahora `choices`: por cada componente, las salidas reales
+de su producto con día, hora, plazas y si **caben** para este grupo. No cuesta
+otra consulta —son las mismas salidas que ya leía para resolver—.
+
+Las que no caben **se enseñan, marcadas**. Esconderlas dejaría al vendedor sin
+saber si la actividad no existe ese día o si está llena, y son dos
+conversaciones distintas con el cliente.
+
+De paso se cerraron los otros dos callejones sin salida de esa línea: **cambiar
+los pasajeros** rehace el itinerario (antes se quedaba con las plazas
+calculadas para el grupo anterior: se enseñaban plazas de sobra para 1 y se
+vendía para 4) y **el día en que empieza** se cambia en su sitio.
+
+### 3 · Y la venta reservaba lo que le daba la gana
+
+El silencioso. `expandBundles` llamaba a `planBundle` **sin** las salidas
+elegidas, así que la venta **volvía a resolver el itinerario por su cuenta**.
+Entre que el vendedor lo repasó con el cliente y pulsó «cobrar» —o simplemente
+porque otra venta llenó una salida— el sistema podía reservar **otras** salidas,
+en otro día, sin decírselo a nadie.
+
+El voucher decía una cosa y el manifiesto otra, y eso no se descubre hasta el
+lobby del hotel a las seis de la mañana.
+
+Ahora el itinerario acordado viaja con la venta (`bundle_chosen`) y el servidor
+lo **valida**: si una salida ya no está, la venta se para con su motivo. Sin
+`bundle_chosen` se sigue resolviendo solo, que es lo que una integración que no
+lo manda ya espera.
+
+Lo que llega de fuera no es peligroso: `planBundle` solo acepta una salida que
+exista, sea **de ese producto** y esté abierta. Una elección inventada no vende
+de más — hace fallar la venta.
+
+### Las pruebas, y el doble que impedía escribirlas
+
+No había **ni una** prueba de vender un paquete, y el motivo estaba a la vista:
+el doble de `supabaseService` en `booking-service.test.ts` tenía solo `rpc`, así
+que cualquier prueba que vendiera un combo moría con «from is not a function».
+Se le dio `from` sobre la **misma** base en memoria que el resto —un itinerario
+probado contra salidas inventadas no prueba nada—, y con eso entraron siete
+pruebas: que reserva exactamente lo acordado, que se para si una salida
+desapareció, que sin acuerdo sigue resolviendo sola, que el precio va entero en
+la cabecera y los componentes a cero, y que los componentes **ocupan plaza**
+(un combo no viaja gratis en el manifiesto).
+
+**Mutación: 8 de 8**, con una superviviente en la primera vuelta que era un
+fallo de mi guarda: pedía que apareciera `replanCartItem(` en el fichero, y
+aparece también en los contadores de pasajeros — así que vaciar el
+`onValueChange` del desplegable dejaba un selector que no hacía nada y la prueba
+seguía en verde. Ahora se afirma la llamada **con** la elección.
+
+**Sin migración.** Todo esto es aplicación: nada nuevo que ejecutar en la base.
