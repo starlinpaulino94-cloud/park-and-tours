@@ -1,4 +1,4 @@
--- SEMBRADOR DEMO - TROZO 13 de 13. Ejecutar EN ORDEN del 01 al 13.
+-- SEMBRADOR DEMO - TROZO 13 de 14. Ejecutar EN ORDEN del 01 al 14.
 -- Pegar entero (Ctrl+A, Run). Requiere la migracion 0067 aplicada.
 
 select modulo, filas from (values

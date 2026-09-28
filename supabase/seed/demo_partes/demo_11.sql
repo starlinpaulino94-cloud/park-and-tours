@@ -1,4 +1,4 @@
--- SEMBRADOR DEMO - TROZO 11 de 13. Ejecutar EN ORDEN del 01 al 13.
+-- SEMBRADOR DEMO - TROZO 11 de 14. Ejecutar EN ORDEN del 01 al 14.
 -- Pegar entero (Ctrl+A, Run). Requiere la migracion 0067 aplicada.
 
 insert into cash_count (id, organization_id, cash_session_id, currency, kind, counted_total, expected_total, difference, counted_at) values

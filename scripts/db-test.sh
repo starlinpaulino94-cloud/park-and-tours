@@ -98,6 +98,37 @@ for doc in "$ROOT"/docs/operaciones/DESDE_EL_EDITOR_SQL.md; do
   fi
 done
 
+# ── Ningún módulo puede quedarse vacío en silencio ──────────────────────────
+#
+# De dónde sale esto: se reportó «hay varios módulos que se crearon y están
+# totalmente vacíos». Medido sobre la base recién sembrada, era cierto —y el
+# código estaba: lo que faltaba eran los DATOS—. `organizations` con
+# `kind='partner'` tenía cero filas, y con ella se quedaban vacías las cuatro
+# tablas del socio, o sea las fases 4, 5 y 6 enteras sin nada con que verse.
+#
+# Un módulo sin datos no se puede ni mirar: desde la pantalla no se distingue
+# «no hay nada» de «no funciona». Así que a partir de aquí eso es un fallo de
+# construcción, no un descubrimiento en mitad de una demostración.
+#
+# La lista crece según se van cubriendo bloques. Lo que NO está aquí, no está
+# cubierto — y se dice, en vez de dejarlo en blanco.
+echo "→ cobertura de datos de demostración"
+COBERTURA="organizations organization_relationships partner_product allotment partner_wallet_movement price_rule product departure booking sales_order payment commission invoice customer seller supplier"
+for tabla in $COBERTURA; do
+  n=$(psql_run -At -c "select count(*) from public.$tabla;" 2>/dev/null | tr -d '[:space:]')
+  if [ "${n:-0}" = "0" ]; then
+    echo "✘ el módulo $tabla se quedó SIN datos de demostración: su pantalla saldrá vacía"; fail=1
+  fi
+done
+# Y el socio, con lo suyo: dos formas de trabajar que el sistema declara
+# excluyentes. Con una sola no se ve la diferencia, que es de lo que va el módulo.
+MODELOS=$(psql_run -At -c "select count(distinct pricing_model) from organization_relationships;" 2>/dev/null | tr -d '[:space:]')
+if [ "${MODELOS:-0}" -lt 2 ] 2>/dev/null; then
+  echo "✘ la demo solo enseña un modelo de precio de socio: comisión y neto tienen que verse los dos"; fail=1
+else
+  echo "  16 módulos con datos; socio a comisión y a neto, los dos"
+fi
+
 # ── La carrera de verdad (F-001) ────────────────────────────────────────────
 #
 # Una prueba SQL corre en UNA sesión, y una carrera necesita dos. Esto lanza N

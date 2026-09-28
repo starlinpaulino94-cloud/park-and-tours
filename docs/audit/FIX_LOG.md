@@ -5250,3 +5250,89 @@ aparece también en los contadores de pasajeros — así que vaciar el
 seguía en verde. Ahora se afirma la llamada **con** la elección.
 
 **Sin migración.** Todo esto es aplicación: nada nuevo que ejecutar en la base.
+
+---
+
+## Bloque 1 de los módulos vacíos · El socio
+
+Reportado, y con razón: «hay varios módulos que se crearon y están totalmente
+vacíos». Antes de tocar nada se midió, porque la explicación importaba.
+
+### Lo que NO era
+
+Las pantallas no están vacías de código. Barrido de las 136 del panel: solo 8
+no tenían nada que leyera o escribiera, y al abrirlas las 8 delegaban en
+componentes reales (`SimpleResource`, `AgingReport`, `BandejaDeAvisos`).
+Falsos positivos del barrido.
+
+### Lo que era
+
+Se levantó la base con las 99 migraciones **y el sembrador de demostración**, y
+se contaron las 118 tablas: **18 vacías**. Y no cualquiera:
+
+| Medido tras sembrar | |
+| --- | --- |
+| Socios (`organizations` kind=partner) | **0** |
+| `organization_relationships` | 0 |
+| `partner_product` · `allotment` · `partner_wallet_movement` | 0 |
+| Vendedores con cuenta enlazada | **0 de 4** |
+| Proveedores con usuario | **0** |
+
+El sembrador **no crea ni un socio**: la palabra «partner» aparece una vez en
+1 809 líneas. Así que las fases 4, 5 y 6 enteras —portal del tour center,
+contrato socio-producto, tarifario neto, cupos garantizados, monedero
+prepago— estaban construidas y **sin un solo dato con el que verse**.
+
+Desde la pantalla eso no se distingue de «no funciona», y por eso el reporte
+era correcto aunque el código estuviera.
+
+### Lo hecho
+
+`demo_partes/demo_14.sql` —y su copia en dos pegados para el editor— da de alta
+**dos socios que trabajan de las dos formas que el sistema declara
+excluyentes**, porque con uno solo la diferencia no se ve:
+
+- **Caribe Tours Bávaro** — tour center, a **comisión** (18%) y a **crédito**
+  (5 000 USD / 15 días), la operadora cobra al turista. 6 de 12 productos
+  contratados, cupo garantizado de 10 plazas en Saona y otro bajo petición.
+- **Punta Cana Excursions** — agencia, a **neto** (22% por debajo del público)
+  y **prepago**, cobra ella en su POS. 4 productos, tarifario neto real y un
+  monedero con una recarga y tres consumos: saldo 2 536,68 USD.
+
+El neto sale de `price_rule` con `partner_id` + canal `b2b_portal`, que es el
+**mismo** camino que usa la reserva: así el tarifario que se descarga y lo que
+se cobra no pueden divergir.
+
+### Un falso hallazgo, anotado porque enseña
+
+Mi primer sembrador insertaba `partner_product` y reventó con clave duplicada:
+había **24 filas donde yo pedía 6**. Parecía un fallo gordo —el contrato que
+debe LIMITAR, autollenado con todo—. No lo era: la **0077** le da a cada socio
+nuevo el catálogo de hoy a propósito, porque un tour center que no pueda vender
+nada hasta que alguien le autorice producto a producto parece un alta rota.
+
+El equivocado era el sembrador. Ahora **desactiva** lo que cada socio no tiene
+contratado, que además es lo que había que poder enseñar: que el contrato acota.
+
+### La guarda: un módulo vacío pasa a ser un fallo de construcción
+
+Lo que dura de esta entrega no son los datos: es que `scripts/db-test.sh`
+comprueba ahora, tras sembrar, que **16 módulos tengan filas** y que el socio
+se vea **en sus dos modelos de precio**. Un bloque que se quede sin datos rompe
+la construcción en vez de descubrirse en mitad de una demostración.
+
+Mutada por los dos lados: sin el sembrador del socio, la guarda nombra las
+cuatro tablas que se quedan vacías; con un solo modelo de precio, lo dice.
+
+**La lista de módulos cubiertos crece según se van cubriendo bloques. Lo que no
+está en ella, no está cubierto** — y se dice, en vez de dejarlo en blanco.
+
+### Qué sigue vacío, sin adornos
+
+- **Vendedores con cuenta enlazada: 0 de 4.** Es lo que deja «Mi espacio»
+  vacío. No se puede sembrar: enlazar una ficha a una cuenta necesita un
+  usuario real de `auth`, que el sembrador no puede crear.
+- **Proveedores con usuario: 0.** El portal del proveedor (fase 8) tampoco se
+  puede abrir por el mismo motivo.
+- `seller_attribution`, `commission_adjustment` y los espejos de MembeGo y
+  Stripe siguen a cero.
