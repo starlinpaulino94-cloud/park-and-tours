@@ -11407,3 +11407,93 @@ describe("el paquete en el punto de venta", () => {
     expect(readCodigo(POS)).toMatch(/bundle_chosen: i\.bundle_plan/);
   });
 });
+
+/**
+ * EL PORTAL DEL PROVEEDOR TIENE PUERTA (bloque 2 de los módulos vacíos).
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LO QUE SE ENCONTRÓ
+ *
+ * `supplier.user_id` es el ÚNICO camino hacia el portal del proveedor: el
+ * enganche de autenticación (0084, restaurado en 0093) busca la ficha por esa
+ * columna y publica `supplier_id` en el token; de ahí sale `ctx.supplierId`, y
+ * de ahí todo —ver sus servicios, aceptarlos o rechazarlos con su plazo, la
+ * hoja de ruta del chofer, su estado de cuenta, facturar con NCF—.
+ *
+ * Y **nada en el producto podía escribirla**: no estaba entre los campos
+ * editables del recurso `supplier` y no existía ninguna ruta que la pusiera.
+ * La fase 8 entera, construida y probada, era inalcanzable salvo con un
+ * `update` a mano contra la base.
+ *
+ * Es el mismo hallazgo que `reconcileStaleDrafts` (9.16) y
+ * `reserve_departure_capacity` (9.19): no faltaba construirlo, faltaba
+ * enchufarlo.
+ */
+describe("la cuenta que abre el portal del proveedor", () => {
+  const RECURSOS = "src/lib/resources.ts";
+  const RANGOS = "src/lib/field-write-role.ts";
+  const RUTA = "src/app/api/suppliers/invite/route.ts";
+  const PANTALLA = "src/app/dashboard/proveedores/page.tsx";
+
+  it("el campo se puede escribir: sin eso el portal no se abre nunca", () => {
+    const src = readCodigo(RECURSOS);
+    // Se corta en el SIGUIENTE recurso, no en uno concreto: `payable` está
+    // antes que `supplier` en el fichero y el corte salía vacío.
+    const desde = src.indexOf("  supplier: {");
+    const resto = src.slice(desde + 10);
+    const bloque = src.slice(desde, desde + 10 + (resto.search(/\n {2}\w+: \{/) + 1 || resto.length));
+    expect(bloque, "no se encontró el recurso supplier").not.toBe("");
+    expect(bloque, "supplier.user volvió a no ser editable: la fase 8 se queda sin puerta")
+      .toMatch(/"bank_account",[\s\S]*"user",/);
+  });
+
+  it("y su rango es el de administración, como el del vendedor", () => {
+    // Esa columna abre los datos de la operación a OTRA empresa. No es un campo
+    // más de la ficha.
+    expect(readCodigo(RANGOS)).toMatch(/supplier: \{ user: "admin" \}/);
+  });
+
+  it("la validación del vínculo se LLAMA en el CRUD genérico, no solo existe", () => {
+    /**
+     * El campo es editable desde el formulario, así que la comprobación tiene
+     * que estar en ese camino. Tenerla solo en la ruta de invitación dejaría el
+     * formulario vinculando cuentas de otra empresa.
+     */
+    for (const ruta of ["src/app/api/erp/[resource]/route.ts", "src/app/api/erp/[resource]/[id]/route.ts"]) {
+      expect(readCodigo(ruta), `${ruta}: no valida el vínculo del proveedor`)
+        .toMatch(/assertSupplierUserLinkable\(ctx\.companyId/);
+    }
+  });
+
+  it("hay una ruta que crea la cuenta y la vincula de una vez", () => {
+    const src = readCodigo(RUTA);
+    expect(src).toMatch(/inviteTeamMember\(/);
+    expect(src).toMatch(/assertSupplierUserLinkable\(/);
+    /**
+     * El vínculo va DESPUÉS de invitar: una ficha apuntando a una cuenta que no
+     * existe es lo único que no se puede arreglar a mano.
+     *
+     * Se compara con la LLAMADA, no con el nombre: `tenantUpdate` aparece
+     * también en la línea del `import`, y la primera versión de esta guarda
+     * medía esa —daba por bueno cualquier orden—. Es la lección de 9.16.
+     */
+    expect(src.indexOf("await inviteTeamMember({"))
+      .toBeLessThan(src.indexOf("await tenantUpdate<"));
+    // Y queda en la bitácora: es un permiso que se concede.
+    expect(src).toMatch(/action: "supplier_account_linked"/);
+    expect(src).toMatch(/requireAtLeast\(ctx, "admin"\)/);
+  });
+
+  it("la pantalla ofrece crear la cuenta y DICE quién no la tiene", () => {
+    const src = readCodigo(PANTALLA);
+    expect(src).toMatch(/\/api\/suppliers\/invite/);
+    // Un icono en la fila no es un aviso: hay que fijarse. La lista lo dice.
+    expect(src).toMatch(/Sin cuenta/);
+  });
+
+  it("y Vendedores también lo dice, que es donde se reportó el síntoma", () => {
+    // Medido sobre la base sembrada: 0 de 4 vendedores tenían cuenta enlazada,
+    // y eso se descubría cuando la persona entraba a un panel vacío.
+    expect(readCodigo("src/app/dashboard/vendedores/page.tsx")).toMatch(/Sin cuenta/);
+  });
+});

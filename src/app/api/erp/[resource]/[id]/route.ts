@@ -18,6 +18,7 @@ import { isSellerScoped } from "@/lib/seller-scope";
 import { assertRowInScope } from "@/lib/row-scope";
 import { protectedFieldChanges, protectedFieldMessage, hasProtectedFields } from "@/lib/field-write-role";
 import { assertSellerUserLinkable } from "@/lib/seller-identity";
+import { assertSupplierUserLinkable } from "@/lib/supplier-identity";
 import { projectRow } from "@/lib/field-projection";
 
 type Params = { params: Promise<{ resource: string; id: string }> };
@@ -125,6 +126,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
       const bloqueados = protectedFieldChanges(def.table, ctx.role, payload, actual);
       if (bloqueados.length > 0) throw new TenantError(protectedFieldMessage(bloqueados), 403);
       await assertSellerUserLinkable(ctx.companyId, payload, id);
+      if (resource === "supplier") await assertSupplierUserLinkable(ctx.companyId, payload, id);
     }
 
     /**

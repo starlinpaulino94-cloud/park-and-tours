@@ -100,6 +100,21 @@ export default function SellersPage() {
             ? <span className="text-xs text-muted-foreground">Vinculada</span>
             : <span className="text-xs font-semibold text-amber-600">Sin vincular</span>),
         },
+        {
+          /**
+           * QUIÉN TIENE CUENTA, DICHO EN LA LISTA.
+           *
+           * El botón de invitar sale en la fila de quien no la tiene, pero un
+           * icono no es un aviso: hay que fijarse. Medido sobre la base
+           * sembrada, CERO de cuatro vendedores tenían cuenta enlazada, y eso
+           * se descubría cuando la persona entraba y encontraba su panel
+           * vacío. Ahora la lista lo dice de frente.
+           */
+          key: "acceso", header: "Cuenta", hideOn: "sm",
+          render: (s: any) => (s.user || s.user_id
+            ? <StatusBadge value="active" dict={GENERIC_STATUS} />
+            : <span className="text-xs text-amber-600">Sin cuenta</span>),
+        },
         { key: "status", header: "Estado", render: (s: any) => <StatusBadge value={s.status} dict={GENERIC_STATUS} /> },
       ]}
       fields={[

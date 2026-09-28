@@ -5336,3 +5336,82 @@ está en ella, no está cubierto** — y se dice, en vez de dejarlo en blanco.
   puede abrir por el mismo motivo.
 - `seller_attribution`, `commission_adjustment` y los espejos de MembeGo y
   Stripe siguen a cero.
+
+---
+
+## Bloque 2 de los módulos vacíos · La cuenta que abre el portal
+
+Segundo bloque de los módulos que salían vacíos. El diagnóstico era «0 de 4
+vendedores con cuenta enlazada, 0 proveedores con usuario», y la hipótesis de
+partida —que el paso era manual y estaba sin guiar— resultó cierta solo a
+medias. Lo del proveedor era mucho peor.
+
+### El vendedor: existía entero
+
+`POST /api/sellers/invite` crea la cuenta, la invita y la vincula en una sola
+operación, con su botón en la fila y su rastro en la bitácora. No faltaba nada.
+
+Lo que faltaba era **decirlo**: que una ficha no tuviera cuenta no se veía en
+ningún sitio. Se descubría cuando la persona entraba y encontraba su panel
+vacío —que es exactamente la captura con la que se reportó—. La lista lo dice
+ahora de frente, con una columna «Cuenta · Sin cuenta».
+
+### El proveedor: la fase 8 no tenía puerta
+
+`supplier.user_id` es el **único** camino hacia el portal del proveedor: el
+enganche de autenticación (0084, restaurado en 0093) busca la ficha por esa
+columna y publica `supplier_id` en el token; de ahí sale `ctx.supplierId`, y de
+ahí **todo** —ver sus servicios, aceptarlos o rechazarlos con su plazo, la hoja
+de ruta del chofer, su estado de cuenta, facturar con NCF, el manifiesto—.
+
+Y **nada en el producto podía escribir esa columna**. Comprobado sobre el
+código:
+
+- `user` no estaba entre los campos editables del recurso `supplier`;
+- no existía ninguna ruta que la pusiera (`/api/suppliers/` no existía);
+- el formulario de proveedores no la ofrecía.
+
+Es decir: la fase 8 entera —ocho subfases de trabajo— estaba construida,
+probada y **era inalcanzable** salvo con un `update` a mano contra la base.
+
+Es el mismo hallazgo que `reconcileStaleDrafts` (9.16) y que
+`reserve_departure_capacity` (9.19), y ya van tres: **lo que faltaba no era
+construirlo, era enchufarlo**. Vale la pena decirlo en voz alta como patrón:
+en este sistema, lo que más veces está roto no es el código que falta sino el
+cable que nadie conectó.
+
+### Lo hecho
+
+Espejo exacto de lo del vendedor, y a propósito —son el mismo problema, y
+resolverlos de dos maneras distintas dejaría dos caminos que envejecen por
+separado—:
+
+- `supplier-identity.ts` — `assertSupplierUserLinkable`: la cuenta tiene que
+  ser de esta empresa y no estar ya en otra ficha. Un fallo al leer la
+  membresía **se lanza**: tomarlo por «no tiene acceso» manda a invitar a quien
+  ya está invitado, y por «sí lo tiene» vincula sin comprobar.
+- `POST /api/suppliers/invite` — crea la cuenta, la vincula y lo audita. Rango
+  de administración: esa columna abre los datos de la operación a otra empresa.
+- El campo `user` pasa a editable con `field-write-role: admin`, y la
+  validación se llama **también** en el CRUD genérico: tenerla solo en la ruta
+  de invitación dejaría el formulario vinculando cuentas de otra empresa.
+- Las dos pantallas dicen quién no tiene cuenta.
+
+### Mutación: 10 de 10, y dos guardas mías mal escritas
+
+- Una medía el `import` de `tenantUpdate` en vez de la llamada, así que daba
+  por bueno cualquier orden entre invitar y vincular. **Es la lección de 9.16
+  otra vez**, y van dos veces que la repito.
+- Otra cortaba el bloque del recurso `supplier` hasta `payable`… que está
+  **antes** en el fichero, así que el corte salía vacío y la guarda no miraba
+  nada.
+
+Y una guarda que ya existía cazó una omisión: `bitacora.test.ts` exige que toda
+acción que el código escribe tenga su texto en castellano, y
+`supplier_account_linked` salía con su nombre técnico en el papel.
+
+### Qué sigue vacío
+
+`seller_attribution`, `commission_adjustment` y los espejos de MembeGo y
+Stripe. Los dos últimos son integraciones externas: vacíos sin una cuenta
+conectada es su estado correcto.

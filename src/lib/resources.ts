@@ -616,6 +616,19 @@ export const RESOURCES: Record<string, ResourceDef> = {
       // son lo que hace falta para transferirle.
       "tax_regime", "retention_isr_pct", "retention_itbis_pct", "tax_rate",
       "bank_name", "bank_account",
+      /**
+       * LA CUENTA CON LA QUE ENTRA EL PROVEEDOR (0084).
+       *
+       * Sin esta columna no hay portal del proveedor: el enganche de
+       * autenticación busca la ficha por ella para publicar `supplier_id` en el
+       * token. No estaba aquí, así que NADA en el producto podía escribirla y
+       * toda la fase 8 era inalcanzable salvo con un `update` a mano.
+       *
+       * `field-write-role.ts` la reserva a administración, y
+       * `assertSupplierUserLinkable` comprueba que la cuenta sea de esta
+       * empresa y no esté ya en otra ficha.
+       */
+      "user",
     ],
     numeric: ["payment_terms_days", "retention_isr_pct", "retention_itbis_pct", "tax_rate"],
     writeRole: "manager",
