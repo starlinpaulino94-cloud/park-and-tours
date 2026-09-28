@@ -99,7 +99,10 @@ describe("toda ruta que toque una tabla con dimensión de vendedor está resuelt
       const tablas = [...src.matchAll(CONSULTA)].map((m) => m[3]);
       if (tablas.length === 0) continue;
 
-      const rel = path.relative(API, file);
+      // Normalizar separadores: en Windows `path.relative` devuelve `\` y la
+      // excepción está escrita con `/`. Sin esto la guarda no excluye nada y
+      // denuncia rutas que sí tienen su motivo.
+      const rel = path.relative(API, file).replace(/\\/g, "/");
       if (EXCEPCIONES[rel]) continue;            // c) motivo escrito
       if (rangoMinimo(src) > RANGO_VENDEDOR) continue;  // a) fuera de su alcance
       if (APLICA_AMBITO.test(src)) continue;     // b) acotada

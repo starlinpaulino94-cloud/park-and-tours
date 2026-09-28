@@ -394,7 +394,23 @@ async function loadClaimsFromPrimaryMembership(userId: string): Promise<AppClaim
 }
 
 export async function getSupabaseTenantContext(): Promise<TenantContext | null> {
-  const sb = await supabaseServer();
+  /*
+   * SIN CREDENCIALES NO HAY SESIÓN, Y NO ES UN ERROR.
+   *
+   * `supabaseServer` lanza cuando faltan las variables de entorno de Supabase.
+   * El middleware ya lo trataba así («no configurado» ⇒ `user: null`), pero
+   * este resolver propagaba el throw: la portada y cualquier Server Component
+   * público que pregunte quién es el visitante morían con un 500 en un
+   * despliegue sin credenciales, en lugar de mostrar la página con la cabecera
+   * de visitante anónimo. Mismo criterio que el middleware: sin config no hay
+   * sesión — y la página decide qué significa eso.
+   */
+  let sb: Awaited<ReturnType<typeof supabaseServer>>;
+  try {
+    sb = await supabaseServer();
+  } catch {
+    return null;
+  }
   const { data: userRes } = await sb.auth.getUser();      // validates the JWT
   const user = userRes?.user;
   if (!user) return null;
