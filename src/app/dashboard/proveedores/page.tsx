@@ -86,11 +86,16 @@ export default function SuppliersPage() {
            * sitio: se descubre el día que el proveedor llama porque no puede
            * confirmar un servicio. Un dato que falta y no se nota es el que
            * más tarda en arreglarse.
+           *
+           * Se dice con las mismas palabras que en Vendedores —el estado es el
+           * mismo— y en texto, no con una insignia de estado: `active` se
+           * imprime «Activo», que es exactamente lo que ya dice la columna de
+           * al lado sobre otra cosa.
            */
           key: "acceso", header: "Portal", hideOn: "sm",
           render: (s: any) => (s.user || s.user_id
-            ? <StatusBadge value="active" dict={GENERIC_STATUS} />
-            : <span className="text-xs text-amber-600">Sin cuenta</span>),
+            ? <span className="text-xs text-muted-foreground">Vinculada</span>
+            : <span className="text-xs font-semibold text-amber-600">Sin vincular</span>),
         },
         { key: "status", header: "Estado", render: (s: any) => <StatusBadge value={s.status} dict={GENERIC_STATUS} /> },
       ]}

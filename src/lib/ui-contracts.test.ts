@@ -11429,6 +11429,57 @@ describe("el paquete en el punto de venta", () => {
  * `reserve_departure_capacity` (9.19): no faltaba construirlo, faltaba
  * enchufarlo.
  */
+describe("ninguna tabla repite la clave de una columna", () => {
+  /**
+   * `DataTable` pinta la cabecera y la celda con `key={c.key}`. Dos columnas
+   * con la misma clave son dos claves repetidas en la misma lista de React:
+   * avisa por consola, y al repintar puede emparejar la celda de una con la
+   * cabecera de la otra.
+   *
+   * No es teórico. Esta guarda nace de un fallo mío: al añadir «quién no tiene
+   * cuenta» a Vendedores no vi que la columna YA existía —con otro título y la
+   * misma clave— y dejé la misma información dos veces en la misma fila. Lo
+   * que lo fijó fue una guarda mía que sólo pedía que el texto apareciera en
+   * el fichero; añadir una columna de más la cumplía igual de bien.
+   *
+   * Medido al escribirla: una sola repetición en todo el producto, la mía.
+   */
+  /** Las columnas de cada `columns={[…]}`, recortadas por corchetes emparejados. */
+  function bloquesDeColumnas(src: string): string[] {
+    const out: string[] = [];
+    const re = /columns(?:=\{|:\s*)\[/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src))) {
+      const inicio = m.index + m[0].length - 1;
+      let nivel = 0;
+      for (let j = inicio; j < src.length; j++) {
+        if (src[j] === "[") nivel++;
+        else if (src[j] === "]") {
+          nivel--;
+          if (nivel === 0) { out.push(src.slice(inicio, j + 1)); break; }
+        }
+      }
+    }
+    return out;
+  }
+
+  it("ni en las pantallas ni en los componentes", () => {
+    const repetidas: string[] = [];
+    for (const fichero of [...ficherosTs("src/app"), ...ficherosTs("src/components")]) {
+      const src = readCodigo(fichero);
+      if (!/columns(?:=\{|:\s*)\[/.test(src)) continue;
+      for (const bloque of bloquesDeColumnas(src)) {
+        const vistas = new Set<string>();
+        for (const [, clave] of bloque.matchAll(/key:\s*"([^"]+)"/g)) {
+          if (vistas.has(clave)) repetidas.push(`${fichero}: la columna "${clave}" está dos veces`);
+          vistas.add(clave);
+        }
+      }
+    }
+    expect(repetidas).toEqual([]);
+  });
+});
+
 describe("la cuenta que abre el portal del proveedor", () => {
   const RECURSOS = "src/lib/resources.ts";
   const RANGOS = "src/lib/field-write-role.ts";
@@ -11488,12 +11539,25 @@ describe("la cuenta que abre el portal del proveedor", () => {
     const src = readCodigo(PANTALLA);
     expect(src).toMatch(/\/api\/suppliers\/invite/);
     // Un icono en la fila no es un aviso: hay que fijarse. La lista lo dice.
-    expect(src).toMatch(/Sin cuenta/);
+    expect(src).toMatch(/Sin vincular/);
   });
 
-  it("y Vendedores también lo dice, que es donde se reportó el síntoma", () => {
-    // Medido sobre la base sembrada: 0 de 4 vendedores tenían cuenta enlazada,
-    // y eso se descubría cuando la persona entraba a un panel vacío.
-    expect(readCodigo("src/app/dashboard/vendedores/page.tsx")).toMatch(/Sin cuenta/);
+  it("y las dos pantallas lo dicen con las MISMAS palabras", () => {
+    /**
+     * Es el mismo estado —la ficha no apunta a ninguna cuenta— y se lee en dos
+     * listados seguidos. Dicho de dos maneras, quien lo lee se pregunta en qué
+     * se diferencian, y no se diferencian en nada.
+     *
+     * Y se dice «sin vincular», no «sin cuenta»: la cuenta puede existir en el
+     * equipo y no estar puesta en la ficha. Afirmar que no existe es afirmar
+     * algo que esta columna no sabe.
+     */
+    for (const pantalla of [PANTALLA, "src/app/dashboard/vendedores/page.tsx"]) {
+      const src = readCodigo(pantalla);
+      expect(src, `${pantalla}: no dice quién no tiene cuenta`).toMatch(/Sin vincular/);
+      expect(src, `${pantalla}: lo esconde en el móvil`)
+        .toMatch(/key: "acceso", header: "[^"]+", hideOn: "sm"/);
+      expect(src, `${pantalla}: dice «sin cuenta», que afirma de más`).not.toMatch(/Sin cuenta</);
+    }
   });
 });

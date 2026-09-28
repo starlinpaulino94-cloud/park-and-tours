@@ -5415,3 +5415,52 @@ acción que el código escribe tenga su texto en castellano, y
 `seller_attribution`, `commission_adjustment` y los espejos de MembeGo y
 Stripe. Los dos últimos son integraciones externas: vacíos sin una cuenta
 conectada es su estado correcto.
+
+---
+
+## Bloque 2 (corrección) · La columna que añadí ya estaba ahí
+
+Revisando lo que acababa de empujar, en Vendedores hay **dos columnas con la
+misma clave** diciendo lo mismo con distintas palabras: «Acceso →
+Vinculada / Sin vincular», que existía desde la fase 1.4, y «Cuenta →
+Activo / Sin cuenta», que añadí yo ayer.
+
+### Por qué no lo vi
+
+Mi guarda pedía que el texto «Sin cuenta» **apareciera en el fichero**. Añadir
+una columna de más la cumple igual de bien que arreglar la que ya estaba. Es
+la misma forma de fallo que el `import` medido en vez de la llamada: la guarda
+comprueba que algo se nombra, no que algo pase.
+
+### Qué rompe de verdad
+
+`DataTable` pinta cabecera y celda con `key={c.key}`. Dos columnas con la misma
+clave son dos claves repetidas en la misma lista de React: avisa por consola y,
+al repintar, puede emparejar la celda de una con la cabecera de la otra.
+
+### Hecho
+
+- Fuera la columna duplicada. Queda **una**, la que ya existía.
+- Se ve en el móvil (`hideOn: "sm"` y no `"md"`): quien da de alta desde el
+  mostrador lo hace en el teléfono, y esa columna es lo primero que hay que
+  arreglar de una ficha.
+- **«Sin vincular», no «sin cuenta», en las dos pantallas.** La cuenta puede
+  existir en el equipo y no estar puesta en la ficha; decir que no existe es
+  afirmar algo que la columna no sabe. Y el mismo estado en dos listados
+  seguidos no puede leerse de dos maneras.
+- En Proveedores, el estado positivo deja de ser una insignia `active`: se
+  imprimía **«Activo»**, que es literalmente lo que ya dice la columna de al
+  lado sobre otra cosa.
+- **Guarda estructural nueva**: ninguna tabla del producto repite la clave de
+  una columna. Recorta cada `columns={[…]}` por corchetes emparejados y nombra
+  el fichero y la clave. Medido al escribirla: **una sola repetición en todo el
+  producto, la mía**.
+
+### Mutación: 6 de 6
+
+Duplicar la columna otra vez, volver a decirlo con otras palabras, esconderla
+en el móvil en cualquiera de las dos pantallas, dejar la columna sin decir nada
+y desenchufar el botón de invitar — todas mueren, y la primera nombrando el
+fichero y la columna.
+
+`tsc`, `eslint`, **4110/4110** y `build` en verde.
