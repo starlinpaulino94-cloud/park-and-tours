@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { requireTenantWrite, requireAtLeast, tenantQuery, tenantCreate, tenantUpdate } from "@/lib/tenant";
 import { ok, fail, readJson } from "@/lib/api-response";
+import { attachAdjustmentsToSettlement } from "@/lib/commission-adjust-service";
 import { assertModule } from "@/lib/plan-service";
 import { newSettlementCode, newDocumentNumber } from "@/lib/codes";
 import { writeAudit } from "@/lib/audit";
@@ -121,6 +122,32 @@ export async function POST(req: NextRequest) {
       await tenantUpdate(ctx.companyId, "commission", c._id, {
         status: "settled", settlement: settlement._id,
       });
+
+      /**
+       * Y SUS AJUSTES, QUE SON LOS QUE EXPLICAN LA CIFRA.
+       *
+       * El total de abajo ya descuenta el ajuste —suma el neto—, pero hasta
+       * ahora no quedaba constancia de QUÉ liquidación se lo llevó:
+       * `commission_adjustment.settlement_id` existe desde 0059, con índice y
+       * con una excepción escrita a propósito en el disparador de solo-lectura
+       * para poder escribirla, y nada la escribía.
+       *
+       * Sin esto no se puede responder «qué recuperamos en el pago de octubre»,
+       * y el estado de cuenta del vendedor no puede enseñar el motivo del
+       * descuento que le aparece en el banco.
+       *
+       * No tumba la liquidación: el dinero ya está bien contado, lo que se
+       * pierde es la trazabilidad, y dejar sin pagar a alguien por eso sería
+       * peor. Se dice en la consola.
+       */
+      try {
+        await attachAdjustmentsToSettlement(ctx.companyId, c._id, settlement._id);
+      } catch (err) {
+        console.error(
+          `[settlements] no se pudieron enganchar los ajustes de la comisión ${c._id} ` +
+          `a la liquidación ${settlement._id}:`, err
+        );
+      }
 
       claimed++;
       base += fresh.base_amount ?? 0;

@@ -85,9 +85,20 @@ describe("lo vivo y lo anulado", () => {
 
   it("totalizar no mete lo anulado en el neto", () => {
     const t = totalizar([
-      { amount: 100, anulada: false }, { amount: 50, anulada: true },
+      { amount: 100, ajustes: 0, anulada: false }, { amount: 50, ajustes: 0, anulada: true },
     ] as Parameters<typeof totalizar>[0]);
-    expect(t).toEqual({ devengado: 100, anulado: 50, neto: 100, lineas: 2 });
+    expect(t).toEqual({ devengado: 100, anulado: 50, ajustes: 0, neto: 100, lineas: 2 });
+  });
+
+  it("y el ajuste de lo vivo SÍ baja el neto", () => {
+    // El neto era `devengado` a secas mientras la liquidación transfería el
+    // neto de verdad. Ésta es la mitad pura de esa diferencia.
+    const t = totalizar([
+      { amount: 100, ajustes: -25, anulada: false },
+    ] as Parameters<typeof totalizar>[0]);
+    expect(t.devengado).toBe(100);
+    expect(t.ajustes).toBe(-25);
+    expect(t.neto).toBe(75);
   });
 });
 
@@ -146,5 +157,124 @@ describe("un vendedor con más comisiones que el tope viejo", () => {
   it("si de verdad no se puede leer todo, no se enseña una nómina a medias", async () => {
     db = libros({ commission: muchas(10_600) });
     await expect(loadSellerStatement(ORG, LIQ)).rejects.toThrow(/no se pudo leer/i);
+  });
+});
+
+/**
+ * EL AJUSTE, EN EL PAPEL DEL VENDEDOR (bloque 3).
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LAS DOS CIFRAS QUE NO COINCIDÍAN
+ *
+ * `/api/settlements/generate` suma `net_amount ?? amount`, con un comentario
+ * que dice por qué: «SE LIQUIDA EL NETO, NO EL IMPORTE». Este papel —el que se
+ * le entrega a esa misma persona para explicarle esa misma transferencia—
+ * sumaba `amount`.
+ *
+ * Es decir: la empresa transfiere el neto y el documento dice el bruto. Con un
+ * solo ajuste, la diferencia aparece en el banco y en ninguna pantalla, y la
+ * persona se entera de que le recuperaron una comisión porque le llega menos
+ * dinero del que pone en su estado de cuenta.
+ *
+ * No saltó antes porque `commission_adjustment` tiene CERO FILAS: las dos
+ * fórmulas llevan desde 0059 sin poder discrepar.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * SE LEEN LOS AJUSTES DE ESTA LIQUIDACIÓN, NO EL NETO DE HOY
+ *
+ * Un ajuste posterior no reescribe un documento ya entregado. Es la misma
+ * decisión que el porcentaje congelado: nadie puede discutir un papel que
+ * cambia solo.
+ */
+describe("el ajuste sale en el estado de cuenta", () => {
+  const ajuste = (id: string, extra: Record<string, unknown> = {}) => ({
+    _id: id, organization_id: ORG, commission: "c1", settlement: LIQ,
+    amount: -100, currency: "usd", reason: "La venta se canceló después de pagarse",
+    reason_code: "clawback", created_at: "2026-09-20T10:00:00Z",
+    ...extra,
+  });
+
+  it("el neto del papel es el que se transfiere, no el bruto", async () => {
+    db = libros({
+      // Pagada y NO anulada: sigue estando pagada, porque se pagó.
+      commission: [comision("c1", { amount: 100, status: "paid" })],
+      commission_adjustment: [ajuste("a1", { amount: -100 })],
+    });
+
+    const estado = await loadSellerStatement(ORG, LIQ);
+
+    expect(estado.totals.devengado).toBe(100);
+    expect(estado.totals.ajustes).toBe(-100);
+    expect(estado.totals.neto).toBe(0);
+  });
+
+  it("y la línea dice cuánto se ajustó y POR QUÉ", async () => {
+    db = libros({
+      commission: [comision("c1", { amount: 100, status: "paid" })],
+      commission_adjustment: [ajuste("a1", { amount: -100 })],
+    });
+
+    const [linea] = (await loadSellerStatement(ORG, LIQ)).lines;
+
+    expect(linea.amount).toBe(100);
+    expect(linea.ajustes).toBe(-100);
+    expect(linea.neto).toBe(0);
+    // Sin el motivo, un descuento de cien es una reclamación.
+    expect(linea.motivos).toEqual(["La venta se canceló después de pagarse"]);
+  });
+
+  it("varios ajustes sobre la misma comisión se suman con su signo", async () => {
+    db = libros({
+      commission: [comision("c1", { amount: 100, status: "settled" })],
+      commission_adjustment: [
+        ajuste("a1", { amount: -30, reason: "Descuento autorizado fuera de tarifa" }),
+        ajuste("a2", { amount: 12, reason: "Premio pactado fuera de la regla" }),
+      ],
+    });
+
+    const [linea] = (await loadSellerStatement(ORG, LIQ)).lines;
+    expect(linea.ajustes).toBe(-18);
+    expect(linea.neto).toBe(82);
+    expect(linea.motivos).toHaveLength(2);
+  });
+
+  it("sin ajustes, el neto es el bruto y nada cambia", async () => {
+    db = libros({ commission: [comision("c1", { amount: 100 })] });
+    const estado = await loadSellerStatement(ORG, LIQ);
+    expect(estado.totals.ajustes).toBe(0);
+    expect(estado.totals.neto).toBe(100);
+    expect(estado.lines[0].ajustes).toBe(0);
+    expect(estado.lines[0].neto).toBe(100);
+  });
+
+  it("el ajuste de una comisión ANULADA no resta dos veces", async () => {
+    /**
+     * Lo anulado ya está fuera del devengado. Si además se le restara su
+     * ajuste, el neto bajaría por una comisión que nunca entró.
+     */
+    db = libros({
+      commission: [comision("c1", { amount: 100, status: "cancelled" })],
+      commission_adjustment: [ajuste("a1", { amount: -100 })],
+    });
+
+    const estado = await loadSellerStatement(ORG, LIQ);
+    expect(estado.totals.devengado).toBe(0);
+    expect(estado.totals.anulado).toBe(100);
+    expect(estado.totals.ajustes).toBe(0);
+    expect(estado.totals.neto).toBe(0);
+  });
+
+  it("un ajuste de OTRA liquidación no entra en este papel", async () => {
+    db = libros({
+      commission: [comision("c1", { amount: 100, status: "paid" })],
+      commission_adjustment: [
+        ajuste("a1", { amount: -40 }),
+        ajuste("a2", { amount: -60, settlement: "liq-2" }),
+      ],
+    });
+
+    const estado = await loadSellerStatement(ORG, LIQ);
+    expect(estado.totals.ajustes).toBe(-40);
+    expect(estado.totals.neto).toBe(60);
   });
 });

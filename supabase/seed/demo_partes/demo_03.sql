@@ -1,4 +1,4 @@
--- SEMBRADOR DEMO - TROZO 03 de 14. Ejecutar EN ORDEN del 01 al 14.
+-- SEMBRADOR DEMO - TROZO 03 de 15. Ejecutar EN ORDEN del 01 al 15.
 -- Pegar entero (Ctrl+A, Run). Requiere la migracion 0067 aplicada.
 
 delete from product_bundle_item where organization_id = (select id from organizations where slug = 'havelgo-demo-presentaciones');

@@ -176,3 +176,52 @@ describe("las copias para el editor de Supabase", () => {
     }
   });
 });
+
+/**
+ * LAS COPIAS DEL SEMBRADOR TAMPOCO PUEDEN ENVEJECER.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * ES EL MISMO RIESGO QUE CON LAS MIGRACIONES, CON PEOR FINAL
+ *
+ * Arriba se sujeta que la copia de una función en `supabase/editor` diga lo
+ * mismo que su migración. Los trozos del sembrador de demostración se copian
+ * igual —el editor trunca el pegado grande, así que van partidos— y hasta ahora
+ * nada comprobaba que dijeran lo mismo que el trozo del que salieron.
+ *
+ * El que se ejecuta en CI es el del sembrador. El que se PEGA es el de
+ * `editor/`. Es decir: el que nadie comprueba es justamente el que alguien va a
+ * correr contra su base.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * SE COMPARAN LAS SENTENCIAS, NO EL TEXTO
+ *
+ * Los comentarios son distintos a propósito: el trozo explica el hueco que
+ * llena y la copia explica cómo pegarla. Lo que no puede diferir es el SQL.
+ */
+describe("las copias del sembrador dicen lo mismo que el sembrador", () => {
+  /** El SQL desnudo: sin comentarios y con los espacios normalizados. */
+  const sentencias = (ruta: string) =>
+    readFileSync(ruta, "utf8").replace(/--[^\n]*/g, "").replace(/\s+/g, " ").trim();
+
+  const COPIAS: { trozo: string; partes: string[] }[] = [
+    { trozo: "demo_14.sql", partes: ["demo_socios_1.sql", "demo_socios_2.sql"] },
+    { trozo: "demo_15.sql", partes: ["demo_embudo_1.sql", "demo_embudo_2.sql"] },
+  ];
+
+  it.each(COPIAS)("$trozo y sus partes de editor", ({ trozo, partes }) => {
+    const origen = sentencias(`supabase/seed/demo_partes/${trozo}`);
+    const copia = partes.map((p) => sentencias(`${EDITOR}/${p}`)).join(" ");
+    expect(copia, `${partes.join(" + ")} ya no dice lo mismo que ${trozo}`).toBe(origen);
+  });
+
+  it("y ninguna parte pasa del tope que el editor traga", () => {
+    // Medido: el editor de Supabase ya falló con un pegado de 7,3 kB. Se deja
+    // el tope en 8 kB porque por debajo de eso no ha fallado nunca.
+    for (const { partes } of COPIAS) {
+      for (const p of partes) {
+        const bytes = Buffer.byteLength(readFileSync(`${EDITOR}/${p}`, "utf8"));
+        expect(bytes, `${p}: ${bytes} bytes, demasiado para un pegado`).toBeLessThanOrEqual(8000);
+      }
+    }
+  });
+});

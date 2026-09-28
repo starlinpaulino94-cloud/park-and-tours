@@ -1,4 +1,4 @@
--- SEMBRADOR DEMO - TROZO 12 de 14. Ejecutar EN ORDEN del 01 al 14.
+-- SEMBRADOR DEMO - TROZO 12 de 15. Ejecutar EN ORDEN del 01 al 15.
 -- Pegar entero (Ctrl+A, Run). Requiere la migracion 0067 aplicada.
 
 insert into work_order (id, organization_id, code, title, order_type, priority, status, opened_at, asset_id, maintenance_plan_id) values

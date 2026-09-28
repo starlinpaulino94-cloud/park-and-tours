@@ -1,4 +1,4 @@
--- SEMBRADOR DEMO - TROZO 09 de 14. Ejecutar EN ORDEN del 01 al 14.
+-- SEMBRADOR DEMO - TROZO 09 de 15. Ejecutar EN ORDEN del 01 al 15.
 -- Pegar entero (Ctrl+A, Run). Requiere la migracion 0067 aplicada.
 
 insert into integration (id, organization_id, name, provider, category, status, direction) values

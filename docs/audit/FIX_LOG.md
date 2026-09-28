@@ -5464,3 +5464,119 @@ y desenchufar el botón de invitar — todas mueren, y la primera nombrando el
 fichero y la columna.
 
 `tsc`, `eslint`, **4110/4110** y `build` en verde.
+
+---
+
+## Bloque 3 · El embudo y los ajustes: una puerta abierta a una habitación vacía
+
+Tercer bloque de los módulos vacíos. El diagnóstico medido era «`seller_attribution`
+y `commission_adjustment`, cero filas». A diferencia de los bloques 1 y 2, **el
+código estaba entero Y enchufado**: el enlace corto escribe la visita, la venta
+escribe el paso de reserva, el cobro completo escribe la compra, la cancelación
+de una venta ya pagada escribe el ajuste en negativo, y las cuatro pantallas
+existen. Vacías porque el sembrador escribe SQL directo y no pasa por el
+servicio.
+
+Y ahí estaba lo interesante: **un camino que nunca ha tenido datos es un camino
+que nadie ha probado.**
+
+### 1 · La compuerta que no existía (seguridad)
+
+`assertCanReadTable` deja pasar toda tabla que no esté en `READ_ROLE`.
+`commission` está reservada a gerencia; **`commission_adjustment` no estaba en
+la lista**, y tampoco en `SELLER_SCOPED`. Es decir: cualquier usuario del
+inquilino —un vendedor, un cajero, alguien de operaciones— podía pedir
+`/api/erp/commission_adjustment` y leer **los ajustes de toda la empresa, sin
+acotar, con el motivo en texto libre**. Es más sensible que la comisión, no
+menos: la comisión es una cifra, el ajuste es la cifra Y el porqué.
+
+**No estaba sola.** Un barrido del catálogo encontró tres, todas con la misma
+forma —la cabecera con compuerta y el detalle sin ella—:
+
+| cabecera | rango | detalle | rango |
+|---|---|---|---|
+| `commission` | manager | `commission_adjustment` | **ninguno** |
+| `settlement` | manager | `seller_bonus` | **ninguno** |
+| `invoice` | manager | `invoice_line` | **ninguno** |
+
+Las tres cerradas, y una guarda estructural que las habría encontrado sola:
+**ningún recurso que expanda una tabla con compuerta puede tener menos
+compuerta que ella**. Las dos pantallas afectadas ya pedían `manager` en el
+menú; ahora la API dice lo mismo que el menú.
+
+### 2 · La empresa transfiere el neto y el papel decía el bruto (dinero)
+
+`/api/settlements/generate` suma `net_amount ?? amount`, con un comentario que
+lo explica: «SE LIQUIDA EL NETO, NO EL IMPORTE». Los **dos** sitios que le
+enseñan a esa misma persona lo que se le debe sumaban `amount`:
+
+- `loadSellerStatement` — el estado de cuenta, el documento con el que se
+  discute una nómina.
+- `/dashboard/mi-espacio/comisiones` — su propia pantalla.
+
+Con un solo ajuste, la diferencia aparece en el banco y en ninguna pantalla. No
+podía saltar antes: las dos fórmulas llevan desde 0059 sin una sola fila con la
+que discrepar.
+
+**Hecho.** El estado de cuenta lleva por línea el bruto, lo ajustado y el neto,
+con el MOTIVO; y totaliza `devengado + ajustes`. Lo anulado no lleva su ajuste
+—ya está fuera del devengado, y restarlo lo contaría dos veces—. Los ajustes se
+leen de **esta** liquidación y no del neto vivo: un ajuste firmado la semana que
+viene no reescribe un papel ya entregado, que es la misma decisión que el
+porcentaje congelado.
+
+La pantalla del vendedor cobra el neto con **el mismo respaldo y en el mismo
+orden** que la liquidación, enseña el ajuste en su columna en cuanto existe, y
+el motivo se pide por `GET /api/commissions/:id/adjustments` —una puerta
+estrecha que comprueba que la comisión sea suya— y no por la tabla, que está
+cerrada por lo de arriba.
+
+### 3 · La columna que el disparador permitía escribir y nadie escribía
+
+`commission_adjustment.settlement_id` está en 0059 con su índice, y el
+disparador de solo-lectura de esa migración permite **exactamente una** edición
+sobre un ajuste ya escrito: engancharlo a una liquidación. Una excepción
+escrita a propósito. **Nada la usaba.** La liquidación descontaba el dinero del
+ajuste y no dejaba constancia de qué cierre se lo llevó.
+
+Es el mismo hallazgo que `reconcileStaleDrafts` (9.16), `reserve_departure_capacity`
+(9.19) y `supplier.user_id` (bloque 2). **Van cuatro.**
+
+### 4 · Los datos (`demo_15.sql`, y `demo_embudo_1/2.sql` para pegar)
+
+120 visitas anónimas sobre los cuatro enlaces que ya existían, 40 altas, 60
+reservas y las compras **solo de las órdenes cobradas** —la misma regla que
+`recordPurchaseOnce`—. Y los dos arquetipos de ajuste: una recuperación por
+venta caída después de pagarse (la comisión sigue en `paid`, porque se pagó) y
+una corrección de porcentaje, las dos enganchadas a LIQ-0002 y con el
+`net_amount` al día.
+
+`COBERTURA` de `db-test.sh` pasa de 16 a 18 módulos.
+
+### Mutación: 18, con un superviviente que sí era un hueco
+
+Las 17 primeras mueren. La 18 —sembrar la compra de **todas** las órdenes,
+incluidas las que nadie pagó— **sobrevivió**: el embudo sigue estrechándose
+(120 → 40) y mi guarda comprobaba la FORMA. La forma no basta. Se añadió el
+invariante que el propio producto respeta: ningún paso de «compra» sobre una
+orden sin cobrar. Con él, muere.
+
+Y una guarda nueva que faltaba desde el bloque 1: **las copias de
+`supabase/editor/` tienen que decir lo mismo que el trozo del sembrador del que
+salieron** —el que corre en CI es el del sembrador; el que se PEGA contra una
+base real es el de `editor/`, y nadie lo comprobaba—.
+
+### Un fallo mío por el camino
+
+Mi propio guion de mutación hacía copia de seguridad con `basename`, y
+`adjustments/route.ts` y `generate/route.ts` tienen el mismo nombre: la segunda
+copia pisó a la primera y restauró un fichero con el contenido del otro. Lo cazó
+la guarda de orden de `assertGerenciaOVendedorDe`.
+
+`tsc`, `eslint`, **4129/4129**, `db-test` y `build` en verde.
+
+### Qué sigue vacío
+
+Los espejos de MembeGo y de Stripe. Son integraciones externas: vacíos sin una
+cuenta conectada es su estado correcto. **Con esto se acaban los módulos vacíos
+que sí dependían de nosotros.**

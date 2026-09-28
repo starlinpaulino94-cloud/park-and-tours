@@ -2,6 +2,7 @@ import "server-only";
 import { leerTodoElRecurso } from "@/lib/barrido";
 import { tenantFindOne, tenantQuery } from "@/lib/tenant";
 import { round2 } from "@/lib/commission-adjustments";
+import { refId } from "@/lib/types";
 import type { Settlement, Seller } from "@/lib/types";
 
 /**
@@ -39,7 +40,21 @@ export interface LineaComision {
   service_date: string | null;
   base_amount: number;
   percentage: number;
+  /** El bruto: lo que devengó esa venta con el porcentaje que se le aplicó. */
   amount: number;
+  /**
+   * Lo ajustado EN ESTA LIQUIDACIÓN, con su signo. Negativo descuenta.
+   *
+   * Sale de los ajustes enganchados a esta liquidación y no del `net_amount`
+   * vivo de la comisión, a propósito: un ajuste firmado la semana que viene no
+   * puede reescribir un papel que ya se entregó. Es la misma decisión que el
+   * porcentaje congelado.
+   */
+  ajustes: number;
+  /** `amount + ajustes`. Es lo que se transfiere por esta línea. */
+  neto: number;
+  /** Por qué se ajustó. Un descuento sin motivo es una reclamación. */
+  motivos: string[];
   currency: string;
   status: string;
   /**
@@ -53,7 +68,7 @@ export interface EstadoDeCuentaVendedor {
   settlement: Settlement & Record<string, unknown>;
   seller: Seller | null;
   lines: LineaComision[];
-  totals: { devengado: number; anulado: number; neto: number; lineas: number };
+  totals: { devengado: number; anulado: number; ajustes: number; neto: number; lineas: number };
   currency: string;
 }
 
@@ -63,18 +78,35 @@ export function esAnulada(status?: string | null): boolean {
   return ANULADAS.has(String(status ?? "").toLowerCase());
 }
 
-/** Suma las líneas separando lo vivo de lo anulado. */
+/**
+ * Suma las líneas separando lo vivo, lo anulado y lo ajustado.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * EL NETO ES DEVENGADO MÁS AJUSTES, Y ESO ERA EL FALLO
+ *
+ * `neto` era `devengado` a secas. Mientras tanto, la ruta que GENERA la
+ * liquidación suma `net_amount ?? amount` con un comentario explicando que se
+ * liquida el neto y no el importe. Las dos cifras no podían coincidir en cuanto
+ * existiera un solo ajuste: la empresa transfiere una y el papel que explica
+ * esa transferencia dice la otra.
+ *
+ * Lo anulado no lleva su ajuste: ya está fuera del devengado, y restárselo
+ * además lo contaría dos veces.
+ */
 export function totalizar(lines: LineaComision[]) {
   let devengado = 0;
   let anulado = 0;
+  let ajustes = 0;
   for (const l of lines) {
-    if (l.anulada) anulado += l.amount;
-    else devengado += l.amount;
+    if (l.anulada) { anulado += l.amount; continue; }
+    devengado += l.amount;
+    ajustes += l.ajustes ?? 0;
   }
   return {
     devengado: round2(devengado),
     anulado: round2(anulado),
-    neto: round2(devengado),
+    ajustes: round2(ajustes),
+    neto: round2(devengado + ajustes),
     lineas: lines.length,
   };
 }
@@ -97,8 +129,42 @@ export async function loadSellerStatement(
       booking: { product: true },
     }));
 
+  /**
+   * LOS AJUSTES DE ESTA LIQUIDACIÓN, EN UNA SOLA CONSULTA.
+   *
+   * Se piden por `settlement` y no comisión a comisión: una nómina de
+   * doscientas líneas serían doscientas idas y vueltas. La columna existe desde
+   * 0059 con su índice, y el disparador de esa misma migración permite
+   * exactamente UNA edición sobre un ajuste ya escrito —engancharlo a una
+   * liquidación—, que es esta relación. Lo que faltaba era que alguien la
+   * escribiera: eso lo hace ahora la generación de la liquidación.
+   *
+   * Un ajuste sin enganchar es de la liquidación que venga, no de ésta.
+   */
+  const ajustes = await leerTodoElRecurso<Record<string, unknown> & { _id: string }>(
+    "commission_adjustment", (limite, salto) => tenantQuery(companyId, "commission_adjustment", {
+      _filter: { settlement: settlementId },
+      _sort: { created_at: "asc", _id: "asc" },
+      _limit: limite, _offset: salto,
+    }));
+
+  const porComision = new Map<string, { total: number; motivos: string[] }>();
+  for (const a of ajustes) {
+    const clave = refId(a.commission);
+    if (!clave) continue;
+    const acc = porComision.get(clave) ?? { total: 0, motivos: [] };
+    acc.total += Number(a.amount ?? 0);
+    const motivo = typeof a.reason === "string" ? a.reason.trim() : "";
+    if (motivo) acc.motivos.push(motivo);
+    porComision.set(clave, acc);
+  }
+
   const lines: LineaComision[] = rows.map((row) => {
     const booking = row.booking as { booking_number?: string; product?: { name?: string } } | null;
+    const importe = Number(row.amount ?? 0);
+    // Lo anulado no lleva ajuste: ya está fuera del devengado.
+    const suyos = esAnulada(row.status as string) ? null : porComision.get(row._id);
+    const ajustado = round2(suyos?.total ?? 0);
     return {
       _id: row._id,
       booking_number: booking?.booking_number ?? null,
@@ -108,7 +174,10 @@ export async function loadSellerStatement(
       base_amount: Number(row.base_amount ?? 0),
       // El congelado, no el vigente.
       percentage: Number(row.percentage ?? 0),
-      amount: Number(row.amount ?? 0),
+      amount: importe,
+      ajustes: ajustado,
+      neto: round2(importe + ajustado),
+      motivos: suyos?.motivos ?? [],
       currency: String(row.currency || settlement.currency || "usd").toLowerCase(),
       status: String(row.status ?? "pending"),
       anulada: esAnulada(row.status as string),

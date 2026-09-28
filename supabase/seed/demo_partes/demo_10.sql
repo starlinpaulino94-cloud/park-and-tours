@@ -1,4 +1,4 @@
--- SEMBRADOR DEMO - TROZO 10 de 14. Ejecutar EN ORDEN del 01 al 14.
+-- SEMBRADOR DEMO - TROZO 10 de 15. Ejecutar EN ORDEN del 01 al 15.
 -- Pegar entero (Ctrl+A, Run). Requiere la migracion 0067 aplicada.
 
 insert into seller_link (id, organization_id, seller_id, slug, name, channel, status)

@@ -11561,3 +11561,83 @@ describe("la cuenta que abre el portal del proveedor", () => {
     }
   });
 });
+
+/**
+ * EL AJUSTE DE COMISIÓN, DE PUNTA A PUNTA (bloque 3).
+ *
+ * La liquidación transfiere el neto desde 0059, con un comentario que lo
+ * explica. Las dos pantallas que le enseñan a la persona lo que se le debe
+ * sumaban el bruto. No podía saltar: `commission_adjustment` tenía cero filas,
+ * así que las dos fórmulas llevaban desde entonces sin poder discrepar.
+ */
+describe("lo que se transfiere y lo que dice la pantalla", () => {
+  const MIESPACIO = "src/app/dashboard/mi-espacio/comisiones/page.tsx";
+  const RUTA_AJUSTES = "src/app/api/commissions/[id]/adjustments/route.ts";
+  const GENERA = "src/app/api/settlements/generate/route.ts";
+
+  it("la pantalla del vendedor cobra el NETO, con el mismo respaldo que la liquidación", () => {
+    const src = readCodigo(MIESPACIO);
+    // El mismo orden que `commissionTotal += fresh.net_amount ?? fresh.amount`:
+    // si las dos no leen igual, el papel y el banco dicen cifras distintas.
+    expect(src).toMatch(/const cobrable = \(c: Comision\) => Number\(c\.net_amount \?\? c\.amount \?\? 0\)/);
+    // Y se USA: en los totales y en la columna del importe.
+    expect(src, "los totales siguen sumando el bruto")
+      .toMatch(/const importe = cobrable\(c\)/);
+    expect(src, "la columna del importe sigue pintando el bruto")
+      .toMatch(/const neto = cobrable\(c\)/);
+  });
+
+  it("y enseña el ajuste en cuanto existe", () => {
+    const src = readCodigo(MIESPACIO);
+    expect(src).toMatch(/header: "Ajuste"/);
+    expect(src).toMatch(/c\.adjustment_total/);
+  });
+
+  it("el motivo se pide por la puerta estrecha, no por la tabla", () => {
+    const src = readCodigo(MIESPACIO);
+    /**
+     * `commission_adjustment` está reservada a gerencia porque no tiene columna
+     * de vendedor y el ámbito por fila no sabría acotarla: abrirla le enseñaría
+     * a cada persona los ajustes de sus compañeros CON EL MOTIVO.
+     */
+    expect(src).toMatch(/\/api\/commissions\/\$\{c\._id\}\/adjustments/);
+    expect(src, "se asoma a la tabla entera")
+      .not.toMatch(/api\/erp\/commission_adjustment/);
+  });
+
+  it("y esa puerta comprueba que la comisión sea suya ANTES de contestar", () => {
+    const src = readCodigo(RUTA_AJUSTES);
+    /**
+     * Se compara con la LLAMADA y no con el nombre: los dos aparecen también en
+     * sus líneas de `import`, y medir el import da por bueno cualquier orden.
+     * Es la lección de 9.16, que ya he repetido dos veces.
+     */
+    const guarda = src.indexOf("assertGerenciaOVendedorDe(ctx");
+    const lectura = src.indexOf("await adjustmentsOf(");
+    expect(guarda, "no comprueba de quién es la comisión").toBeGreaterThan(-1);
+    expect(lectura).toBeGreaterThan(-1);
+    expect(guarda, "lee los ajustes antes de comprobar de quién son").toBeLessThan(lectura);
+  });
+
+  it("la liquidación engancha los ajustes que se lleva", () => {
+    const src = readCodigo(GENERA);
+    /**
+     * `commission_adjustment.settlement_id` existe desde 0059 con su índice, y
+     * el disparador de solo-lectura de esa migración permite exactamente esta
+     * edición y ninguna otra. No la escribía nadie: la liquidación descontaba
+     * el dinero del ajuste y no dejaba constancia de qué cierre se lo llevó.
+     */
+    const engancha = src.indexOf("attachAdjustmentsToSettlement(ctx.companyId");
+    const enlaza = src.indexOf('status: "settled", settlement: settlement._id');
+    expect(engancha, "no engancha los ajustes").toBeGreaterThan(-1);
+    expect(enlaza).toBeGreaterThan(-1);
+    expect(enlaza, "engancha el ajuste antes de reclamar la comisión").toBeLessThan(engancha);
+  });
+
+  it("y solo engancha los que no tienen dueño", () => {
+    // Reapuntar un ajuste ya enganchado movería dinero de un cierre a otro, y
+    // el disparador de 0059 lo rechaza de todas formas.
+    expect(readCodigo("src/lib/commission-adjust-service.ts"))
+      .toMatch(/_filter: \{ commission: commissionId, settlement: null \}/);
+  });
+});
