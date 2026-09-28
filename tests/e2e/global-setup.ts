@@ -155,6 +155,18 @@ export const HABITACION_DEL_CLIENTE = "H-9412";
 export const PROVEEDOR_PROPIO = "E2E-P1";
 export const PROVEEDOR_AJENO = "E2E-P2";
 
+/**
+ * El producto que se VENDE en el camino del dinero, con su precio.
+ *
+ * El precio vive aquí y no en el spec por la misma razón que los números de
+ * venta: el spec afirma que el total en pantalla es ESTE número, y dos
+ * literales en dos ficheros acaban divergiendo. Sin precio, el total de la
+ * venta sería 0 y el cobro —que exige un importe mayor que cero— no se podría
+ * probar nunca.
+ */
+export const EXCURSION_E2E = "Excursión E2E";
+export const PRECIO_EXCURSION_E2E = 150;
+
 /** Sus liquidaciones, para probar que no se abre la del otro. */
 export const LIQUIDACION_PROPIA = "E2E-LIQ-P1";
 export const LIQUIDACION_AJENA = "E2E-LIQ-P2";
@@ -454,12 +466,19 @@ async function ensureSupplierFixtures(
   const { data: producto } = await sb
     .from("product").select("id").eq("organization_id", orgId).eq("code", "E2E-PROD").maybeSingle();
   let productId = producto?.id as string | undefined;
-  if (!productId) {
+  if (productId) {
+    // El precio se reafirma en cada arranque: una pila que sembró el producto
+    // antes de que tuviera precio dejaría el camino del dinero vendiendo a 0.
+    await sb.from("product").update({
+      base_price: PRECIO_EXCURSION_E2E, status: "active",
+    }).eq("id", productId);
+  } else {
     const { data, error } = await sb
       .from("product")
       .insert({
-        organization_id: orgId, code: "E2E-PROD", name: "Excursión E2E",
+        organization_id: orgId, code: "E2E-PROD", name: EXCURSION_E2E,
         status: "active", currency: "usd", duration_hours: 8,
+        base_price: PRECIO_EXCURSION_E2E,
       })
       .select("id").single();
     if (error || !data) throw new Error(`seed product: ${error?.message ?? "sin producto"}`);
