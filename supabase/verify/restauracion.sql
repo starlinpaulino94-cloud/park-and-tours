@@ -130,15 +130,43 @@ select '6b · la mayoría de las tablas de negocio conservan sus cuatro polític
        ) then 'OK' else 'REVISAR' end,
        'sin políticas, la base está entera y no devuelve nada a nadie'
 union all
--- ── 7. Las funciones que mueven dinero ─────────────────────────────────────
-select '7 · funciones de dinero',
+-- ── 7. TODAS las funciones que la aplicación llama ─────────────────────────
+--
+-- Esta fila nombraba TRES —la retención, el monedero y el cupo de la salida— y
+-- se quedó atrás: hoy la aplicación llama a 14. Una restauración que
+-- perdiera `claim_allotment_seats`, `claim_cash_session_status` o `next_ncf`
+-- pasaba esta comprobación con un OK.
+--
+-- La lista va explícita a propósito, para que el fallo diga QUÉ falta y no solo
+-- «faltan funciones». Que no vuelva a envejecer lo sujeta una guarda del
+-- repositorio (`ui-contracts.test.ts`) que la compara con las migraciones y
+-- falla si aparece una función nueva sin añadirla aquí.
+select '7a · funciones que la aplicación llama',
+       coalesce((
+         select 'REVISAR — falta ' || string_agg(f.nombre, ', ')
+           from unnest(array['claim_allotment_seats','claim_cash_session_status','dashboard_summary','departure_pax_totals',
+                              'health_probe','next_ncf','rate_limit_hit','release_allotment_seats',
+                              'release_departure_capacity','report_incident','reserve_departure_capacity','respond_to_supplier_service',
+                              'retain_seller_commission','spend_partner_wallet']) as f(nombre)
+          where not exists (
+            select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+             where n.nspname = 'public' and p.proname = f.nombre)
+       ), 'OK'),
+       'cada una es una escritura que la aplicación da por hecha'
+union all
+-- Y las tres que mueven dinero, con su `security definer`: sin él corren con el
+-- permiso de quien llama, y la RLS les esconde justo las filas que tienen que
+-- contar.
+select '7b · las de dinero, con security definer',
        case when (
          select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
           where n.nspname = 'public'
-            and p.proname in ('retain_seller_commission','spend_partner_wallet','reserve_departure_capacity')
+            and p.proname in ('retain_seller_commission','spend_partner_wallet',
+                              'reserve_departure_capacity','claim_allotment_seats',
+                              'claim_cash_session_status')
             and p.prosecdef
-       ) = 3 then 'OK' else 'REVISAR' end,
-       'la retención, el monedero y el cupo: sin ellas la venta escribe a medias'
+       ) = 5 then 'OK' else 'REVISAR' end,
+       'sin security definer cuentan sobre lo que la RLS les deja ver, que es nada'
 union all
 -- ── 8. Los disparadores que rellenan lo que nadie teclea ───────────────────
 select '8 · disparadores de aceptación y proveedor',
@@ -170,4 +198,46 @@ select '10 · hay empresas y hay ventas',
              and (select count(*) from sales_order) >= 0
             then 'OK' else 'REVISAR' end,
        'si esto falla, se restauró el esquema pero no los datos'
+union all
+-- ── 11. EL CONTADOR FISCAL, QUE UN REBOBINADO PONE PARA ATRÁS ──────────────
+--
+-- La única fila de esta lista cuyo fallo no es técnico sino LEGAL, y la única
+-- que una restauración correcta puede provocar.
+--
+-- `ncf_sequence.next_number` es un contador en una TABLA, no una secuencia de
+-- Postgres. Una restauración a un punto anterior en el tiempo —que es lo que
+-- hace Supabase— lo devuelve a donde estaba, y las facturas que se emitieron
+-- después de ese punto ya llevan su número impreso, enviado al cliente y
+-- declarado. El siguiente NCF que emita el sistema REPITE uno que ya existe.
+--
+-- Dos comprobantes fiscales con el mismo número no es un descuadre que se
+-- arregla con un ajuste: es una factura que la DGII rechaza y un cliente con un
+-- documento que no vale.
+--
+-- Se compara con lo que YA está emitido, que es la única fuente de verdad que
+-- sobrevive al rebobinado. Si esta fila dice REVISAR, hay que subir el contador
+-- ANTES de dejar facturar a nadie — el manual lo explica.
+select '11 · el contador de NCF no está por detrás de lo emitido',
+       coalesce((
+         select 'REVISAR — ' || string_agg(
+                  format('%s: el contador va por %s y ya hay emitido el %s',
+                         upper(d.ncf_type), d.proximo, d.emitido), '; ')
+           from (
+             -- El número se saca quitando el TIPO completo, no las letras: el tipo
+             -- es `b02`, así que quitar solo el prefijo alfabético deja el «02»
+             -- pegado delante y convierte el 59 en 200000059. La primera versión
+             -- de esta fila lo hacía así y daba un rojo con un número inventado.
+             select q.ncf_type, q.next_number as proximo,
+                    max(nullif(substring(e.ncf from length(q.ncf_type) + 1), '')::bigint) as emitido
+               from ncf_sequence q
+               join invoice e
+                 on e.organization_id = q.organization_id
+                and lower(e.ncf_type) = lower(q.ncf_type)
+                and e.ncf is not null and e.ncf <> ''
+              where substring(e.ncf from length(q.ncf_type) + 1) ~ '^[0-9]+$'
+              group by q.ncf_type, q.next_number
+             having max(nullif(substring(e.ncf from length(q.ncf_type) + 1), '')::bigint) >= q.next_number
+           ) d
+       ), 'OK'),
+       'un NCF repetido es una factura que la DGII rechaza'
 ;

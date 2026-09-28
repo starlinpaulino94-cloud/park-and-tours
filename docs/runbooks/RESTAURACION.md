@@ -61,6 +61,47 @@ Llaves de Stripe, `MEMBEGO_SECRETO`, tokens de correo y de WhatsApp,
 `SUPABASE_SERVICE_ROLE_KEY`. Están en Vercel, no en la base. Y con ellas, los
 crons de Vercel y el endpoint del webhook de Stripe, que apunta a un dominio.
 
+### 4. Y una que sí está en la copia, pero que vuelve MAL
+
+No falta: **sobra pasado**. Es la única de esta lista cuyo daño es legal.
+
+`ncf_sequence.next_number` —el próximo comprobante fiscal a emitir— es un
+contador en una tabla, no una secuencia de Postgres. Una restauración a un punto
+anterior en el tiempo **lo devuelve a donde estaba**, y las facturas emitidas
+después de ese punto ya llevan su número impreso, enviado al cliente y
+declarado.
+
+El siguiente NCF que emita el sistema **repite uno que ya existe**. Dos
+comprobantes fiscales con el mismo número no es un descuadre que se arregla con
+un ajuste: es una factura que la DGII rechaza y un cliente con un documento que
+no vale.
+
+La fila **11** de `supabase/verify/restauracion.sql` lo caza, y dice por qué
+número va el contador y qué número ya está emitido. Si sale en rojo, hay que
+subir el contador **antes de que nadie emita nada**:
+
+```sql
+-- Deja cada contador justo por encima del último NCF ya emitido de su tipo.
+-- Se ejecuta ANTES de dejar facturar. No inventa números: mira lo emitido.
+update ncf_sequence q
+   set next_number = greatest(q.next_number, 1 + (
+         select max(nullif(substring(i.ncf from length(q.ncf_type) + 1), '')::bigint)
+           from invoice i
+          where i.organization_id = q.organization_id
+            and lower(i.ncf_type) = lower(q.ncf_type)
+            and substring(i.ncf from length(q.ncf_type) + 1) ~ '^[0-9]+$'
+       ))
+ where exists (select 1 from invoice i
+                where i.organization_id = q.organization_id
+                  and lower(i.ncf_type) = lower(q.ncf_type));
+```
+
+Y después, **volver a pegar la fila 11** para ver que quedó en `OK`.
+
+> Ojo con el otro lado: si lo que se perdió son FACTURAS —se restauró a un punto
+> anterior a ellas— el contador queda por delante y eso **no se toca**. Un hueco
+> en la numeración se explica a la DGII; un número repetido, no.
+
 ---
 
 ## Los treinta minutos, en orden
@@ -71,18 +112,21 @@ producción para «probar» es cómo se convierte un simulacro en un incidente.
 1. **Crear un proyecto de Supabase nuevo** y anotar su URL y sus llaves.
 2. **Restaurar la copia** en él, por el panel o con `pg_restore`.
 3. **Registrar el enganche del token** (punto 1 de arriba).
-4. **Pegar `supabase/verify/restauracion.sql`** en el editor SQL. Devuelve once
+4. **Pegar `supabase/verify/restauracion.sql`** en el editor SQL. Devuelve trece
    filas; **todas** tienen que decir `OK`. Cualquier `REVISAR` trae al lado el
-   porqué importa.
-5. **Entrar con una cuenta de verdad** apuntando la aplicación al proyecto
+   porqué importa —y las que pueden, dicen además QUÉ falta.
+5. **Si la fila 11 salió en rojo, subir el contador de NCF** (punto 4 de arriba)
+   antes de dejar facturar a nadie. Va aquí, antes de abrir el sistema: el primer
+   NCF repetido ya no se puede retirar del cliente.
+6. **Entrar con una cuenta de verdad** apuntando la aplicación al proyecto
    nuevo, y comprobar tres cosas que el SQL no puede ver:
    - que se ve el listado de reservas **con filas** (si sale vacío, es el
      enganche);
    - que un voucher **abre su PDF** (si no, son los archivos de Storage);
    - que el selector de empresa **cambia de empresa** de verdad.
-6. **Apuntar cuánto tardó**, de principio a fin, en el registro de abajo. Es el
+7. **Apuntar cuánto tardó**, de principio a fin, en el registro de abajo. Es el
    número que hace falta para decidir en el peor día si se restaura o se espera.
-7. **Borrar el proyecto de prueba.**
+8. **Borrar el proyecto de prueba.**
 
 ---
 

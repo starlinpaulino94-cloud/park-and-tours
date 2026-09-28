@@ -109,7 +109,13 @@ verificar() {
 }
 SALIDA="$(verificar)"
 echo "$SALIDA" | sed 's/^/     /'
-MALAS="$(echo "$SALIDA" | grep -c '|REVISAR|' || true)"
+# `|REVISAR` y no `|REVISAR|`, y no es un detalle.
+#
+# Con la forma cerrada, una fila que EXPLICARA su fallo —«REVISAR — falta
+# claim_allotment_seats»— no encajaba, y el simulacro daba verde con un rojo en
+# la mesa. Pasó: las filas 7a y 11 dicen QUÉ falta, que es lo que hace útil un
+# rojo, y al decirlo se salían de la detección.
+MALAS="$(echo "$SALIDA" | grep -c '|REVISAR' || true)"
 if [ "$MALAS" != "0" ]; then
   echo "✘ la base restaurada NO sirve: $MALAS comprobaciones en rojo"
   exit 1
@@ -134,7 +140,10 @@ echo "→ 6/6  rompiendo a propósito, para ver si la comprobación se entera"
 caza() { # <fila esperada> <etiqueta> <sql que rompe>
   "${RUN[@]}" psql -h "$PGHOST" -p "$PGPORT" -d origen -v ON_ERROR_STOP=1 -q -c "$3" >/dev/null
   local salida; salida="$(verificar)"
-  if echo "$salida" | grep -E "^$1 ·" | grep -q '|REVISAR|'; then
+  # `|REVISAR` abierto, igual que arriba: las filas que dicen QUÉ falta —7a y
+  # 11— no encajan en la forma cerrada, y con ella un control negativo sobre
+  # ellas habría dado «no se enteró» cuando sí se enteraba.
+  if echo "$salida" | grep -E "^$1 ·" | grep -q '|REVISAR'; then
     echo "     ✔ caza: $2   (fila $1)"
   else
     echo "✘ la fila $1 NO se enteró de: $2"
@@ -179,5 +188,29 @@ caza 2 "desaparece una ayuda de inquilino" \
 #    o sea que el escenario que importa no se puede montar de otra forma.
 caza 9 "las cuentas se quedan fuera del volcado" \
   "set session_replication_role = replica; delete from auth.users; set session_replication_role = origin;"
+"${RUN[@]}" psql -h "$PGHOST" -p "$PGPORT" -d origen -q \
+  -c "insert into auth.users (id, email) select m.user_id, 'restaurada-' || m.user_id || '@ejemplo.do' from (select distinct user_id from organization_memberships) m on conflict do nothing;" >/dev/null
+
+# e) Una función que la aplicación llama y que la restauración se dejó atrás.
+#
+#    La fila 7 nombraba TRES funciones y la aplicación llama a catorce: una
+#    restauración que perdiera el reclamo del cupo pasaba con un OK. Se rompe la
+#    que se añadió más tarde a propósito, que es la que una comprobación vieja no
+#    conoce.
+caza 7a "se pierde una función que la aplicación llama" \
+  "alter function public.claim_allotment_seats(uuid, integer) rename to claim_allotment_seats_perdida;"
+"${RUN[@]}" psql -h "$PGHOST" -p "$PGPORT" -d origen -q \
+  -c "alter function public.claim_allotment_seats_perdida(uuid, integer) rename to claim_allotment_seats;" >/dev/null
+
+# f) EL CONTADOR FISCAL REBOBINADO. El control más importante del fichero,
+#    porque es el ÚNICO escenario que una restauración CORRECTA provoca por sí
+#    sola: volver a un punto anterior devuelve `next_number` a donde estaba, y
+#    las facturas emitidas después ya llevan su número impreso y declarado.
+#
+#    Aquí se simula exactamente eso —el contador para atrás con las facturas
+#    donde están— y se exige que la comprobación lo diga antes de que alguien
+#    emita el primer NCF repetido.
+caza 11 "una restauración rebobina el contador de NCF" \
+  "update ncf_sequence set next_number = 1;"
 
 echo "✔ simulacro de restauración en verde: se vuelve, y la comprobación sabe fallar"

@@ -62,6 +62,22 @@ const existe = (rel: string) => existsSync(path.join(ROOT, rel));
 const readSql = (rel: string) =>
   read(rel)
     .replace(/'(?:[^']|'')*'|--[^\n]*|\/\*[\s\S]*?\*\//g, (m) => (m.startsWith("'") ? m : ""));
+/**
+ * UN GUION DE SHELL SIN SUS COMENTARIOS.
+ *
+ * Tercera vez que una guarda se cumple —o se incumple— con lo que un COMENTARIO
+ * menciona en vez de con lo que el código hace, y tercer lenguaje: `readCodigo`
+ * quita los de TypeScript, `readSql` los de SQL, y faltaba este. La guarda del
+ * simulacro prohíbe la forma cerrada `|REVISAR|` y saltó contra el comentario
+ * que explica POR QUÉ está prohibida.
+ *
+ * Las cadenas entre comillas se conservan: un `#` dentro de una cadena no abre
+ * un comentario, y en este repositorio hay cadenas con almohadilla.
+ */
+const readSh = (rel: string) =>
+  read(rel).replace(/'[^']*'|"(?:[^"\\]|\\.)*"|#[^\n]*/g, (m) =>
+    (m.startsWith("'") || m.startsWith('"') ? m : ""));
+
 /** El fichero sin comentarios: una guarda no puede darse por cumplida por lo
  *  que un comentario MENCIONA, solo por lo que el código HACE. Varios bloques
  *  declaran el suyo; este es el de los que no. */
@@ -10521,11 +10537,82 @@ describe("el simulacro de restauración prueba algo (DR-001)", () => {
      */
     const src = read(DRILL);
     const controles = src.split("\ncaza ").length - 1;
-    expect(controles, "se quedó sin controles negativos").toBeGreaterThanOrEqual(4);
+    expect(controles, "se quedó sin controles negativos").toBeGreaterThanOrEqual(6);
+    /**
+     * Y se exigen POR FILA las dos que más cuestan, no solo el recuento.
+     *
+     * Con un suelo a secas, quitar un control dejaba el número por encima del
+     * mínimo y la mutación sobrevivía. El recuento dice cuántos hay; no dice si
+     * el que falta es el del contador fiscal.
+     *
+     *  · 11 es el único escenario que una restauración CORRECTA provoca sola: el
+     *    contador de NCF rebobinado, que emite un número fiscal repetido.
+     *  · 7a es la que envejece: la lista de funciones que la aplicación llama.
+     */
+    expect(src, "sin control negativo del contador fiscal rebobinado")
+      .toMatch(/\ncaza 11 /);
+    expect(src, "sin control negativo de una función que la restauración perdió")
+      .toMatch(/\ncaza 7a /);
     expect(src).toMatch(/caza\(\) \{ # <fila esperada>/);
     expect(src).toMatch(/grep -E "\^\$1 ·"/);
     expect(src, "un control dejó de decir qué fila lo tiene que cazar")
       .not.toMatch(/\ncaza "/);
+  });
+
+  it("la comprobación no puede envejecer: conoce TODAS las funciones", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * POR QUÉ HACE FALTA ESTA GUARDA
+     *
+     * La fila 7 nombraba TRES funciones —la retención, el monedero y el cupo de
+     * la salida— y se escribió cuando esas eran todas. Hoy la aplicación llama a
+     * catorce. Una restauración que perdiera `claim_allotment_seats`,
+     * `claim_cash_session_status` o `next_ncf` **pasaba la comprobación con un
+     * OK**, y nadie se enteraba hasta la primera venta.
+     *
+     * Una comprobación de recuperación que envejece es peor que no tenerla: da
+     * un verde el día que hay que confiar en ella.
+     *
+     * La lista sigue explícita a propósito —así el rojo dice QUÉ falta— y lo que
+     * la mantiene al día es esto: se saca de las migraciones y se compara.
+     */
+    const migraciones = readdirSync(path.join(ROOT, "supabase/migrations"))
+      .filter((f) => f.endsWith(".sql"))
+      .map((f) => readFileSync(path.join(ROOT, "supabase/migrations", f), "utf8"))
+      .join("\n");
+    const declaradas = new Set(
+      [...migraciones.matchAll(/create or replace function public\.(\w+)/g)].map((m) => m[1])
+    );
+    /**
+     * Se mira la LISTA de la fila 7a, no el fichero entero.
+     *
+     * La primera versión buscaba el nombre en cualquier parte del SQL y
+     * sobrevivió a una mutación: quitar la función de la lista que de verdad
+     * comprueba la existencia dejaba el nombre mencionado en otra fila, y la
+     * guarda lo daba por cubierto. Un nombre en un comentario no comprueba nada.
+     */
+    const verificacion = read("supabase/verify/restauracion.sql");
+    const lista = /unnest\(array\[([\s\S]*?)\]\)/.exec(verificacion)?.[1] ?? "";
+    expect(lista, "la fila 7a ya no lleva una lista de funciones").not.toBe("");
+    const comprobadas = new Set([...lista.matchAll(/'(\w+)'/g)].map((m) => m[1]));
+    const faltan = [...declaradas].filter((f) => !comprobadas.has(f)).sort();
+    expect(faltan, "la comprobación de restauración se quedó atrás").toEqual([]);
+  });
+
+  it("y el simulacro detecta un REVISAR que se explica", () => {
+    /**
+     * La detección buscaba `|REVISAR|`, con la barra de cierre. Una fila que
+     * explicara su fallo —«REVISAR — falta claim_allotment_seats»— no encajaba,
+     * y el simulacro **daba verde con un rojo en la mesa**. Pasó en cuanto las
+     * filas nuevas empezaron a decir qué faltaba, que es justo lo que hace útil
+     * un rojo.
+     */
+    // Sin comentarios: esta guarda saltó contra la explicación de sí misma.
+    const src = readSh(DRILL);
+    expect(src, "vuelve a exigir la barra de cierre y se le escapan los rojos que explican")
+      .not.toMatch(/\|REVISAR\|/);
+    expect(src).toMatch(/grep -c '\|REVISAR'/);
+    expect(src).toMatch(/grep -q '\|REVISAR'/);
   });
 
   it("el manual dice lo que NO está en la copia", () => {

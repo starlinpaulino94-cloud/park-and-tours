@@ -5778,3 +5778,94 @@ Lo que queda **no es una carrera** sino atomicidad estricta —BL-002, que
 PostgREST no da— y eso sigue abierto con su tamaño escrito.
 
 `tsc`, `eslint`, **4147/4147**, `db-test` y `build` en verde.
+
+---
+
+## DR-001 · El simulacro daba verde con un rojo en la mesa, y el contador fiscal volvía para atrás
+
+DR-001 estaba **reducido**: había simulacro (`restore-drill.sh`), comprobación
+(`supabase/verify/restauracion.sql`), manual y cuatro controles negativos, todo
+corriendo en CI. Fui a ver qué le faltaba para cerrarlo. Salieron **cuatro
+cosas**, y dos son de las que no se ven.
+
+### 1 · La comprobación había envejecido
+
+La fila 7 nombraba **tres** funciones —la retención, el monedero y el cupo de la
+salida— porque cuando se escribió eran todas. Medido: la aplicación llama a
+**catorce**. Una restauración que perdiera `claim_allotment_seats`,
+`claim_cash_session_status` o **`next_ncf`** pasaba con un **OK**.
+
+Una comprobación de recuperación que envejece es peor que no tenerla: da un verde
+el día que hay que confiar en ella. La lista sigue explícita —así el rojo dice
+QUÉ falta— y ahora una guarda la saca de las migraciones y falla si aparece una
+función nueva sin añadirla.
+
+### 2 · El simulacro no detectaba un rojo que se explicara
+
+La detección buscaba `|REVISAR|`, con barra de cierre. Las filas nuevas dicen
+`REVISAR — falta claim_allotment_seats`, y **no encajaban**: el simulacro
+imprimía el rojo y terminaba en verde. Lo descubrí porque la primera fila que
+escribí disparó y el simulacro dijo que todo estaba bien.
+
+Es decir: al hacer los rojos más útiles, dejaron de contar. Arreglado en los dos
+sitios (la pasada positiva y los controles negativos), con guarda.
+
+### 3 · EL CONTADOR FISCAL, que una restauración correcta rompe sola
+
+La única de esta lista cuyo daño es **legal**, y la única que no necesita que
+nada falle.
+
+`ncf_sequence.next_number` es un contador en una **tabla**, no una secuencia de
+Postgres. Una restauración a un punto anterior en el tiempo —lo que hace
+Supabase— **lo devuelve a donde estaba**, y las facturas emitidas después ya
+llevan su número impreso, enviado al cliente y declarado. El siguiente NCF que
+emita el sistema **repite uno que ya existe**.
+
+Dos comprobantes fiscales con el mismo número no se arreglan con un ajuste: es
+una factura que la DGII rechaza y un cliente con un documento que no vale. No
+había ni una línea sobre esto en la comprobación ni en el manual.
+
+Fila **11** nueva: compara el contador con lo ya emitido, que es la única fuente
+de verdad que sobrevive al rebobinado, y dice por qué número va cada uno. Con su
+control negativo —rebobinar el contador a 1—, que es el escenario de DR entero en
+una línea. Y el manual trae el SQL para subirlo, con el aviso del otro lado: si
+lo que se perdieron son FACTURAS, el contador queda por delante y **eso no se
+toca** — un hueco en la numeración se explica a la DGII; un número repetido, no.
+
+### 4 · Y el sembrador de demostración estaba en ese estado
+
+Lo encontró la fila 11 en cuanto existió: el sembrador escribe las 59 facturas
+con su NCF directamente, sin pasar por `next_ncf`, y dejaba el contador en **1**.
+La primera factura que alguien hiciera desde la demo habría repetido un número
+fiscal. Arreglado en las dos versiones del sembrador —el monolito y los trozos— y
+comprobado también en `db-test.sh`, porque el simulacro solo corre el monolito.
+
+### Mutación: 6, con tres supervivientes que eran guardas mías flojas
+
+- Quitar una función de la lista **sobrevivía**: la guarda buscaba el nombre en
+  cualquier parte del fichero y lo encontraba en otra fila. Un nombre en un
+  comentario no comprueba nada. Ahora mira la lista que de verdad comprueba.
+- Quitar un control negativo **sobrevivía** dos veces: la guarda contaba
+  controles con un suelo de cuatro y ahora hay seis. El recuento dice cuántos
+  hay, no si el que falta es el del contador fiscal. Ahora se exigen por fila los
+  dos que más cuestan.
+
+### Y un fallo mío, el mismo por tercera vez
+
+La guarda que prohíbe la forma cerrada `|REVISAR|` **saltó contra el comentario
+que explica por qué está prohibida**. Es la tercera vez en esta rama y el tercer
+lenguaje: había `readCodigo` para TypeScript y `readSql` para SQL, y faltaba
+`readSh` para bash. Escrito.
+
+### Qué queda de DR-001
+
+Lo único que no se puede hacer desde aquí: **el simulacro contra el proyecto de
+Supabase de verdad**. Treinta minutos, ocho pasos, en
+`docs/runbooks/RESTAURACION.md`. Mientras el registro de simulacros de ese manual
+esté vacío, **DR-001 no está cerrado** por mucho que el CI esté en verde — y eso
+lo dice el propio manual.
+
+Baja de **Alto** a **Medio**: el procedimiento y la comprobación están probados y
+con seis controles negativos; lo que falta es ejecutarlo una vez.
+
+`tsc`, `eslint`, **4149/4149**, `db-test`, `restore-drill` y `build` en verde.

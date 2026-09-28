@@ -334,6 +334,33 @@ else
   fi
 fi
 
+# ── El contador fiscal de la demo, al día ───────────────────────────────────
+#
+# El sembrador escribe las facturas con su NCF directamente, sin pasar por
+# `next_ncf`, así que el contador se quedaba en 1 con 59 comprobantes emitidos:
+# la primera factura desde la demo habría REPETIDO un NCF que ya existe. Dos
+# comprobantes con el mismo número no es un descuadre, es una factura que la
+# DGII rechaza.
+#
+# Lo encontró la fila 11 de `supabase/verify/restauracion.sql`, que existe para
+# cazar esto tras una restauración a un punto anterior. Se comprueba también
+# aquí porque el simulacro corre el sembrador MONOLÍTICO y esto corre además los
+# trozos: el arreglo tiene que estar en los dos, y sin esta línea el de los
+# trozos podía quedarse atrás sin que nada avisara.
+NCF_ATRAS=$(psql_run -At -c "
+  select count(*) from ncf_sequence q
+   where exists (
+     select 1 from invoice i
+      where i.organization_id = q.organization_id
+        and lower(i.ncf_type) = lower(q.ncf_type)
+        and substring(i.ncf from length(q.ncf_type) + 1) ~ '^[0-9]+\$'
+        and nullif(substring(i.ncf from length(q.ncf_type) + 1), '')::bigint >= q.next_number);" 2>/dev/null | tr -d '[:space:]')
+if [ "${NCF_ATRAS:-0}" != "0" ]; then
+  echo "✘ $NCF_ATRAS secuencia(s) de NCF por detrás de lo emitido: la próxima factura repetiría un número fiscal"; fail=1
+else
+  echo "  el contador de NCF va por delante de lo emitido"
+fi
+
 # ── La carrera del CUPO DEL SOCIO ───────────────────────────────────────────
 #
 # El informe de preparación deja abierta la dimensión F con «quedan sin medir
