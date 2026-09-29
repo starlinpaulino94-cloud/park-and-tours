@@ -8,6 +8,7 @@ import { RESOURCES } from "@/lib/resources";
 import { NOTIFY_EVENTS } from "@/lib/notify";
 import { CONFLICT_FIELDS } from "@/lib/choque-de-recurso";
 import { CAMPOS_QUE_ASIGNA_EL_PROVEEDOR } from "@/lib/asignacion-proveedor";
+import { COLUMNAS_SIN_MAYUSCULAS } from "@/test/fake-tenant";
 
 /**
  * Contratos de código fuente.
@@ -12447,5 +12448,60 @@ describe("la lista de SQL pendiente no puede envejecer", () => {
     );
     expect(sinVerificar, "pasos pendientes sin forma de comprobar que funcionaron")
       .toEqual([]);
+  });
+});
+
+describe("el doble de pruebas compara como Postgres, no como JavaScript", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * UN DOBLE QUE SE APARTA DEL MOTOR NO DA FALSOS VERDES: DA CONCLUSIONES FALSAS
+   *
+   * `citext` compara sin mirar mayúsculas, el `in` incluido. El doble en
+   * memoria comparaba con `===`, y de esa diferencia salió un FALLO INVENTADO:
+   * el registro de arreglos llevaba meses diciendo que el cruce de duplicados
+   * del importador no era insensible a mayúsculas, que por eso una ficha
+   * guardada con mayúsculas se duplicaba en cada importación, y que arreglarlo
+   * pedía «una migración, o sea su propia ola». Con una prueba afirmándolo.
+   *
+   * `customer.email` es `citext` desde 0004. No había nada que arreglar.
+   *
+   * La lista de columnas del doble sale de las migraciones, así que tiene que
+   * seguir saliendo de ahí: una `citext` nueva que no entre en la lista
+   * devuelve al doble a comparar con `===` para esa columna, en silencio.
+   */
+  it("la lista de columnas sin mayúsculas es la que declaran las migraciones", () => {
+    const declaradas = new Set<string>();
+    for (const f of readdirSync(path.join(ROOT, "supabase/migrations")).filter((n) => n.endsWith(".sql")).sort()) {
+      const sql = readSql(`supabase/migrations/${f}`);
+      // `columna citext` dentro de un `create table`, y `add column x citext`.
+      for (const m of sql.matchAll(/create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?(\w+)\s*\(([\s\S]*?)\n\);/gi)) {
+        for (const c of m[2].matchAll(/^\s*(\w+)\s+citext\b/gim)) declaradas.add(`${m[1]}.${c[1]}`);
+      }
+      for (const m of sql.matchAll(/alter\s+table\s+(?:if\s+exists\s+)?(?:public\.)?(\w+)([\s\S]*?);/gi)) {
+        for (const c of m[2].matchAll(/add\s+column\s+(?:if\s+not\s+exists\s+)?(\w+)\s+citext\b/gi)) {
+          declaradas.add(`${m[1]}.${c[1]}`);
+        }
+      }
+    }
+
+    // Que se haya encontrado algo: sin esto, una expresión rota daría dos
+    // conjuntos vacíos y la comparación pasaría por no mirar nada.
+    expect(declaradas.size, "el lector de columnas citext dejó de leer las migraciones").toBe(3);
+    expect([...declaradas].sort(), "el doble y las migraciones dejaron de decir lo mismo")
+      .toEqual([...COLUMNAS_SIN_MAYUSCULAS].sort());
+  });
+
+  it("y lo que afirma se comprueba también contra Postgres de verdad", () => {
+    /**
+     * Ésta es la parte que faltaba y que costó el fallo inventado: leer el
+     * código no basta para saber qué hace `citext`. `db-test.sh` ejecuta esa
+     * prueba contra un Postgres con las migraciones puestas.
+     */
+    expect(existe("supabase/tests/citext_cruce.test.sql")).toBe(true);
+    const sql = readSql("supabase/tests/citext_cruce.test.sql");
+    // La forma EXACTA que usa el importador, no un `=` que probaría otra cosa.
+    expect(sql, "la prueba SQL dejó de comprobar el `in`, que es lo que usa el importador")
+      .toMatch(/email in \('laura@example\.com'\)/);
+    expect(sql, "la prueba SQL dejó de comprobar el tipo de la columna").toMatch(/citext/);
   });
 });

@@ -6476,3 +6476,67 @@ corrida verde sigue siendo la prueba que falta, y sigue sin poder darse desde
 aquí.
 
 `tsc`, `eslint`, **4183/4183**, `db-test` y `build` en verde.
+
+---
+
+## El fallo que no existía: `citext`, y un doble que mentía sobre el sistema
+
+`src/test/fake-tenant.ts`, `src/lib/import-service.test.ts`,
+`supabase/tests/citext_cruce.test.sql`, `src/lib/ui-contracts.test.ts`.
+
+### Corrección a una entrada anterior de este mismo registro
+
+En la ola del importador quedó apuntado, con todas sus letras:
+
+> **Lo que NO se arregló, y está escrito como prueba:** el cruce de duplicados
+> del importador **no es insensible a mayúsculas** […] una ficha guardada como
+> `Laura@Example.com` no casa con `laura@example.com`, se toma por nueva y el
+> archivo la duplica. […] lo que lo arregla es normalizar la columna en la base
+> (`citext` o un índice funcional), o sea una migración.
+
+**`customer.email` es `citext` desde 0004.** `citext` compara sin mirar
+mayúsculas —el `in` incluido—, así que el importador **no** duplicaba nada. No
+había fallo, no hacía falta migración, y la ola que se le asignó era trabajo
+contra un problema inexistente.
+
+Comprobado ejecutándolo, no leyéndolo: contra un Postgres con las 102
+migraciones, `email in ('laura@example.com')` encuentra `Laura@Example.com`.
+
+### De dónde salió la conclusión falsa
+
+Del doble en memoria. `fake-tenant.ts` comparaba con `===`, y la prueba que
+«afirmaba el comportamiento de hoy» afirmaba el del doble, no el del sistema —
+con una cabecera de quince líneas explicando por qué no se arreglaba ahí y qué
+ola haría falta.
+
+**Un doble que se aparta del motor real no da falsos verdes: da conclusiones
+falsas sobre el sistema.** Un falso verde se descubre cuando algo se rompe; esto
+no se rompe nunca, porque describe un mundo que no existe. Llevaba meses en el
+registro como deuda planificada.
+
+### Qué queda
+
+- El doble sabe qué columnas son `citext` —las tres: `customer.email`,
+  `seller.email`, `organizations.slug`— y compara como Postgres en `eq`, `in`,
+  `nin` y `neq`.
+- La prueba del importador afirma ahora lo contrario de lo que afirmaba, en las
+  dos direcciones (archivo en minúsculas contra ficha en mayúsculas, y al revés).
+- **`supabase/tests/citext_cruce.test.sql`**, que es la pieza que faltaba: lo
+  comprueba contra Postgres, con la forma EXACTA que usa el importador —un `in`
+  por lotes, no un `=`— y afirma además que la columna sigue siendo `citext`. Si
+  alguien la pasa a `text`, el fallo se vuelve real y esto lo dice.
+- Y una guarda que compara la lista del doble con lo que declaran las
+  migraciones: una `citext` nueva que no entre en la lista devolvería el doble a
+  `===` para esa columna, en silencio, que es exactamente como se coló ésta.
+
+### La prueba nueva cazó mi propio descuido al escribirla
+
+Conté las columnas `citext` del catálogo y me salieron **cinco**: `pg_class`
+incluye los ÍNDICES, y un índice sobre una columna `citext` tiene a su vez una
+columna `citext`. Sin `relkind = 'r'` hay dos fantasmas. La prueba falló en su
+primera ejecución diciendo exactamente eso.
+
+**Mutación: 6 de 6**, incluida la que importa de verdad — pasar
+`customer.email` a `text` en 0004 pone `db-test` en rojo.
+
+`tsc`, `eslint`, **4186/4186**, `db-test` y `build` en verde.

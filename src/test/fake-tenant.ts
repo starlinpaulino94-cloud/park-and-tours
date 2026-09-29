@@ -38,30 +38,71 @@ function ref(value: unknown): string | null {
   return null;
 }
 
+/**
+ * LAS COLUMNAS QUE POSTGRES COMPARA SIN MIRAR MAYÚSCULAS.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ ESTO ESTÁ AQUÍ, Y LO QUE COSTÓ NO TENERLO
+ *
+ * `citext` es un tipo de Postgres: `email = 'laura@example.com'` encuentra
+ * `Laura@Example.com`, y el `in` también. Este doble comparaba con `===`, que
+ * no.
+ *
+ * Eso no fue una imprecisión sin consecuencias: se dio por bueno un FALLO QUE
+ * NO EXISTE. El registro de arreglos llevaba apuntado que el cruce de
+ * duplicados del importador no era insensible a mayúsculas, que por eso una
+ * ficha guardada con mayúsculas se duplicaba en cada importación, y que
+ * arreglarlo pedía «una migración, o sea su propia ola». Había además una
+ * prueba afirmando ese comportamiento, con una cabecera explicando que sobraba
+ * el día que se arreglara.
+ *
+ * `customer.email` ES `citext` desde 0004. Comprobado contra Postgres de
+ * verdad: el `in` en minúsculas SÍ encuentra la ficha con mayúsculas. Lo que
+ * aquella prueba afirmaba no era el comportamiento del sistema: era el de este
+ * doble.
+ *
+ * La lista sale de las migraciones y una guarda la compara con ellas, para que
+ * una columna `citext` nueva no se quede fuera en silencio — que es exactamente
+ * como se coló ésta.
+ */
+export const COLUMNAS_SIN_MAYUSCULAS = new Set([
+  "customer.email",
+  "organizations.slug",
+  "seller.email",
+]);
+
+/** Lo que Postgres compararía: en `citext`, sin mirar mayúsculas. */
+function comparable(tabla: string, campo: string, valor: unknown): unknown {
+  if (typeof valor !== "string") return valor;
+  return COLUMNAS_SIN_MAYUSCULAS.has(`${tabla}.${campo}`) ? valor.toLowerCase() : valor;
+}
+
 /** ¿La fila cumple una condición de `_filter`? */
-function cumple(fila: Fila, campo: string, cond: unknown): boolean {
-  const valor = campo === "_id" ? (fila._id ?? fila.id) : fila[campo];
+function cumple(fila: Fila, campo: string, cond: unknown, tabla = ""): boolean {
+  const crudo = campo === "_id" ? (fila._id ?? fila.id) : fila[campo];
+  const valor = comparable(tabla, campo, crudo);
+  const igual = (x: unknown) => comparable(tabla, campo, x);
 
   if (cond && typeof cond === "object" && !Array.isArray(cond)) {
     const c = cond as Record<string, unknown>;
     if ("in" in c) {
-      const lista = (c.in as unknown[]).map((v) => ref(v) ?? v);
+      const lista = (c.in as unknown[]).map((v) => igual(ref(v) ?? v));
       return lista.includes(ref(valor) ?? valor);
     }
     if ("nin" in c) {
-      const lista = (c.nin as unknown[]).map((v) => ref(v) ?? v);
+      const lista = (c.nin as unknown[]).map((v) => igual(ref(v) ?? v));
       return !lista.includes(ref(valor) ?? valor);
     }
     if ("gte" in c && String(valor ?? "") < String(c.gte)) return false;
     if ("lte" in c && String(valor ?? "") > String(c.lte)) return false;
     if ("gt" in c && !(String(valor ?? "") > String(c.gt))) return false;
     if ("lt" in c && !(String(valor ?? "") < String(c.lt))) return false;
-    if ("neq" in c) return (ref(valor) ?? valor) !== (ref(c.neq) ?? c.neq);
+    if ("neq" in c) return (ref(valor) ?? valor) !== igual(ref(c.neq) ?? c.neq);
     return true;
   }
 
   // Una referencia se compara por identificador aunque venga expandida.
-  const esperado = ref(cond) ?? cond;
+  const esperado = igual(ref(cond) ?? cond);
   const real = ref(valor) ?? valor;
   return real === esperado;
 }
@@ -117,7 +158,7 @@ export function fakeDb(inicial: Record<string, Fila[]> = {}): FakeDb {
   const buscar = (tabla: string, opts: Record<string, unknown> = {}): Fila[] => {
     const filtro = (opts._filter as Record<string, unknown>) ?? {};
     let filas = de(tabla).filter((fila) =>
-      Object.entries(filtro).every(([campo, cond]) => cumple(fila, campo, cond))
+      Object.entries(filtro).every(([campo, cond]) => cumple(fila, campo, cond, pgTable(tabla)))
     );
 
     /**
@@ -216,7 +257,7 @@ export function fakeDb(inicial: Record<string, Fila[]> = {}): FakeDb {
     rows: (tabla) => de(tabla).map((f) => clon(f)),
     row: (tabla, match) => {
       const f = de(tabla).find((fila) =>
-        Object.entries(match).every(([campo, cond]) => cumple(fila, campo, cond))
+        Object.entries(match).every(([campo, cond]) => cumple(fila, campo, cond, pgTable(tabla)))
       );
       return f ? clon(f) : null;
     },

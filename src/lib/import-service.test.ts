@@ -68,24 +68,26 @@ describe("cruzar el archivo con lo que ya existe", () => {
     expect(found.get("email:laura@example.com")).toBe("cli-1");
   });
 
-  it("PERO NO si la ficha guardada tiene mayúsculas, y eso es un fallo abierto", async () => {
+  it("y la encuentra aunque la ficha guardada tenga mayúsculas", async () => {
     /**
-     * Esta prueba afirma lo que el código hace HOY, no lo que debería hacer.
+     * ────────────────────────────────────────────────────────────────────────
+     * ESTA PRUEBA AFIRMABA LO CONTRARIO, Y AFIRMABA AL DOBLE
      *
-     * `keyOf` pasa a minúsculas las dos partes al armar el mapa, así que leyendo
-     * el servicio parece que el cruce no mira mayúsculas. No es verdad: la
-     * consulta va con un `in` exacto, y una ficha guardada como
-     * `Laura@Example.com` no casa con `laura@example.com`. Se toma por nueva y
-     * el archivo la vuelve a crear.
+     * Decía —con una cabecera larga explicándolo— que el cruce NO era
+     * insensible a mayúsculas, que por eso una ficha guardada como
+     * `Laura@Example.com` se duplicaba en cada importación, y que arreglarlo
+     * pedía «normalizar la columna en la base, o sea una migración».
      *
-     * Y hay fichas así: el motor público pasa el correo a minúsculas, pero la
-     * captura a mano y el espejo de MembeGo guardan lo que les den.
+     * `customer.email` ES `citext` desde 0004, y `citext` compara sin mirar
+     * mayúsculas — el `in` incluido. Comprobado ejecutándolo contra Postgres,
+     * no leyéndolo: `supabase/tests/citext_cruce.test.sql` lo afirma allí.
      *
-     * NO se arregla aquí. Un `in` insensible a mayúsculas no se puede expresar
-     * en PostgREST, y hacer una consulta por valor serían doscientas por lote.
-     * Lo que lo arregla de verdad es normalizar la columna en la base —`citext`
-     * o un índice funcional— y eso es una migración, o sea su propia ola. Queda
-     * dicho en el registro de arreglos.
+     * Lo que aquella prueba describía era el comportamiento del DOBLE en
+     * memoria, que comparaba con `===`. El fallo no existía en producción, y
+     * durante meses estuvo apuntado como deuda abierta con su ola asignada.
+     *
+     * La lección no es sobre correos: un doble que se aparta del motor real no
+     * da falsos verdes, da CONCLUSIONES FALSAS sobre el sistema.
      */
     db.seed("customer", [
       { _id: "cli-1", organization_id: ORG, email: "Laura@Example.com", first_name: "Laura" },
@@ -93,7 +95,20 @@ describe("cruzar el archivo con lo que ya existe", () => {
     const found = await resolveExisting(ORG, CLIENTES, [
       fila(2, { email: "laura@example.com" }, { field: "email", value: "laura@example.com" }),
     ]);
-    expect(found.size, "si esto empieza a encontrarla, el fallo está arreglado y esta prueba sobra").toBe(0);
+    expect(found.get("email:laura@example.com"), "el archivo volvería a crear una ficha que ya está")
+      .toBe("cli-1");
+  });
+
+  it("y al revés: archivo en mayúsculas contra ficha en minúsculas", async () => {
+    // La otra dirección, que es la que se da cuando quien exporta el archivo es
+    // otro sistema. `citext` tampoco mira aquí.
+    db.seed("customer", [
+      { _id: "cli-2", organization_id: ORG, email: "pedro@example.com", first_name: "Pedro" },
+    ]);
+    const found = await resolveExisting(ORG, CLIENTES, [
+      fila(2, { email: "PEDRO@EXAMPLE.COM" }, { field: "email", value: "PEDRO@EXAMPLE.COM" }),
+    ]);
+    expect(found.get("email:pedro@example.com")).toBe("cli-2");
   });
 
   it("lo que no está, no está", async () => {
