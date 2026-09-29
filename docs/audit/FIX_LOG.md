@@ -6809,3 +6809,77 @@ Que estos dos arreglos basten se prueba en la siguiente corrida de CI. Aquí no
 hay navegador ni proyecto Supabase contra el que medir: lo que está medido es
 que las guardas cazan las dos regresiones, y que el resto del sistema sigue en
 verde.
+
+---
+
+## El build dependía de que Google contestara, y un día no contestó
+
+`src/app/layout.tsx`, `src/app/fonts/*.woff2`, `src/lib/pos-tipografia.test.ts`.
+
+### El fallo, que no mencionaba la red por ninguna parte
+
+La corrida 242 del CI murió antes de llegar al E2E:
+
+```
+src/app/layout.tsx
+An error occurred in `next/font`.
+
+TypeError: Cannot read properties of null (reading '1')
+    at node_modules/next/dist/compiled/@next/font/dist/google/loader.js:122:78
+
+> Build failed because of webpack errors
+```
+
+`next/font/google` **no** es una etiqueta `<link>`: descarga la tipografía
+durante el `build` y parsea el CSS que le devuelven. Ese `null` es la expresión
+regular que lo parsea sin casar — llegó algo que no era el CSS esperado.
+
+Un fallo de red disfrazado de fallo de tipos, en un fichero que nadie había
+tocado. El mismo commit pasó al relanzarlo sin cambiar nada, lo que confirmó el
+diagnóstico: cada compilación y cada despliegue dependían de que un tercero
+estuviera de buenas.
+
+### Lo que se hizo
+
+Los dos ficheros —Manrope v20 y Geist Mono v6, subconjunto latino, eje de peso
+completo— viven ahora en `src/app/fonts/` y se cargan con `next/font/local`.
+
+### Lo que NO cambia, medido antes de prometerlo
+
+**Los bytes que descarga el navegador son exactamente los mismos.** La
+tentación era anunciar un ahorro: «antes seis pesos sueltos, ahora un variable».
+Es falso. Pidiéndole a Google los seis pesos
+(`Manrope:wght@300;400;500;600;700;800`) devuelve, para el subconjunto latino,
+**un solo fichero variable de 24 836 bytes** — el mismo que está guardado aquí,
+comprobado por suma SHA-256 contra lo que el build emite en
+`.next/static/media/`. No había seis ficheros que ahorrar.
+
+Lo que cambia es de **dónde** y **cuándo** salen: de este repositorio al
+compilar, en vez de de un servidor ajeno.
+
+Y una diferencia real, pequeña y dicha: con Google, Next conoce las métricas
+exactas de cada familia y ajusta la fuente de respaldo para que el texto no
+salte al cargar. En local eso se aproxima con Arial. Para la monoespaciada se
+desactiva a propósito —aproximar una monoespaciada con Arial desplaza más de lo
+que corrige— y se deja el monoespaciado del sistema.
+
+### Y un binario huérfano que llevaba meses ahí
+
+`src/app/fonts/space-grotesk-latin-var.woff2` no lo nombraba **nada** desde la
+limpieza que dejó la tipografía en una sola familia. Eliminado, y la guarda
+nueva impide que vuelva a pasar.
+
+### Las guardas
+
+| guarda | qué sujeta |
+| --- | --- |
+| son dos familias y ni una más | cuenta los `variable:` declarados, no los nombres importados de Google — que es lo que la guarda vieja miraba y ya no existe |
+| el build no sale a Internet | barre **todo** `src`, no solo el layout: una fuente nueva en otra pantalla devuelve la dependencia entera |
+| cada fichero existe, es woff2 y alguien lo usa | ruta rota (revienta el build), fichero corrupto (se rompe en el navegador, en silencio) y binario huérfano (el caso de Space Grotesk), las tres |
+
+**Mutación: 7 de 7**, incluidas las dos que importan — devolver
+`next/font/google` a *otra* pantalla distinta del layout, y guardar un fichero
+que no es un WOFF2.
+
+`tsc`, `eslint`, **4198/4198** y `build` en verde. Sin migración y sin tocar
+nada de la base, así que `db-test` no entra en esta entrega.
