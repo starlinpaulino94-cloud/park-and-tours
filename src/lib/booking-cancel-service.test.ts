@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fakeDb, type FakeDb, paxTotalsDeLaBase, reservarPlazaDeLaBase, soltarPlazaDeLaBase } from "@/test/fake-tenant";
+import { fakeDb, type FakeDb, paxTotalsDeLaBase, reservarPlazaDeLaBase, soltarPlazaDeLaBase, reclamarCupoDeLaBase, soltarCupoDeLaBase } from "@/test/fake-tenant";
 
 /**
  * DESHACER UNA VENTA.
@@ -39,6 +39,11 @@ vi.mock("@/lib/supabase/service", () => ({
       nombre === "departure_pax_totals" ? paxTotalsDeLaBase(db)(args)
       : nombre === "reserve_departure_capacity" ? reservarPlazaDeLaBase(db)(args)
       : nombre === "release_departure_capacity" ? soltarPlazaDeLaBase(db)(args)
+      // 0100: y la devolución al cupo del socio, por lo mismo. Una constante
+      // aquí dejaría verde la prueba de que las plazas vuelven a SU contrato
+      // sin que nada volviera a ningún sitio.
+      : nombre === "claim_allotment_seats" ? reclamarCupoDeLaBase(db)(args)
+      : nombre === "release_allotment_seats" ? soltarCupoDeLaBase(db)(args)
       : { data: null, error: null },
   }),
 }));

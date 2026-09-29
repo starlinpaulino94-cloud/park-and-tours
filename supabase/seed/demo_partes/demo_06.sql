@@ -105,6 +105,29 @@ select md5('demo:' || ('inv:' || v.n))::uuid, (select id from organizations wher
     round(v.total / 1.18, 2), round(v.total - v.total / 1.18, 2), 18, v.discount, v.total, v.total,
     'usd'::currency, 1, 'Cliente ' || v.cust, NULL, md5('demo:' || ('cust:' || v.cust))::uuid, md5('demo:' || ('order:' || v.n))::uuid
 from demo_seed_rows v where v.paid >= v.total and v.paid > 0;
+-- ── EL CONTADOR FISCAL, AL DÍA CON LO QUE SE ACABA DE EMITIR ──────────────
+--
+-- El sembrador escribe las facturas con su NCF directamente, sin pasar por
+-- `next_ncf`, así que el contador se quedaba en 1 con 59 comprobantes ya
+-- emitidos. La primera factura que alguien hiciera desde la demo REPETIRÍA un
+-- NCF que ya existe — y dos comprobantes con el mismo número no es un descuadre
+-- que se arregla con un ajuste: es una factura que la DGII rechaza.
+--
+-- Lo encontró la fila 11 de `supabase/verify/restauracion.sql`, que existe para
+-- cazar justo esto después de una restauración a un punto anterior.
+update ncf_sequence q
+   set next_number = greatest(q.next_number, 1 + (
+         select max(nullif(substring(i.ncf from length(q.ncf_type) + 1), '')::bigint)
+           from invoice i
+          where i.organization_id = q.organization_id
+            and lower(i.ncf_type) = lower(q.ncf_type)
+            and substring(i.ncf from length(q.ncf_type) + 1) ~ '^[0-9]+$'
+       ))
+ where q.organization_id = (select id from organizations where slug = 'havelgo-demo-presentaciones')
+   and exists (select 1 from invoice i
+                where i.organization_id = q.organization_id
+                  and lower(i.ncf_type) = lower(q.ncf_type));
+
 insert into invoice_line (id, organization_id, invoice_id, description, quantity, unit_price, total)
 select md5('demo:' || ('invl:' || v.n))::uuid, (select id from organizations where slug = 'havelgo-demo-presentaciones'), md5('demo:' || ('inv:' || v.n))::uuid,
     'Excursión ' || v.prod || ' — ' || v.pax_total || ' pax', v.pax_total, v.price, v.total

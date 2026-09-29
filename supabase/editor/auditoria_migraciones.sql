@@ -73,9 +73,14 @@ with e(mig,obj,col) as (values
   ('0099','departure','hold_pax')
 )
 select e.mig as migracion,
-       case when to_regclass('public.' || e.obj) is null
+       -- Esta rama va PRIMERA a propósito. Con el orden al revés,
+       -- `to_regclass('public.' || '')` es nulo y una migración sin
+       -- comprobación automática —hoy 0072— salía como 'FALTA - no existe ',
+       -- con el nombre vacío detrás. Medido contra una base con TODAS
+       -- aplicadas: decía que faltaba una que estaba.
+       case when e.obj = '' then 'SIN COMPROBACION AUTOMATICA - mirala a mano'
+            when to_regclass('public.' || e.obj) is null
               then 'FALTA - no existe ' || e.obj
-            when e.obj = '' then 'SIN COMPROBACION AUTOMATICA - mirala a mano'
             when e.col <> '' and not exists (
               select 1 from information_schema.columns c
                where c.table_schema = 'public' and c.table_name = e.obj
@@ -102,6 +107,6 @@ select e.mig as migracion,
 -- verificacion en supabase/editor/.
 --
 -- Y estas migraciones no salen arriba por lo mismo, no hay nada que preguntar
--- por catalogo de tablas: 0022, 0023, 0024, 0025, 0026, 0027, 0028, 0029, 0031, 0043, 0063, 0091, 0093, 0094, 0095, 0096, 0097
+-- por catalogo de tablas: 0022, 0023, 0024, 0025, 0026, 0027, 0028, 0029, 0031, 0043, 0063, 0091, 0093, 0094, 0095, 0096, 0097, 0100, 0101, 0102
 --
 -- Para el detalle columna por columna: auditoria_migraciones_N.sql

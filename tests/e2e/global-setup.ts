@@ -171,6 +171,25 @@ export const PRECIO_EXCURSION_E2E = 150;
 export const LIQUIDACION_PROPIA = "E2E-LIQ-P1";
 export const LIQUIDACION_AJENA = "E2E-LIQ-P2";
 
+/**
+ * LO QUE HACE FALTA PARA VENDER DE VERDAD, Y NO SOLO PARA MIRAR.
+ *
+ * Todas las specs de hasta ahora son de AISLAMIENTO: entran, miran y comprueban
+ * que no ven lo ajeno. Ninguna escribe. La de la venta sí —crea una orden, cobra
+ * y cancela— y eso cambia dos cosas:
+ *
+ *   · El producto necesita PRECIO. Sin él la venta cuesta cero, y «cobrar»
+ *     sobre cero deja el saldo en cero hiciera lo que hiciera el cobro.
+ *   · La salida necesita quedar LIMPIA en cada ejecución. Si una corrida se
+ *     cae a mitad, la plaza se queda cogida; a las cuarenta, el CI empieza a
+ *     fallar por capacidad y el fallo no se parece en nada a su causa.
+ */
+// El producto y su precio son los de arriba —`EXCURSION_E2E` y
+// `PRECIO_EXCURSION_E2E`—: las dos specs venden LA MISMA excursión, y con dos
+// pares de constantes cada arranque la sembraba con un precio distinto.
+/** El cliente al que se le vende, distinto del que el proveedor no puede ver. */
+export const CLIENTE_DE_LA_VENTA = "Rigoberto Compratest";
+
 const E2E_ORG_SLUG = "e2e-tenant";
 const E2E_PARTNER_SLUG = "e2e-partner";
 
@@ -478,13 +497,15 @@ async function ensureSupplierFixtures(
       .insert({
         organization_id: orgId, code: "E2E-PROD", name: EXCURSION_E2E,
         status: "active", currency: "usd", duration_hours: 8,
+        // CON PRECIO. Sin él la venta entera cuesta cero, y una prueba de
+        // «vender y cobrar» sobre cero pasa sin haber movido un céntimo:
+        // cobrar 0 deja el saldo en 0 hiciera lo que hiciera el cobro.
         base_price: PRECIO_EXCURSION_E2E,
       })
       .select("id").single();
     if (error || !data) throw new Error(`seed product: ${error?.message ?? "sin producto"}`);
     productId = data.id as string;
   }
-
   const manana = new Date(Date.now() + 24 * 3_600_000).toISOString();
   const { data: salidaExistente } = await sb
     .from("departure").select("id")
@@ -493,18 +514,57 @@ async function ensureSupplierFixtures(
   if (departureId) {
     // La fecha se refresca en cada ejecución: si no, la salida dejaría de ser
     // «próxima» al día siguiente y el portal no la enseñaría.
-    await sb.from("departure").update({ departure_at: manana, status: "scheduled" }).eq("id", departureId);
+    await sb.from("departure").update({ departure_at: manana, status: "available" }).eq("id", departureId);
   } else {
     const { data, error } = await sb
       .from("departure")
       .insert({
         organization_id: orgId, product_id: productId, departure_at: manana,
-        capacity: 40, status: "scheduled", meeting_point: "Lobby E2E",
+        capacity: 40, status: "available", meeting_point: "Lobby E2E",
       })
       .select("id").single();
     if (error || !data) throw new Error(`seed departure: ${error?.message ?? "sin salida"}`);
     departureId = data.id as string;
   }
+
+  /**
+   * LA SALIDA QUEDA LIMPIA EN CADA EJECUCIÓN.
+   *
+   * La spec de la venta ESCRIBE: crea una orden, cobra y cancela. Si una
+   * corrida se cae a mitad —o si alguien la interrumpe— la plaza se queda
+   * cogida. A las cuarenta, el CI empieza a fallar por capacidad agotada, y ese
+   * fallo no se parece en nada a su causa: parece que la venta está rota.
+   *
+   * Se borran las reservas de ESTA salida y las órdenes que se quedaron sin
+   * ninguna. No se borra nada más: las órdenes sembradas para el aislamiento
+   * (`E2E-MIA-001` y compañía) no cuelgan de aquí y tienen que sobrevivir.
+   *
+   * Y se pone la capacidad y los contadores a cero con la misma escritura: un
+   * `booked_pax` heredado de una corrida anterior deja la salida llena aunque
+   * no quede ni una reserva.
+   */
+  const { data: reservasViejas } = await sb
+    .from("booking").select("id, order_id").eq("departure_id", departureId);
+  const ordenesTocadas = [...new Set((reservasViejas ?? []).map((b) => b.order_id).filter(Boolean))];
+  if ((reservasViejas ?? []).length > 0) {
+    const ids = (reservasViejas ?? []).map((b) => b.id as string);
+    for (const tabla of ["participant", "voucher", "pickup", "commission", "booking_cost"]) {
+      await sb.from(tabla).delete().in("booking_id", ids);
+    }
+    await sb.from("booking").delete().in("id", ids);
+  }
+  for (const ordenId of ordenesTocadas as string[]) {
+    const { count } = await sb
+      .from("booking").select("id", { count: "exact", head: true }).eq("order_id", ordenId);
+    if ((count ?? 0) === 0) {
+      await sb.from("payment").delete().eq("order_id", ordenId);
+      await sb.from("sales_order").delete().eq("id", ordenId);
+    }
+  }
+  await sb.from("departure").update({
+    capacity: 40, booked_pax: 0, pending_pax: 0, hold_pax: 0, hold_until: null,
+    status: "available", departure_at: manana,
+  }).eq("id", departureId);
 
   // El cliente cuyo nombre NO puede salir por el portal del proveedor.
   const [nombre, apellido] = CLIENTE_DEL_MANIFIESTO.split(" ");
@@ -522,6 +582,26 @@ async function ensureSupplierFixtures(
       .select("id").single();
     if (error || !data) throw new Error(`seed customer: ${error?.message ?? "sin cliente"}`);
     customerId = data.id as string;
+  }
+
+  /**
+   * Y el cliente AL QUE SE LE VENDE, que es otro a propósito.
+   *
+   * El del manifiesto existe para afirmar que su nombre NO aparece en el portal
+   * del proveedor. Venderle a ése mezclaría las dos pruebas: el día que la de la
+   * venta dejara una reserva colgada, la del proveedor empezaría a fallar por un
+   * motivo que no tiene nada que ver.
+   */
+  const [nombreVenta, apellidoVenta] = CLIENTE_DE_LA_VENTA.split(" ");
+  const { data: compradorExistente } = await sb
+    .from("customer").select("id")
+    .eq("organization_id", orgId).eq("last_name", apellidoVenta).limit(1).maybeSingle();
+  if (!compradorExistente?.id) {
+    const { error } = await sb.from("customer").insert({
+      organization_id: orgId, first_name: nombreVenta, last_name: apellidoVenta,
+      email: "compratest@e2e.invalid", status: "active",
+    });
+    if (error) throw new Error(`seed comprador: ${error.message}`);
   }
 
   // Su reserva, con habitación: es el trío —nombre, teléfono, habitación— que

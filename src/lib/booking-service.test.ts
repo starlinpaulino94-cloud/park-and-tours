@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fakeDb, paxTotalsDeLaBase, reservarPlazaDeLaBase, soltarPlazaDeLaBase, type FakeDb } from "@/test/fake-tenant";
+import { fakeDb, paxTotalsDeLaBase, reservarPlazaDeLaBase, soltarPlazaDeLaBase, reclamarCupoDeLaBase, soltarCupoDeLaBase, type FakeDb } from "@/test/fake-tenant";
 import { fakeSupabase } from "@/test/fake-supabase";
 
 /**
@@ -89,6 +89,10 @@ const rpcNormal = async (nombre: string, args: Record<string, unknown>) => {
    */
   if (nombre === "reserve_departure_capacity") return reservarPlazaDeLaBase(db)(args);
   if (nombre === "release_departure_capacity") return soltarPlazaDeLaBase(db)(args);
+  // Y el cupo del socio (0100), por lo mismo: el contador tiene que persistir
+  // o la prueba de que dos ventas no se pisan pasaría sin que nada sumara.
+  if (nombre === "claim_allotment_seats") return reclamarCupoDeLaBase(db)(args);
+  if (nombre === "release_allotment_seats") return soltarCupoDeLaBase(db)(args);
   return MONEDERO;
 };
 const rpc = vi.fn(rpcNormal);
@@ -104,7 +108,7 @@ vi.mock("@/lib/supabase/service", () => ({
   supabaseService: () => ({ rpc, from: (tabla: string) => fakeSupabase(db).from(tabla) }),
 }));
 
-import { createOrderWithBookings, syncOrderTotals, reconcileStaleDrafts } from "@/lib/booking-service";
+import { createOrderWithBookings, syncOrderTotals, reconcileStaleDrafts, compensateOrder } from "@/lib/booking-service";
 
 const ORG = "org-1";
 const ctx = {
@@ -306,6 +310,101 @@ describe("el cupo del socio", () => {
       items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
     });
     expect(Number(db.row("allotment", { _id: "cupo-saona" })!.seats_used)).toBe(2);
+  });
+
+  it("una venta que se pasa del contrato NO se escribe", async () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * ESTA PRUEBA NACIÓ DE UNA MUTACIÓN QUE SOBREVIVIÓ
+     *
+     * Hacer que el doble dijera SIEMPRE «cabe» no rompía nada: ninguna prueba
+     * recorría la venta entera con el cupo agotado. Es decir, la garantía de la
+     * que va todo esto —que el socio no vende más de lo que contrató— estaba
+     * probada en el servicio del cupo y NO en la venta, que es donde se aplica.
+     *
+     * Con 9 de 10 plazas usadas, una venta de 2 no cabe. Y no puede quedarse a
+     * medias: ni orden, ni reserva, ni plaza de la salida retenida.
+     */
+    db = conCupo();
+    await db.tenantUpdate("org-1", "allotment", "cupo-saona", { seats_used: 9 });
+
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow(/cupo/i);
+
+    expect(db.rows("booking"), "quedó una reserva de una venta rechazada").toHaveLength(0);
+    expect(Number(db.row("allotment", { _id: "cupo-saona" })!.seats_used),
+      "el rechazo movió el contador").toBe(9);
+  });
+
+  it("si el cupo se agota MIENTRAS se arma la venta, no pasa", async () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * LA CARRERA, SIMULADA — Y NACIDA DE UNA MUTACIÓN QUE SOBREVIVÍA
+     *
+     * La prueba de arriba la caza `assertAllotment`, que lee al empezar: ahí el
+     * cupo ya estaba lleno antes de vender. Pero el fallo que mide esta tanda
+     * es el otro: el cupo está LIBRE cuando se comprueba y se AGOTA mientras la
+     * venta se arma —otro tour center vendiendo lo mismo en ese instante—.
+     *
+     * Hacer que el doble dijera siempre «cabe» no rompía ninguna prueba, porque
+     * ninguna llegaba hasta el reclamo con el cupo ya gastado. Aquí la lectura
+     * del principio devuelve la fila vieja —con sitio— y la de verdad ya está
+     * llena, que es exactamente lo que pasa en producción.
+     *
+     * Medido contra Postgres: 30 ventas simultáneas de una plaza contra un cupo
+     * de 10 dejaban `seats_used` en 2 y pasaban las 30.
+     */
+    db = conCupo();
+    const consulta = db.tenantQuery.bind(db);
+    let yaLeyo = false;
+    db.tenantQuery = (async (org: string, tabla: string, opciones?: Record<string, unknown>) => {
+      const filas = await consulta(org, tabla, opciones);
+      // La PRIMERA lectura del cupo es la de `assertAllotment`: ve sitio. Justo
+      // después, otra venta se lo lleva entero.
+      if (tabla === "allotment" && !yaLeyo) {
+        yaLeyo = true;
+        await db.tenantUpdate("org-1", "allotment", "cupo-saona", { seats_used: 10 });
+      }
+      return filas;
+    }) as typeof db.tenantQuery;
+
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow(/cupo/i);
+
+    expect(db.rows("booking"), "se escribió una reserva que se pasa del contrato").toHaveLength(0);
+    expect(Number(db.row("allotment", { _id: "cupo-saona" })!.seats_used),
+      "el contador se pasó del cupo contratado").toBe(10);
+  });
+
+  it("y si la venta se cae DESPUÉS de reclamar, el cupo se devuelve", async () => {
+    /**
+     * Una plaza de cupo no caduca sola como la de la salida: se queda quitada
+     * para siempre, y el socio acaba con menos contrato del que pagó sin nada
+     * que lo delate. Es el error que nadie reclama, porque nadie mira un
+     * contador que va de menos.
+     */
+    db = conCupo();
+    const original = db.tenantCreate.bind(db);
+    let cayo = false;
+    db.tenantCreate = (async (org: string, tabla: string, data: Record<string, unknown>) => {
+      if (tabla === "booking" && !cayo) { cayo = true; throw new Error("se cayó al escribir la reserva"); }
+      return original(org, tabla, data);
+    }) as typeof db.tenantCreate;
+
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    })).rejects.toThrow();
+
+    expect(Number(db.row("allotment", { _id: "cupo-saona" })!.seats_used),
+      "la venta caída se quedó con las plazas del socio").toBe(0);
   });
 
   it("la reserva guarda de qué cupo salieron sus plazas", async () => {
@@ -1236,6 +1335,150 @@ describe("la venta de un socio prepago", () => {
     expect(args.p_movement.amount).toBe(Number(res.order.total));
   });
 
+  it("si el descuento FALLA, la venta no se queda de pie (BL-002)", async () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * EL AGUJERO, MEDIDO
+     *
+     * El descuento del monedero corría DESPUÉS de la saga —después de promover
+     * la orden a `pending_payment`, con el `catch` ya cerrado— y sin envolver en
+     * nada. Cualquier fallo de esa llamada dejaba:
+     *
+     *   · la orden confirmada, con sus reservas, vouchers, comisiones y plazas
+     *     tomadas;
+     *   · el saldo del socio intacto;
+     *   · y un error en el mostrador, que invita a repetir la venta.
+     *
+     * Es decir: el tour center se lleva la excursión y no paga, la operadora ve
+     * un error y vende otra vez. No hace falta que se muera el proceso —basta
+     * un fallo de la llamada— y no lo recoge nadie, porque la orden ya no está
+     * en borrador y el barrido no la mira.
+     */
+    conSaldo(1000);
+    rpc.mockImplementation(async (nombre: string, args: Record<string, unknown>) => {
+      if (nombre === "spend_partner_wallet") {
+        return { data: null, error: { message: "se cayó el monedero" } };
+      }
+      return rpcNormal(nombre, args);
+    });
+
+    await expect(createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    } as never)).rejects.toThrow();
+
+    // Ni una venta de pie sin cobrar.
+    const vivas = db.rows("order").filter((o) => String(o.status) !== "cancelled");
+    expect(vivas, "quedó una orden confirmada que nadie pagó").toHaveLength(0);
+    const reservasVivas = db.rows("booking").filter((b) => String(b.status) !== "cancelled");
+    expect(reservasVivas, "quedaron reservas de una venta que no se cobró").toHaveLength(0);
+  });
+
+  it("y si algo falla DESPUÉS de descontar, el saldo se devuelve", async () => {
+    /**
+     * La otra mitad: una vez el dinero salió del monedero, compensar la venta
+     * tiene que devolverlo. Si no, el socio paga una excursión que se canceló
+     * sola — y el movimiento queda ahí, indistinguible de un consumo legítimo.
+     */
+    conSaldo(1000);
+    rpc.mockClear();
+    /**
+     * El doble por defecto contesta `amount: 0`, y una devolución de cero no
+     * escribe nada a propósito («no ensucia el listado»). Con eso, esta prueba
+     * habría pasado sin devolver nada: hay que cobrar un importe de verdad.
+     */
+    rpc.mockImplementation(async (nombre: string, args: Record<string, unknown>) => {
+      if (nombre === "spend_partner_wallet") {
+        return {
+          data: {
+            movement_id: "mov-gasto", amount: 200, currency: "usd",
+            balance_before: 1000, balance_after: 800, overdraft: false, already: false,
+          },
+          error: null,
+        };
+      }
+      return rpcNormal(nombre, args);
+    });
+    /**
+     * El fallo tiene que caer DENTRO de la saga y DESPUÉS del cobro. Lo único
+     * que queda ahí en medio es la promoción de la orden, que es justo la
+     * última escritura crítica: se hace fallar ésa.
+     */
+    const originalUpdate = db.tenantUpdate.bind(db);
+    db.tenantUpdate = (async (org: string, tabla: string, id: string, data: Record<string, unknown>) => {
+      if (tabla === "order" && data.status === "pending_payment") {
+        throw new Error("se cayó al promover la orden");
+      }
+      return originalUpdate(org, tabla, id, data);
+    }) as typeof db.tenantUpdate;
+
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    } as never).catch(() => undefined);
+
+    const devoluciones = rpc.mock.calls.filter(
+      (c) => c[0] === "spend_partner_wallet" || c[0] === "devolver_saldo"
+    );
+    const apuntes = db.rows("partner_wallet_movement").filter((m) => m.movement_type === "refund");
+    expect(
+      devoluciones.length > 1 || apuntes.length > 0,
+      "se descontó del monedero y la compensación no lo devolvió"
+    ).toBe(true);
+  });
+
+  it("un REINTENTO de la misma venta no devuelve el dinero de la primera", async () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * LA OTRA MUTACIÓN QUE SOBREVIVÍA
+     *
+     * `spend_partner_wallet` es idempotente por orden: un reintento —la saga
+     * que vuelve a entrar, el doble clic— recibe el movimiento que YA había, con
+     * `already: true`. Ese consumo no lo cogió esta pasada.
+     *
+     * Si al compensar se devolviera igual, se estaría devolviendo el dinero de
+     * un consumo que sigue siendo válido: la venta original existe. El socio
+     * acabaría con saldo que no le corresponde y con su excursión.
+     */
+    conSaldo(1000);
+    rpc.mockClear();
+    rpc.mockImplementation(async (nombre: string, args: Record<string, unknown>) => {
+      if (nombre === "spend_partner_wallet") {
+        return {
+          data: {
+            movement_id: "mov-previo", amount: 200, currency: "usd",
+            balance_before: 800, balance_after: 800, overdraft: false,
+            // Ya estaba: lo cobró la pasada anterior.
+            already: true,
+          },
+          error: null,
+        };
+      }
+      return rpcNormal(nombre, args);
+    });
+    const originalUpdate = db.tenantUpdate.bind(db);
+    db.tenantUpdate = (async (org: string, tabla: string, id: string, data: Record<string, unknown>) => {
+      if (tabla === "order" && data.status === "pending_payment") {
+        throw new Error("se cayó al promover la orden");
+      }
+      return originalUpdate(org, tabla, id, data);
+    }) as typeof db.tenantUpdate;
+
+    await createOrderWithBookings(ctx, {
+      customer_id: "cli-1",
+      partner_id: "soc-1",
+      items: [{ product_id: "prod-saona", departure_id: "sal-saona", adults: 2 }],
+    } as never).catch(() => undefined);
+
+    const devoluciones = db.rows("partner_wallet_movement").filter((m) => m.movement_type === "refund");
+    expect(
+      devoluciones,
+      "devolvió el consumo de un reintento: ese dinero era de la venta original"
+    ).toHaveLength(0);
+  });
+
   it("y un saldo corto rechaza la venta ANTES de escribir nada", async () => {
     // 402 y no 403: no le faltan permisos, le falta dinero.
     conSaldo(10);
@@ -1621,5 +1864,141 @@ describe("vender un paquete", () => {
       items: [{ product_id: PAQUETE, adults: 2 }],
     })).rejects.toThrow(/día en que empieza/);
     expect(db.rows("booking")).toEqual([]);
+  });
+});
+
+/**
+ * LO QUE UNA VENTA MUERTA A MITAD DEJA DETRÁS (BL-002).
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * LA DIFERENCIA ENTRE FALLAR Y MORIRSE
+ *
+ * PostgREST no da transacciones, así que la venta es una saga con compensación.
+ * La compensación corre en el `catch`: cubre el fallo que se puede ATRAPAR —una
+ * escritura rechazada, un cupo agotado— y no cubre el otro, que es el que
+ * importa aquí: **el proceso que se muere**. Un despliegue a mitad, un tiempo
+ * agotado del contenedor, un OOM. Ahí el `catch` no corre nunca.
+ *
+ * Para eso está `reconcileStaleDrafts`: barre las órdenes que se quedaron en
+ * borrador y las compensa desde otro proceso. Pero compensa con
+ * `compensateOrder`, y lo que esa función NO deshaga se queda sin deshacer para
+ * siempre — sin nadie mirando, porque el borrador desaparece del barrido en
+ * cuanto se cancela.
+ *
+ * Aquí se mide qué se queda.
+ */
+describe("una venta que se muere a mitad no se queda con nada", () => {
+  it("la compensación DEVUELVE el cupo del socio", async () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * EL AGUJERO, MEDIDO
+     *
+     * El `catch` sí devuelve el cupo: lo apunta en `cupoReclamado` y lo suelta.
+     * Pero ese mapa vive en la memoria del proceso que vendía. Cuando el que
+     * compensa es el BARRIDO —otro proceso, minutos después— ese mapa no
+     * existe, y `compensateOrder` cancelaba las reservas sin tocar el cupo.
+     *
+     * Y a diferencia de la plaza de la salida, **el cupo no caduca**: 0099 le
+     * puso caducidad a la retención de plaza justamente porque un proceso
+     * muerto no puede soltar nada. El cupo del socio se queda corto para
+     * siempre, y nadie reclama un contador que va de menos.
+     *
+     * Es además la misma incoherencia por dos caminos: cancelar a mano
+     * (`cancelBookingFully`) SÍ lo devuelve. Los dos caminos tienen que
+     * coincidir, y el que no coincidía es el que corre cuando no hay nadie
+     * delante.
+     */
+    db = conCupo();
+    await db.tenantUpdate("org-1", "allotment", "cupo-saona", { seats_used: 3 });
+    db.seed("order", [{
+      _id: "ord-muerta", organization_id: "org-1", order_number: "ORD-MUERTA",
+      status: "draft", order_date: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+    }]);
+    db.seed("booking", [{
+      _id: "res-muerta", organization_id: "org-1", order: "ord-muerta",
+      booking_number: "RES-MUERTA", status: "pending", pax_total: 3,
+      departure: "sal-saona", product: "prod-saona",
+      // Lo que la venta apuntó antes de morirse.
+      allotment: "cupo-saona", allotment_seats: 3,
+    }]);
+
+    await reconcileStaleDrafts("org-1", 30);
+
+    expect(db.row("order", { _id: "ord-muerta" })!.status).toBe("cancelled");
+    expect(
+      Number(db.row("allotment", { _id: "cupo-saona" })!.seats_used),
+      "el barrido canceló la reserva y se quedó con el cupo del socio"
+    ).toBe(0);
+  });
+
+  it("y NO lo devuelve dos veces si la compensación corre otra vez", async () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * ESTA PRUEBA NACIÓ DE UNA MUTACIÓN QUE SOBREVIVIÓ
+     *
+     * La compensación corre dos veces con más facilidad de la que parece: el
+     * `catch` de la venta y, si el proceso murió antes de acabarla, el barrido
+     * minutos después. Y el barrido puede correr dos veces él solo, porque son
+     * dos crones o porque el primero se cayó a mitad.
+     *
+     * Cancelar dos veces es inofensivo. **Devolver dos veces no**: le regalaría
+     * plazas de cupo al socio, y un contador que va de MÁS tampoco lo reclama
+     * nadie —al revés, el socio vende contra un contrato que no compró—.
+     *
+     * Quitar la comprobación de «ya estaba cancelada» no rompía ninguna prueba:
+     * ésta es la que lo caza.
+     */
+    db = conCupo();
+    /**
+     * Con OTRAS plazas consumidas por detrás, no solo las de esta reserva.
+     *
+     * La primera versión de esta prueba partía de 3 y devolvía 3: las dos
+     * devoluciones acababan en cero —la segunda topa ahí— y el daño quedaba
+     * escondido justo debajo del suelo. La mutación sobrevivía por eso.
+     */
+    await db.tenantUpdate("org-1", "allotment", "cupo-saona", { seats_used: 8 });
+    db.seed("order", [{
+      _id: "ord-doble", organization_id: "org-1", order_number: "ORD-DOBLE",
+      status: "draft", order_date: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+    }]);
+    db.seed("booking", [{
+      _id: "res-doble", organization_id: "org-1", order: "ord-doble",
+      booking_number: "RES-DOBLE", status: "pending", pax_total: 3,
+      departure: "sal-saona", product: "prod-saona",
+      allotment: "cupo-saona", allotment_seats: 3,
+    }]);
+
+    await reconcileStaleDrafts("org-1", 30);
+    expect(Number(db.row("allotment", { _id: "cupo-saona" })!.seats_used)).toBe(5);
+
+    // La orden ya está cancelada, así que el barrido no la vuelve a ver. Se
+    // compensa a mano, que es lo que pasa cuando dos procesos se solapan.
+    const reserva = db.row("booking", { _id: "res-doble" })!;
+    await compensateOrder("org-1", "ord-doble", "ORD-DOBLE", [reserva as never]);
+
+    expect(
+      Number(db.row("allotment", { _id: "cupo-saona" })!.seats_used),
+      "la segunda compensación le regaló plazas al socio"
+    ).toBe(5);
+  });
+
+  it("y no devuelve el cupo de una reserva que no lo consumió", async () => {
+    // Devolver de más es el otro lado del mismo error: le regalaría plazas al
+    // socio, y eso tampoco lo reclama nadie.
+    db = conCupo();
+    await db.tenantUpdate("org-1", "allotment", "cupo-saona", { seats_used: 4 });
+    db.seed("order", [{
+      _id: "ord-sin-cupo", organization_id: "org-1", order_number: "ORD-SIN-CUPO",
+      status: "draft", order_date: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+    }]);
+    db.seed("booking", [{
+      _id: "res-sin-cupo", organization_id: "org-1", order: "ord-sin-cupo",
+      booking_number: "RES-SIN-CUPO", status: "pending", pax_total: 2,
+      departure: "sal-saona", product: "prod-saona",
+    }]);
+
+    await reconcileStaleDrafts("org-1", 30);
+
+    expect(Number(db.row("allotment", { _id: "cupo-saona" })!.seats_used)).toBe(4);
   });
 });

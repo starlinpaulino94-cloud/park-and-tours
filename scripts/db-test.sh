@@ -98,6 +98,176 @@ for doc in "$ROOT"/docs/operaciones/DESDE_EL_EDITOR_SQL.md; do
   fi
 done
 
+# ── Lo que se PEGA, ejecutado y leído ───────────────────────────────────────
+#
+# Las copias de `supabase/editor/` son lo que alguien pega contra SU base de
+# producción. Que digan lo mismo que la migración se comprueba en
+# `editor-sql.test.ts`; lo que aquí se comprueba es que CORREN, y que su
+# verificación sabe decir que algo va mal.
+#
+# Se corren las que son IDEMPOTENTES por construcción —`drop trigger if exists`,
+# `add column if not exists`—, porque volver a pegarlas sobre una base que ya
+# las tiene es exactamente lo que hará quien repita un paso de la lista de
+# `docs/operaciones/SQL_PENDIENTE.md`.
+#
+# Cada entrada es «número : glob de partes : verificación».
+# Un glob vacío («-») significa «solo la verificación»: la migración ya la
+# aplicó el bucle de arriba y lo que se comprueba es que su verificación
+# COINCIDA con ella. Contra una base que lo tiene todo, ninguna puede acusar —y
+# si acusa, o la verificación mira lo que no es, o la migración no hace lo que
+# la verificación espera. Las dos cosas se descubren el día del despliegue.
+COPIAS_QUE_SE_REPITEN=(
+  "0088:-:0088_parte_3_verificacion.sql"
+  "0089:-:0089_parte_3_verificacion.sql"
+  "0098:0098_parte_1.sql:0098_parte_2_verificacion.sql"
+  "0102:0102_parte_[123].sql:0102_parte_4_verificacion.sql"
+)
+echo "→ las copias del editor que aguantan repetirse"
+for entrada in "${COPIAS_QUE_SE_REPITEN[@]}"; do
+  NUM="${entrada%%:*}"; RESTO="${entrada#*:}"
+  PARTES="${RESTO%%:*}"; VERIF="$ROOT/supabase/editor/${RESTO##*:}"
+  encontradas=0
+  if [ "$PARTES" != "-" ]; then
+    for pf in "$ROOT"/supabase/editor/$PARTES; do
+      [ -e "$pf" ] || continue
+      encontradas=$((encontradas + 1))
+      [ "$(id -u)" = "0" ] && chown postgres "$pf" 2>/dev/null
+      if ! psql_run -f "$pf" >/dev/null; then
+        echo "✘ $(basename "$pf") no corre contra el esquema actual"; fail=1
+      fi
+    done
+    if [ "$encontradas" = "0" ]; then
+      echo "✘ $NUM: no hay ninguna parte que pegar donde debería haberlas"; fail=1; continue
+    fi
+  fi
+  if [ ! -e "$VERIF" ]; then
+    echo "✘ $NUM: falta su verificación"; fail=1; continue
+  fi
+  [ "$(id -u)" = "0" ] && chown postgres "$VERIF" 2>/dev/null
+  SALIDA=$(psql_run -At -f "$VERIF" 2>&1 || true)
+  # La verificación devuelve filas legibles; ninguna puede acusar.
+  if [ -z "$SALIDA" ]; then
+    echo "✘ la verificación de $NUM no devolvió ninguna fila: no verificó nada"; fail=1
+  elif echo "$SALIDA" | grep -qE 'FALTA|HAY sin comprobar'; then
+    echo "✘ la verificación de $NUM acusa contra una base que lo tiene todo:"
+    echo "$SALIDA" | grep -E 'FALTA|HAY sin comprobar'; fail=1
+  else
+    if [ "$PARTES" = "-" ]; then
+      echo "  $NUM: su verificación coincide con la migración y no acusa"
+    else
+      echo "  $NUM: $encontradas parte(s) pegadas y su verificación no acusa"
+    fi
+  fi
+done
+
+# ── Y esas verificaciones, ROMPIENDO algo a propósito ───────────────────────
+#
+# Que no acusen contra una base completa prueba que no dan falsos positivos. No
+# prueba que sepan acusar: una verificación cuyas filas solo saben decir OK pasa
+# esa comprobación perfectamente.
+#
+# Sobrevivió a la mutación —cambiar `else 'FALTA'` por `else 'OK'` en una fila
+# seguía dejando la palabra FALTA en otras y la guarda de texto se conformaba—,
+# así que aquí se rompe el objeto de verdad y se exige que la fila lo diga. Es
+# lo mismo que hacen los seis controles negativos del simulacro de restauración.
+#
+# Cada entrada: número : SQL que rompe : qué fila tiene que acusar.
+CAZA_VERIFICACION=(
+  "0088:drop trigger pickup_route_sync_pickups on pickup_route:mueve si la ruta cambia"
+  "0088:alter table pickup drop column service_date:pickup.service_date"
+  "0089:drop index settlement_supplier_ncf_uq:el mismo NCF"
+  "0089:alter table settlement drop column supplier_ncf:settlement.supplier_ncf"
+  "0098:alter table membego_customer drop column membership_status:columna membership_status"
+  "0102:drop trigger task_same_tenant_refs on task:disparadores de 0102"
+)
+echo "→ rompiendo a propósito, para ver si la verificación se entera"
+for entrada in "${CAZA_VERIFICACION[@]}"; do
+  NUM="${entrada%%:*}"; RESTO="${entrada#*:}"
+  ROMPE="${RESTO%%:*}"; ESPERA="${RESTO##*:}"
+  VF=$(ls "$ROOT"/supabase/editor/${NUM}_parte_*verificacion.sql 2>/dev/null | head -1)
+  if [ -z "$VF" ]; then echo "✘ $NUM: no hay verificación que probar"; fail=1; continue; fi
+  [ "$(id -u)" = "0" ] && chown postgres "$VF" 2>/dev/null
+  # En una transacción que se deshace: la rotura no sobrevive al control.
+  SAL=$(printf 'begin;\n%s;\n\\i %s\nrollback;\n' "$ROMPE" "$VF" | psql_run -At 2>&1 || true)
+  if echo "$SAL" | grep -q "$ESPERA.*FALTA\|FALTA.*$ESPERA"; then
+    echo "  ✔ $NUM caza «$ESPERA»"
+  else
+    echo "✘ $NUM: se rompió «$ROMPE» y la verificación NO lo dijo en «$ESPERA»"
+    echo "$SAL" | head -12 | sed 's/^/     /'
+    fail=1
+  fi
+done
+
+# ── «¿Qué migraciones me faltan?», contra una base que NO le falta ninguna ──
+#
+# `que_me_falta_*.sql` y `auditoria_*.sql` son la respuesta que alguien lee
+# antes de tocar su producción. Se generan, así que no se quedan atrás; lo que
+# no comprobaba nadie es que ACIERTEN. Aquí se corren contra la base efímera,
+# que tiene TODAS las migraciones aplicadas: ni una sola fila puede decir FALTA.
+#
+# Un falso «FALTA» manda a ejecutar otra vez algo que ya está, y enseña a
+# desconfiar de la consulta — que es la forma de que la próxima vez nadie la
+# mire. Es el mismo fallo que ya apareció una vez con 0038 y 0081.
+echo "→ la consulta de «qué migraciones me faltan», contra todo aplicado"
+consultas=0; consultas_mal=0
+for cf in "$ROOT"/supabase/editor/que_me_falta_*.sql \
+          "$ROOT"/supabase/editor/auditoria_migraciones*.sql \
+          "$ROOT"/supabase/editor/auditoria_funciones_*.sql; do
+  [ -e "$cf" ] || continue
+  [ "$(id -u)" = "0" ] && chown postgres "$cf" 2>/dev/null
+  SAL=$(psql_run -At -f "$cf" 2>&1 || true)
+  if [ -z "$SAL" ]; then
+    echo "✘ $(basename "$cf") no devolvió ninguna fila: no comprueba nada"; fail=1
+    consultas_mal=1
+  elif echo "$SAL" | grep -q 'FALTA'; then
+    echo "✘ $(basename "$cf") dice que faltan migraciones que SÍ están aplicadas:"
+    echo "$SAL" | grep 'FALTA' | head -5; fail=1
+    consultas_mal=1
+  fi
+  consultas=$((consultas + 1))
+done
+# Cero consultas corridas también es un fallo: el `for` sobre un patrón que no
+# casa con nada deja el bucle vacío y el mensaje de abajo diría que todo bien.
+if [ "${consultas:-0}" -lt 5 ]; then
+  echo "✘ solo se corrieron ${consultas:-0} consultas de auditoría: faltan ficheros"; fail=1
+elif [ "${consultas_mal:-0}" = "0" ]; then
+  echo "  ${consultas} consultas de auditoría y ninguna acusa de falta lo que está puesto"
+fi
+
+# ── La siembra de rendimiento, a escala pequeña ─────────────────────────────
+#
+# `supabase/perf/volumen.sql` es lo que `scripts/perf-panel.sh` usa para medir
+# qué aguanta el panel. Ese banco se corre a mano, de vez en cuando; el esquema
+# cambia todas las semanas. Una siembra de rendimiento que ya no encaja NO
+# avisa: falla el día que alguien quiere medir, que es el peor día.
+#
+# Aquí se corre a escala 100 —1.200 reservas en vez de 120.000, unos segundos—
+# solo para comprobar que sigue encajando. Lo que se mide de verdad no se mide
+# aquí: un tope de milisegundos en CI es una prueba inestable.
+echo "→ la siembra de rendimiento sigue encajando con el esquema"
+if [ -f "$ROOT/supabase/perf/volumen.sql" ]; then
+  PERF="$WORK/volumen.sql"; cp "$ROOT/supabase/perf/volumen.sql" "$PERF"
+  [ "$(id -u)" = "0" ] && chown postgres "$PERF"
+  if ! psql_run -q -c "set perf.escala = 100" -f "$PERF" >/dev/null 2>&1; then
+    echo "✘ supabase/perf/volumen.sql ya no corre contra el esquema actual: el banco de P-001 no mediría nada"; fail=1
+  else
+    # Que corra no basta: a escala 100 una versión anterior dejaba DOS salidas y
+    # solo seis de las 1.200 órdenes llegaban a ser reserva. La siembra no
+    # fallaba; devolvía una base con la que no se puede medir.
+    PR=$(psql_run -At -c "select count(*) from booking where organization_id = (select id from organizations where name = 'Operadora P-001');" 2>/dev/null | tr -d '[:space:]')
+    PO=$(psql_run -At -c "select count(*) from sales_order where organization_id = (select id from organizations where name = 'Operadora P-001');" 2>/dev/null | tr -d '[:space:]')
+    if [ "${PR:-0}" -lt 1000 ] 2>/dev/null || [ "${PR:-0}" != "${PO:-0}" ]; then
+      echo "✘ la siembra de rendimiento dejó ${PR:-0} reservas para ${PO:-0} órdenes: a escala 1 mediría sobre una base a medias"; fail=1
+    else
+      echo "  $PR reservas y $PO órdenes a escala 100: el banco sigue pudiendo medir"
+    fi
+    # Y se retira: el resto de comprobaciones cuentan filas de la demostración.
+    psql_run -q -c "delete from organizations where name in ('Operadora P-001','Socio P-001');" >/dev/null 2>&1 || true
+  fi
+else
+  echo "✘ falta supabase/perf/volumen.sql"; fail=1
+fi
+
 # ── Ningún módulo puede quedarse vacío en silencio ──────────────────────────
 #
 # De dónde sale esto: se reportó «hay varios módulos que se crearon y están
@@ -197,6 +367,230 @@ fi
 # Se comprueban las dos cosas, y las dos importan: que no se venda de más
 # —sobreventa— y que no se venda de menos —el cerrojo dejando plazas sin
 # vender—. Un cerrojo que rechaza todo también pasaría la mitad de la prueba.
+# ── Las carreras de la CAJA ─────────────────────────────────────────────────
+#
+# La última de la dimensión F. Dos caminos, los dos comprobar-y-actuar:
+#
+#  · ABRIR: la ruta lee si esa caja tiene sesión abierta y, si no, crea una. Dos
+#    cajeros que abran a la vez dejan DOS turnos abiertos sobre el mismo cajón:
+#    los cobros se reparten entre los dos y ninguno de los arqueos cuadra.
+#
+#  · CERRAR: la ruta lee el estado, comprueba que sea `open` y luego escribe el
+#    conteo, el movimiento de cierre y el asiento del descuadre. Dos cierres a
+#    la vez lo escriben todo DOS VECES — y el movimiento de cierre lo suma el
+#    recálculo, así que además envenena el esperado de cualquier arqueo
+#    posterior.
+echo "→ carreras de la caja: abrir y cerrar el mismo turno a la vez"
+CAJA_SQL="$WORK/caja.sql"
+cat > "$CAJA_SQL" <<'EOSQL'
+insert into organizations (id, name, kind)
+  values ('cccccccc-0000-0000-0000-0000000000d0', 'Carrera caja', 'tenant')
+  on conflict (id) do nothing;
+insert into cash_register (id, organization_id, name, currency, status)
+  values ('cccccccc-0000-0000-0000-0000000000d1', 'cccccccc-0000-0000-0000-0000000000d0',
+          'Caja de la carrera', 'usd', 'active')
+  on conflict (id) do nothing;
+delete from cash_count    where cash_session_id in (select id from cash_session where organization_id = 'cccccccc-0000-0000-0000-0000000000d0');
+delete from cash_movement where cash_session_id in (select id from cash_session where organization_id = 'cccccccc-0000-0000-0000-0000000000d0');
+delete from cash_session  where organization_id = 'cccccccc-0000-0000-0000-0000000000d0';
+EOSQL
+[ "$(id -u)" = "0" ] && chown postgres "$CAJA_SQL"
+if ! psql_run -f "$CAJA_SQL" >/dev/null; then
+  echo "✘ no se pudo preparar la carrera de la caja"; fail=1
+else
+  ORGC=cccccccc-0000-0000-0000-0000000000d0
+  REG=cccccccc-0000-0000-0000-0000000000d1
+
+  # ABRIR: veinte a la vez, cada uno como la ruta —mirar y crear—.
+  for i in $(seq 1 20); do
+    "${RUN[@]}" psql -h "$PGHOST" -p "$PGPORT" -d appdb -At -c "
+      do \$m\$
+      begin
+        -- Fiel a la ruta: mirar si ya hay turno abierto...
+        if exists (select 1 from cash_session
+                    where organization_id = '$ORGC' and cash_register_id = '$REG'
+                      and status = 'open') then return; end if;
+        -- ...leer la caja, comprobar el rango y el dueño...
+        perform pg_sleep(0.05);
+        -- ...y crear el turno. Sin el índice de 0101 aquí entraban 18.
+        insert into cash_session (organization_id, cash_register_id, opening_amount, currency, status, code)
+          values ('$ORGC', '$REG', 100, 'usd', 'open', 'CJ-$i');
+      end \$m\$;" >/dev/null 2>&1 &
+  done
+  wait
+  ABIERTAS=$(psql_run -At -c "select count(*) from cash_session where organization_id = '$ORGC' and status = 'open';" | tr -d '[:space:]')
+  if [ "${ABIERTAS:-0}" != "1" ]; then
+    echo "✘ DOS CAJONES PARA EL MISMO DINERO: $ABIERTAS turnos abiertos sobre la misma caja"; fail=1
+  else
+    echo "  20 aperturas simultáneas, 1 turno abierto"
+  fi
+
+  # CERRAR: veinte a la vez contra el turno que quedó abierto.
+  TURNO=$(psql_run -At -c "select id from cash_session where organization_id = '$ORGC' and status = 'open' limit 1;" | tr -d '[:space:]')
+  if [ -n "${TURNO:-}" ]; then
+    for i in $(seq 1 20); do
+      "${RUN[@]}" psql -h "$PGHOST" -p "$PGPORT" -d appdb -At -c "
+        do \$m\$
+        begin
+          -- Fiel a la ruta desde 0101: recalcular y validar el conteo primero...
+          perform pg_sleep(0.05);
+          -- ...y RECLAMAR la transición antes de escribir nada. Quien pierde
+          -- sale sin tocar el libro; antes escribía el conteo, el movimiento de
+          -- cierre y el asiento del descuadre igual que el que ganaba.
+          if public.claim_cash_session_status('$TURNO', 'open', 'closed', now(), null) is not true then
+            return;
+          end if;
+          insert into cash_count (organization_id, cash_session_id, currency, kind, counted_total)
+            values ('$ORGC', '$TURNO', 'usd', 'close', 100);
+          -- El movimiento de cierre NO tiene índice único, y es el que mide de
+          -- verdad si la transición serializa: si se cuenta solo el conteo, lo
+          -- que se está midiendo es cash_count_unique_idx, que existe desde
+          -- 0038 por una razón de forma y no como defensa de esta carrera.
+          -- Además el recálculo lo SUMA, así que duplicarlo envenena el
+          -- esperado de cualquier arqueo posterior.
+          insert into cash_movement (organization_id, cash_session_id, movement_type, amount, currency, concept)
+            values ('$ORGC', '$TURNO', 'closing', 100, 'usd', 'Cierre de caja / arqueo');
+        end \$m\$;" >/dev/null 2>&1 &
+    done
+    wait
+    CIERRES=$(psql_run -At -c "select count(*) from cash_movement where cash_session_id = '$TURNO' and movement_type = 'closing';" | tr -d '[:space:]')
+    if [ "${CIERRES:-0}" != "1" ]; then
+      echo "✘ EL TURNO SE CERRÓ $CIERRES VECES: conteo, movimiento y asiento del descuadre, duplicados"; fail=1
+    else
+      echo "  20 cierres simultáneos, 1 cierre escrito"
+    fi
+
+    # ── APROBAR EL DESCUADRE ───────────────────────────────────────────────
+    #
+    # Ésta no tenía NINGUNA defensa: la ruta leía `pending_approval`, escribía
+    # `reconciled` y asentaba la diferencia en el libro diario. Lo único que lo
+    # impedía era `alreadyPosted`, que es una lectura — las dos miran, las dos no
+    # encuentran nada, las dos asientan. Un faltante de caja contabilizado dos
+    # veces no lo nota nadie hasta que no cuadra el balance.
+    psql_run -c "
+      update cash_session set status = 'pending_approval', difference = -25
+       where id = '$TURNO';
+      insert into ledger_account (organization_id, code, name, account_type)
+      select '$ORGC', c.code, c.name, c.tipo
+        from (values ('1101','Caja','asset'), ('5206','Faltantes','expense')) as c(code, name, tipo)
+       where not exists (select 1 from ledger_account
+                          where organization_id = '$ORGC' and code = c.code);" >/dev/null 2>&1
+    for i in $(seq 1 20); do
+      "${RUN[@]}" psql -h "$PGHOST" -p "$PGPORT" -d appdb -At -c "
+        do \$m\$
+        declare v_cuenta uuid;
+        begin
+          -- Fiel a la ruta desde 0101: reclamar la transición y solo entonces
+          -- asentar. Y detrás, el índice único del libro por si alguien mueve
+          -- el asiento a otro sitio.
+          if public.claim_cash_session_status('$TURNO', 'pending_approval', 'reconciled', now(), null) is not true then
+            return;
+          end if;
+          perform pg_sleep(0.05);
+          select id into v_cuenta from ledger_account
+           where organization_id = '$ORGC' and code = '5206' limit 1;
+          insert into ledger_entry (organization_id, source_type, cash_session_id, line_no,
+                                    ledger_account_id, debit, currency, posted_at)
+            values ('$ORGC', 'cash_close', '$TURNO', 1, v_cuenta, 25, 'usd', now());
+        end \$m\$;" >/dev/null 2>&1 &
+    done
+    wait
+    ASIENTOS=$(psql_run -At -c "select count(*) from ledger_entry where cash_session_id = '$TURNO' and source_type = 'cash_close';" | tr -d '[:space:]')
+    if [ "${ASIENTOS:-0}" != "1" ]; then
+      echo "✘ EL DESCUADRE SE ASENTÓ $ASIENTOS VECES en el libro diario"; fail=1
+    else
+      echo "  20 aprobaciones simultáneas, 1 asiento en el libro"
+    fi
+  fi
+fi
+
+# ── El contador fiscal de la demo, al día ───────────────────────────────────
+#
+# El sembrador escribe las facturas con su NCF directamente, sin pasar por
+# `next_ncf`, así que el contador se quedaba en 1 con 59 comprobantes emitidos:
+# la primera factura desde la demo habría REPETIDO un NCF que ya existe. Dos
+# comprobantes con el mismo número no es un descuadre, es una factura que la
+# DGII rechaza.
+#
+# Lo encontró la fila 11 de `supabase/verify/restauracion.sql`, que existe para
+# cazar esto tras una restauración a un punto anterior. Se comprueba también
+# aquí porque el simulacro corre el sembrador MONOLÍTICO y esto corre además los
+# trozos: el arreglo tiene que estar en los dos, y sin esta línea el de los
+# trozos podía quedarse atrás sin que nada avisara.
+NCF_ATRAS=$(psql_run -At -c "
+  select count(*) from ncf_sequence q
+   where exists (
+     select 1 from invoice i
+      where i.organization_id = q.organization_id
+        and lower(i.ncf_type) = lower(q.ncf_type)
+        and substring(i.ncf from length(q.ncf_type) + 1) ~ '^[0-9]+\$'
+        and nullif(substring(i.ncf from length(q.ncf_type) + 1), '')::bigint >= q.next_number);" 2>/dev/null | tr -d '[:space:]')
+if [ "${NCF_ATRAS:-0}" != "0" ]; then
+  echo "✘ $NCF_ATRAS secuencia(s) de NCF por detrás de lo emitido: la próxima factura repetiría un número fiscal"; fail=1
+else
+  echo "  el contador de NCF va por delante de lo emitido"
+fi
+
+# ── La carrera del CUPO DEL SOCIO ───────────────────────────────────────────
+#
+# El informe de preparación deja abierta la dimensión F con «quedan sin medir
+# las demás carreras (caja, monedero, cupo del socio)». El monedero ya se
+# serializa con un cerrojo sobre la fila del socio (0091). Éste no.
+#
+# LO QUE HACE LA APLICACIÓN, TAL CUAL
+#
+# `assertAllotment` lee la fila al EMPEZAR la venta y comprueba las plazas que
+# quedan. `consumeAllotment` escribe, al TERMINARLA, `seats_used = <lo que
+# leyó> + pax`. Entre las dos pasa la venta entera: precio, cupo de la salida,
+# reservas, cobro. Y la escritura no es un incremento, es un valor absoluto
+# calculado sobre una lectura vieja.
+#
+# Esto reproduce ese par con N procesos a la vez. Cada uno lee, espera un poco
+# —la venta— y escribe lo que leyó más uno. Si el contador fuera correcto, 30
+# ventas de una plaza dejarían `seats_used` en el tope del cupo y ni una más.
+echo "→ carrera: 30 ventas del socio contra un cupo de 10 plazas"
+CUPO_SQL="$WORK/cupo.sql"
+cat > "$CUPO_SQL" <<'EOSQL'
+insert into organizations (id, name, kind)
+  values ('cccccccc-0000-0000-0000-0000000000c0', 'Carrera cupo', 'tenant')
+  on conflict (id) do nothing;
+insert into organizations (id, name, kind, tenant_org_id)
+  values ('cccccccc-0000-0000-0000-0000000000c1', 'Socio de la carrera', 'partner',
+          'cccccccc-0000-0000-0000-0000000000c0')
+  on conflict (id) do nothing;
+insert into product (id, organization_id, name, base_price)
+  values ('cccccccc-0000-0000-0000-0000000000c2', 'cccccccc-0000-0000-0000-0000000000c0', 'Tour con cupo', 50)
+  on conflict (id) do nothing;
+insert into allotment (id, organization_id, partner_id, product_id, allotment_type, seats, seats_used, status)
+  values ('cccccccc-0000-0000-0000-0000000000c3', 'cccccccc-0000-0000-0000-0000000000c0',
+          'cccccccc-0000-0000-0000-0000000000c1', 'cccccccc-0000-0000-0000-0000000000c2',
+          'guaranteed', 10, 0, 'active')
+  on conflict (id) do nothing;
+update allotment set seats_used = 0 where id = 'cccccccc-0000-0000-0000-0000000000c3';
+EOSQL
+[ "$(id -u)" = "0" ] && chown postgres "$CUPO_SQL"
+if ! psql_run -f "$CUPO_SQL" >/dev/null; then
+  echo "✘ no se pudo preparar la carrera del cupo"; fail=1
+else
+  CUPO=cccccccc-0000-0000-0000-0000000000c3
+  for i in $(seq 1 30); do
+    "${RUN[@]}" psql -h "$PGHOST" -p "$PGPORT" -d appdb -At -c "
+      select public.claim_allotment_seats('$CUPO'::uuid, 1);" >/dev/null 2>&1 &
+  done
+  wait
+  USADAS=$(psql_run -At -c "select seats_used from allotment where id = '$CUPO';" | tr -d '[:space:]')
+  if [ "${USADAS:-0}" != "10" ]; then
+    if [ "${USADAS:-0}" -gt 10 ] 2>/dev/null; then
+      echo "✘ EL SOCIO PASÓ SU CONTRATO: $USADAS plazas consumidas de un cupo de 10"
+    else
+      echo "✘ el contador del cupo se perdió escrituras: $USADAS de 10 tras 30 ventas de una plaza"
+    fi
+    fail=1
+  else
+    echo "  30 ventas simultáneas del socio, cupo de 10, 10 plazas consumidas"
+  fi
+fi
+
 echo "→ carrera: 30 ventas simultáneas de la última plaza"
 CARRERA_SQL="$WORK/carrera.sql"
 cat > "$CARRERA_SQL" <<'EOSQL'

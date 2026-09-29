@@ -5580,3 +5580,1018 @@ la guarda de orden de `assertGerenciaOVendedorDe`.
 Los espejos de MembeGo y de Stripe. Son integraciones externas: vacíos sin una
 cuenta conectada es su estado correcto. **Con esto se acaban los módulos vacíos
 que sí dependían de nosotros.**
+
+---
+
+## Dimensión F · El cupo del socio: 30 ventas de un contrato de 10, y el contador en 2
+
+Con los módulos vacíos cerrados, lo siguiente pendiente y alcanzable desde aquí
+era la dimensión **F**, que el informe dejaba así: «quedan sin medir las demás
+carreras (caja, monedero, cupo del socio)».
+
+### Lo medido, antes de tocar nada
+
+- **Monedero:** ya estaba cerrado. `spend_partner_wallet` (0091) bloquea la fila
+  del socio con `for update` antes de sumar. Comprobado, no cambiado.
+- **Cupo del socio:** roto. Treinta ventas simultáneas de una plaza contra un
+  cupo garantizado de 10 dejaron `seats_used` en **2**, y **las treinta
+  pasaron**.
+
+### Por qué es peor que la sobreventa de plazas
+
+En la sobreventa de 9.19 el contador al menos **enseñaba** el exceso: 19
+reservas en una salida de 10. Aquí el socio vendió 30 plazas de un contrato de
+10 y la matriz de cupos dice **«2 usadas, 8 libres»**. El comercial ve hueco
+donde ya no lo hay y lo vuelve a vender. El error no se ve por ningún lado.
+
+Y no hace falta concurrencia real: `assertAllotment` lee la fila al EMPEZAR la
+venta y `consumeAllotment` escribía al TERMINARLA `seats_used = <lo que leyó> +
+pax` —un valor **absoluto** sobre una lectura vieja, no un incremento— con la
+venta entera de por medio. Dos ventas que se solapen un instante ya se pisan.
+
+### Lo que lo tapaba: un comentario razonable
+
+El consumo estaba al final, con este motivo escrito: «apuntarlo antes y que la
+saga se compensara dejaría el cupo consumido por una venta que no llegó a
+haber». El razonamiento es bueno. La consecuencia era que la única defensa real
+del contrato fuera una lectura vieja.
+
+Se resuelve por el otro lado, igual que la retención de plaza de 0099: se
+reclama **antes** de escribir nada, y lo reclamado se **suelta** si la venta se
+cae. La objeción original queda atendida y el contrato, defendido.
+
+### Hecho (migración 0100)
+
+- `claim_allotment_seats` — incremento condicional en **una sola sentencia**:
+  sin `select` previo no hay ventana. El tope es el mismo que calcula
+  `allotments.ts`, dicho una vez: `seats - seats_used - seats_released`.
+- `release_allotment_seats` — la devolución tenía el mismo fallo por el otro
+  lado (dos cancelaciones a la vez devolvían **una** plaza, y el socio se
+  quedaba sin cupo que sí había pagado). Ahora dice cuántas devolvió **de
+  verdad**, que puede ser menos de las pedidas.
+- Qué tipos de cupo apartan plazas se queda en `allotments.ts`, que es puro y
+  está probado: repetir la regla en la base crearía un segundo sitio donde se
+  decide lo mismo.
+- **Y ahora tumba la venta.** Antes no, a propósito. Pero eso convertía el
+  contrato en una sugerencia. Como el reclamo va antes de escribir, rechazar no
+  deja nada a medias.
+- Un fallo de lectura tampoco deja pasar: vender contra un contrato sin saber si
+  queda sitio es lo mismo que no comprobarlo. Misma decisión que
+  `assertCapacity`.
+
+Resultado de la misma carrera: **10 de 10**.
+
+### Mutación: 8, con un superviviente que era un hueco real
+
+Hacer que el doble dijera **siempre «cabe»** no rompía nada: ninguna prueba
+recorría la venta entera con el cupo agotado **por otra venta**. La garantía de
+la que va todo esto estaba probada en el servicio y no en la venta.
+
+La prueba obvia no servía: con el cupo lleno de antemano, quien rechaza es
+`assertAllotment` y el reclamo ni se ejecuta. Hizo falta simular la carrera de
+verdad —la primera lectura ve sitio y el cupo se agota justo después— que es
+exactamente lo que pasa en producción. Con ella, muere.
+
+### Dos guardas mías que decían lo contrario, y por qué se invirtieron
+
+- `«el consumo se apunta DESPUÉS de que la venta exista»` fijaba el orden que
+  causaba el fallo. Reescrita al orden nuevo, con el motivo del cambio dentro.
+- `«si el apunte falla, la venta no se entera»` fijaba que el cupo se pudiera
+  ignorar. Reescrita a lo contrario, explicando qué costaba la versión vieja.
+
+No se borraron: una guarda que se invierte tiene que decir por qué, o el
+siguiente que lea el fichero pensará que alguien aflojó el listón.
+
+### El informe de preparación, al día
+
+- **F** pasa a «dos carreras medidas y cerradas, las dos en CI; queda la caja».
+- **F-001** («módulos fiscales sin pruebas») se cierra: medido, los **20**
+  servicios que ese informe listaba sin una sola prueba tienen hoy su fichero.
+
+`tsc`, `eslint`, **4140/4140**, `db-test` y `build` en verde.
+
+### Qué queda de F
+
+La **caja**: `cash_session` y sus totales. No está medida.
+
+---
+
+## Dimensión F · La caja: 18 turnos sobre el mismo cajón y un faltante asentado 20 veces
+
+La última carrera pendiente de F. Salieron **tres**, y las tres sobre dinero.
+
+### Primero, un fallo de método que casi me hace decir que no había nada
+
+La primera medición dio **verde en las dos**. Estaba mal: la apertura la escribí
+como `insert … where not exists (…)` y el cierre como
+`with … update … returning … insert … from`. Las dos son **la versión atómica**
+—una sola sentencia—, así que estaba midiendo el arreglo y no el fallo.
+
+Reproducido como lo hace la aplicación de verdad —leer, esperar lo que tarda el
+resto del trabajo, escribir— salieron los números reales. Es la misma forma del
+error del UUID equivocado de 9.17: **una medición mal montada no da un error,
+da un verde**.
+
+### Lo medido
+
+| carrera | antes | ahora |
+| --- | --- | --- |
+| Abrir caja (20 a la vez) | **18 turnos abiertos** sobre el mismo cajón | 1 |
+| Cerrar turno (20 a la vez) | 1 — pero por accidente (ver abajo) | 1, deliberado |
+| Aprobar el descuadre (20 a la vez) | el mismo faltante **asentado 20 veces** | 1 |
+
+**Dos turnos sobre un cajón no es un número mal puesto.** Los cobros se reparten
+entre los dos según cuál lea cada petición y al final del día **ninguno de los
+dos arqueos cuadra**: el faltante de uno es el sobrante del otro, y desde la
+pantalla no hay forma de saberlo.
+
+### El cierre estaba defendido por accidente
+
+`cash_count_unique_idx` existe desde 0038 por una razón de **forma** —un conteo
+de cierre por sesión y moneda— y el conteo se escribe antes del movimiento, así
+que el segundo cierre muere ahí. Mover ese `insert` dos líneas más abajo
+reabriría el agujero sin que nada avisara, y quien cerraba segundo recibía un
+error de clave duplicada de Postgres en vez de «ya está cerrada».
+
+Importa qué se duplicaba: `recalcCashSession` **suma** el movimiento de cierre,
+así que un duplicado envenena el esperado de cualquier arqueo posterior.
+
+### Y la aprobación no tenía ninguna
+
+Leía `pending_approval`, escribía `reconciled` y asentaba la diferencia. Lo único
+que impedía el asiento doble era `alreadyPosted`, **que es una lectura**: las dos
+peticiones preguntan, las dos no encuentran nada, las dos asientan. Y el libro
+diario no tenía ni un índice único detrás. Comprobado quitando las dos defensas
+nuevas: **20 asientos del mismo faltante**.
+
+`alreadyPosted` es el guardián de idempotencia de **todas** las fuentes del
+libro, no solo de la caja: cobros y liquidaciones colgaban del mismo hilo.
+
+### Hecho (migración 0101)
+
+1. **Índice único parcial** sobre los turnos abiertos de cada caja: un segundo
+   turno abierto pasa a ser imposible, no improbable.
+2. **`claim_cash_session_status`** — transición atómica con el estado de
+   **partida** explícito, para cerrar y para aprobar. Sin él no se puede saltar
+   un paso: aprobar un turno que nadie cerró deja de ser posible.
+3. **Tres índices únicos en el libro diario** —por cobro, por liquidación y por
+   turno de caja, con `line_no` en la clave para que un asiento no choque
+   consigo mismo—. `alreadyPosted` pasa a ser una cortesía en vez de la única
+   defensa.
+
+En las rutas, el reclamo va **antes de la primera escritura**: quien pierde la
+carrera sale sin tocar el libro. El cálculo va antes del reclamo porque el estado
+final depende del conteo, y nada de lo que hay por encima escribe — así no hace
+falta un estado intermedio de «cerrando» en la máquina.
+
+**Si ya hay datos que lo incumplen, la migración se para y los nombra.** No
+elige cuál de dos turnos cerrar, a propósito: el sistema no puede decidir cuál de
+dos cajones tiene el dinero. `0101_parte_1_antes.sql` los lista sin tocar nada.
+
+### Mutación: 3 en la migración, 7 en las rutas, y dos supervivientes que enseñaron algo
+
+- Quitar el índice del turno único → **20 turnos**. Muere.
+- Hacer que la transición ignore el estado de partida → la carrera del cierre
+  seguía en 1. **Sobrevivía** porque el índice de 0038 la tapa. Hizo falta medir
+  sobre el **movimiento** de cierre, que no tiene índice, y añadir una prueba SQL
+  de la función. Con las dos, muere.
+- Quitar el índice único del libro → seguía en 1. **Sobrevivía** porque el
+  reclamo ya serializa. No era un hueco: es defensa en profundidad, y se
+  comprobó quitando **las dos** a la vez — ahí aparecen los 20 asientos.
+
+### Otro fallo mío, este del banco de pruebas
+
+Escribí un comentario SQL nombrando un índice **entre comillas invertidas**,
+dentro de un `psql -c "…"`. Bash las ejecuta antes de que psql vea nada: salió
+`command not found` por la salida de error, las pruebas siguieron en verde, y el
+SQL que llegaba a la base estaba mutilado justo en el trozo que ese comentario
+explicaba. **Un banco de pruebas que se estropea en silencio mide otra cosa y lo
+dice con la misma cara.** Hay guarda.
+
+### La dimensión F, cerrada
+
+Cinco carreras del dominio, medidas y cerradas, las cinco corriendo en CI:
+plazas, cupo del socio, apertura de caja, cierre de turno y aprobación del
+descuadre. El monedero ya se serializaba desde 0091.
+
+Lo que queda **no es una carrera** sino atomicidad estricta —BL-002, que
+PostgREST no da— y eso sigue abierto con su tamaño escrito.
+
+`tsc`, `eslint`, **4147/4147**, `db-test` y `build` en verde.
+
+---
+
+## DR-001 · El simulacro daba verde con un rojo en la mesa, y el contador fiscal volvía para atrás
+
+DR-001 estaba **reducido**: había simulacro (`restore-drill.sh`), comprobación
+(`supabase/verify/restauracion.sql`), manual y cuatro controles negativos, todo
+corriendo en CI. Fui a ver qué le faltaba para cerrarlo. Salieron **cuatro
+cosas**, y dos son de las que no se ven.
+
+### 1 · La comprobación había envejecido
+
+La fila 7 nombraba **tres** funciones —la retención, el monedero y el cupo de la
+salida— porque cuando se escribió eran todas. Medido: la aplicación llama a
+**catorce**. Una restauración que perdiera `claim_allotment_seats`,
+`claim_cash_session_status` o **`next_ncf`** pasaba con un **OK**.
+
+Una comprobación de recuperación que envejece es peor que no tenerla: da un verde
+el día que hay que confiar en ella. La lista sigue explícita —así el rojo dice
+QUÉ falta— y ahora una guarda la saca de las migraciones y falla si aparece una
+función nueva sin añadirla.
+
+### 2 · El simulacro no detectaba un rojo que se explicara
+
+La detección buscaba `|REVISAR|`, con barra de cierre. Las filas nuevas dicen
+`REVISAR — falta claim_allotment_seats`, y **no encajaban**: el simulacro
+imprimía el rojo y terminaba en verde. Lo descubrí porque la primera fila que
+escribí disparó y el simulacro dijo que todo estaba bien.
+
+Es decir: al hacer los rojos más útiles, dejaron de contar. Arreglado en los dos
+sitios (la pasada positiva y los controles negativos), con guarda.
+
+### 3 · EL CONTADOR FISCAL, que una restauración correcta rompe sola
+
+La única de esta lista cuyo daño es **legal**, y la única que no necesita que
+nada falle.
+
+`ncf_sequence.next_number` es un contador en una **tabla**, no una secuencia de
+Postgres. Una restauración a un punto anterior en el tiempo —lo que hace
+Supabase— **lo devuelve a donde estaba**, y las facturas emitidas después ya
+llevan su número impreso, enviado al cliente y declarado. El siguiente NCF que
+emita el sistema **repite uno que ya existe**.
+
+Dos comprobantes fiscales con el mismo número no se arreglan con un ajuste: es
+una factura que la DGII rechaza y un cliente con un documento que no vale. No
+había ni una línea sobre esto en la comprobación ni en el manual.
+
+Fila **11** nueva: compara el contador con lo ya emitido, que es la única fuente
+de verdad que sobrevive al rebobinado, y dice por qué número va cada uno. Con su
+control negativo —rebobinar el contador a 1—, que es el escenario de DR entero en
+una línea. Y el manual trae el SQL para subirlo, con el aviso del otro lado: si
+lo que se perdieron son FACTURAS, el contador queda por delante y **eso no se
+toca** — un hueco en la numeración se explica a la DGII; un número repetido, no.
+
+### 4 · Y el sembrador de demostración estaba en ese estado
+
+Lo encontró la fila 11 en cuanto existió: el sembrador escribe las 59 facturas
+con su NCF directamente, sin pasar por `next_ncf`, y dejaba el contador en **1**.
+La primera factura que alguien hiciera desde la demo habría repetido un número
+fiscal. Arreglado en las dos versiones del sembrador —el monolito y los trozos— y
+comprobado también en `db-test.sh`, porque el simulacro solo corre el monolito.
+
+### Mutación: 6, con tres supervivientes que eran guardas mías flojas
+
+- Quitar una función de la lista **sobrevivía**: la guarda buscaba el nombre en
+  cualquier parte del fichero y lo encontraba en otra fila. Un nombre en un
+  comentario no comprueba nada. Ahora mira la lista que de verdad comprueba.
+- Quitar un control negativo **sobrevivía** dos veces: la guarda contaba
+  controles con un suelo de cuatro y ahora hay seis. El recuento dice cuántos
+  hay, no si el que falta es el del contador fiscal. Ahora se exigen por fila los
+  dos que más cuestan.
+
+### Y un fallo mío, el mismo por tercera vez
+
+La guarda que prohíbe la forma cerrada `|REVISAR|` **saltó contra el comentario
+que explica por qué está prohibida**. Es la tercera vez en esta rama y el tercer
+lenguaje: había `readCodigo` para TypeScript y `readSql` para SQL, y faltaba
+`readSh` para bash. Escrito.
+
+### Qué queda de DR-001
+
+Lo único que no se puede hacer desde aquí: **el simulacro contra el proyecto de
+Supabase de verdad**. Treinta minutos, ocho pasos, en
+`docs/runbooks/RESTAURACION.md`. Mientras el registro de simulacros de ese manual
+esté vacío, **DR-001 no está cerrado** por mucho que el CI esté en verde — y eso
+lo dice el propio manual.
+
+Baja de **Alto** a **Medio**: el procedimiento y la comprobación están probados y
+con seis controles negativos; lo que falta es ejecutarlo una vez.
+
+`tsc`, `eslint`, **4149/4149**, `db-test`, `restore-drill` y `build` en verde.
+
+---
+
+## T-001 · El recorrido que ninguna prueba hacía: vender, cobrar y cancelar
+
+### Lo primero, corregir el propio informe
+
+T-001 decía «**dos** ficheros de Playwright». Medido: hay **cinco**, con
+`global-setup.ts` provisionando usuarios, organizaciones, socios y proveedores.
+Esa mitad del hallazgo llevaba tiempo siendo falsa.
+
+La otra mitad era exacta, y peor de lo que suena: **las cinco specs son de
+aislamiento**. Entran, miran, y afirman que no se ve lo ajeno. **Ninguna escribe
+nada.** El camino que ninguna recorre es justo el que ha concentrado casi todos
+los hallazgos de esta auditoría —la retención de plaza, el cupo del socio, la
+comisión, el monedero, el arqueo—: cada pieza con sus pruebas unitarias, y cero
+pruebas de que las piezas ENCAJEN con una sesión real, la RLS puesta y el
+enganche del token metiendo el rol.
+
+### Hecho: `venta-completa.spec.ts`
+
+Dos recorridos.
+
+**El primero** hace la venta con el ratón —buscar la excursión, añadirla,
+elegir el cliente, confirmar, cobrar— y después **cancela desde Reservas**. Cada
+paso se afirma **contra la API con la misma sesión del navegador**, porque una
+pantalla puede decir «cobrado» sin haber escrito nada y ahí el verde sería
+mentira. Lo que se comprueba:
+
+- la orden quedó escrita, con importe mayor que cero;
+- vender **bajó las plazas libres** de la salida (es la mitad de 0099 y 0100);
+- cobrar dejó el saldo en **0** y el estado en `paid`;
+- cancelar dejó la reserva en `cancelled`;
+- y **la plaza volvió exactamente a donde estaba**.
+
+**El segundo** pide mil pasajeros en una salida de cuarenta **por la API**, con
+la sesión de una persona real. Es la única comprobación de la casa que ejerce el
+camino entero —sesión, rol en el token, RLS, ruta, reserva de plaza— contra la
+base: la carrera de `db-test.sh` prueba la función; esto prueba que la ruta la
+llama y que la llamada manda.
+
+### Dos cosas que el sembrador no daba, y sin las cuales el verde era vacío
+
+- **El producto no tenía precio.** La venta entera costaba cero, y «cobrar»
+  sobre cero deja el saldo en cero hiciera lo que hiciera el cobro. Se le pone
+  precio —y se le **refresca** en cada ejecución, porque un proyecto de CI que ya
+  corrió tiene el producto viejo sin precio y ahí la prueba pasaría sobre cero.
+- **La salida no quedaba limpia.** Es la primera spec que escribe: si una corrida
+  se cae a mitad, la plaza se queda cogida, y a las cuarenta el CI empieza a
+  fallar por capacidad agotada con un fallo que no se parece en nada a su causa.
+  Ahora `global-setup` borra las reservas de esa salida y devuelve sus contadores
+  a cero en cada ejecución.
+
+### Un fallo mío que habría dado verde para siempre
+
+La segunda prueba afirmaba `status >= 400`. **Un 404 también es ≥ 400**: si me
+hubiera equivocado en la ruta, la prueba habría dado verde sin ejercer nada. Un
+rechazo por «no existe» y uno por «no caben» se parecen mucho en un número y no
+se parecen en nada en lo que prueban. Ahora exige que la ruta exista y que la
+negativa **hable de plazas**.
+
+### Lo que NO se pudo hacer, dicho sin adornos
+
+**Esa spec no se ha ejecutado nunca.** Este entorno no tiene demonio de Docker, y
+sin él no hay pila de Supabase —ni autenticación ni PostgREST—, así que no hay
+contra qué correrla. Lo que sí se hizo desde aquí:
+
+- `tsc` y `eslint` sobre ella;
+- **Playwright la analiza y la recoge** (`--list`): 18 recorridos en 6 ficheros,
+  o sea que el fichero está bien formado y los `import` resuelven;
+- y —esto es lo que de verdad reduce el riesgo— **una guarda que comprueba que
+  cada texto que la prueba busca existe en la pantalla que conduce**. Una prueba
+  de navegador que nadie ha visto pasar falla, cuando falla, por la razón más
+  tonta: un botón que ya no se llama así. Eso sí se puede comprobar sin
+  ejecutarla, y **sigue comprobándose después**: el día que alguien renombre el
+  botón, el E2E se pondría rojo en el CI sin decir por qué, y esto lo dice en la
+  compilación.
+
+### Mutación: 8 de 8
+
+Renombrar cada botón del punto de venta, quitarle a la prueba la lectura de lo
+escrito, quitarle la afirmación de que el cobro salda, la de que cancelar
+devuelve la plaza, dejar el producto sin precio, no refrescarlo, y quitar la
+limpieza entre ejecuciones. Todas mueren.
+
+### Qué queda de T-001
+
+Baja de **Alto** a **Medio**. El recorrido existe, está sujeto y corre en el CI.
+**Mientras nadie lo haya visto pasar en verde, no está cerrado** — y el primer CI
+sobre esta rama es quien lo dirá.
+
+`tsc`, `eslint`, **4153/4153**, `playwright --list` (18 recorridos), `db-test` y
+`build` en verde.
+
+---
+
+## BL-002 · Lo que una venta muerta a mitad se lleva puesto
+
+### La premisa no se toca
+
+«PostgREST no da transacciones multi-sentencia» es cierto y no se arregla desde
+aquí. La venta toca dieciséis tablas; reescribirla entera como una función de
+base sería cambiar un riesgo conocido por uno nuevo y mayor. **No lo hice.**
+
+Lo que sí se puede hacer es que la ausencia de transacción deje de ser una
+excusa: medir qué queda huérfano de verdad, cerrarlo, y hacer que el deshacer
+sea imposible de olvidar.
+
+### Hallazgo 1 · El cobro al monedero se tragaba su error, fuera de la saga
+
+`gastarDelMonedero` capturaba **todo** y devolvía `null`. Quien llamaba lo
+asignaba a una variable y solo miraba `consumo?.descubierto`, así que «no se
+pudo cobrar» y «se cobró sin descubierto» eran **indistinguibles**. Y la llamada
+estaba **después del `catch`**, sin envolver en nada.
+
+Medido: si esa llamada fallaba, **la venta se daba por buena**. El tour center se
+llevaba su excursión confirmada, su saldo intacto, y el mostrador veía «venta
+registrada». Ni un error, ni una fila pendiente, ni nada que reclamar — una línea
+en la consola del servidor. **No hace falta que se muera el proceso: basta que
+falle la llamada.**
+
+El código lo justificaba así: «revertir todo sería cambiar un descuadre —visible
+en el listado al día siguiente— por una reserva perdida con el turista delante».
+El razonamiento es bueno y **la premisa era falsa**: no había descuadre visible.
+No existía ninguna fila. Lo que se cambiaba no era una cosa por otra, era una
+pérdida **invisible** por nada.
+
+Y la objeción se resuelve donde estaba el problema: **el cobro se movió dentro de
+la saga, antes de promover la orden**. Ahí la orden sigue en borrador — no hay
+reserva confirmada ni voucher que perder, que es exactamente donde `assertSaldo`
+ya rechazaba por saldo corto. Lo cobrado se apunta y **se devuelve** si la venta
+se cae después.
+
+### Hallazgo 2 · La compensación se quedaba con el cupo del socio
+
+El `catch` sí devolvía el cupo — lo lleva apuntado en un mapa. Pero ese mapa vive
+en la memoria del proceso que vendía. Cuando quien compensa es el **barrido**
+—otro proceso, media hora después— el mapa no existe, y `compensateOrder`
+cancelaba las reservas **sin tocar el cupo**.
+
+Y a diferencia de la plaza de la salida, **el cupo no caduca**: 0099 le puso
+caducidad a la retención precisamente porque un proceso muerto no suelta nada. El
+contrato del socio se quedaba corto **para siempre**, y un contador que va de
+menos no lo reclama nadie.
+
+Era además una incoherencia entre dos caminos: cancelar a mano sí lo devuelve. El
+que no lo hacía era el que corre **sin testigos**.
+
+### El entregable de verdad: el inventario con guarda
+
+Ocho efectos de la venta, cada uno con quién lo deshace, y una prueba por
+efecto. Añadir una escritura a la saga sin decir qué la deshace pone la prueba en
+rojo. Más lo que aprendí midiendo: **la compensación sola no basta** — hay tres
+formas de deshacer y cada efecto necesita una que no dependa de la memoria del
+proceso que murió (la plaza caduca; el cupo se lee de la propia reserva).
+
+### Mutación: 6, con dos supervivientes sobre la mitad difícil
+
+Las dos eran sobre **deshacer dos veces**, que es donde se rompen los sistemas de
+compensación:
+
+- devolver el cupo de una reserva ya cancelada **sobrevivía**: la compensación
+  corre dos veces con facilidad (el `catch` y el barrido, o dos barridos), y
+  devolver dos veces le **regala** plazas al socio.
+- devolver el consumo de un **reintento** también sobrevivía: ese dinero es de la
+  venta original, que sigue en pie.
+
+Y al escribir la primera prueba me salió mal: partía de 3 plazas y devolvía 3, así
+que las dos devoluciones acababan en cero —la segunda topa ahí— y **el daño
+quedaba escondido justo debajo del suelo**. Con otras plazas consumidas por
+detrás, se ve.
+
+### Qué sigue abierto, con su tamaño
+
+Entre dos escrituras **no hay atomicidad**, y eso no lo cierra nada de esto. Lo
+que hay es compensación + barrido + caducidad, que reparan *después*. La ventana
+existe y ahora está inventariada.
+
+`tsc`, `eslint`, **4169/4169**, `db-test` y `build` en verde.
+
+---
+
+## DB-001 · Las referencias a una persona, comprobadas — y el disparador que encogió
+
+**Migración 0102**, `supabase/tests/tenant_refs.test.sql`, `scripts/db-test.sh`,
+`scripts/build-auditoria-migraciones.mjs`, `src/lib/ui-contracts.test.ts`,
+`src/lib/editor-sql.test.ts`, `src/lib/schema-contract.test.ts`,
+`supabase/editor/0102_parte_1..4`.
+
+### Lo medido primero
+
+Ninguna clave foránea de este esquema es compuesta `(organization_id, id)`, así
+que la base no impide que una fila de la empresa A apunte a una de la B. Con RLS
+puesta una sesión normal no puede; lo que queda expuesto es la escritura con la
+**llave de servicio**, que es la que usa toda la aplicación por detrás.
+
+Medido contra el esquema real: **141 referencias entre tablas de inquilino sin
+ninguna comprobación**. Cubrirlas todas no es gratis —cada una cuesta una lectura
+por fila insertada— así que hacía falta un criterio escrito en vez de un gusto:
+
+> Se comprueba toda referencia a una **PERSONA** —cliente, vendedor, proveedor—
+> o a un **DOCUMENTO SOBRE UNA PERSONA** —reserva, venta—.
+
+36 referencias en 25 tablas. **141 → 105.** Lo que queda fuera refiere cosas:
+almacén, mantenimiento, turnos, activos. Un movimiento de stock mal apuntado es
+un número que cuadrar; un caso de atención apuntando al cliente de otra operadora
+es el expediente de alguien colgando de la empresa equivocada.
+
+La más cara de la lista no es de dinero: **`supplier_response_token.supplier_id`**.
+Ese token es la llave del portal del proveedor —el enlace de un solo uso con el
+que alguien acepta o rechaza un servicio sin tener cuenta—. Apuntando a un
+proveedor de otra empresa, ese enlace **abre el portal de otro**. Es
+autenticación, no contabilidad.
+
+### El fallo que cometí, y cómo se cazó
+
+El disparador no se configura por tabla: se configura por **NOMBRE**. Todas las
+migraciones usan la convención `<tabla>_same_tenant_refs` con un
+`drop trigger if exists` delante. Registrar una tabla que **ya** tenía disparador
+no añade referencias: las **sustituye**.
+
+`pickup` lo tenía desde 0018 con `booking_id`, `hotel_id` y `route_id`. Lo
+registré con `supplier_id` a secas: **tres comprobaciones perdidas para ganar
+una**, vendido como una mejora.
+
+Lo dijo el número: la prueba esperaba 105 y dio **108**. Tres de diferencia, que
+es exactamente lo que `pickup` cubría. `db-test` entero había dado verde antes de
+bajar el techo — porque nada erroraba. Lo que caza esto no es que algo falle: es
+un número que tiene que cuadrar.
+
+### El techo dejó de ser un techo
+
+Era `sin_cubrir > TECHO` con `TECHO = 141`. **Con ese tope, 108 cabe debajo de
+141 y la pérdida de `pickup` no habría dicho nada.** Un tope se cumple subiéndolo.
+
+Ahora es un número **exacto** en las dos direcciones: si sube, alguien añadió una
+referencia sin cubrir o le quitó columnas a un disparador que ya existía; si baja,
+se cubrió más y hay que bajarlo en el mismo cambio. Y sigue viviendo en **dos
+ficheros** —la prueba SQL y `ui-contracts`— para que moverlo se cuente en voz alta
+en vez de esconderse en un dígito.
+
+Lo mismo con la regla de personas: `en_personas` exige cero sin cubrir, y
+recortando su lista de tablas padre a `('customer')` **seguía dando cero**. Ahora
+además se cuenta cuántas referencias entra a mirar —100, exacto— porque un cero
+sobre una familia recortada no prueba nada.
+
+### La guarda que impide que vuelva a pasar
+
+`ui-contracts.test.ts` lee **todas** las migraciones en orden, extrae cada
+`create trigger … enforce_same_tenant_refs(…)` y exige que la **última**
+definición de cada nombre contenga todas las columnas de las anteriores. Y que
+toda columna validada esté en el `before insert or update of`, porque una columna
+que se valida pero no dispara al actualizarla parece cubierta y no lo está: el
+cruce se cuela moviendo una fila ya escrita.
+
+Al escribir esa guarda la expresión regular **cruzaba sentencias** —lo perezoso de
+`[\s\S]*?` enganchaba el nombre de un `create trigger` con el
+`enforce_same_tenant_refs` de la sentencia siguiente— y acusó a
+`bundle_item_no_nesting` de algo que no hace. Una guarda que parsea mal es peor
+que no tenerla.
+
+### Lo que apareció de paso: tres falsos «FALTA» en la consulta que el usuario pega
+
+Al hacer que `db-test` ejecutara las consultas de auditoría **contra una base con
+todas las migraciones aplicadas**, salieron tres filas acusando de falta algo que
+estaba:
+
+- `auditoria_migraciones.sql` decía `0072 | FALTA - no existe `, con el nombre
+  vacío detrás: la rama «sin comprobación automática» iba **después** de
+  `to_regclass('public.' || '')`, que es nulo. Orden de ramas.
+- `auditoria_funciones_1/2.sql` acusaban a **0038** y **0081** por disparadores
+  que **0095 borra** para rehacerlos con otro nombre. El resumen ya descartaba
+  esos objetos; el detalle, no.
+
+Y la raíz común de que 0102 saliera «no se puede comprobar»: un
+`drop … if exists` seguido de **su propio** `create` se contaba como un borrado.
+Es la forma de escribir un registro repetible, no una eliminación.
+
+Un falso «FALTA» manda a ejecutar otra vez algo que ya está y, peor, **enseña a
+desconfiar de la consulta**, que es la forma de que la próxima vez nadie la mire.
+Ahora `db-test` corre las **13** y ninguna puede acusar.
+
+### Lo que se pega, ejecutado
+
+`supabase/editor/0102_parte_1..3` y su verificación no solo se comparan con la
+migración —`editor-sql.test.ts` exige el mismo conjunto de disparadores, que hasta
+ahora solo se comprobaba para migraciones **con función**—: `db-test` las
+**ejecuta** y lee su verificación fila a fila. Si la copia encoge `pickup`, lo
+dice al correrla.
+
+### Mutación: 16, todas mueren
+
+Las dos que sobrevivieron primero y por qué:
+
+- **aflojar mi propio recuento de 0102** (`toBe(39)` → `toBeGreaterThan(0)`) no
+  se notaba sola. Se comprobó aplicándola **junto** con el encogimiento de
+  `pickup`: la regla de superconjunto lo caza igual. Defensa en profundidad, no
+  una sola guarda.
+- **romper la expresión regular** de `editor-sql.test.ts` dejaba los dos conjuntos
+  vacíos y el `continue` se llevaba la migración entera: pasaba **sin comparar
+  nada**. Ahora exige que 0102 compare sus 25.
+
+### Lo que sigue sin cubrirse, con su número
+
+**105 referencias**, a propósito, todas fuera de las dos familias que importan
+(dinero/entrada/descargo y personas). No es un olvido: es un coste medido —0097
+dejó los disparadores de la reserva en 0,66 ms— y el número está en la prueba
+para que no crezca en silencio.
+
+`tsc`, `eslint`, **4174/4174**, `db-test`, `restore-drill` y `build` en verde.
+
+---
+
+## P-001 · Qué aguanta el panel, y las cinco mejoras que medí y descarté
+
+`scripts/perf-panel.sh`, `supabase/perf/volumen.sql`, `scripts/db-test.sh`,
+`src/lib/ui-contracts.test.ts`.
+
+### Lo que faltaba, y por qué seguía faltando
+
+9.17 midió el panel con volumen y bajó 800 → 450 ms. Dejó dos cosas abiertas, y
+la primera era ésta: **«no hay pruebas de carga con concurrencia. Todo lo medido
+es un solo cliente contra una base sin nadie más»**.
+
+Seguía abierta un año después por un motivo simple: **la siembra con la que se
+midió vivía en un terminal**. Una medición que no se puede repetir es una
+anécdota — el número envejece, nadie sabe con qué datos salió, y la siguiente
+vez se empieza de cero. Que es exactamente lo que pasó aquí.
+
+Así que lo primero que se entrega no es un número: es `perf-panel.sh` y
+`supabase/perf/volumen.sql`, que levantan un Postgres, siembran **120 000
+reservas, 120 000 órdenes, 80 000 cobros, 80 000 comisiones y 5 520 salidas**, y
+miden. Se corre con un comando.
+
+### Lo que el panel aguanta, medido (cuatro núcleos)
+
+| clientes a la vez | p50 | p95 | caudal |
+| --- | --- | --- | --- |
+| 1 | 620 ms | 668 ms | 1,55/s |
+| 2 | 648 ms | 697 ms | 2,98/s |
+| 4 | 678 ms | 865 ms | **5,37/s** |
+| 8 | 1 303 ms | 1 590 ms | 5,78/s |
+| 16 | 2 794 ms | 3 191 ms | 5,52/s |
+
+El caudal se planta en **~5,4 llamadas por segundo — una por núcleo** — y a
+partir de ahí la latencia crece en línea recta mientras el caudal no se mueve.
+El panel **no espera a disco: gasta un núcleo entero por visita**. La ventana por
+defecto (el mes) cuesta 186 ms y aguanta ~23/s.
+
+Es el primer número de capacidad que este sistema ha tenido: con cuatro núcleos,
+**cuatro personas mirando el informe del año ocupan la base entera**.
+
+### La pregunta que de verdad importaba: ¿se puede seguir vendiendo?
+
+| en el panel | coger plaza p50 | p95 | peor |
+| --- | --- | --- | --- |
+| nadie | 0,3 ms | 1,4 ms | 94 ms |
+| 4 | 0,6 ms | 7,2 ms | 14 ms |
+| 8 | 3,9 ms | 15,5 ms | 19 ms |
+| 16 | 1,8 ms | 14,7 ms | 43 ms |
+
+**No.** No se rompe: el reclamo de plaza es una actualización de una fila por
+índice, el sistema operativo la intercala sin problema y el peor caso con
+dieciséis personas en el informe del año son 43 ms. Lo daba por perdido antes de
+medirlo y estaba equivocado. El coste del panel se queda **dentro del panel**.
+
+### Cinco mejoras medidas. Cinco descartadas. Incluida la del plan.
+
+Contra 547 ms de referencia a 365 días, y comprobando en cada una que la salida
+seguía siendo **idéntica**:
+
+| hipótesis | resultado | veredicto |
+| --- | --- | --- |
+| Índice `(organization_id, booking_id)` en `commission`, para quitarle la ordenación en disco a `booking_commission` | 559 ms | **no cambia nada** |
+| Fundir los cinco desgloses en una pasada con `grouping sets` | 542 ms | **3,5%**, no el ~140 ms previsto |
+| Sumar en `float8` en vez de `numeric` | 661 ms | **peor** (los casts por fila) |
+| Acotar la comisión por reserva a la ventana | 30 d: 141 → **102** · 365 d: 566 → **1 015** | −27% en lo común, **+79% en el año** |
+| Calcular la clave de agrupación una vez en vez de dos | 548 ms | Postgres ya la reutilizaba |
+
+**La segunda es la que importa**, porque era el plan de récord: el informe
+anterior decía «fundir los cinco desgloses con `grouping sets`, ~140 ms». El
+prototipo está medido y da **5 ms**.
+
+El error de razonamiento está identificado. Quitando los cinco desgloses de la
+salida, la consulta baja de 547 a 293 ms —46%—, y de ahí salía la estimación.
+Pero ese 46% no son «cinco pasadas»: al podarlos, el planificador se ahorra
+también la agregación, el ordenamiento, la función de ventana y el `jsonb_agg`
+de 366 filas. **Una sola pasada calculando cinco agregaciones cuesta casi lo
+mismo que cinco pasadas calculando una cada una**, porque el coste es por fila,
+no por pasada. El plan lo confirma: la pasada única tarda 133 ms y las cinco
+sueltas 119.
+
+Con eso, lo que queda de P-001 en la parte de velocidad es honesto y firme:
+**los ~610 ms del año son irreducibles sin una tabla de instantáneas.**
+
+### Dos veces medí otra cosa que la que quería
+
+- La primera tanda de tiempos dio **0,15 ms** y me los creí un momento. Eran
+  errores: `dashboard_summary` rechaza la llamada si el inquilino de la sesión
+  no coincide, y yo no había puesto `request.jwt.claims`. Un número redondo y
+  rapidísimo es la forma que tiene una medición de decir que no midió.
+- La primera ablación de la ventana comparativa dijo **257 ms de ahorro**. Había
+  puesto `limit 0` sobre `previous_summary`, que deja el producto cartesiano
+  final **sin filas** y permite saltarse el trabajo entero. La salida medía 0
+  bytes. Bien medido son 35 ms.
+
+Las dos son la misma lección que la caja y que 9.17: **comprobar siempre que lo
+medido produjo lo que tenía que producir**, no solo que tardó poco.
+
+### La guarda: el eje que predice el coste, no los milisegundos
+
+Un tope de milisegundos en CI es una prueba inestable, y una prueba inestable se
+acaba reejecutando hasta que pasa. Lo que sí es determinista es **cuántas veces
+se recorre `booking`**, que es lo que hace el coste lineal en el tamaño de la
+ventana. Hoy son **dos**: la ventana y su comparativa.
+
+Se fijan **dos** números, porque el texto y el plan no dicen lo mismo: en el
+texto `booking` aparece cuatro veces —dos `from` y dos `left join … on pb.id =
+p.booking_id` en las CTE de cobros—, pero en el plan solo hay dos barridos,
+porque esos dos `left join` son por clave primaria y sin columnas usadas, así
+que el planificador **los elimina enteros**.
+
+**La primera versión de la guarda sobrevivió a la mutación**: contaba solo `from
+booking`, y la regresión que existe de verdad —la cuarta hipótesis de la tabla—
+entra como `join booking b0`. Contaba dos y había tres.
+
+Y `db-test.sh` corre la siembra a escala 100 (1 200 reservas, unos segundos) para
+que no envejezca: un banco de rendimiento que ya no encaja con el esquema no
+avisa, falla el día que alguien quiere medir. Eso también se aprendió midiendo:
+a escala 100 la primera versión dejaba **dos salidas** en total y solo seis de
+1 200 órdenes llegaban a ser reserva. No falló; devolvió una base inútil.
+
+**Mutación: 8 de 8**, tras corregir la guarda que sobrevivió.
+
+### Qué sigue abierto de P-001
+
+- **Los ~610 ms del año**, que ahora tienen causa y no candidata: trabajo por
+  fila sobre 95 526 reservas. Bajarlos pide una **tabla de instantáneas**, que es
+  una ola entera con su problema de invalidación. No se ha hecho.
+- Lo medido es **una máquina de cuatro núcleos y un solo inquilino**. La
+  capacidad de la instancia real de Supabase será otra; el banco está para
+  correrlo allí.
+
+`tsc`, `eslint`, **4176/4176**, `db-test`, `restore-drill` y `build` en verde.
+
+---
+
+## La lista de SQL pendiente, y los tres agujeros que encontró al escribirla
+
+`docs/operaciones/SQL_PENDIENTE.md`, `supabase/editor/0088_parte_3_verificacion.sql`,
+`0089_parte_3_verificacion.sql`, `0098_parte_1.sql`, `0098_parte_2_verificacion.sql`,
+`scripts/db-test.sh`, `src/lib/ui-contracts.test.ts`.
+
+**47 archivos, 15 migraciones (0088 → 0102)**, en orden, con qué desbloquea cada
+uno y cuáles solo leen. La lista vive en el repositorio y no en un mensaje,
+porque una lista de nombres de fichero en un chat caduca sin avisar.
+
+### Lo que apareció al armarla
+
+Tres agujeros, ninguno visible leyendo:
+
+1. **La 0098 no tenía copia para el editor.** Era la única migración pendiente
+   sin `_parte_N.sql`, y llevaba así desde que se escribió: el paso habría sido
+   «abre la migración y averigua qué pegar». Son 3 kB que caben de sobra.
+2. **La 0088 y la 0089 no tenían verificación.** Dos pasos sin forma de saber si
+   funcionaron —y el editor de Supabase dice «Success. No rows returned» tanto
+   si hizo lo suyo como si no—. La de 0089 comprueba, entre otras cosas, el
+   índice único del NCF: sin él, **el mismo comprobante del mismo proveedor
+   entra dos veces**, que es una factura duplicada ante la DGII.
+3. **El orden que yo mismo había dado era el no probado.** En una lista anterior
+   puse la 0094 y la 0095 por delante de la 0091–0093 porque la 0094 bloquea las
+   ventas. El orden numérico es el que se aplica en cada integración sobre una
+   base vacía y el único probado de punta a punta — y hay dependencias reales
+   dentro del tramo: **la 0099 llama siete veces a `departure_pax_totals`, que
+   la crea la 0094**. La urgencia se resuelve haciendo la lista de una sentada,
+   no reordenándola. Queda corregido en el documento, dicho como corrección.
+
+### Y un cuarto, que encontró la guarda: la verificación que revienta
+
+Añadí controles negativos a `db-test.sh` —romper el objeto a propósito y exigir
+que la fila lo diga, igual que los seis del simulacro de restauración— y dos
+fallaron al primer intento. No por un descuido de redacción: **con la columna
+borrada, tres de estas verificaciones reventaban con un error de Postgres
+—«column … does not exist»— en vez de devolver la fila que dice FALTA**.
+
+Es decir: dejaban de verificar justo el día que algo había salido mal, que es el
+único día que importan. Se arregla leyendo los datos por
+`to_jsonb(fila) ->> 'columna'`, que se resuelve en ejecución y devuelve nulo
+cuando la columna no está, así que la fila sobrevive y acusa.
+
+### Las guardas, y la que no guardaba nada
+
+Un documento con 47 nombres de fichero y 47 números escritos a mano envejece
+solo. Se comprueban las dos direcciones —un fichero nombrado que no existe manda
+a pegar algo que no está; un fichero pendiente sin nombrar se queda sin pegar—
+más que los números vayan de 1 a N sin huecos y en orden numérico. **Los números
+ya se me habían descolgado**: al insertar las verificaciones de 0088 y 0089, los
+43 pasos siguientes quedaron corridos por dos.
+
+Y una lección repetida, por tercera vez en este repositorio: **la guarda de los
+controles negativos no guardaba nada**. `db-test.sh` tiene dos arrays con la
+misma forma y **los mismos cuatro números** —`COPIAS_QUE_SE_REPITEN` y
+`CAZA_VERIFICACION`—, y yo buscaba el patrón por todo el fichero. Las entradas
+de copias satisfacían las aserciones de controles: habría pasado con el bloque
+de controles **borrado entero**. Ahora se lee el bloque, no el fichero.
+
+**Mutación: 10 de 10**, tras corregir esa guarda y una plantilla de mutación mía
+que apuntaba a un número de paso que el renumerado había movido —una mutación
+que no aplica se lee igual que una que sobrevive, y no es lo mismo—.
+
+`tsc`, `eslint`, **4182/4182**, `db-test`, `restore-drill` y `build` en verde.
+
+---
+
+## El CI llevaba rojo desde siempre, y ninguna prueba de navegador se había ejecutado
+
+`tests/e2e/global-setup.ts`, `src/lib/schema-contract.test.ts`.
+
+### Lo que encontré al ir a mirar
+
+Le pedí al usuario que vigilara «la primera corrida de CI de esta rama». Fui yo a
+mirarla, y la respuesta es peor que «todavía no ha corrido»: **han corrido más de
+cien y han fallado todas**. Siempre en el mismo sitio, y nunca en una prueba:
+
+```
+Error: seed departure: new row for relation "departure"
+       violates check constraint "departure_status_check"
+   at ensureSupplierFixtures (tests/e2e/global-setup.ts:505)
+```
+
+El montaje del E2E siembra una salida con `status: "scheduled"`. Esa columna
+admite `available | almost_full | full | closed | cancelled | completed`, y
+`scheduled` no está. PostgREST rechaza el INSERT entero, el montaje lanza y
+**ninguna prueba de navegador llega a ejecutarse**.
+
+Estaba escrito en **tres** sitios del mismo fichero, así que no fue un desliz de
+tecleo: fue no tener dónde comprobarlo.
+
+Esto explica de golpe por qué T-001 llevaba abierto diciendo «la spec nunca se ha
+ejecutado». No era solo que aquí no haya demonio de docker: **es que en el CI
+tampoco llegaba a correr**, y el error queda enterrado en un montaje de seis
+minutos que nadie lee si no va a buscarlo.
+
+### Por qué la guarda que ya existía no lo vio
+
+Hay una guarda desde hace olas que comprueba que el arranque del E2E **escriba
+columnas que existen**, y hace bien su trabajo: `departure.status` existe. Lo que
+nadie comprobaba era el **valor**.
+
+La diferencia importa porque las dos se leen igual de mal: una columna inventada
+se puede ver leyendo el código con atención; un valor que la base no admite, no —
+hay que ir a buscar la restricción a la migración que la declaró.
+
+### No una vuelta de CI por error: los tres tipos de golpe
+
+Cada vuelta de CI cuesta seis minutos y aquí no puedo levantar la pila. Así que
+en vez de arreglar y esperar, levanté un Postgres con las 102 migraciones y barrí
+el arranque entero contra el catálogo **real**, en los tres tipos de fallo que
+rechazan un INSERT completo:
+
+| | resultado |
+| --- | --- |
+| columnas que no existen | 0 (la guarda vieja ya lo cubría) |
+| valores que la columna no admite | **3**, todos `departure.status` |
+| columnas obligatorias sin escribir | 0 |
+
+Los tres eran el mismo. Corregidos, y el barrido contra el catálogo vuelve a dar
+cero — también sobre las specs y los scripts.
+
+### La guarda, y el hueco que tenía el lector
+
+`readAllowedValues()` reconstruye de las migraciones qué admite cada columna, y
+la comprobación compara cada literal del arranque contra eso. Al medirla contra
+el catálogo real apareció que veía **195 de 218** columnas: se saltaba la forma
+`check (col is null or col in (…))` —«admite nulo Y esta lista»—, que es
+justamente la de `organizations.subscription_status`, **otra columna que el
+arranque escribe**. Una comprobación que se cree completa y mira dos tercios.
+Corregido el patrón, las 14 columnas con valores declarados que el arranque
+escribe están las 14 comparadas, verificado contra el catálogo y no contra el
+propio lector, que es juez y parte.
+
+### Mutación: 6, y tres supervivientes que enseñaron algo distinto cada uno
+
+- **Una era mi plantilla**: mutaba `payment_type`, que no aparece en ese fichero.
+  Una mutación que no llega a aplicarse se lee **exactamente igual** que una que
+  sobrevive, y no es lo mismo. Comprobar que la mutación cambió el fichero es
+  parte de mutar.
+- **Romper el extractor** —la expresión que encuentra los `.from("t").insert({…})`—
+  dejaba la lista de malos vacía y la comprobación pasaba con el valor malo
+  puesto. Mis suelos vigilaban el LECTOR de valores; ninguno vigilaba el
+  extractor.
+- Y aflojar los dos suelos a la vez seguía pasando, porque cada aserción
+  vigilaba su mitad y **ninguna vigilaba el producto de las dos**, que es lo
+  único que de verdad se compara. Ahora se ancla en ese número: 14 pares.
+
+Y una repetición: mi primera expresión **cruzaba sentencias** y acusó a
+`payment.status` de un valor que era de `departure`. Es el tercer fichero
+distinto en el que cometo ese mismo error con un `[\s\S]*?` perezoso.
+
+### Qué NO cierra esto
+
+Que el montaje ya no se caiga **no significa que las pruebas pasen**. Lo único
+que se sabe es que el error que las impedía arrancar ya no está. La primera
+corrida verde sigue siendo la prueba que falta, y sigue sin poder darse desde
+aquí.
+
+`tsc`, `eslint`, **4183/4183**, `db-test` y `build` en verde.
+
+---
+
+## El fallo que no existía: `citext`, y un doble que mentía sobre el sistema
+
+`src/test/fake-tenant.ts`, `src/lib/import-service.test.ts`,
+`supabase/tests/citext_cruce.test.sql`, `src/lib/ui-contracts.test.ts`.
+
+### Corrección a una entrada anterior de este mismo registro
+
+En la ola del importador quedó apuntado, con todas sus letras:
+
+> **Lo que NO se arregló, y está escrito como prueba:** el cruce de duplicados
+> del importador **no es insensible a mayúsculas** […] una ficha guardada como
+> `Laura@Example.com` no casa con `laura@example.com`, se toma por nueva y el
+> archivo la duplica. […] lo que lo arregla es normalizar la columna en la base
+> (`citext` o un índice funcional), o sea una migración.
+
+**`customer.email` es `citext` desde 0004.** `citext` compara sin mirar
+mayúsculas —el `in` incluido—, así que el importador **no** duplicaba nada. No
+había fallo, no hacía falta migración, y la ola que se le asignó era trabajo
+contra un problema inexistente.
+
+Comprobado ejecutándolo, no leyéndolo: contra un Postgres con las 102
+migraciones, `email in ('laura@example.com')` encuentra `Laura@Example.com`.
+
+### De dónde salió la conclusión falsa
+
+Del doble en memoria. `fake-tenant.ts` comparaba con `===`, y la prueba que
+«afirmaba el comportamiento de hoy» afirmaba el del doble, no el del sistema —
+con una cabecera de quince líneas explicando por qué no se arreglaba ahí y qué
+ola haría falta.
+
+**Un doble que se aparta del motor real no da falsos verdes: da conclusiones
+falsas sobre el sistema.** Un falso verde se descubre cuando algo se rompe; esto
+no se rompe nunca, porque describe un mundo que no existe. Llevaba meses en el
+registro como deuda planificada.
+
+### Qué queda
+
+- El doble sabe qué columnas son `citext` —las tres: `customer.email`,
+  `seller.email`, `organizations.slug`— y compara como Postgres en `eq`, `in`,
+  `nin` y `neq`.
+- La prueba del importador afirma ahora lo contrario de lo que afirmaba, en las
+  dos direcciones (archivo en minúsculas contra ficha en mayúsculas, y al revés).
+- **`supabase/tests/citext_cruce.test.sql`**, que es la pieza que faltaba: lo
+  comprueba contra Postgres, con la forma EXACTA que usa el importador —un `in`
+  por lotes, no un `=`— y afirma además que la columna sigue siendo `citext`. Si
+  alguien la pasa a `text`, el fallo se vuelve real y esto lo dice.
+- Y una guarda que compara la lista del doble con lo que declaran las
+  migraciones: una `citext` nueva que no entre en la lista devolvería el doble a
+  `===` para esa columna, en silencio, que es exactamente como se coló ésta.
+
+### La prueba nueva cazó mi propio descuido al escribirla
+
+Conté las columnas `citext` del catálogo y me salieron **cinco**: `pg_class`
+incluye los ÍNDICES, y un índice sobre una columna `citext` tiene a su vez una
+columna `citext`. Sin `relkind = 'r'` hay dos fantasmas. La prueba falló en su
+primera ejecución diciendo exactamente eso.
+
+**Mutación: 6 de 6**, incluida la que importa de verdad — pasar
+`customer.email` a `text` en 0004 pone `db-test` en rojo.
+
+`tsc`, `eslint`, **4186/4186**, `db-test` y `build` en verde.
+
+---
+
+## Las acciones de bitácora que salían con su nombre técnico: eran 17, no 40
+
+`src/lib/bitacora.ts`, `src/lib/ui-contracts.test.ts`.
+
+### El pendiente, y la cifra que estaba mal
+
+De la ola 9.14 quedó apuntado:
+
+> **Lo que esa guarda SIGUE sin ver, y está medido:** cinco sitios componen la
+> acción en tiempo de ejecución […] Son unas cuarenta acciones más, ninguna
+> traducida. Enumerarlas exige escribir las cuarenta etiquetas y es trabajo
+> aparte: queda apuntado, no hecho.
+
+Enumeradas: **diecisiete**. Ese «unas cuarenta» se escribió sin contarlas, que
+es lo que le pasa a una deuda anotada a ojo — y el tamaño supuesto fue parte de
+por qué se aplazó.
+
+Y hay una corrección dentro de la corrección: de los cinco sitios, uno ya estaba
+traducido (`quote_accepted | rejected | negotiating`, desde antes).
+
+### Lo que se veía en el papel
+
+Las diecisiete salían en la auditoría con su nombre técnico. No son todas
+iguales de caras: **siete son de comisiones** —`commissions_approved`,
+`commissions_held`, `commissions_disputed`…— y ésas son las que alguien lee
+cuando discute su paga. Las otras diez: tres de nómina, tres de periodo contable
+y cuatro de saldo regalo.
+
+### La guarda deriva los valores del código, no de una lista
+
+Escribir las diecisiete etiquetas es media hora; lo que evita que vuelva a
+pasar es de dónde salen los valores. Cada familia se deriva de quien la produce:
+
+| familia | de dónde salen los valores |
+| --- | --- |
+| `commissions_` | la unión `CommissionStatus` de `types.ts` |
+| `quote_` | el `Set DECISIONS` de la propia ruta |
+| `payroll_` | los `next` de `payrollTransition` (`hr.ts`) |
+| `period_` | los `next` de `periodTransition` (`financials.ts`) |
+| saldo regalo | los `auditAction` de las cuatro rutas |
+
+Añadir un estado de comisión, o un destino de nómina, hace aparecer la acción
+nueva sola y la guarda pide su traducción. Comprobado mutando las dos cosas.
+
+La guarda comprueba además que la ruta **siga componiendo** la acción: si deja
+de hacerlo, estaría exigiendo traducciones de acciones que ya no existen — que
+es la otra forma de que una guarda envejezca sin avisar.
+
+**Mutación: 6 de 6**, incluidas las dos que importan —un estado nuevo sin
+traducir, y romper el derivador junto con borrar una etiqueta—.
+
+`tsc`, `eslint`, **4191/4191**, `db-test` y `build` en verde.

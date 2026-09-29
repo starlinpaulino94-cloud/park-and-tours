@@ -155,6 +155,64 @@ describe("las copias para el editor de Supabase", () => {
     expect(problemas, "copias que el editor de Supabase no podría correr").toEqual([]);
   });
 
+  it("registran los MISMOS disparadores que su migración", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * LA REGLA DE ARRIBA NO CUBRE UNA MIGRACIÓN SIN FUNCIÓN
+     *
+     * `cuerpoDeFuncion` compara el cuerpo entre `$$`, así que una migración que
+     * solo registra disparadores —0102— pasaba por la regla sin que nada
+     * comparase nada: `continue`. Y una copia de disparadores es exactamente
+     * igual de peligrosa cuando envejece, porque el disparador se identifica
+     * por NOMBRE y pegar uno con menos columnas QUITA las que ya había.
+     *
+     * Se comparan las sentencias `create trigger … enforce_same_tenant_refs(…)`
+     * de las dos partes, normalizadas: mismo conjunto, en los dos sentidos.
+     */
+    const disparadores = (sql: string) => {
+      const re =
+        /create\s+trigger\s+\w+\s+before\s+insert\s+or\s+update\s+of\s+[^;]*?\s+on\s+\w+\s+for\s+each\s+row\s+execute\s+function\s+app\.enforce_same_tenant_refs\s*\([^;]*?\)\s*;/gi;
+      return new Set(
+        [...sinComentarios(sql).matchAll(re)].map((m) => m[0].replace(/\s+/g, " ").trim().toLowerCase())
+      );
+    };
+
+    const partes = readdirSync(EDITOR).filter((f) => f.endsWith(".sql"));
+    const divergentes: string[] = [];
+    const encontrados = new Map<string, number>();
+    for (const n of new Set(partes.filter((f) => /^\d{4}_/.test(f)).map((f) => f.slice(0, 4)))) {
+      const migracion = readdirSync(MIGRACIONES).find((f) => f.startsWith(`${n}_`))!;
+      const enLaMigracion = disparadores(readFileSync(`${MIGRACIONES}/${migracion}`, "utf8"));
+      if (enLaMigracion.size === 0) continue; // esa migración no registra disparadores
+
+      const enElEditor = disparadores(
+        partes.filter((f) => f.startsWith(`${n}_`))
+          .map((f) => readFileSync(`${EDITOR}/${f}`, "utf8")).join("\n")
+      );
+      for (const d of enLaMigracion) {
+        if (!enElEditor.has(d)) divergentes.push(`${n}: la copia no trae · ${d.slice(0, 90)}…`);
+      }
+      for (const d of enElEditor) {
+        if (!enLaMigracion.has(d)) divergentes.push(`${n}: la copia trae de más · ${d.slice(0, 90)}…`);
+      }
+      // Y que se hayan encontrado: una expresión regular rota daría dos
+      // conjuntos vacíos y esta comprobación pasaría por no mirar nada.
+      expect(enElEditor.size, `${n}: la copia no registra ningún disparador`).toBe(enLaMigracion.size);
+      encontrados.set(n, enLaMigracion.size);
+    }
+    expect(divergentes, "copias de disparadores que se quedaron atrás").toEqual([]);
+    /**
+     * Y QUE SE HAYA MIRADO ALGO.
+     *
+     * Con la expresión regular rota los dos conjuntos salen vacíos, el `continue`
+     * de arriba se lleva la migración entera y la comprobación pasa sin comparar
+     * nada. Sobrevivió a la mutación. 0102 registra 25 disparadores y su copia
+     * tiene que traer los 25: si ese número deja de salir, lo que falló es la
+     * guarda, no la copia.
+     */
+    expect(encontrados.get("0102"), "0102 dejó de comparar sus 25 disparadores").toBe(25);
+  });
+
   it("traen una verificación que se LEE, no un bloque mudo", () => {
     /**
      * Un bloque de comprobación que no falla deja «Success. No rows returned»,

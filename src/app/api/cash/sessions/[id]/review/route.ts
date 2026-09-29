@@ -3,6 +3,7 @@ import { requireTenantWrite, requireAtLeast, tenantDelete, tenantFindOne, tenant
 import { ok, fail, readJson } from "@/lib/api-response";
 import { recalcCashSession } from "@/lib/cash";
 import { postCashDifference } from "@/lib/ledger-events";
+import { supabaseService } from "@/lib/supabase/service";
 import { writeAudit } from "@/lib/audit";
 import type { CashSession } from "@/lib/types";
 import { assertSameOriginMutation } from "@/lib/csrf";
@@ -96,10 +97,46 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     const approvedAt = new Date().toISOString();
+
+    /**
+     * SE RECLAMA LA APROBACIÓN ANTES DE ASENTAR (0101).
+     *
+     * ────────────────────────────────────────────────────────────────────────
+     * ESTA NO TENÍA NINGUNA DEFENSA
+     *
+     * Leía `status === "pending_approval"`, escribía `reconciled` y asentaba la
+     * diferencia en el libro diario. Lo único que impedía el asiento doble era
+     * `alreadyPosted`, que es una LECTURA: dos aprobaciones a la vez preguntan
+     * las dos, no encuentran nada las dos, y asientan las dos.
+     *
+     * Medido con las dos defensas de 0101 fuera: el mismo faltante de caja se
+     * asentó **veinte veces**. Un descuadre contabilizado dos veces no lo nota
+     * nadie hasta que no cuadra el balance del mes.
+     *
+     * El reclamo va PRIMERO por eso: quien pierde la carrera sale de aquí sin
+     * tocar el libro. Detrás queda el índice único de 0101 por si algún día
+     * alguien mueve el asiento a otro sitio.
+     */
+    const { data: reclamado, error: errorDelReclamo } = await supabaseService()
+      .rpc("claim_cash_session_status", {
+        p_session: id,
+        p_from: "pending_approval",
+        p_to: "reconciled",
+        p_at: approvedAt,
+        p_by: ctx.userId,
+      });
+    if (errorDelReclamo) {
+      throw Object.assign(
+        new Error(`No se pudo aprobar el arqueo: ${errorDelReclamo.message}`),
+        { status: 409 }
+      );
+    }
+    if (reclamado !== true) {
+      throw Object.assign(new Error("Este arqueo ya se revisó"), { status: 409 });
+    }
+
+    // El estado, la fecha y la firma los escribió el reclamo.
     await tenantUpdate(ctx.companyId, "cash_session", id, {
-      status: "reconciled",
-      approved_by: ctx.userId,
-      approved_at: approvedAt,
       approval_notes: body.approval_notes,
       difference_reason: body.difference_reason || session.difference_reason,
     });

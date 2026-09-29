@@ -8,6 +8,8 @@ import { RESOURCES } from "@/lib/resources";
 import { NOTIFY_EVENTS } from "@/lib/notify";
 import { CONFLICT_FIELDS } from "@/lib/choque-de-recurso";
 import { CAMPOS_QUE_ASIGNA_EL_PROVEEDOR } from "@/lib/asignacion-proveedor";
+import { COLUMNAS_SIN_MAYUSCULAS } from "@/test/fake-tenant";
+import { ACCION } from "@/lib/bitacora";
 
 /**
  * Contratos de código fuente.
@@ -62,6 +64,22 @@ const existe = (rel: string) => existsSync(path.join(ROOT, rel));
 const readSql = (rel: string) =>
   read(rel)
     .replace(/'(?:[^']|'')*'|--[^\n]*|\/\*[\s\S]*?\*\//g, (m) => (m.startsWith("'") ? m : ""));
+/**
+ * UN GUION DE SHELL SIN SUS COMENTARIOS.
+ *
+ * Tercera vez que una guarda se cumple —o se incumple— con lo que un COMENTARIO
+ * menciona en vez de con lo que el código hace, y tercer lenguaje: `readCodigo`
+ * quita los de TypeScript, `readSql` los de SQL, y faltaba este. La guarda del
+ * simulacro prohíbe la forma cerrada `|REVISAR|` y saltó contra el comentario
+ * que explica POR QUÉ está prohibida.
+ *
+ * Las cadenas entre comillas se conservan: un `#` dentro de una cadena no abre
+ * un comentario, y en este repositorio hay cadenas con almohadilla.
+ */
+const readSh = (rel: string) =>
+  read(rel).replace(/'[^']*'|"(?:[^"\\]|\\.)*"|#[^\n]*/g, (m) =>
+    (m.startsWith("'") || m.startsWith('"') ? m : ""));
+
 /** El fichero sin comentarios: una guarda no puede darse por cumplida por lo
  *  que un comentario MENCIONA, solo por lo que el código HACE. Varios bloques
  *  declaran el suyo; este es el de los que no. */
@@ -3986,12 +4004,45 @@ describe("distribución: el cupo del socio acota de verdad", () => {
     expect(src.indexOf("await assertCapacity(")).toBeLessThan(src.indexOf("await assertAllotment("));
   });
 
-  it("el consumo se apunta DESPUÉS de que la venta exista", () => {
-    // Apuntarlo antes y que la saga se compensara dejaría el cupo consumido por
-    // una venta que no llegó a haber.
+  it("el cupo se RECLAMA antes de escribir la venta, y se suelta si se cae", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * ESTA GUARDA DECÍA LO CONTRARIO, Y LO QUE DECÍA COSTABA EL CONTRATO
+     *
+     * «El consumo se apunta DESPUÉS de que la venta exista», porque «apuntarlo
+     * antes y que la saga se compensara dejaría el cupo consumido por una venta
+     * que no llegó a haber». El razonamiento era bueno; la consecuencia, no.
+     *
+     * `consumeAllotment` escribía `seats_used = <lo que se leyó al EMPEZAR> +
+     * pax` —un valor absoluto sobre una lectura vieja— con toda la venta de por
+     * medio. Medido: 30 ventas simultáneas de una plaza contra un cupo
+     * garantizado de 10 dejaban el contador en **2**, y las 30 pasaban. El
+     * socio vendía treinta plazas de un contrato de diez y la matriz enseñaba
+     * «2 usadas, 8 libres».
+     *
+     * La objeción original no se ignora: se resuelve del otro lado. Se reclama
+     * antes —la base incrementa si cabe, en una sentencia— y lo reclamado se
+     * SUELTA en la compensación. Misma pareja que la retención de plaza (0099).
+     */
     const src = read("src/lib/booking-service.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
-    expect(src.indexOf("await consumeAllotment(")).toBeGreaterThan(src.indexOf("const aviso"));
-    expect(src.indexOf("await consumeAllotment(")).toBeLessThan(src.lastIndexOf("return { order:"));
+
+    const reclama = src.indexOf("await consumeAllotment(");
+    const escribeLaOrden = src.indexOf("await tenantCreate<Order>");
+    expect(reclama, "ya no se reclama el cupo").toBeGreaterThan(-1);
+    expect(escribeLaOrden).toBeGreaterThan(-1);
+    expect(reclama, "reclama el cupo cuando la venta ya está escrita")
+      .toBeLessThan(escribeLaOrden);
+
+    // Y lo reclamado se apunta para poder devolverlo: una plaza de cupo que se
+    // queda quitada por una venta que se cayó no caduca sola como las de la
+    // salida — se queda quitada para siempre.
+    expect(src).toMatch(/cupoReclamado\.set\(/);
+    const suelta = src.indexOf("for (const [allotmentId, seats] of cupoReclamado)");
+    expect(suelta, "lo reclamado no se suelta en la compensación").toBeGreaterThan(-1);
+    expect(suelta, "lo suelta fuera del camino de fallo")
+      .toBeGreaterThan(src.indexOf("await compensateOrder(") - 4000);
+    expect(src.slice(suelta), "no llama a la devolución")
+      .toMatch(/releaseBookingAllotment\(companyId, \{ allotment: allotmentId/);
   });
 
   it("cancelar devuelve las plazas a SU cupo", () => {
@@ -7148,6 +7199,27 @@ describe("el socio que integra por API", () => {
     expect(iCobro, "no se descuenta la venta").toBeGreaterThan(iOrden);
     expect(servicio.slice(iCobro, iCobro + 400), "se cobra la estimación, no el total")
       .toMatch(/importe: totals\.total/);
+    /**
+     * Y AHORA TAMBIÉN: DENTRO DE LA SAGA, ANTES DE PROMOVER (BL-002).
+     *
+     * El cobro estaba después del `catch`, sin envolver, y la función se tragaba
+     * su error devolviendo `null`. Si fallaba, la venta se daba por buena con el
+     * saldo del socio intacto — y no quedaba ni una fila que lo dijera.
+     */
+    /**
+     * La PROMOCIÓN, no cualquier `pending_payment`: la cadena aparece antes en
+     * el estado con el que nace una reserva, y anclar ahí medía otra cosa.
+     * Lo que identifica a la promoción es que escribe los totales y el estado
+     * juntos.
+     */
+    const iPromocion = servicio.search(/\.\.\.totals,\s*\n\s*status: "pending_payment",/);
+    // El `catch` DE LA SAGA, que es el que compensa: hay varios `catch (err)`
+    // en el fichero y el primero no es éste.
+    const iCatch = servicio.indexOf("await compensateOrder(companyId, order._id");
+    expect(iPromocion, "no se encuentra la promoción de la orden").toBeGreaterThan(-1);
+    expect(iCobro, "se cobra después de promover la orden: un fallo ya no compensa")
+      .toBeLessThan(iPromocion);
+    expect(iCobro, "el cobro quedó fuera de la saga").toBeLessThan(iCatch);
   });
 
   it("la cancelación mira el LIBRO, no el contrato de hoy", () => {
@@ -10488,11 +10560,82 @@ describe("el simulacro de restauración prueba algo (DR-001)", () => {
      */
     const src = read(DRILL);
     const controles = src.split("\ncaza ").length - 1;
-    expect(controles, "se quedó sin controles negativos").toBeGreaterThanOrEqual(4);
+    expect(controles, "se quedó sin controles negativos").toBeGreaterThanOrEqual(6);
+    /**
+     * Y se exigen POR FILA las dos que más cuestan, no solo el recuento.
+     *
+     * Con un suelo a secas, quitar un control dejaba el número por encima del
+     * mínimo y la mutación sobrevivía. El recuento dice cuántos hay; no dice si
+     * el que falta es el del contador fiscal.
+     *
+     *  · 11 es el único escenario que una restauración CORRECTA provoca sola: el
+     *    contador de NCF rebobinado, que emite un número fiscal repetido.
+     *  · 7a es la que envejece: la lista de funciones que la aplicación llama.
+     */
+    expect(src, "sin control negativo del contador fiscal rebobinado")
+      .toMatch(/\ncaza 11 /);
+    expect(src, "sin control negativo de una función que la restauración perdió")
+      .toMatch(/\ncaza 7a /);
     expect(src).toMatch(/caza\(\) \{ # <fila esperada>/);
     expect(src).toMatch(/grep -E "\^\$1 ·"/);
     expect(src, "un control dejó de decir qué fila lo tiene que cazar")
       .not.toMatch(/\ncaza "/);
+  });
+
+  it("la comprobación no puede envejecer: conoce TODAS las funciones", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * POR QUÉ HACE FALTA ESTA GUARDA
+     *
+     * La fila 7 nombraba TRES funciones —la retención, el monedero y el cupo de
+     * la salida— y se escribió cuando esas eran todas. Hoy la aplicación llama a
+     * catorce. Una restauración que perdiera `claim_allotment_seats`,
+     * `claim_cash_session_status` o `next_ncf` **pasaba la comprobación con un
+     * OK**, y nadie se enteraba hasta la primera venta.
+     *
+     * Una comprobación de recuperación que envejece es peor que no tenerla: da
+     * un verde el día que hay que confiar en ella.
+     *
+     * La lista sigue explícita a propósito —así el rojo dice QUÉ falta— y lo que
+     * la mantiene al día es esto: se saca de las migraciones y se compara.
+     */
+    const migraciones = readdirSync(path.join(ROOT, "supabase/migrations"))
+      .filter((f) => f.endsWith(".sql"))
+      .map((f) => readFileSync(path.join(ROOT, "supabase/migrations", f), "utf8"))
+      .join("\n");
+    const declaradas = new Set(
+      [...migraciones.matchAll(/create or replace function public\.(\w+)/g)].map((m) => m[1])
+    );
+    /**
+     * Se mira la LISTA de la fila 7a, no el fichero entero.
+     *
+     * La primera versión buscaba el nombre en cualquier parte del SQL y
+     * sobrevivió a una mutación: quitar la función de la lista que de verdad
+     * comprueba la existencia dejaba el nombre mencionado en otra fila, y la
+     * guarda lo daba por cubierto. Un nombre en un comentario no comprueba nada.
+     */
+    const verificacion = read("supabase/verify/restauracion.sql");
+    const lista = /unnest\(array\[([\s\S]*?)\]\)/.exec(verificacion)?.[1] ?? "";
+    expect(lista, "la fila 7a ya no lleva una lista de funciones").not.toBe("");
+    const comprobadas = new Set([...lista.matchAll(/'(\w+)'/g)].map((m) => m[1]));
+    const faltan = [...declaradas].filter((f) => !comprobadas.has(f)).sort();
+    expect(faltan, "la comprobación de restauración se quedó atrás").toEqual([]);
+  });
+
+  it("y el simulacro detecta un REVISAR que se explica", () => {
+    /**
+     * La detección buscaba `|REVISAR|`, con la barra de cierre. Una fila que
+     * explicara su fallo —«REVISAR — falta claim_allotment_seats»— no encajaba,
+     * y el simulacro **daba verde con un rojo en la mesa**. Pasó en cuanto las
+     * filas nuevas empezaron a decir qué faltaba, que es justo lo que hace útil
+     * un rojo.
+     */
+    // Sin comentarios: esta guarda saltó contra la explicación de sí misma.
+    const src = readSh(DRILL);
+    expect(src, "vuelve a exigir la barra de cierre y se le escapan los rojos que explican")
+      .not.toMatch(/\|REVISAR\|/);
+    expect(src).toMatch(/grep -c '\|REVISAR'/);
+    expect(src).toMatch(/grep -q '\|REVISAR'/);
   });
 
   it("el manual dice lo que NO está en la copia", () => {
@@ -10980,41 +11123,57 @@ describe("referencias entre inquilinos: las de dinero, cubiertas", () => {
     expect(read(MIG)).toMatch(/No se puede validar el inquilino de %/);
   });
 
-  it("el hueco de DB-001 está medido y con techo", () => {
+  it("el hueco de DB-001 está medido, y medido en las dos direcciones", () => {
     /**
      * DB-001 llevaba abierto desde la primera auditoría sin un número al lado.
-     * La prueba SQL lo cuenta contra el esquema real y guarda el resultado como
-     * techo: puede bajar, no subir. Así una clave foránea nueva entre tablas de
-     * inquilino sin comprobación se ve antes de llegar a producción.
+     * La prueba SQL lo cuenta contra el esquema real y compara con lo que dice
+     * haber medido.
+     *
+     * ERA UN TECHO Y AHORA ES UN NÚMERO EXACTO, y la diferencia no es de
+     * estilo: 0102 perdió tres comprobaciones de `pickup` —sustituyó por nombre
+     * el disparador que 0018 ya tenía— y el techo de 141 no habría dicho nada,
+     * porque 108 cabe debajo de 141. Lo dijo el número exacto.
      */
     const sql = read(PRUEBA);
-    expect(sql).toMatch(/if sin_cubrir > TECHO then/);
+    expect(sql).toMatch(/if sin_cubrir > MEDIDO then/);
+    expect(sql, "el hueco volvió a ser un tope: bajar de lo medido ya no se ve")
+      .toMatch(/if sin_cubrir < MEDIDO then/);
     // Y en las tablas de dinero el hueco tiene que ser CERO, no pequeño: se
     // comprueba la CONDICIÓN, no solo que el mensaje siga escrito. Una mutación
     // que dejaba el texto y apagaba el `if` sobrevivió a la primera versión.
     expect(sql).toMatch(/if en_dinero is not null then/);
     expect(sql).toMatch(/SIGUEN sin cubrir referencias de dinero\/entrada\/descargo/);
+    // Y en las referencias a una PERSONA, también cero (0102).
+    expect(sql).toMatch(/if en_personas is not null then/);
+    expect(sql, "la familia de personas dejó de contarse: recortarla da cero sola")
+      .toMatch(/if cuantas_personas <> PERSONAS then/);
   });
 
-  it("el techo del hueco no se puede subir sin que se vea", () => {
+  it("el número del hueco no se puede mover sin que se vea", () => {
     /**
      * UN UMBRAL QUE VIVE SOLO EN SU PROPIA PRUEBA NO ES UN UMBRAL.
      *
      * La prueba SQL compara contra una constante que ella misma declara, así que
      * subirla de 141 a 300 hacía pasar todo sin arreglar nada — y eso sobrevivió
      * a la mutación. No se puede hacer inmutable un número escrito en un
-     * fichero; lo que sí se puede es exigir que subirlo pase por DOS ficheros,
+     * fichero; lo que sí se puede es exigir que moverlo pase por DOS ficheros,
      * de modo que el diff lo cuente en voz alta en vez de esconderlo en un
      * dígito.
      *
-     * Este valor solo baja. Si alguien cubre más referencias, se baja aquí y
-     * allí, y el diff dice exactamente cuántas se cubrieron.
+     * 141 → 105 con 0102. Se comprueba la IGUALDAD y no un tope: con un tope,
+     * cubrir de más y no bajar el número pasa desapercibido, y entonces el
+     * número deja de medir nada.
      */
-    const TECHO_ACORDADO = 141;
-    const m = read(PRUEBA).match(/TECHO constant integer := (\d+);/);
-    expect(m, "la prueba SQL dejó de declarar su techo").not.toBeNull();
-    expect(Number(m![1]), "el techo del hueco subió: cúbrelas o explica por qué")
-      .toBeLessThanOrEqual(TECHO_ACORDADO);
+    const MEDIDO_ACORDADO = 105;
+    const m = read(PRUEBA).match(/MEDIDO constant integer := (\d+);/);
+    expect(m, "la prueba SQL dejó de declarar lo que midió").not.toBeNull();
+    expect(Number(m![1]), "el hueco de DB-001 cambió: cúbrelas, o baja el número en los dos ficheros")
+      .toBe(MEDIDO_ACORDADO);
+
+    const p = read(PRUEBA).match(/PERSONAS constant integer := (\d+);/);
+    expect(p, "la prueba SQL dejó de declarar cuántas referencias a una persona hay").not.toBeNull();
+    expect(Number(p![1]), "cambió el número de referencias a una persona: revisa que todas estén cubiertas")
+      .toBe(100);
   });
 
   it("la prueba SQL comprueba que la caja del socio VUELVE a funcionar", () => {
@@ -11639,5 +11798,808 @@ describe("lo que se transfiere y lo que dice la pantalla", () => {
     // el disparador de 0059 lo rechaza de todas formas.
     expect(readCodigo("src/lib/commission-adjust-service.ts"))
       .toMatch(/_filter: \{ commission: commissionId, settlement: null \}/);
+  });
+});
+
+/**
+ * LA CAJA: TRES COMPROBAR-Y-ACTUAR SOBRE DINERO (0101, dimensión F).
+ *
+ * Medido: veinte aperturas simultáneas de la misma caja dejaban **18 turnos
+ * abiertos sobre el mismo cajón**, y aprobar el descuadre —que no tenía
+ * defensa ninguna— asentó el mismo faltante **veinte veces** en el libro
+ * diario.
+ */
+describe("la caja no se abre, cierra ni aprueba dos veces", () => {
+  const ABRIR = "src/app/api/cash/sessions/route.ts";
+  const CERRAR = "src/app/api/cash/sessions/[id]/close/route.ts";
+  const REVISAR = "src/app/api/cash/sessions/[id]/review/route.ts";
+
+  it("abrir dos veces lo impide el candado, y se dice con el mensaje bueno", () => {
+    const src = readCodigo(ABRIR);
+    /**
+     * La lectura de «¿ya hay turno abierto?» se queda —da el mensaje bueno y
+     * ahorra el trabajo de en medio— pero no es la defensa: entre ella y el
+     * `insert` cabe todo el camino. Lo que defiende es el índice único parcial.
+     */
+    expect(src, "no traduce el candado de la base al mensaje de siempre")
+      .toMatch(/cash_session_un_turno_abierto_idx/);
+    expect(src).toMatch(/Esta caja ya tiene una sesión abierta/);
+  });
+
+  it("cerrar RECLAMA la transición antes de escribir nada", () => {
+    const src = readCodigo(CERRAR);
+    const reclamo = src.indexOf('p_from: "open"');
+    const conteo = src.indexOf('tenantCreate(ctx.companyId, "cash_count"');
+    const movimiento = src.indexOf('movement_type: "closing"');
+
+    expect(reclamo, "no reclama la transición").toBeGreaterThan(-1);
+    expect(conteo).toBeGreaterThan(-1);
+    expect(reclamo, "escribe el conteo antes de reclamar el cierre").toBeLessThan(conteo);
+    expect(reclamo, "escribe el movimiento de cierre antes de reclamar").toBeLessThan(movimiento);
+    expect(src).toMatch(/claim_cash_session_status/);
+  });
+
+  it("y no vuelve a escribir el estado por su cuenta", () => {
+    /**
+     * El estado, la fecha y la firma los escribe el reclamo. Repetirlos en el
+     * `tenantUpdate` daría dos sitios donde se decide cuándo se cerró un turno,
+     * y el día que se separen no hay forma de saber cuál manda.
+     */
+    const src = readCodigo(CERRAR);
+    const patch = src.slice(src.indexOf('tenantUpdate(ctx.companyId, "cash_session", id, {'));
+    const cuerpo = patch.slice(0, patch.indexOf("});"));
+    expect(cuerpo, "el estado se escribe en dos sitios").not.toMatch(/status:/);
+    expect(cuerpo, "la fecha de cierre se escribe en dos sitios").not.toMatch(/closed_at:/);
+  });
+
+  it("aprobar RECLAMA antes de asentar en el libro", () => {
+    const src = readCodigo(REVISAR);
+    const reclamo = src.indexOf('p_from: "pending_approval"');
+    const asiento = src.indexOf("postCashDifference(ctx.companyId");
+
+    expect(reclamo, "no reclama la aprobación").toBeGreaterThan(-1);
+    expect(asiento).toBeGreaterThan(-1);
+    expect(reclamo, "asienta el descuadre antes de reclamar la aprobación")
+      .toBeLessThan(asiento);
+  });
+
+  it("el estado de PARTIDA viaja explícito en las dos", () => {
+    // Sin él, aprobar un turno que nadie cerró sería posible: la transición
+    // dejaría de ser un paso y pasaría a ser una escritura.
+    expect(readCodigo(CERRAR)).toMatch(/p_from: "open"/);
+    expect(readCodigo(REVISAR)).toMatch(/p_from: "pending_approval"/);
+  });
+
+  it("y ningún comentario SQL del banco de pruebas lleva comillas invertidas", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * ESTA GUARDA NACE DE UN FALLO MÍO
+     *
+     * Las carreras se lanzan con `psql -c "…"`, una cadena entre DOBLES
+     * comillas. Bash ejecuta las comillas invertidas que haya dentro antes de
+     * que psql vea nada, así que un comentario SQL que nombrara un índice entre
+     * comillas invertidas —como se escribe en todo este repositorio— acababa
+     * intentando ejecutar ese nombre como si fuera un comando.
+     *
+     * Salió por la salida de error («command not found») y las pruebas seguían
+     * en verde: el SQL que llegaba a la base estaba mutilado justo en el trozo
+     * que ese comentario explicaba. Un banco de pruebas que se estropea en
+     * silencio mide otra cosa y lo dice con la misma cara.
+     *
+     * En los comentarios de bash (`#`) no pasa, y ahí se dejan.
+     */
+    const lineas = read("scripts/db-test.sh").split("\n");
+    const malas = lineas
+      .map((linea, i) => ({ linea, n: i + 1 }))
+      .filter(({ linea }) => /^\s*--/.test(linea) && linea.includes("`"))
+      .map(({ n, linea }) => `${n}: ${linea.trim()}`);
+    expect(malas, "bash ejecutará lo que haya entre comillas invertidas").toEqual([]);
+  });
+
+  it("y las tres carreras corren en CI, no en un documento", () => {
+    const sh = read("scripts/db-test.sh");
+    expect(sh).toMatch(/aperturas simultáneas/);
+    expect(sh).toMatch(/cierres simultáneos/);
+    expect(sh).toMatch(/aprobaciones simultáneas/);
+    /**
+     * Y la carrera del cierre se mide sobre el MOVIMIENTO, no sobre el conteo:
+     * el conteo lo protege `cash_count_unique_idx` desde 0038 por una razón de
+     * forma, así que medirlo ahí mediría ese índice y no la transición.
+     */
+    expect(sh, "la carrera del cierre mide el conteo, que ya tenía índice")
+      .toMatch(/movement_type = 'closing'/);
+  });
+});
+
+/**
+ * EL RECORRIDO DE LA VENTA, SUJETO DESDE FUERA (T-001).
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ ESTA GUARDA EXISTE, DICHO SIN ADORNOS
+ *
+ * `tests/e2e/venta-completa.spec.ts` **no se ha ejecutado nunca**. El entorno
+ * donde se escribió no tiene demonio de Docker, y sin él no hay pila de Supabase
+ * —ni autenticación ni PostgREST—, así que no hay contra qué correrla. Corre en
+ * el CI, que sí la levanta.
+ *
+ * Una prueba de navegador que nadie ha visto pasar falla, cuando falla, por la
+ * razón más tonta: un botón que ya no se llama así. Eso sí se puede comprobar
+ * desde aquí, y además sigue comprobándose después — que es lo que de verdad
+ * hace falta, porque el día que alguien reescriba el botón el E2E se pondrá rojo
+ * en el CI sin decir por qué, y esto lo dice en la compilación.
+ */
+describe("lo que busca el E2E de la venta existe en la pantalla", () => {
+  const SPEC = "tests/e2e/venta-completa.spec.ts";
+  /** Qué pantallas conduce el recorrido. Los textos tienen que salir de éstas. */
+  const PANTALLAS = [
+    "src/app/dashboard/pos/page.tsx",
+    "src/app/dashboard/reservas/page.tsx",
+  ];
+
+  it("cada texto que la prueba busca sale de una de las pantallas que conduce", () => {
+    const spec = read(SPEC);
+    const pantallas = PANTALLAS.map((p) => read(p)).join("\n");
+
+    const literales = new Set<string>();
+    const patrones = [
+      /getByRole\(\s*"button",\s*\{\s*name:\s*"([^"]+)"/g,
+      /getByPlaceholder\(\s*"([^"]+)"/g,
+      /getByText\(\s*"([^"]+)"/g,
+      /hasText:\s*"([^"]+)"/g,
+      // Y los que van por expresión regular, que son los que más se escapan:
+      // `/Confirmar venta/` no se parece a una cadena y nadie lo busca al
+      // renombrar el botón.
+      /getByRole\(\s*"button",\s*\{\s*name:\s*\/([^/\\]+)\//g,
+    ];
+    for (const patron of patrones) {
+      for (const m of spec.matchAll(patron)) literales.add(m[1]);
+    }
+
+    expect(literales.size, "la prueba dejó de buscar textos: ¿sigue conduciendo la pantalla?")
+      .toBeGreaterThanOrEqual(6);
+
+    const huerfanos = [...literales].filter((t) => !pantallas.includes(t)).sort();
+    expect(huerfanos, `${SPEC} busca textos que ya no están en ${PANTALLAS.join(" ni ")}`)
+      .toEqual([]);
+  });
+
+  it("y la prueba afirma sobre lo ESCRITO, no sobre lo que pinta la pantalla", () => {
+    /**
+     * Una pantalla puede decir «cobrado» sin haber escrito nada, y ahí el verde
+     * sería mentira. Cada paso se hace con el ratón y se comprueba contra la
+     * API con la misma sesión: lo que se afirma es lo que quedó en la base.
+     */
+    const spec = readCodigo(SPEC);
+    expect(spec, "no comprueba la orden contra la API").toMatch(/\/api\/erp\/order/);
+    expect(spec, "no comprueba la reserva contra la API").toMatch(/\/api\/erp\/booking/);
+    // Las tres afirmaciones que son el recorrido entero.
+    // `[\s\S]` y no la bandera `s`: el objetivo de compilación de este
+    // repositorio es anterior a es2018 y `tsc` la rechaza.
+    expect(spec, "no comprueba que el cobro salde la orden").toMatch(/balance[\s\S]*?\)\.toBe\(0\)/);
+    expect(spec, "no comprueba que vender TOME la plaza").toMatch(/toBeLessThan\(libresAntes\)/);
+    expect(spec, "no comprueba que cancelar DEVUELVA la plaza").toMatch(/\.toBe\(libresAntes\)/);
+  });
+
+  it("y el sembrador le da un producto con precio: vender cero no prueba nada", () => {
+    // Con `base_price` sin poner, la venta entera cuesta 0 y «cobrar» deja el
+    // saldo en 0 hiciera lo que hiciera el cobro. El verde sería vacío.
+    const setup = readCodigo("tests/e2e/global-setup.ts");
+    expect(setup).toMatch(/export const PRECIO_EXCURSION_E2E = \d+/);
+    expect(setup, "el precio no se escribe en el producto").toMatch(/base_price: PRECIO_EXCURSION_E2E/);
+    // Y se pone por los DOS caminos: al crear el producto y al reencontrarlo.
+    // Un proyecto de CI que ya corrió tiene el producto viejo, y si el precio
+    // solo se escribiera al crearlo, la prueba pasaría sobre cero.
+    expect(setup, "solo pone el precio al crear el producto, no al reencontrarlo")
+      .toMatch(/\.update\(\{[\s\S]{0,60}base_price: PRECIO_EXCURSION_E2E/);
+
+    /**
+     * UN SOLO PRODUCTO, UN SOLO PRECIO.
+     *
+     * Las dos specs que venden —`venta-completa` y `camino-del-dinero`— usan LA
+     * MISMA excursión. Nacieron en ramas distintas con su propio par de
+     * constantes y el mismo nombre de producto: al fusionarlas, cada arranque
+     * lo sembraba dos veces con precios distintos y la última escritura decidía
+     * cuál de las dos specs fallaba. Un segundo par de constantes vuelve a
+     * abrir eso, y no se nota hasta que corren las dos.
+     */
+    expect(setup, "volvió a haber dos constantes para el mismo producto")
+      .not.toMatch(/export const PRODUCTO_E2E/);
+    const precios = [...setup.matchAll(/export const PRECIO_\w+ =/g)];
+    expect(precios.length, "hay más de un precio declarado para la misma excursión").toBe(1);
+  });
+
+  it("y la salida queda limpia entre ejecuciones", () => {
+    /**
+     * Es la primera spec que ESCRIBE. Si una corrida se cae a mitad, la plaza se
+     * queda cogida; a las cuarenta, el CI empieza a fallar por capacidad y el
+     * fallo no se parece en nada a su causa.
+     */
+    const setup = readCodigo("tests/e2e/global-setup.ts");
+    expect(setup, "no borra las reservas de la salida del E2E")
+      .toMatch(/from\("booking"\)\.delete\(\)\.in\("id", ids\)/);
+    expect(setup, "no devuelve los contadores de la salida a cero")
+      .toMatch(/booked_pax: 0, pending_pax: 0, hold_pax: 0/);
+  });
+});
+
+/**
+ * SIN TRANSACCIONES, EL DESHACER NO PUEDE SER OPCIONAL (BL-002).
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * QUÉ ES BL-002 Y QUÉ SE PUEDE HACER CON ÉL
+ *
+ * «PostgREST no da transacciones multi-sentencia.» Es cierto y no se arregla:
+ * la venta toca dieciséis tablas y reescribirla entera como una función de
+ * base sería cambiar un riesgo conocido por uno nuevo y mayor.
+ *
+ * Lo que sí se puede hacer es que la ausencia de transacción sea IMPOSIBLE DE
+ * OLVIDAR. Cada efecto que la venta produce tiene que tener escrito quién lo
+ * deshace, y este inventario es ese contrato: si mañana alguien añade una
+ * escritura a la saga sin decir qué la deshace, esta prueba se pone roja.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * TRES FORMAS DE DESHACER, Y UNA DE ELLAS NO VALE SOLA
+ *
+ *   · COMPENSACIÓN — el `catch` de la venta. Cubre el fallo que se ATRAPA.
+ *   · BARRIDO — `reconcileStaleDrafts`, desde otro proceso. Cubre el fallo que
+ *     NO se atrapa: el proceso que se muere y nunca ejecuta su `catch`.
+ *   · CADUCIDAD — la retención de plaza (0099), que se suelta sola.
+ *
+ * La compensación sola NO basta, y ese fue el hallazgo: el cupo del socio se
+ * devolvía en el `catch` —con un mapa en memoria— y el barrido no lo devolvía,
+ * porque ese mapa muere con el proceso. Un contador que va de menos no lo
+ * reclama nadie.
+ */
+describe("cada efecto de la venta tiene escrito quién lo deshace", () => {
+  const SERVICIO = "src/lib/booking-service.ts";
+
+  /** Efecto → lo que tiene que aparecer en `compensateOrder` para deshacerlo. */
+  const DESHACE: { efecto: string; enCompensacion: RegExp }[] = [
+    { efecto: "las reservas", enCompensacion: /status: "cancelled"/ },
+    { efecto: "los costes del proveedor", enCompensacion: /cancelBookingCosts\(/ },
+    { efecto: "los contadores de la salida", enCompensacion: /recalculateDeparture\(/ },
+    { efecto: "los vouchers", enCompensacion: /"voucher"/ },
+    { efecto: "las comisiones", enCompensacion: /"commission"/ },
+    { efecto: "las cuentas por cobrar", enCompensacion: /"receivable"/ },
+    // El que faltaba: el barrido cancelaba la reserva y se quedaba con el cupo.
+    { efecto: "el cupo del socio", enCompensacion: /releaseBookingAllotment\(/ },
+    { efecto: "la orden", enCompensacion: /"order", orderId, \{/ },
+  ];
+
+  /** El cuerpo de `compensateOrder`, que es quien corre cuando no hay nadie. */
+  function compensacion(): string {
+    const src = cuerpoDe(SERVICIO);
+    const ini = src.indexOf("export async function compensateOrder(");
+    expect(ini, "ya no existe compensateOrder").toBeGreaterThan(-1);
+    const fin = src.indexOf("\nexport async function", ini + 10);
+    return src.slice(ini, fin > 0 ? fin : undefined);
+  }
+
+  it.each(DESHACE)("$efecto", ({ efecto, enCompensacion }) => {
+    expect(compensacion(), `la compensación no deshace ${efecto}`).toMatch(enCompensacion);
+  });
+
+  it("y lo que se coge en memoria se suelta TAMBIÉN desde el barrido", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * LA TRAMPA, Y POR QUÉ ESTA PRUEBA EXISTE
+     *
+     * El `catch` de la venta suelta la plaza y el cupo desde dos mapas
+     * (`retenidas`, `cupoReclamado`) y el monedero desde una variable. Los tres
+     * viven en la memoria del proceso que vendía. Cuando quien compensa es el
+     * BARRIDO —otro proceso, media hora después— no existe ninguno de los tres.
+     *
+     * Así que cada uno necesita, además, una forma de deshacerse SIN esa
+     * memoria: la plaza caduca sola (0099), el cupo se lee de la propia reserva
+     * (`allotment_seats`), y el monedero queda pendiente —está declarado abajo
+     * como el hueco que sigue abierto, con su tamaño—.
+     */
+    const src = cuerpoDe(SERVICIO);
+    // La plaza: caduca sola, así que el barrido no tiene que hacer nada.
+    expect(src, "la retención dejó de tener caducidad").toMatch(/hold_until/);
+    // El cupo: la reserva guarda de qué contrato salió y cuántas plazas.
+    expect(compensacion(), "la compensación no puede saber qué cupo devolver")
+      .toMatch(/allotment_seats/);
+  });
+
+  it("el barrido de borradores existe y corre desde algún sitio", () => {
+    // Una compensación que solo vive en el `catch` no cubre el caso que de
+    // verdad importa: el proceso que se muere y nunca llega a su `catch`.
+    expect(cuerpoDe(SERVICIO)).toMatch(/export async function reconcileStaleDrafts/);
+    expect(
+      read("src/app/api/cron/reconcile-drafts/route.ts"),
+      "el barrido existe y no lo ejecuta nadie"
+    ).toMatch(/reconcileStaleDrafts\(/);
+  });
+});
+
+describe("DB-001 · un disparador de inquilino no puede encoger", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * EL FALLO QUE ESTA GUARDA CAZA, Y QUE YA OCURRIÓ
+   *
+   * `app.enforce_same_tenant_refs` no se configura por tabla: se configura por
+   * DISPARADOR, y el disparador se identifica por NOMBRE. Todas las migraciones
+   * de este repositorio usan la misma convención —`<tabla>_same_tenant_refs`— y
+   * todas empiezan por `drop trigger if exists`, que es lo correcto para poder
+   * reaplicarlas.
+   *
+   * El efecto secundario es que escribir un `create trigger` nuevo con ese
+   * nombre no AÑADE referencias: las SUSTITUYE. 0102 registró `pickup` con una
+   * sola columna sin ver que 0018 ya lo tenía con tres, y el resultado fue
+   * perder la reserva, el hotel y la ruta a cambio de ganar el proveedor: tres
+   * comprobaciones menos vendidas como una más.
+   *
+   * Se cazó por el techo de `tenant_refs.test.sql`, que en vez de 105 dio 108.
+   * Un número que no cuadra por tres es una pista, no un diagnóstico. Esta
+   * guarda lo dice por su nombre y sin base de datos: la ÚLTIMA definición de
+   * cada disparador tiene que contener todas las columnas de las anteriores.
+   */
+  const MIGRACIONES = "supabase/migrations";
+  type Registro = { fichero: string; nombre: string; tabla: string; deColumnas: string[]; valida: string[] };
+
+  const registros: Registro[] = [];
+  for (const f of readdirSync(path.join(ROOT, MIGRACIONES)).filter((n) => n.endsWith(".sql")).sort()) {
+    const sql = readSql(`${MIGRACIONES}/${f}`);
+    /**
+     * Sin `[^;]` la expresión CRUZA sentencias: lo perezoso de `[\s\S]*?` deja
+     * que un `create trigger` de otra función enganche su nombre con el
+     * `enforce_same_tenant_refs` de la sentencia siguiente. Pasó, y el
+     * resultado fue acusar a `bundle_item_no_nesting` de algo que no hace.
+     */
+    const re =
+      /create\s+trigger\s+(\w+)\s+before\s+insert\s+or\s+update\s+of\s+([^;]*?)\s+on\s+(\w+)\s+for\s+each\s+row\s+execute\s+function\s+app\.enforce_same_tenant_refs\s*\(([^;]*?)\)\s*;/gi;
+    for (const m of sql.matchAll(re)) {
+      // Los argumentos van en pares (columna, tabla padre): las posiciones
+      // pares son las columnas que este disparador valida de verdad.
+      const args = [...m[4].matchAll(/'([^']+)'/g)].map((x) => x[1]);
+      registros.push({
+        fichero: f,
+        nombre: m[1],
+        tabla: m[3],
+        deColumnas: m[2].split(",").map((c) => c.trim()).filter(Boolean),
+        valida: args.filter((_, i) => i % 2 === 0),
+      });
+    }
+  }
+
+  it("se encontraron los disparadores: la expresión no quedó buscando nada", () => {
+    // Sin esto, romper la expresión regular dejaría cero registros y todas las
+    // comprobaciones de abajo pasarían por vacío.
+    expect(registros.length).toBeGreaterThanOrEqual(60);
+    expect(new Set(registros.map((r) => r.nombre)).size).toBeGreaterThanOrEqual(40);
+    expect(registros.some((r) => r.fichero.startsWith("0018"))).toBe(true);
+    expect(registros.some((r) => r.fichero.startsWith("0102"))).toBe(true);
+  });
+
+  it("ninguna migración posterior le quita columnas a un disparador anterior", () => {
+    const porNombre = new Map<string, Registro[]>();
+    for (const r of registros) porNombre.set(r.nombre, [...(porNombre.get(r.nombre) ?? []), r]);
+
+    const perdidas: string[] = [];
+    for (const [nombre, defs] of porNombre) {
+      const ultima = defs[defs.length - 1];
+      const cubre = new Set(ultima.valida);
+      for (const anterior of defs.slice(0, -1)) {
+        for (const col of anterior.valida) {
+          if (!cubre.has(col)) {
+            perdidas.push(`${nombre}: ${anterior.fichero} validaba ${ultima.tabla}.${col} y ${ultima.fichero} lo dejó fuera`);
+          }
+        }
+      }
+    }
+    expect(perdidas, perdidas.join(" | ")).toEqual([]);
+  });
+
+  it("toda columna validada dispara también al actualizarla", () => {
+    /**
+     * `before insert or update of <columnas>` dispara SIEMPRE en el insert, así
+     * que una columna que se valida pero no está en la lista de `of` parece
+     * cubierta y no lo está: el cruce se cuela moviendo una fila ya escrita,
+     * que es lo más fácil de hacer desde la aplicación porque no hay que crear
+     * nada.
+     */
+    const sueltas: string[] = [];
+    for (const r of registros) {
+      for (const col of r.valida) {
+        if (!r.deColumnas.includes(col)) sueltas.push(`${r.fichero} · ${r.nombre}: valida ${col} pero no dispara al actualizarla`);
+      }
+      if (!r.deColumnas.includes("organization_id")) {
+        sueltas.push(`${r.fichero} · ${r.nombre}: no dispara al cambiar organization_id`);
+      }
+    }
+    expect(sueltas, sueltas.join(" | ")).toEqual([]);
+  });
+
+  it("0102 comprueba toda referencia a una persona o a su expediente", () => {
+    /**
+     * El criterio escrito de 0102, contado: 36 referencias en 25 tablas. Si
+     * alguien recorta la migración, el techo de `tenant_refs.test.sql` sube y
+     * esta guarda dice cuántas faltan sin necesidad de base de datos.
+     */
+    const dela0102 = registros.filter((r) => r.fichero.startsWith("0102"));
+    const referencias = dela0102.reduce((n, r) => n + r.valida.length, 0);
+    expect(new Set(dela0102.map((r) => r.tabla)).size, "0102 dejó de cubrir tablas").toBe(25);
+    expect(referencias, "0102 dejó de cubrir referencias").toBe(39);
+
+    // Y las tres que más duelen, por su nombre.
+    const cubre = (tabla: string, col: string) =>
+      dela0102.some((r) => r.tabla === tabla && r.valida.includes(col));
+    // La llave del portal del proveedor: apuntando a otro proveedor, ese
+    // enlace de un solo uso abre el portal de otra empresa.
+    expect(cubre("supplier_response_token", "supplier_id")).toBe(true);
+    // El expediente de una persona colgando de la empresa equivocada.
+    expect(cubre("guest_case", "customer_id")).toBe(true);
+    // Y lo que 0018 ya cubría y 0102 llegó a tirar.
+    expect(cubre("pickup", "booking_id")).toBe(true);
+  });
+});
+
+describe("P-001 · lo que le cuesta al panel cada visita", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * EL EJE QUE PREDICE EL COSTE ES CUÁNTAS VECES SE BARRE `booking`
+   *
+   * Medido con 120.000 reservas de un inquilino y cuatro núcleos: el panel a
+   * 365 días cuesta ~610 ms de CPU y el caudal se planta en ~5,4 llamadas por
+   * segundo —una por núcleo—. No es E/S: subir `work_mem` no lo movió (9.17), y
+   * el derrame a disco tampoco es el cuello. Es trabajo por fila.
+   *
+   * Así que lo que hay que vigilar no son los milisegundos —un tope de
+   * milisegundos en CI es una prueba inestable, y una prueba inestable se acaba
+   * reejecutando hasta que pasa— sino CUÁNTAS VECES se recorre la tabla grande.
+   * Hoy son DOS: la ventana y su comparativa.
+   *
+   * El número está medido en los dos sentidos. Una de las mejoras que se
+   * probaron —acotar la comisión por reserva a la ventana, que baja la vista
+   * por defecto de 141 a 102 ms— añade un TERCER barrido, y a 365 días sube de
+   * 566 a 1.015 ms: un 79% peor. Esa es exactamente la regresión que esta
+   * guarda caza, y la razón de que no se haya aplicado.
+   */
+  const MIG = "supabase/migrations/0096_dashboard_summary_proyeccion.sql";
+  const BARRIDOS = 2;
+  const NOMBRADA = 4;
+
+  it("dashboard_summary recorre `booking` dos veces y no más", () => {
+    /**
+     * DOS NÚMEROS, PORQUE EL TEXTO Y EL PLAN NO DICEN LO MISMO.
+     *
+     * En el texto de la función `booking` aparece CUATRO veces: dos `from` —la
+     * ventana y su comparativa— y dos `left join booking pb on pb.id =
+     * p.booking_id` dentro de las dos CTE de cobros. En el plan solo hay DOS
+     * barridos: esos dos `left join` son por clave primaria y ninguna columna
+     * suya se usa, así que el planificador los ELIMINA enteros.
+     *
+     * Se fijan los dos números porque fallan por cosas distintas: los `from`
+     * suben cuando alguien añade otra CTE sobre la ventana —lineal en su
+     * tamaño—, y el total sube cuando alguien mete un `join booking` nuevo,
+     * que es como entra la regresión que medí y descarté.
+     *
+     * La primera versión de esta guarda solo contaba `from booking`, y esa
+     * mutación —acotar la comisión por reserva con un `join booking b0`—
+     * SOBREVIVIÓ: contaba dos y había tres barridos.
+     */
+    const sql = readSql(MIG);
+    const ventanas = [...sql.matchAll(/\bfrom\s+booking\s+\w+/g)].length;
+    const total = [...sql.matchAll(/\b(?:from|join)\s+booking\s+\w+/g)].length;
+
+    expect(ventanas, `el panel abre ${ventanas} CTE sobre booking (medido: ${BARRIDOS}). ` +
+      "Cada una recorre la ventana entera")
+      .toBe(BARRIDOS);
+    expect(total, `booking se nombra ${total} veces (medido: ${NOMBRADA}). ` +
+      "Un `join booking` de más midió +79% a 365 días: 566 → 1.015 ms")
+      .toBe(NOMBRADA);
+  });
+
+  it("y el banco de medición sigue existiendo y siendo ejecutable", () => {
+    /**
+     * P-001 decía «sin pruebas de carga con concurrencia» y lo siguió diciendo
+     * después de medirse, porque la siembra con la que se midió vivía en un
+     * terminal. Una medición que no se puede repetir es una anécdota.
+     */
+    expect(existe("scripts/perf-panel.sh"), "desapareció el banco de medición").toBe(true);
+    expect(existe("supabase/perf/volumen.sql"), "desapareció la siembra de volumen").toBe(true);
+
+    const banco = readSh("scripts/perf-panel.sh");
+    // Las tres cosas que mide, por su nombre: si alguien recorta el banco a una
+    // sola, P-001 vuelve a quedarse sin la mitad que le faltaba.
+    expect(banco, "el banco dejó de medir con varios clientes a la vez").toMatch(/CLIENTES/);
+    expect(banco, "el banco dejó de medir si se puede vender mientras tanto")
+      .toMatch(/reserve_departure_capacity/);
+    expect(banco, "el banco dejó de medir la ventana por defecto y la del año")
+      .toMatch(/for v in 30 365/);
+
+    // Y la siembra tiene que poder correr pequeña, o `db-test` no podría
+    // comprobar que sigue encajando con el esquema.
+    expect(readSql("supabase/perf/volumen.sql"), "la siembra dejó de admitir escala")
+      .toMatch(/perf\.escala/);
+  });
+});
+
+describe("la lista de SQL pendiente no puede envejecer", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * UNA LISTA DE NOMBRES DE FICHERO CADUCA SOLA
+   *
+   * `docs/operaciones/SQL_PENDIENTE.md` es lo que alguien sigue mientras pega
+   * SQL contra su base de producción, paso a paso. Es una lista de 45 nombres
+   * de fichero, y eso envejece en cuanto se añade una migración: la lista deja
+   * de mencionarla, nadie la pega, y el sistema se queda a medias sin que nada
+   * avise.
+   *
+   * Ya pasó en pequeño: la 0098 era la única migración pendiente SIN copia para
+   * el editor, y llevaba así desde que se escribió. Nadie lo notó porque no hay
+   * forma de notarlo leyendo.
+   *
+   * Aquí se comprueban las dos direcciones, que son dos fallos distintos:
+   *  · un fichero nombrado en el documento que no existe → manda a pegar algo
+   *    que no está;
+   *  · un fichero pendiente que el documento no nombra → se queda sin pegar.
+   */
+  const DOC = "docs/operaciones/SQL_PENDIENTE.md";
+  const EDITOR = "supabase/editor";
+  /** El primer número pendiente. Lo anterior está aplicado. */
+  const DESDE = 88;
+
+  const nombrados = () =>
+    new Set([...read(DOC).matchAll(/`([a-z0-9_]+\.sql)`/g)].map((m) => m[1]));
+
+  it("existe, y todo fichero que nombra está en supabase/editor", () => {
+    expect(existe(DOC), "desapareció la lista de SQL pendiente").toBe(true);
+
+    const fantasmas = [...nombrados()].filter((f) => !existe(`${EDITOR}/${f}`));
+    expect(fantasmas, "la lista manda a pegar ficheros que no existen").toEqual([]);
+    // Y que se hayan encontrado: una expresión regular rota daría cero nombres
+    // y las dos comprobaciones pasarían por vacío.
+    expect(nombrados().size, "la lista dejó de nombrar ficheros").toBeGreaterThanOrEqual(45);
+  });
+
+  it("y ninguna migración pendiente se queda fuera de la lista", () => {
+    const dichos = nombrados();
+    const olvidados = readdirSync(path.join(ROOT, EDITOR))
+      .filter((f) => /^\d{4}_parte/.test(f) && Number(f.slice(0, 4)) >= DESDE)
+      .filter((f) => !dichos.has(f));
+    expect(olvidados,
+      `estas partes están pendientes y la lista no las nombra: nadie las pegaría`)
+      .toEqual([]);
+  });
+
+  it("los pasos van numerados de 1 a N, sin huecos y en orden", () => {
+    /**
+     * Los números están escritos en el documento, así que se descuelgan en
+     * cuanto alguien inserta un paso. Me pasó al añadir las verificaciones de
+     * 0088 y 0089: los 43 pasos siguientes quedaron corridos por dos, y un
+     * documento que se sigue paso a paso con los números mal es peor que uno
+     * sin números.
+     */
+    const filas = [...read(DOC).matchAll(/^\| (\d+) \| `(\d{4}_parte[a-z0-9_]*\.sql)`/gm)]
+      .map((m) => ({ n: Number(m[1]), fichero: m[2] }));
+    const pendientes = readdirSync(path.join(ROOT, EDITOR))
+      .filter((f) => /^\d{4}_parte/.test(f) && Number(f.slice(0, 4)) >= DESDE)
+      .sort();
+
+    expect(filas.length, "la lista numerada no cubre todas las partes pendientes")
+      .toBe(pendientes.length);
+    expect(filas.map((f) => f.n), "los números de la lista se descolgaron")
+      .toEqual(filas.map((_, i) => i + 1));
+    // Y en el mismo orden que el numérico, que es el único probado.
+    expect(filas.map((f) => f.fichero), "la lista no va en orden de número de migración")
+      .toEqual(pendientes);
+  });
+
+  it("y toda migración pendiente tiene copia para el editor", () => {
+    /**
+     * Sin copia, el paso de la lista sería «abre la migración y averigua qué
+     * pegar». La 0098 estuvo así: 3 kB que cabían de sobra en un pegado, sin
+     * nadie que lo dijera.
+     */
+    const conCopia = new Set(
+      readdirSync(path.join(ROOT, EDITOR))
+        .filter((f) => /^\d{4}_parte/.test(f))
+        .map((f) => f.slice(0, 4))
+    );
+    const sinCopia = readdirSync(path.join(ROOT, "supabase/migrations"))
+      .filter((f) => f.endsWith(".sql") && Number(f.slice(0, 4)) >= DESDE)
+      .map((f) => f.slice(0, 4))
+      .filter((n) => !conCopia.has(n));
+    expect(sinCopia, "migraciones pendientes que nadie puede pegar").toEqual([]);
+  });
+
+  it("y cada verificación que corre en CI tiene su control negativo", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * UNA VERIFICACIÓN QUE NO SABE ACUSAR NO VERIFICA
+     *
+     * `db-test.sh` corre estas verificaciones contra una base completa y exige
+     * que ninguna acuse. Eso descarta los falsos positivos y NADA MÁS: una
+     * verificación cuyas filas solo saben decir OK pasa esa prueba perfecta.
+     *
+     * Por eso hay controles negativos que rompen el objeto a propósito —igual
+     * que los seis del simulacro de restauración—, y por eso se exigen aquí POR
+     * SU NÚMERO. Un suelo del tipo «al menos cuatro controles» sobrevive a
+     * borrar uno; ya pasó en DR-001, y borrar uno de éstos volvió a sobrevivir.
+     *
+     * Los controles encontraron un fallo real: con la columna borrada, tres de
+     * estas verificaciones REVENTABAN con un error de Postgres en vez de decir
+     * FALTA. Es decir, dejaban de verificar justo el día que algo salió mal.
+     */
+    const sh = readSh("scripts/db-test.sh");
+    /**
+     * SE LEE EL BLOQUE, NO EL FICHERO.
+     *
+     * `db-test.sh` tiene DOS arrays con la misma forma —`COPIAS_QUE_SE_REPITEN`
+     * y `CAZA_VERIFICACION`— y con los MISMOS cuatro números. La primera
+     * versión de esta guarda buscaba el patrón por todo el fichero, así que las
+     * entradas de copias satisfacían las aserciones de controles: habría pasado
+     * con el bloque de controles borrado entero. Sobrevivió a la mutación.
+     */
+    const bloque = /CAZA_VERIFICACION=\(([\s\S]*?)\n\)/.exec(sh);
+    expect(bloque, "desapareció el bloque de controles negativos de db-test.sh").not.toBeNull();
+    const controles = [...bloque![1].matchAll(/"(\d{4}):[^:"]+:[^"]+"/g)].map((m) => m[1]);
+    const conCaza = new Set(controles);
+
+    for (const num of ["0088", "0089", "0098", "0102"]) {
+      expect(conCaza.has(num), `${num} corre en CI y nadie comprueba que su verificación sepa acusar`)
+        .toBe(true);
+    }
+    // Y que no se vacíe el bloque entero: dos por migración es lo medido.
+    expect(controles.length, "se borraron controles negativos").toBeGreaterThanOrEqual(6);
+
+    // Toda verificación que CI ejecuta tiene que tener al menos un control.
+    const copias = /COPIAS_QUE_SE_REPITEN=\(([\s\S]*?)\n\)/.exec(sh);
+    expect(copias, "desapareció el bloque de copias que se ejecutan").not.toBeNull();
+    const ejecutadas = [...copias![1].matchAll(/"(\d{4}):[^:"]*:(\d{4}_parte_[a-z0-9_]*verificacion\.sql)"/g)]
+      .map((m) => m[1]);
+    const sinCaza = [...new Set(ejecutadas)].filter((n) => !conCaza.has(n));
+    expect(sinCaza, "verificaciones que CI corre sin comprobar que sepan fallar").toEqual([]);
+  });
+
+  it("cada migración pendiente trae una verificación que se lee", () => {
+    // Un paso sin verificación es un paso que no se sabe si funcionó: el editor
+    // dice «Success. No rows returned» tanto si hizo algo como si no.
+    const partes = readdirSync(path.join(ROOT, EDITOR)).filter((f) => /^\d{4}_parte/.test(f));
+    const numeros = [...new Set(partes.filter((f) => Number(f.slice(0, 4)) >= DESDE)
+      .map((f) => f.slice(0, 4)))];
+    const sinVerificar = numeros.filter(
+      (n) => !partes.some((f) => f.startsWith(`${n}_`) && /verificacion/.test(f))
+    );
+    expect(sinVerificar, "pasos pendientes sin forma de comprobar que funcionaron")
+      .toEqual([]);
+  });
+});
+
+describe("el doble de pruebas compara como Postgres, no como JavaScript", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * UN DOBLE QUE SE APARTA DEL MOTOR NO DA FALSOS VERDES: DA CONCLUSIONES FALSAS
+   *
+   * `citext` compara sin mirar mayúsculas, el `in` incluido. El doble en
+   * memoria comparaba con `===`, y de esa diferencia salió un FALLO INVENTADO:
+   * el registro de arreglos llevaba meses diciendo que el cruce de duplicados
+   * del importador no era insensible a mayúsculas, que por eso una ficha
+   * guardada con mayúsculas se duplicaba en cada importación, y que arreglarlo
+   * pedía «una migración, o sea su propia ola». Con una prueba afirmándolo.
+   *
+   * `customer.email` es `citext` desde 0004. No había nada que arreglar.
+   *
+   * La lista de columnas del doble sale de las migraciones, así que tiene que
+   * seguir saliendo de ahí: una `citext` nueva que no entre en la lista
+   * devuelve al doble a comparar con `===` para esa columna, en silencio.
+   */
+  it("la lista de columnas sin mayúsculas es la que declaran las migraciones", () => {
+    const declaradas = new Set<string>();
+    for (const f of readdirSync(path.join(ROOT, "supabase/migrations")).filter((n) => n.endsWith(".sql")).sort()) {
+      const sql = readSql(`supabase/migrations/${f}`);
+      // `columna citext` dentro de un `create table`, y `add column x citext`.
+      for (const m of sql.matchAll(/create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?(\w+)\s*\(([\s\S]*?)\n\);/gi)) {
+        for (const c of m[2].matchAll(/^\s*(\w+)\s+citext\b/gim)) declaradas.add(`${m[1]}.${c[1]}`);
+      }
+      for (const m of sql.matchAll(/alter\s+table\s+(?:if\s+exists\s+)?(?:public\.)?(\w+)([\s\S]*?);/gi)) {
+        for (const c of m[2].matchAll(/add\s+column\s+(?:if\s+not\s+exists\s+)?(\w+)\s+citext\b/gi)) {
+          declaradas.add(`${m[1]}.${c[1]}`);
+        }
+      }
+    }
+
+    // Que se haya encontrado algo: sin esto, una expresión rota daría dos
+    // conjuntos vacíos y la comparación pasaría por no mirar nada.
+    expect(declaradas.size, "el lector de columnas citext dejó de leer las migraciones").toBe(3);
+    expect([...declaradas].sort(), "el doble y las migraciones dejaron de decir lo mismo")
+      .toEqual([...COLUMNAS_SIN_MAYUSCULAS].sort());
+  });
+
+  it("y lo que afirma se comprueba también contra Postgres de verdad", () => {
+    /**
+     * Ésta es la parte que faltaba y que costó el fallo inventado: leer el
+     * código no basta para saber qué hace `citext`. `db-test.sh` ejecuta esa
+     * prueba contra un Postgres con las migraciones puestas.
+     */
+    expect(existe("supabase/tests/citext_cruce.test.sql")).toBe(true);
+    const sql = readSql("supabase/tests/citext_cruce.test.sql");
+    // La forma EXACTA que usa el importador, no un `=` que probaría otra cosa.
+    expect(sql, "la prueba SQL dejó de comprobar el `in`, que es lo que usa el importador")
+      .toMatch(/email in \('laura@example\.com'\)/);
+    expect(sql, "la prueba SQL dejó de comprobar el tipo de la columna").toMatch(/citext/);
+  });
+});
+
+describe("las acciones de bitácora que se componen en tiempo de ejecución", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * LA GUARDA DEL CASTELLANO LEÍA CADENAS LITERALES, Y ÉSTAS NO LO SON
+   *
+   * Cuatro rutas arman el nombre de la acción con una plantilla —`action:
+   * \`commissions_${status}\`— y el saldo regalo la recibe por parámetro. La
+   * guarda que exige que toda acción tenga su texto en castellano lee las
+   * cadenas del código, así que estas NO las veía: salían en el papel de la
+   * auditoría con su nombre técnico. Las de comisión son las que alguien lee
+   * cuando discute su paga.
+   *
+   * Quedaron apuntadas en el registro como «unas cuarenta, y enumerarlas es
+   * trabajo aparte». Enumeradas, son DIECISIETE: el número anterior se escribió
+   * sin contarlas, que es lo que pasa cuando una deuda se anota a ojo.
+   *
+   * Los valores se derivan del CÓDIGO que los produce, no de una lista escrita
+   * aquí: si alguien añade un estado de comisión o un destino de nómina, la
+   * acción nueva aparece sola y esta guarda pide su traducción.
+   */
+  const valoresDe = (rel: string, re: RegExp) =>
+    [...readCodigo(rel).matchAll(re)].map((m) => m[1]);
+
+  const COMPUESTAS: { prefijo: string; valores: () => string[]; donde: string }[] = [
+    {
+      prefijo: "commissions_",
+      donde: "src/app/api/commissions/bulk/route.ts",
+      // `CommissionStatus` es la unión que la ruta acepta en el cuerpo.
+      valores: () => {
+        const t = readCodigo("src/lib/types.ts");
+        const m = /export type CommissionStatus =([\s\S]*?);/.exec(t);
+        return m ? [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]) : [];
+      },
+    },
+    {
+      prefijo: "quote_",
+      donde: "src/app/api/quotes/[id]/decide/route.ts",
+      valores: () => {
+        const r = readCodigo("src/app/api/quotes/[id]/decide/route.ts");
+        const m = /const DECISIONS = new Set\(\[([^\]]*)\]\)/.exec(r);
+        return m ? [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]) : [];
+      },
+    },
+    {
+      prefijo: "payroll_",
+      donde: "src/app/api/payroll/[id]/status/route.ts",
+      valores: () => valoresDe("src/lib/hr.ts", /\bok: true, next: "([a-z_]+)"/g),
+    },
+    {
+      prefijo: "period_",
+      donde: "src/app/api/ledger/periods/route.ts",
+      valores: () => valoresDe("src/lib/financials.ts", /\bok: true, next: "([a-z_]+)"/g),
+    },
+  ];
+
+  it.each(COMPUESTAS)("$prefijo: toda acción posible tiene su texto", ({ prefijo, valores, donde }) => {
+    const posibles = valores();
+    // Que se hayan encontrado: una expresión rota daría cero y esto pasaría por
+    // no mirar nada, que es justo como estas acciones llevaban meses sin verse.
+    expect(posibles.length, `no se pudo derivar ningún valor para ${prefijo}`).toBeGreaterThanOrEqual(3);
+    // Y que la ruta siga componiéndola así: si deja de hacerlo, esta guarda
+    // estaría exigiendo traducciones de acciones que ya no existen.
+    expect(readCodigo(donde), `${donde} dejó de componer la acción`).toContain(`${prefijo}$`);
+
+    const sinTexto = posibles.filter((v) => !ACCION[`${prefijo}${v}`]);
+    expect(sinTexto.map((v) => `${prefijo}${v}`),
+      "saldrían en el papel de la auditoría con su nombre técnico").toEqual([]);
+  });
+
+  it("y las que el servicio recibe por parámetro", () => {
+    // `gift-card-service` no compone nada: la acción se la pasan las rutas.
+    const desdeLasRutas = new Set<string>();
+    for (const f of ficherosTs("src/app/api/gift-cards")) {
+      for (const m of readCodigo(f).matchAll(/auditAction:\s*"([a-z_]+)"/g)) desdeLasRutas.add(m[1]);
+    }
+    expect(desdeLasRutas.size, "no se encontró ninguna acción de saldo regalo").toBe(4);
+    const sinTexto = [...desdeLasRutas].filter((a) => !ACCION[a]);
+    expect(sinTexto, "saldrían en el papel con su nombre técnico").toEqual([]);
   });
 });

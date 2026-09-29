@@ -20,10 +20,10 @@ import { creditCheck, holdUntil } from "@/lib/collections";
 import { esPrepago } from "@/lib/monedero-socio";
 import { modoDeCobro, elVendedorRetiene, type ModoDeCobro } from "@/lib/modo-de-cobro";
 import { retenerComision, turnoAbiertoDe } from "@/lib/comision-retenida";
-import { assertSaldo, gastarDelMonedero, monedaDelMonederoDe } from "@/lib/monedero-service";
+import { assertSaldo, gastarDelMonedero, devolverAlMonedero, monedaDelMonederoDe } from "@/lib/monedero-service";
 import { accrueBookingCosts, cancelBookingCosts } from "@/lib/supplier-settlement-service";
 import { reserveForSale, stockableOffers } from "@/lib/stock-commitment-service";
-import { assertAllotment, consumeAllotment } from "@/lib/allotment-service";
+import { assertAllotment, consumeAllotment, releaseBookingAllotment } from "@/lib/allotment-service";
 import { allotmentState, type AllotmentRow } from "@/lib/allotments";
 import { priceExtras, unknownSelections, type ExtraOffer, type ExtraSelection } from "@/lib/extras";
 import { resolveOrderAttribution, recordTouch, recordPurchaseOnce } from "@/lib/attribution-service";
@@ -719,6 +719,10 @@ export async function createOrderWithBookings(
   // Solo acota al SOCIO. El vendedor de la casa sigue vendiendo contra la
   // capacidad: el cupo es un acuerdo con la agencia, no un límite del negocio.
   const allotmentUse = new Map<string, { row: AllotmentRow | null; seats: number }>();
+  /** Lo que ya se le quitó al cupo del socio, para devolverlo si la venta se cae. */
+  const cupoReclamado = new Map<string, number>();
+  /** Y lo que ya se le cobró al monedero prepago, por lo mismo. */
+  let gastadoDelMonedero: { partnerId: string; importe: number; moneda: string } | null = null;
   /**
    * El cupo que resolvió CADA línea, guardado mientras se sabe.
    *
@@ -772,6 +776,27 @@ export async function createOrderWithBookings(
       const acc = allotmentUse.get(key) || { row: resolved.row, seats: 0 };
       acc.seats += pax;
       allotmentUse.set(key, acc);
+    }
+
+    /**
+     * Y SE RECLAMA AQUÍ, NO AL FINAL (0100).
+     *
+     * Estaba al final de la venta, con este comentario: «apuntarlo antes y que
+     * la saga se compensara dejaría el cupo consumido por una venta que no
+     * llegó a haber». El razonamiento era bueno y la consecuencia, cara:
+     * `consumeAllotment` escribía `seats_used = <lo que se leyó ARRIBA> + pax`,
+     * con toda la venta de por medio. Medido: 30 ventas simultáneas de una
+     * plaza contra un cupo de 10 dejaban el contador en **2**, y las 30
+     * pasaban.
+     *
+     * Así que se reclama antes —la base incrementa si cabe, en una sentencia— y
+     * lo reclamado se apunta para SOLTARLO si la venta se cae, que es lo que
+     * resuelve la objeción original sin dejar el contrato sin defensa. Misma
+     * pareja que la retención de plaza de 0099.
+     */
+    for (const [key, use] of allotmentUse) {
+      await consumeAllotment(companyId, use.row, use.seats);
+      cupoReclamado.set(key, (cupoReclamado.get(key) ?? 0) + use.seats);
     }
   }
 
@@ -1279,6 +1304,85 @@ export async function createOrderWithBookings(
     });
   }
 
+    /**
+     * ---- descontar la venta del monedero prepago (0080) ------------------
+     *
+     * DENTRO DE LA SAGA Y ANTES DE PROMOVER LA ORDEN (BL-002).
+     *
+     * Estaba DESPUÉS del `catch`, sin envolver en nada, y `gastarDelMonedero`
+     * se tragaba su propio error devolviendo `null`. Medido: si esa llamada
+     * fallaba, la venta se daba por buena — el tour center con su excursión
+     * confirmada, su saldo intacto, y el mostrador viendo «venta registrada».
+     * Ni un error, ni una fila pendiente, ni nada que reclamar: una línea en la
+     * consola del servidor.
+     *
+     * Aquí dentro, un fallo compensa la venta entera, que es lo más parecido a
+     * una transacción que hay sin transacciones. Y no cuesta lo que costaba
+     * estar fuera: en este punto la orden sigue en BORRADOR, así que no hay
+     * reserva confirmada ni voucher que perder. Es exactamente donde
+     * `assertSaldo` ya rechazaba cuando el saldo no llegaba.
+     *
+     * Va con el TOTAL de verdad y no con la estimación: la estimación existe
+     * para no armar la venta entera y descubrir al final que no cabía, pero
+     * cobrar por ella dejaría el saldo distinto de lo que el socio ve en su
+     * factura.
+     */
+    if (input.partner_id && prepago) {
+      const consumo = await gastarDelMonedero(
+        companyId,
+        {
+          partnerId: input.partner_id,
+          tipo: "consumption",
+          importe: totals.total,
+          moneda: currency,
+          orderId: order._id,
+          nota: `Venta ${order.order_number}`,
+          userId: ctx.userId,
+        },
+        /**
+         * La moneda DEL MONEDERO, no la de la venta. Que coincidan ya lo
+         * garantizó `assertSaldo` antes de vender; pasar aquí la de la venta
+         * convertía la comprobación en una comparación consigo misma.
+         */
+        (await monedaDelMonederoDe(companyId, input.partner_id)) ?? currency
+      );
+
+      /**
+       * Lo gastado se apunta para poder DEVOLVERLO si la venta se cae después.
+       *
+       * Un consumo escrito y una orden luego anulada dejan al socio pagando una
+       * excursión que no existe, con un movimiento indistinguible de un consumo
+       * legítimo. Misma pareja que la plaza (0099) y el cupo (0100): quien
+       * coge, suelta. `yaEstaba` es un reintento de la MISMA venta: ese no lo
+       * cogió esta pasada y devolverlo sería devolver lo de otro.
+       */
+      if (consumo && !consumo.yaEstaba) {
+        gastadoDelMonedero = {
+          partnerId: input.partner_id,
+          importe: consumo.importe,
+          moneda: consumo.moneda,
+        };
+      }
+
+      if (consumo?.descubierto) {
+        await writeAudit({
+          companyId, userId: ctx.userId,
+          action: "partner_wallet_overdraft",
+          entityType: "partner", entityId: input.partner_id,
+          severity: "warning",
+          description:
+            `El monedero del socio quedó en ${consumo.saldoDespues} ${consumo.moneda.toUpperCase()} ` +
+            `tras la venta ${order.order_number} de ${consumo.importe}: hay que cobrarle la diferencia.`,
+          metadata: {
+            order: order._id,
+            amount: consumo.importe,
+            balance_before: consumo.saldoAntes,
+            balance_after: consumo.saldoDespues,
+          },
+        });
+      }
+    }
+
   // ---- promote the order (AUD-F34): the last critical write. Totals and the
   // final status go together, so the order only becomes a real sale once every
   // child exists. A failure before this point triggers the catch below.
@@ -1299,6 +1403,43 @@ export async function createOrderWithBookings(
       await liberarRetencion(departureId, pax);
     }
     retenidas.clear();
+    /**
+     * Y el cupo del socio, por lo mismo y con más motivo: no caduca solo.
+     *
+     * Una plaza de cupo reclamada por una venta que se cayó se queda quitada
+     * PARA SIEMPRE, y el socio acaba con menos contrato del que pagó sin nada
+     * que lo delate — el error que nadie reclama, porque nadie mira un
+     * contador que va de menos.
+     */
+    for (const [allotmentId, seats] of cupoReclamado) {
+      await releaseBookingAllotment(companyId, { allotment: allotmentId, allotment_seats: seats });
+    }
+    cupoReclamado.clear();
+    /**
+     * Y el dinero del monedero vuelve al socio.
+     *
+     * Sin esto, una venta que se cae después de cobrar deja al tour center
+     * pagando una excursión que no existe, con un movimiento que no se
+     * distingue de un consumo legítimo. La devolución no puede tumbar la
+     * compensación —`devolverAlMonedero` no lanza—, así que lo peor que puede
+     * pasar es que quede por devolver, y eso sí se ve en su estado de cuenta.
+     */
+    if (gastadoDelMonedero) {
+      await devolverAlMonedero(
+        companyId,
+        {
+          partnerId: gastadoDelMonedero.partnerId,
+          tipo: "refund",
+          importe: gastadoDelMonedero.importe,
+          moneda: gastadoDelMonedero.moneda,
+          orderId: order._id,
+          nota: `Devolución: la venta ${order.order_number} no llegó a existir`,
+          userId: ctx.userId,
+        },
+        gastadoDelMonedero.moneda
+      );
+      gastadoDelMonedero = null;
+    }
     await compensateOrder(companyId, order._id, order.order_number, bookings);
     throw err;
   }
@@ -1428,79 +1569,10 @@ export async function createOrderWithBookings(
     }
   }
 
-  // ---- apuntar el consumo en el cupo del socio (0054) --------------------
-  //
-  // Va al FINAL, cuando la venta ya existe: apuntarlo antes y que la saga se
-  // compensara dejaría el cupo del socio consumido por una venta que no llegó a
-  // haber, y el comercial buscando plazas que nadie compró.
-  //
-  // Fuera de la saga a propósito: un contador mal puesto no puede tumbar una
-  // venta que ya está hecha; la diferencia se ve en la matriz al día siguiente.
-  for (const [, use] of allotmentUse) {
-    await consumeAllotment(companyId, use.row, use.seats);
-  }
-
-  /**
-   * ---- descontar la venta del monedero prepago (0080) --------------------
-   *
-   * Aquí, con el TOTAL de verdad y no con la estimación que se usó para
-   * comprobar el saldo: la estimación existe para no armar la venta entera y
-   * descubrir al final que no cabía, pero cobrar por ella dejaría el saldo
-   * distinto de lo que el socio va a ver en su factura.
-   *
-   * Al final y fuera de la saga, por lo mismo que el cupo: en este punto el
-   * cliente ya tiene su reserva y su voucher, y revertir todo por no poder
-   * escribir una fila de saldo cambiaría un descuadre —visible en el listado al
-   * día siguiente— por una reserva perdida con el turista delante.
-   *
-   * Y una orden descuenta UNA vez: lo hace cumplir un índice único de 0080, no
-   * una comprobación de aquí, porque dos instancias a la vez le ganan siempre a
-   * una comprobación en la aplicación.
-   *
-   * Desde 0091 el descuento va por una función de base que suma el saldo dentro
-   * de la misma transacción y detrás de un cerrojo sobre el socio: el saldo con
-   * el que se descuenta no puede estar viejo. Y si aun así queda en descubierto
-   * —porque dos ventas se AUTORIZARON a la vez, que eso sigue pudiendo pasar—
-   * se anota en la bitácora con el número, para que alguien lo cobre.
-   */
-  if (input.partner_id && prepago) {
-    const consumo = await gastarDelMonedero(
-      companyId,
-      {
-        partnerId: input.partner_id,
-        tipo: "consumption",
-        importe: totals.total,
-        moneda: currency,
-        orderId: order._id,
-        nota: `Venta ${order.order_number}`,
-        userId: ctx.userId,
-      },
-      /**
-       * La moneda DEL MONEDERO, no la de la venta. Que coincidan ya lo garantizó
-       * `assertSaldo` antes de vender; pasar aquí la de la venta convertía la
-       * comprobación en una comparación consigo misma.
-       */
-      (await monedaDelMonederoDe(companyId, input.partner_id)) ?? currency
-    );
-
-    if (consumo?.descubierto) {
-      await writeAudit({
-        companyId, userId: ctx.userId,
-        action: "partner_wallet_overdraft",
-        entityType: "partner", entityId: input.partner_id,
-        severity: "warning",
-        description:
-          `El monedero del socio quedó en ${consumo.saldoDespues} ${consumo.moneda.toUpperCase()} ` +
-          `tras la venta ${order.order_number} de ${consumo.importe}: hay que cobrarle la diferencia.`,
-        metadata: {
-          order: order._id,
-          amount: consumo.importe,
-          balance_before: consumo.saldoAntes,
-          balance_after: consumo.saldoDespues,
-        },
-      });
-    }
-  }
+  // El cupo del socio ya está reclamado, arriba y antes de escribir nada
+  // (0100). Aquí solo se deja de deber: la venta existe, así que lo reclamado
+  // es suyo y no hay que soltarlo.
+  cupoReclamado.clear();
 
   console.log(`[booking-service] orden ${order.order_number} creada · ${bookings.length} reservas · total ${totals.total} ${currency}`);
 
@@ -1529,6 +1601,17 @@ export async function compensateOrder(
   const departures = new Set<string>();
   for (const b of bookings) {
     try {
+      /**
+       * UNA RESERVA YA CANCELADA NO SE VUELVE A DESHACER (BL-002).
+       *
+       * La compensación corre dos veces con más facilidad de la que parece: el
+       * `catch` de la venta y, si el proceso se murió antes de terminarla, el
+       * barrido de borradores minutos después. Cancelar dos veces es inofensivo;
+       * DEVOLVER DOS VECES no lo es —le regalaría plazas de cupo al socio—, y
+       * eso tampoco lo reclama nadie.
+       */
+      const yaCancelada = String(b.status ?? "") === "cancelled";
+
       await tenantUpdate(companyId, "booking", b._id, {
         status: "cancelled",
         cancel_reason: reason,
@@ -1539,6 +1622,26 @@ export async function compensateOrder(
       // Una reserva que no se va a operar no le debe nada al transportista:
       // dejar el devengo vivo se lo pagaría en la liquidación del viernes.
       await cancelBookingCosts(companyId, b._id, reason);
+
+      /**
+       * Y EL CUPO DEL SOCIO VUELVE A SU CONTRATO.
+       *
+       * Faltaba, y el agujero solo se abría cuando no había nadie delante: el
+       * `catch` de la venta sí lo devuelve —lo lleva apuntado en memoria— pero
+       * ese mapa muere con el proceso. Cuando quien compensa es el BARRIDO, la
+       * reserva se cancelaba y el cupo se quedaba consumido.
+       *
+       * Y a diferencia de la plaza de la salida, el cupo NO CADUCA: 0099 le
+       * puso caducidad a la retención justamente porque un proceso muerto no
+       * suelta nada. El contrato del socio se quedaba corto para siempre.
+       *
+       * Además hacía que los dos caminos discreparan: cancelar a mano
+       * (`cancelBookingFully`) sí lo devuelve. El que no lo hacía era el que
+       * corre sin testigos.
+       */
+      if (!yaCancelada) {
+        await releaseBookingAllotment(companyId, b as { allotment?: unknown; allotment_seats?: number | null });
+      }
     } catch (e) {
       console.error("[booking-service] compensación: no se pudo cancelar la reserva", b._id, e);
     }

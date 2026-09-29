@@ -116,6 +116,87 @@ function readSchema(): Map<string, Set<string>> {
   return tables;
 }
 
+/**
+ * LOS VALORES QUE CADA COLUMNA ADMITE, leídos de las migraciones.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ HIZO FALTA, Y LO QUE COSTÓ NO TENERLO
+ *
+ * La guarda de más abajo comprobaba que el arranque del E2E escribe COLUMNAS que
+ * existen. `departure.status` existe. Lo que escribía era `"scheduled"`, y la
+ * columna solo admite `available | almost_full | full | closed | cancelled |
+ * completed`.
+ *
+ * PostgREST rechaza el INSERT entero, el arranque del E2E lanza, y **ninguna
+ * prueba de navegador llega a ejecutarse**. El CI de esta rama llevaba rojo
+ * desde entonces, y el error —«violates check constraint
+ * departure_status_check»— aparece dentro de un montaje de seis minutos que
+ * nadie lee si no va a buscarlo.
+ *
+ * Una columna mal escrita se ve leyendo; un VALOR que la base no admite, no.
+ * Por eso esto se lee del esquema y no de una lista a mano.
+ *
+ * Solo se recogen las restricciones de la forma `check (col in ('a','b'))`, que
+ * son las que se pueden comprobar contra un literal. Lo demás —rangos,
+ * expresiones— se deja fuera a propósito: una comprobación a medias que se cree
+ * completa es peor que no tenerla.
+ */
+/**
+ * `check (col in (…))`, admitiendo el prefijo `col is null or`.
+ *
+ * Esa forma declara «admite nulo Y esta lista cerrada», y es frecuente —
+ * `organizations.subscription_status` la usa—. Sin admitirla, el lector se
+ * saltaba 23 columnas en silencio, una de ellas escrita por el propio arranque
+ * del E2E: una comprobación que se cree completa y mira dos tercios.
+ */
+const PATRON = (col: string) =>
+  `check\\s*\\(\\s*(?:${col}\\s+is\\s+null\\s+or\\s+)?${col}\\s+in\\s*\\(([^)]*)\\)`;
+
+function readAllowedValues(): Map<string, Set<string>> {
+  const permitidos = new Map<string, Set<string>>();
+  const anota = (tabla: string, col: string, vals: string[]) => {
+    const clave = `${tabla}.${col}`;
+    if (!permitidos.has(clave)) permitidos.set(clave, new Set());
+    for (const v of vals) permitidos.get(clave)!.add(v);
+  };
+
+  for (const file of readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort()) {
+    const sql = readFileSync(path.join(MIGRATIONS, file), "utf8").replace(/--[^\n]*/g, "");
+
+    // Dentro de un `create table`: `columna tipo ... check (columna in (...))`.
+    const create = /create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?(\w+)\s*\(/gi;
+    let m: RegExpExecArray | null;
+    while ((m = create.exec(sql))) {
+      const { body, end } = balanced(sql, create.lastIndex);
+      create.lastIndex = end;
+      for (const raw of splitTopLevel(body)) {
+        const line = raw.trim();
+        const col = /^(\w+)\s/.exec(line);
+        if (!col || CONSTRAINT.test(line)) continue;
+        const chk = new RegExp(PATRON(col[1]), "i").exec(line);
+        if (chk) anota(m[1], col[1], [...chk[1].matchAll(/'([^']*)'/g)].map((x) => x[1]));
+      }
+    }
+
+    // Y fuera: `alter table t add column c ... check (c in (...))`, y también
+    // `add constraint ... check (c in (...))`.
+    const alter = /alter\s+table\s+(?:if\s+exists\s+)?(?:public\.)?(\w+)([\s\S]*?);/gi;
+    while ((m = alter.exec(sql))) {
+      const tabla = m[1];
+      for (const c of m[2].matchAll(/add\s+column\s+(?:if\s+not\s+exists\s+)?(\w+)([\s\S]*?)(?=,\s*add\s|$)/gi)) {
+        const chk = new RegExp(PATRON(c[1]), "i").exec(c[2]);
+        if (chk) anota(tabla, c[1], [...chk[1].matchAll(/'([^']*)'/g)].map((x) => x[1]));
+      }
+      for (const c of m[2].matchAll(/check\s*\(\s*(?:\w+\s+is\s+null\s+or\s+)?(\w+)\s+in\s*\(([^)]*)\)/gi)) {
+        anota(tabla, c[1], [...c[2].matchAll(/'([^']*)'/g)].map((x) => x[1]));
+      }
+    }
+  }
+  return permitidos;
+}
+
+const VALORES = readAllowedValues();
+
 const SCHEMA = readSchema();
 
 /** Todas las migraciones concatenadas, sin comentarios: para buscar literales. */
@@ -899,6 +980,106 @@ describe("el arranque del E2E escribe columnas que existen", () => {
       .map((x) => `${x[1]}(${x[2]})`);
     expect([...new Set(escondidas)], "payloads que la guarda del esquema no puede leer").toEqual([]);
   });
+
+  it("ni un valor que la columna no admita", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * ESTO ES LO QUE TUVO EL CI EN ROJO, Y NO SE VEÍA LEYENDO
+     *
+     * La comprobación de arriba mira que la COLUMNA exista. `departure.status`
+     * existe. El arranque escribía `"scheduled"`, que la columna no admite:
+     * PostgREST rechaza el insert entero, el arranque lanza, y NINGUNA prueba
+     * de navegador llega a ejecutarse. El error sale enterrado en un montaje de
+     * seis minutos.
+     *
+     * Estaba escrito en TRES sitios del mismo fichero, así que no era un
+     * despiste de tecleo: era no tener dónde comprobarlo.
+     */
+    const codigo = readFileSync(SETUP, "utf8");
+    const malos: string[] = [];
+
+    /**
+     * La ventana entre `.from("t")` y su `.insert({` tiene que quedarse DENTRO
+     * de la misma cadena. Con un `[\s\S]{0,200}?` perezoso, el `.from("payment")`
+     * enganchaba el `.insert({` de la sentencia siguiente y acusaba a
+     * `payment.status` de un valor que es de `departure`. Es el mismo fallo que
+     * el de la guarda de disparadores de 0102, en otro fichero: una expresión
+     * regular que cruza sentencias no mide lo que dice medir.
+     */
+    for (const m of codigo.matchAll(
+      /\.from\(\s*"(\w+)"\s*\)\s*(?:\.[a-zA-Z]+\([^)]*\)\s*)*?\.(insert|update|upsert)\(\s*\{/g
+    )) {
+      const { body } = objectBody(codigo, m.index! + m[0].length);
+      for (const par of body.matchAll(/(?:^|[\s,{])([a-z_][\w]*)\s*:\s*"([^"]*)"/g)) {
+        const permitidos = VALORES.get(`${m[1]}.${par[1]}`);
+        if (permitidos && !permitidos.has(par[2])) {
+          malos.push(`${m[1]}.${par[1]} = "${par[2]}" (admite: ${[...permitidos].sort().join(", ")})`);
+        }
+      }
+    }
+    expect([...new Set(malos)], "valores que la base rechazaría, y con ellos el E2E entero").toEqual([]);
+
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * DOS SUELOS, PORQUE HAY DOS FORMAS DE NO MIRAR NADA
+     *
+     * La primera versión solo vigilaba el LECTOR DE VALORES. Romper el
+     * EXTRACTOR —la expresión que encuentra los `.from("t").insert({…})`— deja
+     * `malos` vacío y la comprobación pasa con el valor malo puesto. Sobrevivió
+     * a la mutación, incluso combinada con reintroducir el fallo del CI.
+     *
+     * Los dos números están medidos sobre el fichero de hoy y bajan solos si
+     * alguien recorta el arranque, que es cuando hay que volver a mirarlos.
+     */
+    expect(VALORES.get("departure.status"), "el lector de valores dejó de ver departure.status")
+      .toContain("available");
+    expect(VALORES.size, "el lector de valores dejó de leer las migraciones").toBeGreaterThan(80);
+
+    const escrituras = [...codigo.matchAll(
+      /\.from\(\s*"(\w+)"\s*\)\s*(?:\.[a-zA-Z]+\([^)]*\)\s*)*?\.(insert|update|upsert)\(\s*\{/g
+    )];
+    expect(escrituras.length, "el extractor dejó de encontrar las escrituras del arranque")
+      .toBeGreaterThanOrEqual(20);
+    expect(new Set(escrituras.map((x) => x[1])).size, "el extractor dejó de ver casi todas las tablas")
+      .toBeGreaterThanOrEqual(8);
+    // Y que de verdad esté comparando: la tabla que rompió el CI tiene que
+    // aparecer entre lo extraído, no solo entre lo leído del esquema.
+    expect(escrituras.some((x) => x[1] === "departure"),
+      "el extractor dejó de ver las escrituras sobre departure").toBe(true);
+
+    /**
+     * Y CUÁNTOS PARES SE COMPARAN DE VERDAD.
+     *
+     * Los dos suelos de arriba son independientes, y una mutación que aflojaba
+     * los dos a la vez Y vaciaba el lector seguía pasando: cada aserción
+     * vigilaba su mitad y ninguna vigilaba el PRODUCTO de las dos, que es lo
+     * único que de verdad se compara.
+     *
+     * Éste sí: 15 pares `columna = "literal"` con valores declarados, medidos
+     * sobre el fichero de hoy. Vaciar el lector, romper el extractor o recortar
+     * el arranque lo bajan, y los tres tienen que mirarse a mano.
+     */
+    const comparados = escrituras.flatMap((m) => {
+      const { body } = objectBody(codigo, m.index! + m[0].length);
+      return [...body.matchAll(/(?:^|[\s,{])([a-z_][\w]*)\s*:\s*"([^"]*)"/g)]
+        .filter((par) => VALORES.has(`${m[1]}.${par[1]}`))
+        .map((par) => `${m[1]}.${par[1]}`);
+    });
+    expect(new Set(comparados).size, "dejaron de compararse valores: o el lector, o el extractor, o el arranque")
+      .toBe(14);
+    /**
+     * CATORCE DE CATORCE, Y LO QUE ESTA GUARDA NO CUBRE.
+     *
+     * Son TODAS las columnas con valores declarados que el arranque escribe:
+     * comprobado aparte contra el catálogo de una base con las 102 migraciones
+     * aplicadas, no contra este lector —que es juez y parte—.
+     *
+     * Lo que el lector NO ve son las restricciones escritas de otras formas
+     * (rangos, expresiones, `check` sobre varias columnas). No afectan a lo que
+     * el arranque escribe hoy, y decirlo aquí vale más que dejar creer que
+     * esto cubre el esquema entero.
+     */
+  });
 });
 
 describe("el enganche del token no pierde security definer", () => {
@@ -1433,7 +1614,23 @@ describe("la consulta de «qué migraciones me faltan»", () => {
     for (const f of readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql")).sort()) {
       const n = f.slice(0, 4);
       const sql = readFileSync(path.join(MIGRATIONS, f), "utf8").replace(/^\s*--.*$/gm, "");
+      /**
+       * UN `drop trigger if exists` SEGUIDO DE SU `create` NO BORRA NADA.
+       *
+       * Es la forma de escribir un registro que se puede repetir, y la usan
+       * todas las migraciones de disparadores de inquilino. Contarlo como
+       * borrado dejaba a 0102 —25 disparadores, todos «borrados» por ella
+       * misma— sin ningún objeto en el que apoyarse, y la consulta consolidada
+       * la daba por no comprobable.
+       *
+       * Lo que sigue siendo un borrado de verdad es el de 0095: deja caer
+       * `ledger_entry_cash_session_same_tenant` y crea OTRO con otro nombre.
+       */
+      const rehechoAqui = new Set(
+        [...sql.matchAll(/^create trigger\s+([a-z_0-9]+)/gm)].map((m) => m[1])
+      );
       for (const m of sql.matchAll(/drop\s+trigger\s+(?:if\s+exists\s+)?([a-z_0-9]+)/gi)) {
+        if (rehechoAqui.has(m[1])) continue;
         if (!borraEn.has(m[1])) borraEn.set(m[1], n);
       }
       for (const m of sql.matchAll(/drop\s+(?:table|index)\s+(?:if\s+exists\s+)?(?:public\.)?([a-z_0-9]+)/gi)) {
