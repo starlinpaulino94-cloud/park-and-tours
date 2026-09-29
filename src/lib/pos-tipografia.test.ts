@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import path from "node:path";
 
 describe("la tipografía es una sola familia", () => {
   it("no se descargan familias decorativas", () => {
@@ -57,12 +57,22 @@ describe("un cupo sin calcular no es un agotado", () => {
      * Quien necesite el número, que pase por `plazas.ts`, que distingue el
      * hueco del cero.
      */
-    const culpables = execSync(
-      "grep -rn 'available_pax ?? 0' src/ || true",
-      { encoding: "utf8" },
-    )
-      .split("\n")
-      .filter(Boolean)
+    // Lo que hacía `grep -rn 'available_pax ?? 0' src/`, recorrido con Node
+    // porque `grep` no existe en Windows: `ruta:línea:texto`, igual que grep.
+    const lineas: string[] = [];
+    const pila = ["src"];
+    while (pila.length) {
+      const dir = pila.pop()!;
+      for (const nombre of readdirSync(dir)) {
+        const ruta = path.join(dir, nombre);
+        if (statSync(ruta).isDirectory()) { pila.push(ruta); continue; }
+        readFileSync(ruta, "utf8").split("\n").forEach((texto, i) => {
+          if (texto.includes("available_pax ?? 0"))
+            lineas.push(`${ruta.replace(/\\/g, "/")}:${i + 1}:${texto}`);
+        });
+      }
+    }
+    const culpables = lineas
       // Las pruebas y los comentarios NOMBRAN el defecto para explicarlo; no lo
       // cometen. Sin esto la guarda se dispararía con su propia explicación.
       .filter((l) => !/\.test\.tsx?:/.test(l))

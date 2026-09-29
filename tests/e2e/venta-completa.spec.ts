@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { login } from "./login";
-import { PRODUCTO_E2E, PRECIO_E2E, CLIENTE_DE_LA_VENTA } from "./global-setup";
+import { EXCURSION_E2E, PRECIO_EXCURSION_E2E, CLIENTE_DE_LA_VENTA } from "./global-setup";
 
 /**
  * VENDER → COBRAR → CANCELAR, EN UN NAVEGADOR DE VERDAD (T-001).
@@ -67,7 +67,7 @@ async function plazasLibres(page: Page): Promise<number> {
   const ctx = await api<{ data?: { products?: { name?: string; departures?: { available_pax?: number | null }[] }[] } }>(
     page, "/api/pos/context"
   );
-  const producto = (ctx?.data?.products ?? []).find((p) => p.name === PRODUCTO_E2E);
+  const producto = (ctx?.data?.products ?? []).find((p) => p.name === EXCURSION_E2E);
   const salida = producto?.departures?.[0];
   return Number(salida?.available_pax ?? 0);
 }
@@ -88,9 +88,9 @@ test.describe("una venta entera, de la pantalla a la base", () => {
 
     // ── 1. AL CARRITO ───────────────────────────────────────────────────────
     await page.getByPlaceholder("Buscar excursión por nombre, código, categoría o ubicación…")
-      .fill(PRODUCTO_E2E);
-    const tarjeta = page.locator("article").filter({ hasText: PRODUCTO_E2E }).first();
-    await expect(tarjeta, `no aparece «${PRODUCTO_E2E}» en el catálogo`).toBeVisible({ timeout: 30_000 });
+      .fill(EXCURSION_E2E);
+    const tarjeta = page.locator("article").filter({ hasText: EXCURSION_E2E }).first();
+    await expect(tarjeta, `no aparece «${EXCURSION_E2E}» en el catálogo`).toBeVisible({ timeout: 30_000 });
     await tarjeta.getByRole("button", { name: "Añadir a la venta" }).click();
 
     // ── 2. EL CLIENTE ───────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ test.describe("una venta entera, de la pantalla a la base", () => {
     const { data: ordenes } = await api<{ data: OrdenLeida[] }>(page, "/api/erp/order?limit=5&sort=-createdAt");
     const orden = ordenes?.[0];
     expect(orden, "no se escribió ninguna orden").toBeTruthy();
-    expect(Number(orden!.total), `la venta salió por ${orden!.total} y el producto vale ${PRECIO_E2E}`)
+    expect(Number(orden!.total), `la venta salió por ${orden!.total} y el producto vale ${PRECIO_EXCURSION_E2E}`)
       .toBeGreaterThan(0);
     expect(Number(orden!.balance ?? 0), "una venta recién hecha no puede estar saldada").toBeGreaterThan(0);
 
@@ -187,7 +187,7 @@ test.describe("una venta entera, de la pantalla a la base", () => {
       products?: { _id: string; name?: string; departures?: { _id: string; capacity: number }[] }[];
       customers?: { _id: string; last_name?: string }[];
     } }>(page, "/api/pos/context");
-    const producto = (ctx?.data?.products ?? []).find((p) => p.name === PRODUCTO_E2E);
+    const producto = (ctx?.data?.products ?? []).find((p) => p.name === EXCURSION_E2E);
     const salida = producto?.departures?.[0];
     expect(salida, "sin salida no se puede probar el techo").toBeTruthy();
 

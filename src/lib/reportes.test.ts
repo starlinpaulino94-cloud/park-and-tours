@@ -1,9 +1,30 @@
 import { describe, it, expect } from "vitest";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import path from "node:path";
 import {
   REPORTES, reportePorSlug, gruposDeReportes, valorCrudo, sumaColumna, totalesDe, monedaDe,
   textoCelda, esNumerica, cuadreDe, TOLERANCIA_CUADRE,
 } from "@/lib/reportes";
 import { RESOURCES } from "@/lib/resources";
+
+/**
+ * Hace lo que hacía `grep -rl <aguja> <dirs>`: la lista de ficheros que la
+ * contienen. Se recorre con Node porque `grep` no existe en Windows y la
+ * guarda tiene que correr en la máquina de cualquiera.
+ */
+function ficherosQueContienen(dirs: string[], aguja: string, ext: RegExp): string[] {
+  const resultado: string[] = [];
+  const pila = [...dirs];
+  while (pila.length) {
+    const dir = pila.pop()!;
+    for (const nombre of readdirSync(dir)) {
+      const ruta = path.join(dir, nombre);
+      if (statSync(ruta).isDirectory()) pila.push(ruta);
+      else if (ext.test(nombre) && readFileSync(ruta, "utf8").includes(aguja)) resultado.push(ruta);
+    }
+  }
+  return resultado;
+}
 
 describe("el catálogo de reportes", () => {
   it("cada reporte apunta a un recurso que existe", () => {
@@ -218,12 +239,9 @@ describe("las pantallas piden los listados con los nombres que la ruta lee", () 
      * Solo se miran las pantallas (cliente). En el servidor `_limit` es
      * correcto: ahí se le habla directo a `tenantQuery`.
      */
-    const { readFileSync } = await import("node:fs");
-    const { execSync } = await import("node:child_process");
-    const archivos = execSync(
-      "grep -rl 'new URLSearchParams' src/app/dashboard src/components --include=*.tsx || true",
-      { encoding: "utf8" },
-    ).split("\n").filter(Boolean);
+    const archivos = ficherosQueContienen(
+      ["src/app/dashboard", "src/components"], "new URLSearchParams", /\.tsx$/,
+    );
 
     const culpables: string[] = [];
     for (const archivo of archivos) {
@@ -369,12 +387,9 @@ describe("toda hoja de reportes se puede archivar", () => {
      * Lo que se comprueba: ninguna pantalla escribe su propio bloque impreso
      * con el nombre de la empresa dentro. Quien lo necesite, que use la pieza.
      */
-    const { readFileSync } = await import("node:fs");
-    const { execSync } = await import("node:child_process");
-    const archivos = execSync(
-      "grep -rl 'print-only' src/app src/components --include=*.tsx || true",
-      { encoding: "utf8" },
-    ).split("\n").filter(Boolean);
+    const archivos = ficherosQueContienen(
+      ["src/app", "src/components"], "print-only", /\.tsx$/,
+    );
 
     const copias = archivos.filter((archivo) => {
       if (archivo.endsWith("hoja-impresa.tsx")) return false;
