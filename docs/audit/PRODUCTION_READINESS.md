@@ -34,7 +34,7 @@ una declaración mal presentada o un proveedor cobrado dos veces.
 | Qué | Cómo | Resultado |
 | --- | --- | --- |
 | Compilación de producción | `npx next build` | ✅ compila |
-| Pruebas unitarias | `npm test` | ✅ **4 200** en verde (foto del 29-sep: contarlas exige ejecutarlas, así que ésta es la única cifra del documento que no se deriva) |
+| Pruebas unitarias | `npm test` | ✅ **todas en verde** (29-sep)³ |
 | Tipos | `npx tsc --noEmit` | ✅ limpio |
 | Lint | `npx next lint` | ✅ sin errores (1 aviso ajeno, preexistente) |
 | Pruebas SQL contra Postgres real | `bash scripts/db-test.sh` | ✅ verde |
@@ -56,6 +56,15 @@ una guarda compara lo que dice esta tabla con lo que sale de ahí.
 
 ² Solo `.env.example` está versionado. El JWT que aparece en `membego.test.ts`
 es inventado y sin firma.
+
+³ Aquí **no va un número a propósito**, y es la única casilla del documento que
+renuncia a darlo. Contar las pruebas exige ejecutarlas, así que no se puede
+derivar como las demás cifras; y escrito a mano envejece cada vez que entra una
+prueba nueva — se quedó viejo **dos veces la misma tarde**, primero al fusionar
+los arreglos del E2E y otra vez al fusionar la tipografía. Un número que hay
+que perseguir semana a semana y que no cambia ninguna decisión no merece estar
+escrito: lo que importa es que `npm test` pase, y el recuento exacto lo imprime
+él.
 
 ---
 

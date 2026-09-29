@@ -6963,4 +6963,17 @@ mutación se aplica es parte de mutar.
 documento no se entere, y que el documento diga un número que el repositorio no
 tiene—.
 
-`tsc`, `eslint`, **4200/4200** y `build` en verde. Sin migración.
+`tsc`, `eslint`, la suite entera y `build` en verde. Sin migración.
+
+### Coda: el recuento de pruebas se quedó viejo dos veces la misma tarde
+
+La cifra de pruebas unitarias no se puede derivar —contarlas exige
+ejecutarlas—, así que se dejó escrita a mano y marcada como foto. Envejeció
+**dos veces en media hora**: al fusionar los arreglos del E2E y otra vez al
+fusionar la tipografía, cada uno con sus dos pruebas nuevas.
+
+Dos veces en una tarde es la respuesta. Se quitó el número: la casilla dice
+«todas en verde» con su fecha, y el recuento exacto lo imprime `npm test`. Un
+número que hay que perseguir cada semana y que no cambia ninguna decisión no
+merece estar escrito — que es el mismo hallazgo de esta entrada aplicado a lo
+que la entrada acababa de escribir.
