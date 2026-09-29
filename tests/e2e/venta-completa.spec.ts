@@ -130,7 +130,24 @@ test.describe("una venta entera, de la pantalla a la base", () => {
 
     // ── 5. COBRAR ───────────────────────────────────────────────────────────
     await page.getByRole("button", { name: "Cobrar ahora" }).click();
-    await expect(page.getByRole("button", { name: "Cobrar ahora" }))
+    /**
+     * SE ESPERA A QUE EL DIÁLOGO SE CIERRE, NO A QUE EL BOTÓN DESAPAREZCA.
+     *
+     * Esto esperaba a que el botón «Cobrar ahora» dejara de existir. Ese botón
+     * cambia su texto a «Cobrando…» MIENTRAS la petición está en vuelo
+     * (`setBusy(true)` en `registerPayment`), así que la espera se cumplía con
+     * el cobro sin terminar: la orden se releía antes de que se escribiera
+     * nada y el fallo salía como «el cobro no dejó rastro en la orden» —
+     * acusando al cobro de no escribir cuando lo que pasaba es que aún no había
+     * terminado.
+     *
+     * El diálogo solo se cierra cuando `/api/payments` respondió bien:
+     * `setPayFor(null)` va después del `if (!res.ok) return`. Y si el cobro
+     * falla, se queda abierto y esto falla AQUÍ diciendo que el cobro no se
+     * completó — que es una cosa distinta de que no dejara rastro, y el
+     * mensaje tiene que distinguirlas.
+     */
+    await expect(page.getByRole("dialog"), "el cobro no se completó: el diálogo sigue abierto")
       .toHaveCount(0, { timeout: 60_000 });
 
     const { data: trasCobrar } = await api<{ data: OrdenLeida[] }>(
@@ -194,6 +211,29 @@ test.describe("una venta entera, de la pantalla a la base", () => {
     const salida = producto?.departures?.[0];
     expect(salida, "sin salida no se puede probar el techo").toBeTruthy();
 
+    /**
+     * Y CON CLIENTE, QUE NO ES PAPELEO.
+     *
+     * `/api/orders` comprueba el cliente ANTES que el cupo. Sin él la respuesta
+     * era un 400 de «Debes seleccionar un cliente»: un rechazo, sí, pero por
+     * otra cosa — y la prueba no habría ejercido ni una línea del camino de la
+     * plaza. La aserción del MOTIVO es la que lo cazó; con el `>= 400` a secas
+     * esto habría salido verde sin probar nada, que es justo lo que ese
+     * comentario de abajo decía que no podía volver a pasar.
+     *
+     * Se busca en la lista y no por `filter.last_name`: un campo que no esté en
+     * la lista blanca de filtros se IGNORA en silencio, y entonces esto cogería
+     * el primer cliente que hubiera —otro, o el de un socio— sin que nada lo
+     * dijera.
+     */
+    const { data: clientes } = await api<{ data: { _id: string; last_name?: string }[] }>(
+      page, "/api/erp/customer?limit=200"
+    );
+    const apellido = CLIENTE_DE_LA_VENTA.split(" ")[1];
+    const cliente = (clientes ?? []).find((c) => c.last_name === apellido);
+    expect(cliente, `no está sembrado «${CLIENTE_DE_LA_VENTA}»: sin cliente el rechazo sería por el cliente`)
+      .toBeTruthy();
+
     const respuesta = await page.evaluate(async (payload) => {
       const res = await fetch("/api/orders", {
         method: "POST",
@@ -203,6 +243,7 @@ test.describe("una venta entera, de la pantalla a la base", () => {
       });
       return { status: res.status, cuerpo: await res.json().catch(() => null) };
     }, {
+      customer_id: cliente!._id,
       // Mil pasajeros en una salida de cuarenta. Ni con la pantalla más rota
       // del mundo debería escribirse esto.
       items: [{ product_id: producto!._id, departure_id: salida!._id, adults: 1000 }],
