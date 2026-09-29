@@ -12795,3 +12795,100 @@ describe("el proveedor de un recurso de salida sale del vehículo", () => {
       .toBe(escrituras.length);
   });
 });
+
+/**
+ * DOS FORMAS DE QUE UNA PRUEBA DE NAVEGADOR AFIRME ALGO QUE NO OCURRIÓ.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * Las dos salieron de la MISMA corrida, la primera que llegó a ejecutar el
+ * recorrido de la venta entera. Las dos dan un mensaje de fallo que acusa al
+ * sitio equivocado, que es lo que las hace caras.
+ *
+ *   1. Esperar a que desaparezca un texto que cambia MIENTRAS la acción está en
+ *      vuelo. El botón dice «Cobrando…» durante la petición, así que esperar a
+ *      que «Cobrar ahora» deje de existir se cumple con el cobro sin terminar:
+ *      la comprobación de después leía la orden antes de que se escribiera
+ *      nada, y el fallo decía «el cobro no dejó rastro».
+ *
+ *   2. Mandarle a una ruta un cuerpo al que le falta lo que comprueba ANTES de
+ *      llegar a lo que la prueba quiere ejercer. La venta por encima del cupo
+ *      iba sin cliente, y `/api/orders` mira el cliente primero: el rechazo era
+ *      real, pero por otra cosa.
+ */
+describe("el E2E no puede dar por hecho lo que todavía no ha pasado", () => {
+  const PANTALLAS = [
+    "src/app/dashboard/pos/page.tsx",
+    "src/app/dashboard/reservas/page.tsx",
+  ];
+  const SPEC = "tests/e2e/venta-completa.spec.ts";
+
+  it("no espera a que desaparezca un texto que el botón cambia mientras trabaja", () => {
+    /**
+     * Los rótulos en reposo de cada `{busy ? "…" : "…"}` de las pantallas que
+     * la prueba conduce. Esperar a que cualquiera de ellos desaparezca es
+     * esperar a que EMPIECE la petición, no a que termine.
+     */
+    const enReposo = new Set<string>();
+    for (const pantalla of PANTALLAS) {
+      const fuente = read(pantalla);
+      for (const m of fuente.matchAll(/\{\s*busy\s*\?\s*"[^"]+"\s*:\s*"([^"]+)"\s*\}/g)) {
+        enReposo.add(m[1]);
+      }
+      // Y el que arma su rótulo con el total dentro: se guarda el trozo fijo,
+      // que es por donde una espera lo buscaría. Dejarlo fuera habría bajado el
+      // piso a seis sin que se notara que faltaba uno.
+      for (const m of fuente.matchAll(/\{\s*busy\s*\?\s*"[^"]+"\s*:\s*`([^$`]*)/g)) {
+        enReposo.add(m[1]);
+      }
+    }
+    // Piso medido: siete botones con rótulo de trabajo entre las dos pantallas
+    // —seis con el rótulo entre comillas y el de confirmar la venta, que lo
+    // compone—. Con el lector roto esto quedaría en cero y la comprobación de
+    // abajo pasaría sin mirar nada.
+    expect(enReposo.size, "no se reconoció ningún botón con rótulo de trabajo")
+      .toBeGreaterThanOrEqual(7);
+    expect(enReposo.has("Cobrar ahora")).toBe(true);
+
+    const spec = read(SPEC);
+    /**
+     * Cada espera de desaparición, con el nombre al que se aplica. Se busca la
+     * pareja `getByRole("button", { name: X }) … toHaveCount(0)` dentro de la
+     * MISMA cadena: un `[\s\S]*?` cruzaría hasta la siguiente y acusaría a una
+     * espera que no tiene nada que ver.
+     */
+    const esperas = [...spec.matchAll(
+      /getByRole\(\s*"button",\s*\{\s*name:\s*"([^"]+)"\s*\}\s*\)[^;]*?toHaveCount\(\s*0/g
+    )].map((m) => m[1]);
+
+    const malas = esperas.filter((nombre) => enReposo.has(nombre));
+    expect(malas, `se cumple en cuanto arranca la petición, no cuando termina: ${malas.join(", ")}`)
+      .toEqual([]);
+  });
+
+  it("el cuerpo que manda a /api/orders trae lo que la ruta exige antes de nada", () => {
+    /**
+     * Las comprobaciones tempranas de la ruta, leídas de la ruta. Van en orden
+     * y cortan: la primera que falte decide el motivo del rechazo, y una prueba
+     * que afirma el MOTIVO —como la del cupo— falla acusando a otra cosa.
+     */
+    const ruta = read("src/app/api/orders/route.ts");
+    const exigidos = [...ruta.matchAll(/if\s*\(\s*!body\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]);
+    expect(new Set(exigidos).size, "la ruta de ventas dejó de comprobar el cuerpo")
+      .toBeGreaterThanOrEqual(2);
+
+    const spec = read(SPEC);
+    /**
+     * El cuerpo que la prueba manda: el objeto que va como segundo argumento
+     * del `page.evaluate` que hace el POST. Se acota al trozo entre el `fetch`
+     * de `/api/orders` y el cierre del `evaluate`, para no contar un `items:`
+     * de cualquier otro sitio del fichero.
+     */
+    const desde = spec.indexOf('fetch("/api/orders"');
+    expect(desde, "la prueba ya no manda ninguna venta por la API").toBeGreaterThan(-1);
+    const cuerpo = spec.slice(desde, spec.indexOf("});", spec.indexOf("}, {", desde)));
+
+    const faltan = [...new Set(exigidos)].filter((campo) => !new RegExp(`\\b${campo}\\s*:`).test(cuerpo));
+    expect(faltan, `la ruta rechazará por esto antes de llegar a lo que se prueba: ${faltan.join(", ")}`)
+      .toEqual([]);
+  });
+});

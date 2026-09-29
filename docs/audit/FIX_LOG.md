@@ -6727,6 +6727,91 @@ deducción del doble (12 pruebas en rojo).
 
 ---
 
+## De 14 a 17 de 19: los dos que quedaban afirmaban algo que aún no había pasado
+
+`tests/e2e/venta-completa.spec.ts`, `src/lib/ui-contracts.test.ts`.
+
+### Lo que la corrida anterior dejó demostrado
+
+Los tres arreglos de la entrada anterior están confirmados contra la base de
+verdad: las dos del proveedor en verde, la del socio en verde, y la venta
+entera **pasa del punto donde moría** —antes reventaba en la línea 87 leyendo
+plazas; ahora llega a la 140, después de vender, apartar la plaza y cobrar—.
+
+Quedan dos, los dos en `venta-completa.spec.ts`, y los dos son de la misma
+familia que todo lo de hoy: **el mensaje señalaba el sitio equivocado**.
+
+### 1 · «el cobro no dejó rastro en la orden» — el cobro no había terminado
+
+```
+expect(Number(saldada?.paid_total ?? 0), "el cobro no dejó rastro en la orden")
+  .toBeGreaterThan(0)      Received: 0
+```
+
+La prueba pinchaba «Cobrar ahora» y esperaba a que ese botón dejara de existir.
+Pero el botón **cambia su rótulo a «Cobrando…» mientras la petición está en
+vuelo** (`setBusy(true)` es lo primero que hace `registerPayment`). O sea: la
+espera se cumplía en cuanto la petición ARRANCABA. La orden se releía antes de
+que se escribiera nada, y el fallo acusaba al cobro de no dejar rastro.
+
+`paid_total` era el nombre correcto de la columna —comprobado en 0005—; no
+había nada roto en el cobro.
+
+Se espera ahora a que **el diálogo se cierre**, que es lo único que solo ocurre
+cuando `/api/payments` respondió bien: `setPayFor(null)` va después del
+`if (!res.ok) return`. Y si el cobro falla, el diálogo se queda abierto y la
+prueba falla **ahí**, diciendo que el cobro no se completó — que es otra cosa
+distinta de que no dejara rastro. Las dos causas ya no comparten mensaje.
+
+### 2 · «rechazó, pero no por el cupo» — le faltaba el cliente
+
+```
+Error: rechazó, pero no por el cupo:
+{"ok":false,"error":{"message":"Debes seleccionar un cliente"}}
+```
+
+La venta de 1 000 plazas iba sin `customer_id`, y `/api/orders` comprueba el
+cliente **antes** que el cupo. Había un rechazo, sí, pero de otra cosa: la
+prueba no ejercía ni una línea del camino de la plaza.
+
+Lo que lo cazó fue una aserción que ya estaba puesta, con su comentario:
+
+> La primera versión afirmaba `status >= 400` y habría pasado con un **404** […]
+> Un rechazo por «no existe» y uno por «no caben» se parecen mucho en un número
+> y no se parecen en nada en lo que prueban.
+
+Es exactamente el caso que ese comentario describía, ocurrido de verdad. Sin la
+comprobación del motivo, esto habría salido **verde sin probar nada**.
+
+El cliente se busca en la lista y **no** por `filter.last_name`: un campo fuera
+de la lista blanca de filtros se ignora en silencio, y entonces la prueba
+cogería el primer cliente que hubiera —otro, o el de un socio— sin decir nada.
+
+### Las dos guardas, derivadas del código y no de una lista
+
+| guarda | de dónde saca la verdad |
+| --- | --- |
+| no esperar un rótulo que cambia al trabajar | los `{busy ? "…" : "…"}` de las pantallas que la prueba conduce (7: seis entre comillas y el de confirmar, que compone su rótulo con el total) |
+| el cuerpo trae lo que la ruta exige antes de nada | los `if (!body.<campo>)` de `/api/orders`, en su orden |
+
+Renombrar el botón en la pantalla, añadir una comprobación temprana a la ruta o
+quitarle un campo al cuerpo de la prueba ponen la guarda en rojo sin que nadie
+tenga que acordarse de nada.
+
+**Mutación: 7 de 7**, incluidas las dos que importan —volver a esperar el rótulo
+del botón, y que la ruta empiece a exigir un campo que la prueba no manda—.
+
+`tsc`, `eslint`, **4198/4198**, `db-test` y `build` en verde.
+
+### Lo que sigue sin estar demostrado
+
+Que estos dos arreglos basten se prueba en la siguiente corrida de CI. Aquí no
+hay navegador ni proyecto Supabase contra el que medir: lo que está medido es
+que las guardas cazan las dos regresiones, y que el resto del sistema sigue en
+verde.
+
+---
+
 ## El build dependía de que Google contestara, y un día no contestó
 
 `src/app/layout.tsx`, `src/app/fonts/*.woff2`, `src/lib/pos-tipografia.test.ts`.
