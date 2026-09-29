@@ -25,8 +25,23 @@
  * RLS de verdad. Una prueba que lo tapara escondería precisamente la clase de
  * fuga que hay que buscar.
  *
- * Tampoco hay `check`, claves foráneas, disparadores ni transacciones; para eso
- * están `supabase/tests/*.test.sql`.
+ * Tampoco hay `check`, claves foráneas ni transacciones; para eso están
+ * `supabase/tests/*.test.sql`.
+ *
+ * DE DISPARADORES, UNO. Y CON CORREA.
+ *
+ * `departure_resource` y `pickup_route` NO llevan el proveedor que se les
+ * escribe: se lo pone el disparador de 0085 a partir del vehículo —y sin
+ * vehículo, del personal—, pisando lo que hubiera. Un doble que se saltara eso
+ * aceptaría un `supplier_id` a mano y devolvería la fila con dueño, que es
+ * justo lo que el motor NO hace: el sembrador del E2E escribió así durante dos
+ * semanas y sus filas salían sin dueño.
+ *
+ * Emular un disparador en el doble es peligroso —un doble que se aparta del
+ * motor no da falsos verdes, da conclusiones falsas—, así que este va atado:
+ * `supabase/tests/recurso_proveedor.test.sql` afirma contra Postgres de verdad
+ * las mismas tres cosas que se emulan aquí. Si el motor cambia, esa prueba
+ * falla primero.
  */
 
 import { paxTotalsDeLaBase, reservarPlazaDeLaBase, soltarPlazaDeLaBase, type FakeDb } from "@/test/fake-tenant";
@@ -292,6 +307,34 @@ class Builder implements PromiseLike<Resultado> {
     return filas;
   }
 
+  /**
+   * Lo que 0085 y 0086 ponen en la fila, y que nadie escribe a mano.
+   *
+   * Las dos columnas juntas y no por separado porque el portal del proveedor
+   * filtra por las DOS a la vez: con cualquiera de ellas en null la lista sale
+   * vacía exactamente igual, así que emular una sola dejaría media causa viva.
+   */
+  private conDisparadoresDeRecurso(row: Fila): Fila {
+    if (this.tabla !== "departure_resource" && this.tabla !== "pickup_route") return row;
+    const busca = (tabla: string, id: unknown): Fila | undefined =>
+      typeof id === "string" && id
+        ? this.db.rows(tabla).find((f) => String(f._id) === id)
+        : undefined;
+
+    // 0085: manda el vehículo; sin vehículo, la persona; sin ninguno, NULL —
+    // también cuando venía escrito a mano, que es la trampa entera.
+    const vehiculo = busca("vehicle", row.vehicle_id);
+    const persona = busca("staff", row.staff_id ?? row.driver_id);
+    const proveedor = (vehiculo?.supplier_id as string | undefined)
+      ?? (persona?.supplier_id as string | undefined) ?? null;
+
+    // 0086: la fecha del servicio se copia de la salida.
+    const salida = busca("departure", row.departure_id);
+    const fecha = (salida?.departure_at as string | undefined) ?? null;
+
+    return { ...row, supplier_id: proveedor, service_date: fecha };
+  }
+
   private async ejecutar(): Promise<Resultado> {
     try {
       if (this.modo === "insert") {
@@ -319,7 +362,8 @@ class Builder implements PromiseLike<Resultado> {
             ? { ...row, created_at: new Date().toISOString() }
             : row;
           creadas.push(await this.db.tenantCreate(
-            String(row.organization_id ?? ""), this.tabla, conAmbasFormas(conSello)));
+            String(row.organization_id ?? ""), this.tabla,
+            conAmbasFormas(this.conDisparadoresDeRecurso(conSello))));
         }
         return this.envolver(creadas);
       }

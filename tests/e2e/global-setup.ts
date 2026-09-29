@@ -172,6 +172,42 @@ export const LIQUIDACION_PROPIA = "E2E-LIQ-P1";
 export const LIQUIDACION_AJENA = "E2E-LIQ-P2";
 
 /**
+ * SU GUAGUA, Y LA DEL DE ENFRENTE.
+ *
+ * El recurso de salida NO lleva el proveedor porque alguien lo escriba: lo
+ * DEDUCE el disparador de 0085 del vehículo —y si no hay vehículo, del
+ * personal—. Sembrar `supplier_id` a mano no servía de nada: el disparador
+ * corre `before insert` con la lista `of` vacía de efecto en los `insert`, y
+ * su última línea es `new.supplier_id := v_supplier`, así que el valor escrito
+ * a mano se iba a null en silencio y el portal del proveedor nacía vacío.
+ *
+ * Con la guagua delante se siembra por el mismo camino que la operación real:
+ * se le asigna un vehículo, y el proveedor sale del vehículo.
+ */
+export const MATRICULA_PROPIA = "E2E-BUS-01";
+export const MATRICULA_AJENA = "E2E-BUS-02";
+
+/**
+ * Una nota interna en la ficha del vehículo, para que el recorte de columnas
+ * afirme algo.
+ *
+ * `notes` está FUERA de la lista blanca del proveedor. Sin una nota sembrada,
+ * comprobar que no sale es comprobar que no sale una columna vacía: pasaría
+ * igual con la lista blanca borrada.
+ */
+export const NOTA_INTERNA_DEL_VEHICULO = "Nota interna E2E que no sale del ERP";
+
+/**
+ * El cliente del tour center.
+ *
+ * `customer` es del socio POR COLUMNA desde 0075: ve los suyos y no los de la
+ * operadora. Sin un cliente propio sembrado, «ve lo suyo» no se puede afirmar
+ * —solo se podría afirmar que no ve el ajeno, que también pasaría con la ruta
+ * rota devolviendo lista vacía.
+ */
+export const CLIENTE_DEL_SOCIO = "Marisol Sociotest";
+
+/**
  * LO QUE HACE FALTA PARA VENDER DE VERDAD, Y NO SOLO PARA MIRAR.
  *
  * Todas las specs de hasta ahora son de AISLAMIENTO: entran, miran y comprueban
@@ -435,6 +471,37 @@ async function ensurePartnerFixtures(
     status: "confirmed", currency: "usd", subtotal: 200, total: 200, balance: 200,
   });
   if (error) throw new Error(`seed orden del socio: ${error.message}`);
+
+  await clienteDelSocio(sb, orgId, partnerOrgId);
+}
+
+/**
+ * EL CLIENTE DEL TOUR CENTER.
+ *
+ * `customer` entró en las tablas PROPIAS del socio en 0075, acotada por
+ * `partner_id`: los clientes de la operadora tienen esa columna nula y no le
+ * salen. Con esto el aislamiento se puede afirmar por los dos lados —ve el
+ * suyo, no ve el de la casa—, que es lo único que distingue «el filtro
+ * funciona» de «la ruta devuelve una lista vacía».
+ */
+async function clienteDelSocio(
+  sb: SupabaseClient,
+  orgId: string,
+  partnerOrgId: string
+): Promise<void> {
+  const [nombre, apellido] = CLIENTE_DEL_SOCIO.split(" ");
+  const { data: existente } = await sb
+    .from("customer").select("id")
+    .eq("organization_id", orgId).eq("last_name", apellido).limit(1).maybeSingle();
+  if (existente?.id) {
+    await sb.from("customer").update({ partner_id: partnerOrgId, status: "active" }).eq("id", existente.id);
+    return;
+  }
+  const { error } = await sb.from("customer").insert({
+    organization_id: orgId, first_name: nombre, last_name: apellido,
+    email: "sociotest@e2e.invalid", partner_id: partnerOrgId, status: "active",
+  });
+  if (error) throw new Error(`seed cliente del socio: ${error.message}`);
 }
 
 /**
@@ -645,29 +712,89 @@ async function ensureSupplierFixtures(
     }
   }
 
-  // Un recurso de CADA proveedor sobre la misma salida: la que opera el de la
-  // cuenta, y la que no. `supplier_id` se escribe a mano porque el disparador de
-  // 0085 solo lo deduce cuando hay vehículo o personal detrás.
-  async function recurso(supplierId: string, role: string): Promise<void> {
+  /**
+   * LA GUAGUA DE CADA UNO, QUE ES LO QUE LE DA EL SERVICIO.
+   *
+   * `notes` va sembrada a propósito: es una columna que la lista blanca del
+   * proveedor NO incluye, y sin un valor dentro comprobar que no sale sería
+   * comprobar que no sale una columna vacía.
+   */
+  async function guagua(supplierId: string, plate: string): Promise<string> {
+    const { data: existente } = await sb
+      .from("vehicle").select("id").eq("organization_id", orgId).eq("plate", plate).maybeSingle();
+    if (existente?.id) {
+      await sb.from("vehicle").update({
+        supplier_id: supplierId, status: "available", notes: NOTA_INTERNA_DEL_VEHICULO,
+      }).eq("id", existente.id);
+      return existente.id as string;
+    }
+    const { data, error } = await sb
+      .from("vehicle")
+      .insert({
+        organization_id: orgId, supplier_id: supplierId, plate,
+        name: `Guagua ${plate}`, vehicle_type: "minibus", capacity: 20,
+        status: "available", notes: NOTA_INTERNA_DEL_VEHICULO,
+      })
+      .select("id").single();
+    if (error || !data) throw new Error(`seed vehicle ${plate}: ${error?.message ?? "sin vehículo"}`);
+    return data.id as string;
+  }
+
+  /**
+   * UN RECURSO DE CADA PROVEEDOR SOBRE LA MISMA SALIDA.
+   *
+   * El proveedor NO se escribe: se deduce del vehículo (0085). Escribirlo a
+   * mano era escribir en una columna que el disparador pisa con lo que deduce
+   * —y sin vehículo deduce null—, así que las dos filas quedaban sin dueño y el
+   * portal del proveedor salía vacío sin que nada fallara al sembrar.
+   *
+   * Por eso la búsqueda de idempotencia va por `vehicle_id` y no por
+   * `supplier_id`: el vehículo es el dato que esta función controla; el
+   * proveedor es la consecuencia.
+   */
+  async function recurso(vehicleId: string, role: string): Promise<void> {
     const { data: existente } = await sb
       .from("departure_resource").select("id")
       .eq("organization_id", orgId).eq("departure_id", departureId!)
-      .eq("supplier_id", supplierId).maybeSingle();
+      .eq("vehicle_id", vehicleId).maybeSingle();
     if (existente?.id) {
       await sb.from("departure_resource").update({
-        organization_id: orgId, departure_id: departureId!, supplier_id: supplierId,
+        organization_id: orgId, departure_id: departureId!, vehicle_id: vehicleId,
         resource_role: role, pax_assigned: 2, status: "planned",
       }).eq("id", existente.id);
       return;
     }
     const { error } = await sb.from("departure_resource").insert({
-      organization_id: orgId, departure_id: departureId!, supplier_id: supplierId,
+      organization_id: orgId, departure_id: departureId!, vehicle_id: vehicleId,
       resource_role: role, pax_assigned: 2, status: "planned",
     });
     if (error) throw new Error(`seed departure_resource ${role}: ${error.message}`);
   }
-  await recurso(propio, "vehicle");
-  await recurso(ajeno, "guide");
+  const guaguaPropia = await guagua(propio, MATRICULA_PROPIA);
+  const guaguaAjena = await guagua(ajeno, MATRICULA_AJENA);
+  await recurso(guaguaPropia, "vehicle");
+  await recurso(guaguaAjena, "vehicle");
+
+  /**
+   * Y SE COMPRUEBA QUE EL PROVEEDOR LLEGÓ A LA FILA.
+   *
+   * Toda la spec del proveedor cuelga de esta deducción. Sin esta lectura, un
+   * disparador que dejara de deducir sale como «el portal está vacío», y la
+   * primera sospecha es la ruta, no el sembrador — que es exactamente lo que
+   * pasó.
+   */
+  const { data: conDuenio } = await sb
+    .from("departure_resource").select("id, supplier_id")
+    .eq("organization_id", orgId).eq("departure_id", departureId!)
+    .in("vehicle_id", [guaguaPropia, guaguaAjena]);
+  const duenios = new Set((conDuenio ?? []).map((r) => r.supplier_id as string | null));
+  if (!duenios.has(propio) || !duenios.has(ajeno)) {
+    throw new Error(
+      `seed departure_resource: el disparador de 0085 no dedujo el proveedor ` +
+      `(filas ${conDuenio?.length ?? 0}, dueños ${[...duenios].join(", ") || "ninguno"}). ` +
+      `¿Está aplicada la migración 0085?`
+    );
+  }
 
   // Y una liquidación de cada uno, para probar que no se abre la del vecino.
   async function liquidacion(code: string, supplierId: string): Promise<void> {

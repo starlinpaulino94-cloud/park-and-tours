@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { login } from "./login";
 import {
   ORDEN_PROPIA, ORDEN_DEL_SOCIO, E2E_PARTNER_SUFFIX, emailDerivado,
+  CLIENTE_DEL_SOCIO, CLIENTE_DE_LA_VENTA, CLIENTE_DEL_MANIFIESTO,
 } from "./global-setup";
 
 /**
@@ -70,14 +71,34 @@ test.describe("un socio solo ve lo suyo", () => {
     expect(numeros).not.toContain(ORDEN_PROPIA);
   });
 
-  test("y no se lleva la lista de clientes de la operadora", async ({ page }) => {
-    // `customer` está denegado al socio a propósito: sus clientes son los que él
-    // trajo, y esos viajan dentro de su reserva.
+  test("y de la cartera se lleva la SUYA, no la de la operadora", async ({ page }) => {
+    /**
+     * `customer` NO está denegado al socio, y esta prueba afirmaba que sí.
+     *
+     * Se le abrió en 0075 —acotada por `partner_id`— porque sin ella no podía
+     * terminar una venta: `POST /api/orders` exige `customer_id` y él no tenía
+     * forma de buscar ni de crear un cliente. La prueba se escribió después y
+     * siguió pidiendo un 403 que ya no era el comportamiento; como el E2E nunca
+     * llegó a correr, nadie vio la contradicción.
+     *
+     * Lo que hay que afirmar de una tabla ACOTADA no es el código de estado: es
+     * que el filtro reparte. Por eso se mira por los dos lados —el suyo sale, el
+     * de la casa no—: con solo la mitad de abajo, una ruta rota devolviendo
+     * lista vacía pasaría la prueba.
+     */
     await entrar(page);
-    const status = await page.evaluate(async () => {
-      const res = await fetch("/api/erp/customer?limit=5", { credentials: "include" });
-      return res.status;
+    const cuerpo = await page.evaluate(async () => {
+      const res = await fetch("/api/erp/customer?limit=200", { credentials: "include" });
+      return { status: res.status, body: await res.json().catch(() => null) };
     });
-    expect(status).toBeGreaterThanOrEqual(400);
+    expect(cuerpo.status).toBe(200);
+    const apellidos = (cuerpo.body?.data ?? []).map((c: { last_name?: string }) => c.last_name);
+    expect(apellidos, "el socio no ve ni a su propio cliente").toContain(
+      CLIENTE_DEL_SOCIO.split(" ")[1]
+    );
+    for (const ajeno of [CLIENTE_DE_LA_VENTA, CLIENTE_DEL_MANIFIESTO]) {
+      expect(apellidos, `se le entregó «${ajeno}», que es de la operadora`)
+        .not.toContain(ajeno.split(" ")[1]);
+    }
   });
 });
