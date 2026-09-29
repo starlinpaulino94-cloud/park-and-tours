@@ -502,13 +502,13 @@ async function ensureSupplierFixtures(
   if (departureId) {
     // La fecha se refresca en cada ejecución: si no, la salida dejaría de ser
     // «próxima» al día siguiente y el portal no la enseñaría.
-    await sb.from("departure").update({ departure_at: manana, status: "scheduled" }).eq("id", departureId);
+    await sb.from("departure").update({ departure_at: manana, status: "available" }).eq("id", departureId);
   } else {
     const { data, error } = await sb
       .from("departure")
       .insert({
         organization_id: orgId, product_id: productId, departure_at: manana,
-        capacity: 40, status: "scheduled", meeting_point: "Lobby E2E",
+        capacity: 40, status: "available", meeting_point: "Lobby E2E",
       })
       .select("id").single();
     if (error || !data) throw new Error(`seed departure: ${error?.message ?? "sin salida"}`);
@@ -551,7 +551,7 @@ async function ensureSupplierFixtures(
   }
   await sb.from("departure").update({
     capacity: 40, booked_pax: 0, pending_pax: 0, hold_pax: 0, hold_until: null,
-    status: "scheduled", departure_at: manana,
+    status: "available", departure_at: manana,
   }).eq("id", departureId);
 
   // El cliente cuyo nombre NO puede salir por el portal del proveedor.

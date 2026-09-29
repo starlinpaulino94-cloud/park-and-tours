@@ -6380,3 +6380,99 @@ que apuntaba a un número de paso que el renumerado había movido —una mutaci�
 que no aplica se lee igual que una que sobrevive, y no es lo mismo—.
 
 `tsc`, `eslint`, **4182/4182**, `db-test`, `restore-drill` y `build` en verde.
+
+---
+
+## El CI llevaba rojo desde siempre, y ninguna prueba de navegador se había ejecutado
+
+`tests/e2e/global-setup.ts`, `src/lib/schema-contract.test.ts`.
+
+### Lo que encontré al ir a mirar
+
+Le pedí al usuario que vigilara «la primera corrida de CI de esta rama». Fui yo a
+mirarla, y la respuesta es peor que «todavía no ha corrido»: **han corrido más de
+cien y han fallado todas**. Siempre en el mismo sitio, y nunca en una prueba:
+
+```
+Error: seed departure: new row for relation "departure"
+       violates check constraint "departure_status_check"
+   at ensureSupplierFixtures (tests/e2e/global-setup.ts:505)
+```
+
+El montaje del E2E siembra una salida con `status: "scheduled"`. Esa columna
+admite `available | almost_full | full | closed | cancelled | completed`, y
+`scheduled` no está. PostgREST rechaza el INSERT entero, el montaje lanza y
+**ninguna prueba de navegador llega a ejecutarse**.
+
+Estaba escrito en **tres** sitios del mismo fichero, así que no fue un desliz de
+tecleo: fue no tener dónde comprobarlo.
+
+Esto explica de golpe por qué T-001 llevaba abierto diciendo «la spec nunca se ha
+ejecutado». No era solo que aquí no haya demonio de docker: **es que en el CI
+tampoco llegaba a correr**, y el error queda enterrado en un montaje de seis
+minutos que nadie lee si no va a buscarlo.
+
+### Por qué la guarda que ya existía no lo vio
+
+Hay una guarda desde hace olas que comprueba que el arranque del E2E **escriba
+columnas que existen**, y hace bien su trabajo: `departure.status` existe. Lo que
+nadie comprobaba era el **valor**.
+
+La diferencia importa porque las dos se leen igual de mal: una columna inventada
+se puede ver leyendo el código con atención; un valor que la base no admite, no —
+hay que ir a buscar la restricción a la migración que la declaró.
+
+### No una vuelta de CI por error: los tres tipos de golpe
+
+Cada vuelta de CI cuesta seis minutos y aquí no puedo levantar la pila. Así que
+en vez de arreglar y esperar, levanté un Postgres con las 102 migraciones y barrí
+el arranque entero contra el catálogo **real**, en los tres tipos de fallo que
+rechazan un INSERT completo:
+
+| | resultado |
+| --- | --- |
+| columnas que no existen | 0 (la guarda vieja ya lo cubría) |
+| valores que la columna no admite | **3**, todos `departure.status` |
+| columnas obligatorias sin escribir | 0 |
+
+Los tres eran el mismo. Corregidos, y el barrido contra el catálogo vuelve a dar
+cero — también sobre las specs y los scripts.
+
+### La guarda, y el hueco que tenía el lector
+
+`readAllowedValues()` reconstruye de las migraciones qué admite cada columna, y
+la comprobación compara cada literal del arranque contra eso. Al medirla contra
+el catálogo real apareció que veía **195 de 218** columnas: se saltaba la forma
+`check (col is null or col in (…))` —«admite nulo Y esta lista»—, que es
+justamente la de `organizations.subscription_status`, **otra columna que el
+arranque escribe**. Una comprobación que se cree completa y mira dos tercios.
+Corregido el patrón, las 14 columnas con valores declarados que el arranque
+escribe están las 14 comparadas, verificado contra el catálogo y no contra el
+propio lector, que es juez y parte.
+
+### Mutación: 6, y tres supervivientes que enseñaron algo distinto cada uno
+
+- **Una era mi plantilla**: mutaba `payment_type`, que no aparece en ese fichero.
+  Una mutación que no llega a aplicarse se lee **exactamente igual** que una que
+  sobrevive, y no es lo mismo. Comprobar que la mutación cambió el fichero es
+  parte de mutar.
+- **Romper el extractor** —la expresión que encuentra los `.from("t").insert({…})`—
+  dejaba la lista de malos vacía y la comprobación pasaba con el valor malo
+  puesto. Mis suelos vigilaban el LECTOR de valores; ninguno vigilaba el
+  extractor.
+- Y aflojar los dos suelos a la vez seguía pasando, porque cada aserción
+  vigilaba su mitad y **ninguna vigilaba el producto de las dos**, que es lo
+  único que de verdad se compara. Ahora se ancla en ese número: 14 pares.
+
+Y una repetición: mi primera expresión **cruzaba sentencias** y acusó a
+`payment.status` de un valor que era de `departure`. Es el tercer fichero
+distinto en el que cometo ese mismo error con un `[\s\S]*?` perezoso.
+
+### Qué NO cierra esto
+
+Que el montaje ya no se caiga **no significa que las pruebas pasen**. Lo único
+que se sabe es que el error que las impedía arrancar ya no está. La primera
+corrida verde sigue siendo la prueba que falta, y sigue sin poder darse desde
+aquí.
+
+`tsc`, `eslint`, **4183/4183**, `db-test` y `build` en verde.
