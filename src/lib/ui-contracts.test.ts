@@ -12892,3 +12892,149 @@ describe("el E2E no puede dar por hecho lo que todavía no ha pasado", () => {
       .toEqual([]);
   });
 });
+
+/**
+ * LAS CIFRAS DEL INFORME DE PRODUCCIÓN, CONTRA EL REPOSITORIO.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * UN DOCUMENTO NO FALLA CUANDO DEJA DE SER VERDAD
+ *
+ * `PRODUCTION_READINESS.md` tenía un apartado titulado «Cobertura, MEDIDA» con
+ * seis cifras escritas a mano. Las seis estaban mal:
+ *
+ *   · «en el repositorio hay 67 migraciones»  →  102
+ *   · «la 0067 es la última»                  →  la 0102
+ *   · «servicios sin ninguna prueba: 20»      →  0 de 40
+ *   · «rutas de API: 152»                     →  176
+ *   · «pruebas SQL: 10 ficheros»              →  24
+ *   · «seis ficheros con 18 recorridos»       →  siete con 19
+ *
+ * La peor no estaba en ese apartado sino en la lista de tareas previas a la
+ * primera venta: «la 0067 es la última». Con treinta y cinco migraciones por
+ * detrás, eso no es un dato viejo: es una instrucción que deja la base a medio
+ * migrar haciendo creer que está al día.
+ *
+ * Es el mismo hallazgo que ha salido tres veces en esta auditoría —el fallo del
+ * importador que no existía, las «cuarenta» acciones de bitácora que eran
+ * diecisiete— y en el peor sitio posible: el documento que se lee para decidir
+ * qué tocar en la base real.
+ *
+ * Por eso esto no comprueba que ponga 102: comprueba que lo que ponga COINCIDA
+ * con lo que hay, sacado del repositorio en el momento de correr la prueba.
+ */
+describe("el informe de producción no puede decir un número que ya no es", () => {
+  const INFORME = "docs/audit/PRODUCTION_READINESS.md";
+
+  /** Las mismas cuentas que hace `scripts/cifras-del-informe.mjs`. */
+  function cifrasDelRepositorio() {
+    const migraciones = readdirSync(path.join(ROOT, "supabase/migrations"))
+      .filter((f) => /^\d{4}_.*\.sql$/.test(f)).sort();
+    /**
+     * Sin comentarios. Escaneando el SQL crudo, una llamada comentada
+     * —`-- select app.enable_tenant_rls('public.customer');`— seguía contando
+     * como tabla protegida, y la mutación que la comentaba no movía el número.
+     */
+    const sql = migraciones.map((f) => read(`supabase/migrations/${f}`)).join("\n")
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/--[^\n]*/g, "");
+
+    // Con esquema SIEMPRE: `create table app.rate_limit_bucket` capturado a
+    // secas entra como una tabla llamada «app» y el limitador desaparece del
+    // recuento. Le pasó al primer intento del script.
+    const conEsquema = (n: string) => (n.includes(".") ? n : `public.${n}`);
+    const tablas = new Set([...sql.matchAll(/^create table (?:if not exists )?([a-z_]+(?:\.[a-z_]+)?)/gm)]
+      .map((m) => conEsquema(m[1])));
+    const conAyuda = new Set([...sql.matchAll(/app\.enable_tenant_rls\('([a-z_]+(?:\.[a-z_]+)?)'/g)]
+      .map((m) => conEsquema(m[1])));
+    const aMano = new Set([...sql.matchAll(/alter table ([a-z_]+(?:\.[a-z_]+)?)[^;]*?enable row level security/g)]
+      .map((m) => conEsquema(m[1])));
+
+    const servicios = readdirSync(path.join(ROOT, "src/lib")).filter((f) => /-service\.ts$/.test(f));
+    const specs = readdirSync(path.join(ROOT, "tests/e2e")).filter((f) => f.endsWith(".spec.ts"));
+
+    return {
+      migraciones: migraciones.length,
+      ultima: migraciones.at(-1)!.slice(0, 4),
+      tablas: tablas.size,
+      conRls: [...tablas].filter((t) => conAyuda.has(t) || aMano.has(t)).length,
+      servicios: servicios.length,
+      sinPrueba: servicios.filter((f) => !existsSync(path.join(ROOT, "src/lib", f.replace(/\.ts$/, ".test.ts")))).length,
+      rutas: ficherosTs("src/app/api").filter((f) => f.endsWith("route.ts")).length,
+      pruebasSql: readdirSync(path.join(ROOT, "supabase/tests")).filter((f) => f.endsWith(".test.sql")).length,
+      ficherosE2e: specs.length,
+      recorridos: specs.map((f) => (read(`tests/e2e/${f}`).match(/^\s*test\(/gm) || []).length)
+        .reduce((a, b) => a + b, 0),
+    };
+  }
+
+  /** Lo que el documento AFIRMA, sacado de su texto. */
+  function loQueDiceElInforme(texto: string) {
+    const numero = (patron: RegExp, etiqueta: string): number => {
+      const m = patron.exec(texto);
+      expect(m, `el informe dejó de decir ${etiqueta}: ¿se reescribió el apartado?`).toBeTruthy();
+      return Number(m![1].replace(/[\s ]/g, ""));
+    };
+    return {
+      migracionesAqui: numero(/en el repositorio hay \*\*([\d  ]+)\*\*/, "cuántas migraciones hay"),
+      ultima: /la \*\*(\d{4})\*\* es la última/.exec(texto)?.[1] ?? "",
+      migracionesCobertura: numero(/Migraciones en el repositorio: ([\d  ]+)\*\*/, "las migraciones del apartado de cobertura"),
+      conRls: numero(/\*\*([\d  ]+) de [\d  ]+ tablas\*\*/, "cuántas tablas con RLS"),
+      tablas: numero(/\*\*[\d  ]+ de ([\d  ]+) tablas\*\*/, "cuántas tablas hay"),
+      sinPrueba: numero(/Servicios sin ninguna prueba: ([\d  ]+)\*\*/, "servicios sin prueba"),
+      servicios: numero(/Servicios sin ninguna prueba: [\d  ]+\*\* de \*\*([\d  ]+)\*\*/, "cuántos servicios hay"),
+      rutas: numero(/Rutas de API: ([\d  ]+)\*\*/, "cuántas rutas de API"),
+      pruebasSql: numero(/Pruebas SQL contra Postgres de verdad: ([\d  ]+)\*\*/, "cuántas pruebas SQL"),
+      recorridos: numero(/Recorridos de navegador: ([\d  ]+)\*\*/, "cuántos recorridos"),
+      ficherosE2e: numero(/repartidos en \*\*([\d  ]+)\*\* ficheros/, "en cuántos ficheros"),
+    };
+  }
+
+  it("cada cifra del informe coincide con lo que hay en el repositorio", () => {
+    const real = cifrasDelRepositorio();
+    const dice = loQueDiceElInforme(read(INFORME));
+
+    // Piso, para que un lector roto no deje pasar todo con ceros: el
+    // repositorio tiene cien y pico migraciones y cuarenta servicios.
+    expect(real.migraciones, "el lector de migraciones se quedó vacío").toBeGreaterThan(50);
+    expect(real.servicios, "el lector de servicios se quedó vacío").toBeGreaterThan(20);
+
+    const desajustes: string[] = [];
+    const comparar = (etiqueta: string, enElInforme: unknown, enElRepositorio: unknown) => {
+      if (enElInforme !== enElRepositorio) {
+        desajustes.push(`${etiqueta}: el informe dice ${enElInforme}, el repositorio tiene ${enElRepositorio}`);
+      }
+    };
+
+    comparar("migraciones (apartado «no se ha podido comprobar»)", dice.migracionesAqui, real.migraciones);
+    comparar("migraciones (apartado de cobertura)", dice.migracionesCobertura, real.migraciones);
+    comparar("la última migración", dice.ultima, real.ultima);
+    comparar("tablas", dice.tablas, real.tablas);
+    comparar("tablas con RLS", dice.conRls, real.conRls);
+    comparar("servicios", dice.servicios, real.servicios);
+    comparar("servicios sin prueba", dice.sinPrueba, real.sinPrueba);
+    comparar("rutas de API", dice.rutas, real.rutas);
+    comparar("pruebas SQL", dice.pruebasSql, real.pruebasSql);
+    comparar("ficheros de E2E", dice.ficherosE2e, real.ficherosE2e);
+    comparar("recorridos de E2E", dice.recorridos, real.recorridos);
+
+    expect(desajustes, `el informe envejeció:\n  - ${desajustes.join("\n  - ")}`).toEqual([]);
+  });
+
+  /**
+   * Y que el script que las deriva siga existiendo y dando lo mismo: el
+   * documento apunta a él por su nombre, y un documento que manda ejecutar algo
+   * que no está es peor que uno que no manda nada.
+   */
+  it("el script que deriva las cifras existe y coincide con esta guarda", async () => {
+    const ruta = "scripts/cifras-del-informe.mjs";
+    expect(existsSync(path.join(ROOT, ruta)), `el informe apunta a ${ruta} y no está`).toBe(true);
+    expect(read(INFORME), "el informe dejó de decir de dónde salen sus cifras").toContain(ruta);
+
+    const delScript = (await import(/* @vite-ignore */ path.join(ROOT, ruta))).default;
+    const real = cifrasDelRepositorio();
+    expect(delScript.migraciones, "el script y la guarda cuentan migraciones distintas").toBe(real.migraciones);
+    expect(delScript.rutasDeApi, "el script y la guarda cuentan rutas distintas").toBe(real.rutas);
+    expect(delScript.serviciosSinPrueba.length, "el script y la guarda no ven los mismos servicios sin prueba")
+      .toBe(real.sinPrueba);
+    expect(delScript.tablasSinRls, "el script ve tablas sin RLS que la guarda no").toEqual([]);
+  });
+});

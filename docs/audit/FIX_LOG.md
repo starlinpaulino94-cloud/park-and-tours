@@ -6809,3 +6809,84 @@ Que estos dos arreglos basten se prueba en la siguiente corrida de CI. Aquí no
 hay navegador ni proyecto Supabase contra el que medir: lo que está medido es
 que las guardas cazan las dos regresiones, y que el resto del sistema sigue en
 verde.
+
+---
+
+## El informe de producción decía «0067 es la última» con 35 migraciones por detrás
+
+`docs/audit/PRODUCTION_READINESS.md`, `scripts/cifras-del-informe.mjs`,
+`src/lib/ui-contracts.test.ts`.
+
+### Lo que estaba mal
+
+`PRODUCTION_READINESS.md` tenía un apartado titulado **«Cobertura, medida»**.
+Sus cifras estaban mal. Todas:
+
+| decía | era |
+| --- | --- |
+| «en el repositorio hay **67** migraciones» | **102** |
+| «la **0067** es la última» | la **0102** |
+| «servicios sin ninguna prueba: **20**» | **0** de 40 |
+| «rutas de API: **152**» | **176** |
+| «pruebas SQL: **10** ficheros» | **24** |
+| «**seis** ficheros con **18** recorridos» | **siete** con **19** |
+| «pruebas unitarias: **2 300**» | **4 200** |
+| «RLS: **114 de 115**, falta `rate_limit_bucket`» | **119 de 119**; el limitador ya la tiene |
+
+La peor no estaba en ese apartado, sino en la lista de tareas previas a la
+primera venta real:
+
+> - [ ] `npm run verify:migrations` sin nada pendiente (la **0067** es la
+>   última).
+
+Con treinta y cinco migraciones por detrás, eso no es un dato viejo: es una
+**instrucción que deja la base a medio migrar haciendo creer que está al día**.
+Y es el documento que se lee justamente para decidir qué tocar en la base real.
+
+Dos de las ocho eran mejores de lo que decía el informe —los veinte servicios
+sin prueba son cero, y el RLS está completo—, lo que no consuela: una cifra que
+no se sabe si está por encima o por debajo no sirve para decidir nada.
+
+### Por qué pasa, y por qué se repite
+
+Es el **tercer** hallazgo de la misma forma en esta auditoría: el fallo del
+importador que no existía, las «unas cuarenta» acciones de bitácora que eran
+diecisiete, y ahora esto. Un número escrito a mano en un documento envejece
+peor que el código, porque **nada falla cuando deja de ser verdad**.
+
+### Lo que se hizo
+
+`scripts/cifras-del-informe.mjs` las deriva del repositorio —migraciones,
+tablas y su RLS, servicios sin prueba, rutas de API, ficheros SQL, recorridos de
+navegador— y una guarda **compara el texto del documento con esa salida**. No
+comprueba que ponga 102: comprueba que lo que ponga coincida con lo que hay.
+
+Se corrigieron las ocho cifras, se marcó como hecho el punto 3 de «antes de
+abrir a terceros» (el E2E del camino del dinero, verde desde el 29-sep) —
+dejando dicho que el **reembolso** sigue sin cubrirse—, y el recuento de pruebas
+unitarias queda marcado como lo que es: una foto, porque contarlas exige
+ejecutarlas. Es la única cifra del documento que no se deriva, y el documento lo
+dice.
+
+### Dos fallos de medición propios, cazados por la mutación
+
+1. **`create table app.rate_limit_bucket` entraba como una tabla llamada «app»**
+   — el nombre se capturaba sin esquema—, y el limitador desaparecía del
+   recuento de RLS. Habría publicado una cifra falsa en el mismo documento que
+   esto existe para arreglar.
+2. **El lector contaba SQL comentado.** Comentar
+   `-- select app.enable_tenant_rls('public.customer');` no movía el número: la
+   expresión casaba dentro del comentario. Un recuento que no distingue código
+   de comentario no mide el sistema, mide el fichero.
+
+El segundo salió de una mutación que **primero pareció sobrevivir**. Al
+verificar si el fichero había cambiado, resultó que el `sed` no casaba: no era
+un superviviente, era una mutación que no aplicó. Rehecha con la comprobación
+delante, mató la guarda y destapó el fallo del comentario. Comprobar que la
+mutación se aplica es parte de mutar.
+
+**Mutación: 12 de 12** en las dos direcciones —que el repositorio cambie y el
+documento no se entere, y que el documento diga un número que el repositorio no
+tiene—.
+
+`tsc`, `eslint`, **4200/4200** y `build` en verde. Sin migración.

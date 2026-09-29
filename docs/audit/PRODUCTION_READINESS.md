@@ -34,17 +34,25 @@ una declaración mal presentada o un proveedor cobrado dos veces.
 | Qué | Cómo | Resultado |
 | --- | --- | --- |
 | Compilación de producción | `npx next build` | ✅ compila |
-| Pruebas unitarias | `npm test` | ✅ **2 300** en verde |
+| Pruebas unitarias | `npm test` | ✅ **4 200** en verde (foto del 29-sep: contarlas exige ejecutarlas, así que ésta es la única cifra del documento que no se deriva) |
 | Tipos | `npx tsc --noEmit` | ✅ limpio |
 | Lint | `npx next lint` | ✅ sin errores (1 aviso ajeno, preexistente) |
 | Pruebas SQL contra Postgres real | `bash scripts/db-test.sh` | ✅ verde |
-| RLS | recuento sobre las migraciones | ✅ **114 de 115 tablas**¹ |
+| RLS | recuento sobre las migraciones | ✅ **119 de 119 tablas**¹ |
 | Secretos en el repositorio | `git ls-files` + búsqueda de patrones | ✅ ninguno² |
 | Observabilidad | ficheros de configuración | ✅ Sentry instalado y conectado |
 
-¹ La que falta es `app.rate_limit_bucket`: infraestructura del limitador, sin
-datos de cliente. Las políticas cubren `select`, `insert`, `update` y `delete`,
+¹ No falta ninguna, y antes sí: `app.rate_limit_bucket` era la excepción
+anotada aquí y **ya lleva su política**. Son 109 por `app.enable_tenant_rls`
+—las que tienen inquilino— y 10 con política propia, que son las que no lo
+tienen: `organizations`, `plan`, `stripe_event`, `api_key`,
+`organization_memberships`, `organization_relationships`,
+`user_active_workspace`, `membego_sso_jti`, `supplier_response_token` y el
+propio limitador. Las políticas cubren `select`, `insert`, `update` y `delete`,
 no solo lectura.
+
+El recuento lo deriva `scripts/cifras-del-informe.mjs` de las migraciones, y
+una guarda compara lo que dice esta tabla con lo que sale de ahí.
 
 ² Solo `.env.example` está versionado. El JWT que aparece en `membego.test.ts`
 es inventado y sin firma.
@@ -100,7 +108,7 @@ Además, cerrados en este ciclo y no listados antes:
 | --- | --- | --- |
 | **DB-001** FKs sin inquilino | Medio | **Reducido.** La premisa no cambia: ninguna clave foránea es compuesta `(organization_id, id)`, así que lo expuesto es una escritura con la **llave de servicio** que referencie mal —con RLS puesta, una sesión normal no puede—. Lo que cambia es que ya está medido y acotado: **141 referencias sin comprobar**, de las que 0102 cierra **36** en 25 tablas por un criterio escrito —toda referencia a una PERSONA (cliente, vendedor, proveedor) o a un DOCUMENTO SOBRE UNA PERSONA (reserva, venta)—. **141 → 105**, y ese 105 es un número **exacto en las dos direcciones**, no un tope: con el tope anterior de 141, una pérdida de tres comprobaciones cabía debajo sin que nada lo dijera (y pasó: registrar `pickup` por su nombre sustituyó al disparador de 0018). La más cara de las 36 no es de dinero — `supplier_response_token.supplier_id` es la llave del portal del proveedor, y apuntando a otro proveedor ese enlace abre el portal de otra empresa. Sigue abierto lo que queda fuera del criterio: **105 referencias** a cosas —almacén, mantenimiento, turnos, activos—, sin cubrir a propósito porque cada comprobación cuesta una lectura por alta |
 | **BL-002** sin transacciones | Medio | **Reducido.** La premisa no cambia —PostgREST no da transacciones y reescribir la venta entera como función de base sería cambiar un riesgo conocido por otro mayor—, pero el hueco práctico sí se estrechó. Medido y corregido: (1) el cobro del monedero prepago corría **fuera** de la saga y **se tragaba su error**, así que un fallo dejaba la venta confirmada con el saldo del socio intacto y sin una fila que lo dijera; ahora va dentro, antes de promover la orden, y devuelve el dinero al compensar; (2) la compensación cancelaba las reservas sin devolver **el cupo del socio**, que a diferencia de la plaza no caduca — el `catch` sí lo devolvía, pero con un mapa en memoria que muere con el proceso, así que el barrido no. Y hay un **inventario con guarda**: cada efecto de la venta declara quién lo deshace, y añadir una escritura sin su deshacer pone la prueba en rojo. Sigue abierto lo irreducible: entre dos escrituras no hay atomicidad, y lo que la cubre es compensación + barrido + caducidad, no una transacción |
-| **T-001** E2E casi inexistente | Medio | **Reducido, y ahora se sabe POR QUÉ no corría.** Son **seis ficheros con 18 recorridos**, incluido `venta-completa.spec.ts` (vender→cobrar→tomar la plaza→cancelar→devolverla con el ratón, afirmando cada paso contra la API con la misma sesión, más el rechazo de sobreventa por el servidor). Lo que decía este informe —«esa spec no se ha ejecutado nunca»— era verdad y la causa no era solo la falta de docker aquí: **el montaje del E2E sembraba `departure.status = "scheduled"`, que la columna no admite**, así que PostgREST rechazaba el insert, el montaje lanzaba y NINGUNA prueba de navegador llegaba a arrancar. Más de cien corridas de CI fallaron ahí, y `main` tiene el mismo valor. Corregido, con guarda nueva que compara cada literal del montaje contra los valores que la columna declara. **Y ya se ha visto una corrida**: la 238 ejecutó 19 pruebas — **14 en verde, 5 en rojo**. Los cinco fallos venían de tres causas, y los tres mensajes señalaban el sitio equivocado: una clave mal escrita en la propia prueba (`data.products` por `data.catalog`) que salía como «revisa el sembrador»; un `supplier_id` que el disparador de 0085 descarta en silencio, que salía como «el portal del proveedor está vacío»; y una prueba que exigía un 403 sobre `customer` derogado en 0075, que salía como «fuga de aislamiento». Los tres corregidos, con guardas y una prueba SQL contra Postgres. Tras corregirlos, la corrida 241 sobre `main` dio **17 de 19**: las cuatro del proveedor y del socio en verde, y la venta entera llegando hasta el cobro. Los dos que quedaban eran otra vez mensajes que acusaban al sitio equivocado — una espera que se cumplía cuando el cobro ARRANCABA (el botón cambia de rótulo mientras trabaja) y una venta de prueba sin cliente, que `/api/orders` rechaza antes de mirar el cupo. Corregidos, con dos guardas derivadas del código. **Lo que sigue abierto**: nadie ha visto todavía una corrida ENTERA en verde — la prueba de que estos últimos dos arreglos bastan es la ejecución que viene |
+| **T-001** E2E casi inexistente | Medio | **Reducido, y ahora se sabe POR QUÉ no corría.** Son **siete ficheros con 19 recorridos**, incluido `venta-completa.spec.ts` (vender→cobrar→tomar la plaza→cancelar→devolverla con el ratón, afirmando cada paso contra la API con la misma sesión, más el rechazo de sobreventa por el servidor). Lo que decía este informe —«esa spec no se ha ejecutado nunca»— era verdad y la causa no era solo la falta de docker aquí: **el montaje del E2E sembraba `departure.status = "scheduled"`, que la columna no admite**, así que PostgREST rechazaba el insert, el montaje lanzaba y NINGUNA prueba de navegador llegaba a arrancar. Más de cien corridas de CI fallaron ahí, y `main` tiene el mismo valor. Corregido, con guarda nueva que compara cada literal del montaje contra los valores que la columna declara. **Y ya se ha visto una corrida**: la 238 ejecutó 19 pruebas — **14 en verde, 5 en rojo**. Los cinco fallos venían de tres causas, y los tres mensajes señalaban el sitio equivocado: una clave mal escrita en la propia prueba (`data.products` por `data.catalog`) que salía como «revisa el sembrador»; un `supplier_id` que el disparador de 0085 descarta en silencio, que salía como «el portal del proveedor está vacío»; y una prueba que exigía un 403 sobre `customer` derogado en 0075, que salía como «fuga de aislamiento». Los tres corregidos, con guardas y una prueba SQL contra Postgres. Tras corregirlos, la corrida 241 sobre `main` dio **17 de 19**: las cuatro del proveedor y del socio en verde, y la venta entera llegando hasta el cobro. Los dos que quedaban eran otra vez mensajes que acusaban al sitio equivocado — una espera que se cumplía cuando el cobro ARRANCABA (el botón cambia de rótulo mientras trabaja) y una venta de prueba sin cliente, que `/api/orders` rechaza antes de mirar el cupo. Corregidos, con dos guardas derivadas del código. **Lo que sigue abierto**: nadie ha visto todavía una corrida ENTERA en verde — la prueba de que estos últimos dos arreglos bastan es la ejecución que viene |
 | ~~**F-001** módulos fiscales sin pruebas~~ | **CERRADA** | Medido: los **20** servicios que este informe listaba sin una sola prueba tienen hoy su fichero, `invoice-service`, `dgii-service` y `supplier-settlement-service` incluidos. La cobertura de más abajo es de un ciclo anterior y queda como registro de dónde se venía |
 | **P-001** rendimiento desconocido | Medio | **Reducido, con capacidad medida.** 9.17 dio los primeros números (panel 800→450 ms con 120 000 reservas; escritura 0,76→0,66 ms) y dejó abierto que **todo era un solo cliente**. Ya no: `scripts/perf-panel.sh` + `supabase/perf/volumen.sql` siembran 120 000 reservas y miden con 1, 2, 4, 8 y 16 clientes a la vez. Resultado: el panel **gasta un núcleo entero por visita**, así que el caudal se planta en **~5,4 visitas/s con cuatro núcleos** y a partir de ahí la latencia crece en línea recta (16 clientes → p50 2,8 s). La ventana por defecto —el mes— cuesta 186 ms y aguanta ~23/s. Y la pregunta que importaba tiene respuesta medida: **el panel cargado NO impide vender** (coger plaza pasa de 0,3 a 1,8 ms de mediana, peor caso 43 ms). Sigue abierto el coste por visita: **cinco mejoras medidas y las cinco descartadas**, incluida la que este informe daba por buena —fundir los desgloses con `grouping sets`, prevista en ~140 ms y medida en **5 ms**—; bajar de ~610 ms pide una tabla de instantáneas, que es una ola entera. Y lo medido es una máquina de cuatro núcleos: la capacidad de la instancia real está sin medir, y el banco existe para correrlo allí |
 | **DR-001** restauración sin probar | Medio | **Reducido, no cerrado.** El PROCEDIMIENTO y la COMPROBACIÓN sí están probados: `scripts/restore-drill.sh` monta la base, la vuelca, **la destruye**, la restaura y pasa `supabase/verify/restauracion.sql` (13 filas), y luego rompe la base a propósito **seis veces** exigiendo qué fila caza cada rotura. Corre en cada CI. La comprobación ya no puede envejecer: una guarda la compara con las migraciones. Lo que sigue abierto es lo único que no se puede hacer desde aquí — **un simulacro contra el proyecto de Supabase de verdad**, que son treinta minutos y está escrito paso a paso en `docs/runbooks/RESTAURACION.md`. Mientras el registro de simulacros de ese manual esté vacío, esto no está cerrado |
@@ -108,22 +116,29 @@ Además, cerrados en este ciclo y no listados antes:
 
 ---
 
-## Cobertura, medida
+## Cobertura, medida — y esta vez derivada
 
-- **Servicios sin ninguna prueba: 20** (5 320 líneas). Por tamaño:
-  `membego-redemption-service` (596), `membego-service` (550),
-  `dispatch-service` (499), `supplier-settlement-service` (453),
-  `attribution-service` (378), `public-booking-service` (357),
-  `invoice-service` (351), `seller-goals-service` (348), `bundle-service` (340),
-  `schedule-service` (293), `dgii-service` (286), `system-health-service` (257),
-  `analytics-service` (221), `commission-adjust-service` (199),
-  `plan-service` (191), `import-service` (189), `quote-service` (154),
-  `manifest-service` (94), `cash-service` (93), `gift-card-service` (71).
-- **Rutas de API: 152**, de las cuales 5 con prueba propia. El resto está
-  cubierto **estructuralmente** por las guardas de `ui-contracts.test.ts`
+> Las cifras de aquí abajo las saca `scripts/cifras-del-informe.mjs` del propio
+> repositorio, y una guarda de `ui-contracts.test.ts` compara este texto con esa
+> salida. El día que cualquiera deje de ser verdad, la prueba se pone roja.
+>
+> **Hizo falta.** Este apartado se titulaba «Cobertura, medida» y sus seis
+> cifras estaban mal, unas por mucho: decía «servicios sin ninguna prueba: 20»
+> cuando son **cero de 40**, «rutas de API: 152» cuando son **176**, y «pruebas
+> SQL: 10 ficheros» cuando son **24**. Una cifra escrita a mano en un documento
+> envejece peor que el código, porque nada falla cuando deja de ser cierta.
+
+- **Servicios sin ninguna prueba: 0** de **40**. Los veinte que este informe
+  listaba por nombre —`membego-redemption-service`, `invoice-service`,
+  `dgii-service`, `supplier-settlement-service`…— tienen todos la suya.
+- **Rutas de API: 176**, de las cuales unas pocas con prueba propia. El resto
+  está cubierto **estructuralmente** por las guardas de `ui-contracts.test.ts`
   —CSRF, plan, inquilino, forma de la respuesta—, que es otra cosa que probar su
-  lógica.
-- **Pruebas SQL contra Postgres de verdad:** 10 ficheros.
+  lógica. Ese matiz sigue siendo verdad y conviene no perderlo de vista.
+- **Pruebas SQL contra Postgres de verdad: 24** ficheros.
+- **Recorridos de navegador: 19**, repartidos en **7** ficheros, y ya no es una
+  promesa: el 29-sep el CI los ejecutó enteros en verde por primera vez.
+- **Migraciones en el repositorio: 102**, la última la **0102**.
 
 ---
 
@@ -132,7 +147,7 @@ Además, cerrados en este ciclo y no listados antes:
 El entorno donde se escribe esto **no tiene credenciales de Supabase**. Por lo
 tanto, sobre la base real no se sabe:
 
-- qué migraciones están aplicadas (en el repositorio hay **67**);
+- qué migraciones están aplicadas (en el repositorio hay **102**);
 - si el hook del token (`app.custom_access_token_hook`) está instalado y activo;
 - si las variables de entorno están puestas en el alojamiento;
 - si las copias de seguridad corren, y con qué retención.
@@ -159,8 +174,12 @@ En orden de lo que más cuesta si sale mal:
 2. **Red sobre lo fiscal.** `invoice-service`, `dgii-service` y
    `supplier-settlement-service`. Es lo que te multa o le paga dos veces al
    transportista.
-3. **E2E del camino del dinero.** Vender, cobrar, cancelar y reembolsar en un
-   navegador, contra una base de prueba.
+3. ~~**E2E del camino del dinero.** Vender, cobrar, cancelar y reembolsar en
+   un navegador, contra una base de prueba.~~ **HECHO** el 29-sep:
+   `venta-completa.spec.ts` lo recorre con el ratón y afirma cada paso contra la
+   API con la misma sesión, y el CI lo ejecuta contra una pila Supabase efímera.
+   Los 19 recorridos en verde. Queda fuera el **reembolso**, que la spec no
+   cubre: cancela y comprueba que la plaza vuelve, pero no devuelve el dinero.
 4. **`EXPLAIN` y carga** sobre las consultas del panel y del manifiesto, que
    son las que se abren cien veces al día.
 5. ~~**Separar el proyecto de Supabase del CI** del de producción (CI-001).~~
@@ -174,7 +193,7 @@ En orden de lo que más cuesta si sale mal:
 
 Lo que hay que tener hecho antes de la primera venta real:
 
-- [ ] `npm run verify:migrations` sin nada pendiente (la **0067** es la última).
+- [ ] `npm run verify:migrations` sin nada pendiente (la **0102** es la última).
 - [ ] `SUPABASE_USE_RLS=true` en producción — si no, la aplicación **se niega a
       arrancar**, por diseño.
 - [ ] `CRON_SECRET` puesto, y los cinco trabajos programados dados de alta
