@@ -6313,3 +6313,70 @@ a escala 100 la primera versión dejaba **dos salidas** en total y solo seis de
   correrlo allí.
 
 `tsc`, `eslint`, **4176/4176**, `db-test`, `restore-drill` y `build` en verde.
+
+---
+
+## La lista de SQL pendiente, y los tres agujeros que encontró al escribirla
+
+`docs/operaciones/SQL_PENDIENTE.md`, `supabase/editor/0088_parte_3_verificacion.sql`,
+`0089_parte_3_verificacion.sql`, `0098_parte_1.sql`, `0098_parte_2_verificacion.sql`,
+`scripts/db-test.sh`, `src/lib/ui-contracts.test.ts`.
+
+**47 archivos, 15 migraciones (0088 → 0102)**, en orden, con qué desbloquea cada
+uno y cuáles solo leen. La lista vive en el repositorio y no en un mensaje,
+porque una lista de nombres de fichero en un chat caduca sin avisar.
+
+### Lo que apareció al armarla
+
+Tres agujeros, ninguno visible leyendo:
+
+1. **La 0098 no tenía copia para el editor.** Era la única migración pendiente
+   sin `_parte_N.sql`, y llevaba así desde que se escribió: el paso habría sido
+   «abre la migración y averigua qué pegar». Son 3 kB que caben de sobra.
+2. **La 0088 y la 0089 no tenían verificación.** Dos pasos sin forma de saber si
+   funcionaron —y el editor de Supabase dice «Success. No rows returned» tanto
+   si hizo lo suyo como si no—. La de 0089 comprueba, entre otras cosas, el
+   índice único del NCF: sin él, **el mismo comprobante del mismo proveedor
+   entra dos veces**, que es una factura duplicada ante la DGII.
+3. **El orden que yo mismo había dado era el no probado.** En una lista anterior
+   puse la 0094 y la 0095 por delante de la 0091–0093 porque la 0094 bloquea las
+   ventas. El orden numérico es el que se aplica en cada integración sobre una
+   base vacía y el único probado de punta a punta — y hay dependencias reales
+   dentro del tramo: **la 0099 llama siete veces a `departure_pax_totals`, que
+   la crea la 0094**. La urgencia se resuelve haciendo la lista de una sentada,
+   no reordenándola. Queda corregido en el documento, dicho como corrección.
+
+### Y un cuarto, que encontró la guarda: la verificación que revienta
+
+Añadí controles negativos a `db-test.sh` —romper el objeto a propósito y exigir
+que la fila lo diga, igual que los seis del simulacro de restauración— y dos
+fallaron al primer intento. No por un descuido de redacción: **con la columna
+borrada, tres de estas verificaciones reventaban con un error de Postgres
+—«column … does not exist»— en vez de devolver la fila que dice FALTA**.
+
+Es decir: dejaban de verificar justo el día que algo había salido mal, que es el
+único día que importan. Se arregla leyendo los datos por
+`to_jsonb(fila) ->> 'columna'`, que se resuelve en ejecución y devuelve nulo
+cuando la columna no está, así que la fila sobrevive y acusa.
+
+### Las guardas, y la que no guardaba nada
+
+Un documento con 47 nombres de fichero y 47 números escritos a mano envejece
+solo. Se comprueban las dos direcciones —un fichero nombrado que no existe manda
+a pegar algo que no está; un fichero pendiente sin nombrar se queda sin pegar—
+más que los números vayan de 1 a N sin huecos y en orden numérico. **Los números
+ya se me habían descolgado**: al insertar las verificaciones de 0088 y 0089, los
+43 pasos siguientes quedaron corridos por dos.
+
+Y una lección repetida, por tercera vez en este repositorio: **la guarda de los
+controles negativos no guardaba nada**. `db-test.sh` tiene dos arrays con la
+misma forma y **los mismos cuatro números** —`COPIAS_QUE_SE_REPITEN` y
+`CAZA_VERIFICACION`—, y yo buscaba el patrón por todo el fichero. Las entradas
+de copias satisfacían las aserciones de controles: habría pasado con el bloque
+de controles **borrado entero**. Ahora se lee el bloque, no el fichero.
+
+**Mutación: 10 de 10**, tras corregir esa guarda y una plantilla de mutación mía
+que apuntaba a un número de paso que el renumerado había movido —una mutación
+que no aplica se lee igual que una que sobrevive, y no es lo mismo—.
+
+`tsc`, `eslint`, **4182/4182**, `db-test`, `restore-drill` y `build` en verde.

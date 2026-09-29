@@ -105,35 +105,98 @@ done
 # `editor-sql.test.ts`; lo que aquí se comprueba es que CORREN, y que su
 # verificación sabe decir que algo va mal.
 #
-# Se eligen las de 0102 porque son idempotentes por construcción —cada trozo
-# empieza por `drop trigger if exists`— así que volver a pegarlas sobre una base
-# que ya las tiene es exactamente lo que hará quien las repita.
-echo "→ las copias de 0102 que se pegan en el editor"
-for pf in "$ROOT"/supabase/editor/0102_parte_[123].sql; do
-  [ -e "$pf" ] || { echo "✘ falta $pf"; fail=1; continue; }
-  [ "$(id -u)" = "0" ] && chown postgres "$pf" 2>/dev/null
-  if ! psql_run -f "$pf" >/dev/null; then
-    echo "✘ $(basename "$pf") no corre contra el esquema actual"; fail=1
+# Se corren las que son IDEMPOTENTES por construcción —`drop trigger if exists`,
+# `add column if not exists`—, porque volver a pegarlas sobre una base que ya
+# las tiene es exactamente lo que hará quien repita un paso de la lista de
+# `docs/operaciones/SQL_PENDIENTE.md`.
+#
+# Cada entrada es «número : glob de partes : verificación».
+# Un glob vacío («-») significa «solo la verificación»: la migración ya la
+# aplicó el bucle de arriba y lo que se comprueba es que su verificación
+# COINCIDA con ella. Contra una base que lo tiene todo, ninguna puede acusar —y
+# si acusa, o la verificación mira lo que no es, o la migración no hace lo que
+# la verificación espera. Las dos cosas se descubren el día del despliegue.
+COPIAS_QUE_SE_REPITEN=(
+  "0088:-:0088_parte_3_verificacion.sql"
+  "0089:-:0089_parte_3_verificacion.sql"
+  "0098:0098_parte_1.sql:0098_parte_2_verificacion.sql"
+  "0102:0102_parte_[123].sql:0102_parte_4_verificacion.sql"
+)
+echo "→ las copias del editor que aguantan repetirse"
+for entrada in "${COPIAS_QUE_SE_REPITEN[@]}"; do
+  NUM="${entrada%%:*}"; RESTO="${entrada#*:}"
+  PARTES="${RESTO%%:*}"; VERIF="$ROOT/supabase/editor/${RESTO##*:}"
+  encontradas=0
+  if [ "$PARTES" != "-" ]; then
+    for pf in "$ROOT"/supabase/editor/$PARTES; do
+      [ -e "$pf" ] || continue
+      encontradas=$((encontradas + 1))
+      [ "$(id -u)" = "0" ] && chown postgres "$pf" 2>/dev/null
+      if ! psql_run -f "$pf" >/dev/null; then
+        echo "✘ $(basename "$pf") no corre contra el esquema actual"; fail=1
+      fi
+    done
+    if [ "$encontradas" = "0" ]; then
+      echo "✘ $NUM: no hay ninguna parte que pegar donde debería haberlas"; fail=1; continue
+    fi
   fi
-done
-VERIF="$ROOT/supabase/editor/0102_parte_4_verificacion.sql"
-if [ -e "$VERIF" ]; then
+  if [ ! -e "$VERIF" ]; then
+    echo "✘ $NUM: falta su verificación"; fail=1; continue
+  fi
   [ "$(id -u)" = "0" ] && chown postgres "$VERIF" 2>/dev/null
   SALIDA=$(psql_run -At -f "$VERIF" 2>&1 || true)
-  # La verificación devuelve filas legibles; ninguna puede decir que falta algo.
-  if echo "$SALIDA" | grep -q 'FALTA'; then
-    echo "✘ la verificación de 0102 dice que falta algo:"; echo "$SALIDA" | grep 'FALTA'; fail=1
-  elif echo "$SALIDA" | grep -q 'HAY sin comprobar'; then
-    echo "✘ la verificación de 0102 encontró referencias a una persona sin comprobar:"
-    echo "$SALIDA" | grep 'HAY sin comprobar'; fail=1
-  elif [ -z "$SALIDA" ]; then
-    echo "✘ la verificación de 0102 no devolvió ninguna fila: no verificó nada"; fail=1
+  # La verificación devuelve filas legibles; ninguna puede acusar.
+  if [ -z "$SALIDA" ]; then
+    echo "✘ la verificación de $NUM no devolvió ninguna fila: no verificó nada"; fail=1
+  elif echo "$SALIDA" | grep -qE 'FALTA|HAY sin comprobar'; then
+    echo "✘ la verificación de $NUM acusa contra una base que lo tiene todo:"
+    echo "$SALIDA" | grep -E 'FALTA|HAY sin comprobar'; fail=1
   else
-    echo "  las 4 filas de la verificación de 0102 se leen y ninguna acusa"
+    if [ "$PARTES" = "-" ]; then
+      echo "  $NUM: su verificación coincide con la migración y no acusa"
+    else
+      echo "  $NUM: $encontradas parte(s) pegadas y su verificación no acusa"
+    fi
   fi
-else
-  echo "✘ falta la verificación de 0102"; fail=1
-fi
+done
+
+# ── Y esas verificaciones, ROMPIENDO algo a propósito ───────────────────────
+#
+# Que no acusen contra una base completa prueba que no dan falsos positivos. No
+# prueba que sepan acusar: una verificación cuyas filas solo saben decir OK pasa
+# esa comprobación perfectamente.
+#
+# Sobrevivió a la mutación —cambiar `else 'FALTA'` por `else 'OK'` en una fila
+# seguía dejando la palabra FALTA en otras y la guarda de texto se conformaba—,
+# así que aquí se rompe el objeto de verdad y se exige que la fila lo diga. Es
+# lo mismo que hacen los seis controles negativos del simulacro de restauración.
+#
+# Cada entrada: número : SQL que rompe : qué fila tiene que acusar.
+CAZA_VERIFICACION=(
+  "0088:drop trigger pickup_route_sync_pickups on pickup_route:mueve si la ruta cambia"
+  "0088:alter table pickup drop column service_date:pickup.service_date"
+  "0089:drop index settlement_supplier_ncf_uq:el mismo NCF"
+  "0089:alter table settlement drop column supplier_ncf:settlement.supplier_ncf"
+  "0098:alter table membego_customer drop column membership_status:columna membership_status"
+  "0102:drop trigger task_same_tenant_refs on task:disparadores de 0102"
+)
+echo "→ rompiendo a propósito, para ver si la verificación se entera"
+for entrada in "${CAZA_VERIFICACION[@]}"; do
+  NUM="${entrada%%:*}"; RESTO="${entrada#*:}"
+  ROMPE="${RESTO%%:*}"; ESPERA="${RESTO##*:}"
+  VF=$(ls "$ROOT"/supabase/editor/${NUM}_parte_*verificacion.sql 2>/dev/null | head -1)
+  if [ -z "$VF" ]; then echo "✘ $NUM: no hay verificación que probar"; fail=1; continue; fi
+  [ "$(id -u)" = "0" ] && chown postgres "$VF" 2>/dev/null
+  # En una transacción que se deshace: la rotura no sobrevive al control.
+  SAL=$(printf 'begin;\n%s;\n\\i %s\nrollback;\n' "$ROMPE" "$VF" | psql_run -At 2>&1 || true)
+  if echo "$SAL" | grep -q "$ESPERA.*FALTA\|FALTA.*$ESPERA"; then
+    echo "  ✔ $NUM caza «$ESPERA»"
+  else
+    echo "✘ $NUM: se rompió «$ROMPE» y la verificación NO lo dijo en «$ESPERA»"
+    echo "$SAL" | head -12 | sed 's/^/     /'
+    fail=1
+  fi
+done
 
 # ── «¿Qué migraciones me faltan?», contra una base que NO le falta ninguna ──
 #

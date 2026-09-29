@@ -12297,3 +12297,155 @@ describe("P-001 · lo que le cuesta al panel cada visita", () => {
       .toMatch(/perf\.escala/);
   });
 });
+
+describe("la lista de SQL pendiente no puede envejecer", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * UNA LISTA DE NOMBRES DE FICHERO CADUCA SOLA
+   *
+   * `docs/operaciones/SQL_PENDIENTE.md` es lo que alguien sigue mientras pega
+   * SQL contra su base de producción, paso a paso. Es una lista de 45 nombres
+   * de fichero, y eso envejece en cuanto se añade una migración: la lista deja
+   * de mencionarla, nadie la pega, y el sistema se queda a medias sin que nada
+   * avise.
+   *
+   * Ya pasó en pequeño: la 0098 era la única migración pendiente SIN copia para
+   * el editor, y llevaba así desde que se escribió. Nadie lo notó porque no hay
+   * forma de notarlo leyendo.
+   *
+   * Aquí se comprueban las dos direcciones, que son dos fallos distintos:
+   *  · un fichero nombrado en el documento que no existe → manda a pegar algo
+   *    que no está;
+   *  · un fichero pendiente que el documento no nombra → se queda sin pegar.
+   */
+  const DOC = "docs/operaciones/SQL_PENDIENTE.md";
+  const EDITOR = "supabase/editor";
+  /** El primer número pendiente. Lo anterior está aplicado. */
+  const DESDE = 88;
+
+  const nombrados = () =>
+    new Set([...read(DOC).matchAll(/`([a-z0-9_]+\.sql)`/g)].map((m) => m[1]));
+
+  it("existe, y todo fichero que nombra está en supabase/editor", () => {
+    expect(existe(DOC), "desapareció la lista de SQL pendiente").toBe(true);
+
+    const fantasmas = [...nombrados()].filter((f) => !existe(`${EDITOR}/${f}`));
+    expect(fantasmas, "la lista manda a pegar ficheros que no existen").toEqual([]);
+    // Y que se hayan encontrado: una expresión regular rota daría cero nombres
+    // y las dos comprobaciones pasarían por vacío.
+    expect(nombrados().size, "la lista dejó de nombrar ficheros").toBeGreaterThanOrEqual(45);
+  });
+
+  it("y ninguna migración pendiente se queda fuera de la lista", () => {
+    const dichos = nombrados();
+    const olvidados = readdirSync(path.join(ROOT, EDITOR))
+      .filter((f) => /^\d{4}_parte/.test(f) && Number(f.slice(0, 4)) >= DESDE)
+      .filter((f) => !dichos.has(f));
+    expect(olvidados,
+      `estas partes están pendientes y la lista no las nombra: nadie las pegaría`)
+      .toEqual([]);
+  });
+
+  it("los pasos van numerados de 1 a N, sin huecos y en orden", () => {
+    /**
+     * Los números están escritos en el documento, así que se descuelgan en
+     * cuanto alguien inserta un paso. Me pasó al añadir las verificaciones de
+     * 0088 y 0089: los 43 pasos siguientes quedaron corridos por dos, y un
+     * documento que se sigue paso a paso con los números mal es peor que uno
+     * sin números.
+     */
+    const filas = [...read(DOC).matchAll(/^\| (\d+) \| `(\d{4}_parte[a-z0-9_]*\.sql)`/gm)]
+      .map((m) => ({ n: Number(m[1]), fichero: m[2] }));
+    const pendientes = readdirSync(path.join(ROOT, EDITOR))
+      .filter((f) => /^\d{4}_parte/.test(f) && Number(f.slice(0, 4)) >= DESDE)
+      .sort();
+
+    expect(filas.length, "la lista numerada no cubre todas las partes pendientes")
+      .toBe(pendientes.length);
+    expect(filas.map((f) => f.n), "los números de la lista se descolgaron")
+      .toEqual(filas.map((_, i) => i + 1));
+    // Y en el mismo orden que el numérico, que es el único probado.
+    expect(filas.map((f) => f.fichero), "la lista no va en orden de número de migración")
+      .toEqual(pendientes);
+  });
+
+  it("y toda migración pendiente tiene copia para el editor", () => {
+    /**
+     * Sin copia, el paso de la lista sería «abre la migración y averigua qué
+     * pegar». La 0098 estuvo así: 3 kB que cabían de sobra en un pegado, sin
+     * nadie que lo dijera.
+     */
+    const conCopia = new Set(
+      readdirSync(path.join(ROOT, EDITOR))
+        .filter((f) => /^\d{4}_parte/.test(f))
+        .map((f) => f.slice(0, 4))
+    );
+    const sinCopia = readdirSync(path.join(ROOT, "supabase/migrations"))
+      .filter((f) => f.endsWith(".sql") && Number(f.slice(0, 4)) >= DESDE)
+      .map((f) => f.slice(0, 4))
+      .filter((n) => !conCopia.has(n));
+    expect(sinCopia, "migraciones pendientes que nadie puede pegar").toEqual([]);
+  });
+
+  it("y cada verificación que corre en CI tiene su control negativo", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * UNA VERIFICACIÓN QUE NO SABE ACUSAR NO VERIFICA
+     *
+     * `db-test.sh` corre estas verificaciones contra una base completa y exige
+     * que ninguna acuse. Eso descarta los falsos positivos y NADA MÁS: una
+     * verificación cuyas filas solo saben decir OK pasa esa prueba perfecta.
+     *
+     * Por eso hay controles negativos que rompen el objeto a propósito —igual
+     * que los seis del simulacro de restauración—, y por eso se exigen aquí POR
+     * SU NÚMERO. Un suelo del tipo «al menos cuatro controles» sobrevive a
+     * borrar uno; ya pasó en DR-001, y borrar uno de éstos volvió a sobrevivir.
+     *
+     * Los controles encontraron un fallo real: con la columna borrada, tres de
+     * estas verificaciones REVENTABAN con un error de Postgres en vez de decir
+     * FALTA. Es decir, dejaban de verificar justo el día que algo salió mal.
+     */
+    const sh = readSh("scripts/db-test.sh");
+    /**
+     * SE LEE EL BLOQUE, NO EL FICHERO.
+     *
+     * `db-test.sh` tiene DOS arrays con la misma forma —`COPIAS_QUE_SE_REPITEN`
+     * y `CAZA_VERIFICACION`— y con los MISMOS cuatro números. La primera
+     * versión de esta guarda buscaba el patrón por todo el fichero, así que las
+     * entradas de copias satisfacían las aserciones de controles: habría pasado
+     * con el bloque de controles borrado entero. Sobrevivió a la mutación.
+     */
+    const bloque = /CAZA_VERIFICACION=\(([\s\S]*?)\n\)/.exec(sh);
+    expect(bloque, "desapareció el bloque de controles negativos de db-test.sh").not.toBeNull();
+    const controles = [...bloque![1].matchAll(/"(\d{4}):[^:"]+:[^"]+"/g)].map((m) => m[1]);
+    const conCaza = new Set(controles);
+
+    for (const num of ["0088", "0089", "0098", "0102"]) {
+      expect(conCaza.has(num), `${num} corre en CI y nadie comprueba que su verificación sepa acusar`)
+        .toBe(true);
+    }
+    // Y que no se vacíe el bloque entero: dos por migración es lo medido.
+    expect(controles.length, "se borraron controles negativos").toBeGreaterThanOrEqual(6);
+
+    // Toda verificación que CI ejecuta tiene que tener al menos un control.
+    const copias = /COPIAS_QUE_SE_REPITEN=\(([\s\S]*?)\n\)/.exec(sh);
+    expect(copias, "desapareció el bloque de copias que se ejecutan").not.toBeNull();
+    const ejecutadas = [...copias![1].matchAll(/"(\d{4}):[^:"]*:(\d{4}_parte_[a-z0-9_]*verificacion\.sql)"/g)]
+      .map((m) => m[1]);
+    const sinCaza = [...new Set(ejecutadas)].filter((n) => !conCaza.has(n));
+    expect(sinCaza, "verificaciones que CI corre sin comprobar que sepan fallar").toEqual([]);
+  });
+
+  it("cada migración pendiente trae una verificación que se lee", () => {
+    // Un paso sin verificación es un paso que no se sabe si funcionó: el editor
+    // dice «Success. No rows returned» tanto si hizo algo como si no.
+    const partes = readdirSync(path.join(ROOT, EDITOR)).filter((f) => /^\d{4}_parte/.test(f));
+    const numeros = [...new Set(partes.filter((f) => Number(f.slice(0, 4)) >= DESDE)
+      .map((f) => f.slice(0, 4)))];
+    const sinVerificar = numeros.filter(
+      (n) => !partes.some((f) => f.startsWith(`${n}_`) && /verificacion/.test(f))
+    );
+    expect(sinVerificar, "pasos pendientes sin forma de comprobar que funcionaron")
+      .toEqual([]);
+  });
+});
