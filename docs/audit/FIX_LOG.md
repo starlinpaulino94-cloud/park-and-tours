@@ -6540,3 +6540,58 @@ primera ejecución diciendo exactamente eso.
 `customer.email` a `text` en 0004 pone `db-test` en rojo.
 
 `tsc`, `eslint`, **4186/4186**, `db-test` y `build` en verde.
+
+---
+
+## Las acciones de bitácora que salían con su nombre técnico: eran 17, no 40
+
+`src/lib/bitacora.ts`, `src/lib/ui-contracts.test.ts`.
+
+### El pendiente, y la cifra que estaba mal
+
+De la ola 9.14 quedó apuntado:
+
+> **Lo que esa guarda SIGUE sin ver, y está medido:** cinco sitios componen la
+> acción en tiempo de ejecución […] Son unas cuarenta acciones más, ninguna
+> traducida. Enumerarlas exige escribir las cuarenta etiquetas y es trabajo
+> aparte: queda apuntado, no hecho.
+
+Enumeradas: **diecisiete**. Ese «unas cuarenta» se escribió sin contarlas, que
+es lo que le pasa a una deuda anotada a ojo — y el tamaño supuesto fue parte de
+por qué se aplazó.
+
+Y hay una corrección dentro de la corrección: de los cinco sitios, uno ya estaba
+traducido (`quote_accepted | rejected | negotiating`, desde antes).
+
+### Lo que se veía en el papel
+
+Las diecisiete salían en la auditoría con su nombre técnico. No son todas
+iguales de caras: **siete son de comisiones** —`commissions_approved`,
+`commissions_held`, `commissions_disputed`…— y ésas son las que alguien lee
+cuando discute su paga. Las otras diez: tres de nómina, tres de periodo contable
+y cuatro de saldo regalo.
+
+### La guarda deriva los valores del código, no de una lista
+
+Escribir las diecisiete etiquetas es media hora; lo que evita que vuelva a
+pasar es de dónde salen los valores. Cada familia se deriva de quien la produce:
+
+| familia | de dónde salen los valores |
+| --- | --- |
+| `commissions_` | la unión `CommissionStatus` de `types.ts` |
+| `quote_` | el `Set DECISIONS` de la propia ruta |
+| `payroll_` | los `next` de `payrollTransition` (`hr.ts`) |
+| `period_` | los `next` de `periodTransition` (`financials.ts`) |
+| saldo regalo | los `auditAction` de las cuatro rutas |
+
+Añadir un estado de comisión, o un destino de nómina, hace aparecer la acción
+nueva sola y la guarda pide su traducción. Comprobado mutando las dos cosas.
+
+La guarda comprueba además que la ruta **siga componiendo** la acción: si deja
+de hacerlo, estaría exigiendo traducciones de acciones que ya no existen — que
+es la otra forma de que una guarda envejezca sin avisar.
+
+**Mutación: 6 de 6**, incluidas las dos que importan —un estado nuevo sin
+traducir, y romper el derivador junto con borrar una etiqueta—.
+
+`tsc`, `eslint`, **4191/4191**, `db-test` y `build` en verde.

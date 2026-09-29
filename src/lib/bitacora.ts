@@ -139,6 +139,46 @@ export const ACCION: Record<string, string> = {
   quote_accepted: "Cotización aceptada por el cliente",
   quote_rejected: "Cotización rechazada",
   quote_negotiating: "Cotización en negociación",
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * LAS QUE SE COMPONEN EN TIEMPO DE EJECUCIÓN
+   *
+   * Cuatro rutas arman el nombre con una plantilla —`commissions_${status}`,
+   * `payroll_${decision.next}`, `period_${result.status}`— y el saldo regalo lo
+   * recibe por parámetro. La guarda que exige castellano lee las cadenas
+   * literales del código, así que estas NO las veía: salían en el papel con su
+   * nombre técnico, y las de comisión son las que alguien lee cuando discute su
+   * paga.
+   *
+   * Quedaron apuntadas como «unas cuarenta, enumerarlas es trabajo aparte».
+   * Enumeradas: son DIECISIETE. El número de antes se escribió sin contarlas.
+   *
+   * Los valores salen del código, no de la memoria: `CommissionStatus`
+   * (`types.ts`), los tres destinos de `payrollTransition` y los tres de
+   * `periodTransition` (`financials.ts`), y los cuatro `auditAction` de las
+   * rutas de saldo regalo. Una guarda los vuelve a derivar de ahí.
+   */
+  // Comisiones en bloque: `commissions_${status}`, los siete de CommissionStatus.
+  commissions_pending: "Comisiones devueltas a pendiente",
+  commissions_approved: "Comisiones aprobadas",
+  commissions_settled: "Comisiones liquidadas",
+  commissions_paid: "Comisiones pagadas",
+  commissions_cancelled: "Comisiones canceladas",
+  commissions_held: "Comisiones retenidas",
+  commissions_disputed: "Comisiones en disputa",
+  // Nómina: los tres destinos que `payrollTransition` sabe devolver.
+  payroll_approved: "Nómina aprobada",
+  payroll_paid: "Nómina pagada",
+  payroll_cancelled: "Nómina cancelada",
+  // Periodo contable: los tres de `periodTransition`.
+  period_closed: "Periodo contable cerrado",
+  period_locked: "Periodo contable bloqueado",
+  period_open: "Periodo contable reabierto",
+  // Saldo regalo: la acción le llega al servicio por parámetro.
+  gift_card_issued: "Saldo regalo emitido",
+  gift_card_redeemed: "Saldo regalo consumido",
+  gift_card_refunded: "Saldo regalo devuelto",
+  gift_card_voided: "Saldo regalo anulado",
   seller_bonus_awarded: "Bono otorgado",
   settlement_disputed: "Liquidación disputada por su beneficiario",
   settlement_paid: "Liquidación pagada",

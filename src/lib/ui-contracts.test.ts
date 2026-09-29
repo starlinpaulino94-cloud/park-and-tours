@@ -9,6 +9,7 @@ import { NOTIFY_EVENTS } from "@/lib/notify";
 import { CONFLICT_FIELDS } from "@/lib/choque-de-recurso";
 import { CAMPOS_QUE_ASIGNA_EL_PROVEEDOR } from "@/lib/asignacion-proveedor";
 import { COLUMNAS_SIN_MAYUSCULAS } from "@/test/fake-tenant";
+import { ACCION } from "@/lib/bitacora";
 
 /**
  * Contratos de código fuente.
@@ -12503,5 +12504,86 @@ describe("el doble de pruebas compara como Postgres, no como JavaScript", () => 
     expect(sql, "la prueba SQL dejó de comprobar el `in`, que es lo que usa el importador")
       .toMatch(/email in \('laura@example\.com'\)/);
     expect(sql, "la prueba SQL dejó de comprobar el tipo de la columna").toMatch(/citext/);
+  });
+});
+
+describe("las acciones de bitácora que se componen en tiempo de ejecución", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * LA GUARDA DEL CASTELLANO LEÍA CADENAS LITERALES, Y ÉSTAS NO LO SON
+   *
+   * Cuatro rutas arman el nombre de la acción con una plantilla —`action:
+   * \`commissions_${status}\`— y el saldo regalo la recibe por parámetro. La
+   * guarda que exige que toda acción tenga su texto en castellano lee las
+   * cadenas del código, así que estas NO las veía: salían en el papel de la
+   * auditoría con su nombre técnico. Las de comisión son las que alguien lee
+   * cuando discute su paga.
+   *
+   * Quedaron apuntadas en el registro como «unas cuarenta, y enumerarlas es
+   * trabajo aparte». Enumeradas, son DIECISIETE: el número anterior se escribió
+   * sin contarlas, que es lo que pasa cuando una deuda se anota a ojo.
+   *
+   * Los valores se derivan del CÓDIGO que los produce, no de una lista escrita
+   * aquí: si alguien añade un estado de comisión o un destino de nómina, la
+   * acción nueva aparece sola y esta guarda pide su traducción.
+   */
+  const valoresDe = (rel: string, re: RegExp) =>
+    [...readCodigo(rel).matchAll(re)].map((m) => m[1]);
+
+  const COMPUESTAS: { prefijo: string; valores: () => string[]; donde: string }[] = [
+    {
+      prefijo: "commissions_",
+      donde: "src/app/api/commissions/bulk/route.ts",
+      // `CommissionStatus` es la unión que la ruta acepta en el cuerpo.
+      valores: () => {
+        const t = readCodigo("src/lib/types.ts");
+        const m = /export type CommissionStatus =([\s\S]*?);/.exec(t);
+        return m ? [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]) : [];
+      },
+    },
+    {
+      prefijo: "quote_",
+      donde: "src/app/api/quotes/[id]/decide/route.ts",
+      valores: () => {
+        const r = readCodigo("src/app/api/quotes/[id]/decide/route.ts");
+        const m = /const DECISIONS = new Set\(\[([^\]]*)\]\)/.exec(r);
+        return m ? [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]) : [];
+      },
+    },
+    {
+      prefijo: "payroll_",
+      donde: "src/app/api/payroll/[id]/status/route.ts",
+      valores: () => valoresDe("src/lib/hr.ts", /\bok: true, next: "([a-z_]+)"/g),
+    },
+    {
+      prefijo: "period_",
+      donde: "src/app/api/ledger/periods/route.ts",
+      valores: () => valoresDe("src/lib/financials.ts", /\bok: true, next: "([a-z_]+)"/g),
+    },
+  ];
+
+  it.each(COMPUESTAS)("$prefijo: toda acción posible tiene su texto", ({ prefijo, valores, donde }) => {
+    const posibles = valores();
+    // Que se hayan encontrado: una expresión rota daría cero y esto pasaría por
+    // no mirar nada, que es justo como estas acciones llevaban meses sin verse.
+    expect(posibles.length, `no se pudo derivar ningún valor para ${prefijo}`).toBeGreaterThanOrEqual(3);
+    // Y que la ruta siga componiéndola así: si deja de hacerlo, esta guarda
+    // estaría exigiendo traducciones de acciones que ya no existen.
+    expect(readCodigo(donde), `${donde} dejó de componer la acción`).toContain(`${prefijo}$`);
+
+    const sinTexto = posibles.filter((v) => !ACCION[`${prefijo}${v}`]);
+    expect(sinTexto.map((v) => `${prefijo}${v}`),
+      "saldrían en el papel de la auditoría con su nombre técnico").toEqual([]);
+  });
+
+  it("y las que el servicio recibe por parámetro", () => {
+    // `gift-card-service` no compone nada: la acción se la pasan las rutas.
+    const desdeLasRutas = new Set<string>();
+    for (const f of ficherosTs("src/app/api/gift-cards")) {
+      for (const m of readCodigo(f).matchAll(/auditAction:\s*"([a-z_]+)"/g)) desdeLasRutas.add(m[1]);
+    }
+    expect(desdeLasRutas.size, "no se encontró ninguna acción de saldo regalo").toBe(4);
+    const sinTexto = [...desdeLasRutas].filter((a) => !ACCION[a]);
+    expect(sinTexto, "saldrían en el papel con su nombre técnico").toEqual([]);
   });
 });
