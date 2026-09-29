@@ -12216,3 +12216,84 @@ describe("DB-001 · un disparador de inquilino no puede encoger", () => {
     expect(cubre("pickup", "booking_id")).toBe(true);
   });
 });
+
+describe("P-001 · lo que le cuesta al panel cada visita", () => {
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * EL EJE QUE PREDICE EL COSTE ES CUÁNTAS VECES SE BARRE `booking`
+   *
+   * Medido con 120.000 reservas de un inquilino y cuatro núcleos: el panel a
+   * 365 días cuesta ~610 ms de CPU y el caudal se planta en ~5,4 llamadas por
+   * segundo —una por núcleo—. No es E/S: subir `work_mem` no lo movió (9.17), y
+   * el derrame a disco tampoco es el cuello. Es trabajo por fila.
+   *
+   * Así que lo que hay que vigilar no son los milisegundos —un tope de
+   * milisegundos en CI es una prueba inestable, y una prueba inestable se acaba
+   * reejecutando hasta que pasa— sino CUÁNTAS VECES se recorre la tabla grande.
+   * Hoy son DOS: la ventana y su comparativa.
+   *
+   * El número está medido en los dos sentidos. Una de las mejoras que se
+   * probaron —acotar la comisión por reserva a la ventana, que baja la vista
+   * por defecto de 141 a 102 ms— añade un TERCER barrido, y a 365 días sube de
+   * 566 a 1.015 ms: un 79% peor. Esa es exactamente la regresión que esta
+   * guarda caza, y la razón de que no se haya aplicado.
+   */
+  const MIG = "supabase/migrations/0096_dashboard_summary_proyeccion.sql";
+  const BARRIDOS = 2;
+  const NOMBRADA = 4;
+
+  it("dashboard_summary recorre `booking` dos veces y no más", () => {
+    /**
+     * DOS NÚMEROS, PORQUE EL TEXTO Y EL PLAN NO DICEN LO MISMO.
+     *
+     * En el texto de la función `booking` aparece CUATRO veces: dos `from` —la
+     * ventana y su comparativa— y dos `left join booking pb on pb.id =
+     * p.booking_id` dentro de las dos CTE de cobros. En el plan solo hay DOS
+     * barridos: esos dos `left join` son por clave primaria y ninguna columna
+     * suya se usa, así que el planificador los ELIMINA enteros.
+     *
+     * Se fijan los dos números porque fallan por cosas distintas: los `from`
+     * suben cuando alguien añade otra CTE sobre la ventana —lineal en su
+     * tamaño—, y el total sube cuando alguien mete un `join booking` nuevo,
+     * que es como entra la regresión que medí y descarté.
+     *
+     * La primera versión de esta guarda solo contaba `from booking`, y esa
+     * mutación —acotar la comisión por reserva con un `join booking b0`—
+     * SOBREVIVIÓ: contaba dos y había tres barridos.
+     */
+    const sql = readSql(MIG);
+    const ventanas = [...sql.matchAll(/\bfrom\s+booking\s+\w+/g)].length;
+    const total = [...sql.matchAll(/\b(?:from|join)\s+booking\s+\w+/g)].length;
+
+    expect(ventanas, `el panel abre ${ventanas} CTE sobre booking (medido: ${BARRIDOS}). ` +
+      "Cada una recorre la ventana entera")
+      .toBe(BARRIDOS);
+    expect(total, `booking se nombra ${total} veces (medido: ${NOMBRADA}). ` +
+      "Un `join booking` de más midió +79% a 365 días: 566 → 1.015 ms")
+      .toBe(NOMBRADA);
+  });
+
+  it("y el banco de medición sigue existiendo y siendo ejecutable", () => {
+    /**
+     * P-001 decía «sin pruebas de carga con concurrencia» y lo siguió diciendo
+     * después de medirse, porque la siembra con la que se midió vivía en un
+     * terminal. Una medición que no se puede repetir es una anécdota.
+     */
+    expect(existe("scripts/perf-panel.sh"), "desapareció el banco de medición").toBe(true);
+    expect(existe("supabase/perf/volumen.sql"), "desapareció la siembra de volumen").toBe(true);
+
+    const banco = readSh("scripts/perf-panel.sh");
+    // Las tres cosas que mide, por su nombre: si alguien recorta el banco a una
+    // sola, P-001 vuelve a quedarse sin la mitad que le faltaba.
+    expect(banco, "el banco dejó de medir con varios clientes a la vez").toMatch(/CLIENTES/);
+    expect(banco, "el banco dejó de medir si se puede vender mientras tanto")
+      .toMatch(/reserve_departure_capacity/);
+    expect(banco, "el banco dejó de medir la ventana por defecto y la del año")
+      .toMatch(/for v in 30 365/);
+
+    // Y la siembra tiene que poder correr pequeña, o `db-test` no podría
+    // comprobar que sigue encajando con el esquema.
+    expect(readSql("supabase/perf/volumen.sql"), "la siembra dejó de admitir escala")
+      .toMatch(/perf\.escala/);
+  });
+});

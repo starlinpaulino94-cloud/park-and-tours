@@ -6179,3 +6179,137 @@ dejó los disparadores de la reserva en 0,66 ms— y el número está en la prue
 para que no crezca en silencio.
 
 `tsc`, `eslint`, **4174/4174**, `db-test`, `restore-drill` y `build` en verde.
+
+---
+
+## P-001 · Qué aguanta el panel, y las cinco mejoras que medí y descarté
+
+`scripts/perf-panel.sh`, `supabase/perf/volumen.sql`, `scripts/db-test.sh`,
+`src/lib/ui-contracts.test.ts`.
+
+### Lo que faltaba, y por qué seguía faltando
+
+9.17 midió el panel con volumen y bajó 800 → 450 ms. Dejó dos cosas abiertas, y
+la primera era ésta: **«no hay pruebas de carga con concurrencia. Todo lo medido
+es un solo cliente contra una base sin nadie más»**.
+
+Seguía abierta un año después por un motivo simple: **la siembra con la que se
+midió vivía en un terminal**. Una medición que no se puede repetir es una
+anécdota — el número envejece, nadie sabe con qué datos salió, y la siguiente
+vez se empieza de cero. Que es exactamente lo que pasó aquí.
+
+Así que lo primero que se entrega no es un número: es `perf-panel.sh` y
+`supabase/perf/volumen.sql`, que levantan un Postgres, siembran **120 000
+reservas, 120 000 órdenes, 80 000 cobros, 80 000 comisiones y 5 520 salidas**, y
+miden. Se corre con un comando.
+
+### Lo que el panel aguanta, medido (cuatro núcleos)
+
+| clientes a la vez | p50 | p95 | caudal |
+| --- | --- | --- | --- |
+| 1 | 620 ms | 668 ms | 1,55/s |
+| 2 | 648 ms | 697 ms | 2,98/s |
+| 4 | 678 ms | 865 ms | **5,37/s** |
+| 8 | 1 303 ms | 1 590 ms | 5,78/s |
+| 16 | 2 794 ms | 3 191 ms | 5,52/s |
+
+El caudal se planta en **~5,4 llamadas por segundo — una por núcleo** — y a
+partir de ahí la latencia crece en línea recta mientras el caudal no se mueve.
+El panel **no espera a disco: gasta un núcleo entero por visita**. La ventana por
+defecto (el mes) cuesta 186 ms y aguanta ~23/s.
+
+Es el primer número de capacidad que este sistema ha tenido: con cuatro núcleos,
+**cuatro personas mirando el informe del año ocupan la base entera**.
+
+### La pregunta que de verdad importaba: ¿se puede seguir vendiendo?
+
+| en el panel | coger plaza p50 | p95 | peor |
+| --- | --- | --- | --- |
+| nadie | 0,3 ms | 1,4 ms | 94 ms |
+| 4 | 0,6 ms | 7,2 ms | 14 ms |
+| 8 | 3,9 ms | 15,5 ms | 19 ms |
+| 16 | 1,8 ms | 14,7 ms | 43 ms |
+
+**No.** No se rompe: el reclamo de plaza es una actualización de una fila por
+índice, el sistema operativo la intercala sin problema y el peor caso con
+dieciséis personas en el informe del año son 43 ms. Lo daba por perdido antes de
+medirlo y estaba equivocado. El coste del panel se queda **dentro del panel**.
+
+### Cinco mejoras medidas. Cinco descartadas. Incluida la del plan.
+
+Contra 547 ms de referencia a 365 días, y comprobando en cada una que la salida
+seguía siendo **idéntica**:
+
+| hipótesis | resultado | veredicto |
+| --- | --- | --- |
+| Índice `(organization_id, booking_id)` en `commission`, para quitarle la ordenación en disco a `booking_commission` | 559 ms | **no cambia nada** |
+| Fundir los cinco desgloses en una pasada con `grouping sets` | 542 ms | **3,5%**, no el ~140 ms previsto |
+| Sumar en `float8` en vez de `numeric` | 661 ms | **peor** (los casts por fila) |
+| Acotar la comisión por reserva a la ventana | 30 d: 141 → **102** · 365 d: 566 → **1 015** | −27% en lo común, **+79% en el año** |
+| Calcular la clave de agrupación una vez en vez de dos | 548 ms | Postgres ya la reutilizaba |
+
+**La segunda es la que importa**, porque era el plan de récord: el informe
+anterior decía «fundir los cinco desgloses con `grouping sets`, ~140 ms». El
+prototipo está medido y da **5 ms**.
+
+El error de razonamiento está identificado. Quitando los cinco desgloses de la
+salida, la consulta baja de 547 a 293 ms —46%—, y de ahí salía la estimación.
+Pero ese 46% no son «cinco pasadas»: al podarlos, el planificador se ahorra
+también la agregación, el ordenamiento, la función de ventana y el `jsonb_agg`
+de 366 filas. **Una sola pasada calculando cinco agregaciones cuesta casi lo
+mismo que cinco pasadas calculando una cada una**, porque el coste es por fila,
+no por pasada. El plan lo confirma: la pasada única tarda 133 ms y las cinco
+sueltas 119.
+
+Con eso, lo que queda de P-001 en la parte de velocidad es honesto y firme:
+**los ~610 ms del año son irreducibles sin una tabla de instantáneas.**
+
+### Dos veces medí otra cosa que la que quería
+
+- La primera tanda de tiempos dio **0,15 ms** y me los creí un momento. Eran
+  errores: `dashboard_summary` rechaza la llamada si el inquilino de la sesión
+  no coincide, y yo no había puesto `request.jwt.claims`. Un número redondo y
+  rapidísimo es la forma que tiene una medición de decir que no midió.
+- La primera ablación de la ventana comparativa dijo **257 ms de ahorro**. Había
+  puesto `limit 0` sobre `previous_summary`, que deja el producto cartesiano
+  final **sin filas** y permite saltarse el trabajo entero. La salida medía 0
+  bytes. Bien medido son 35 ms.
+
+Las dos son la misma lección que la caja y que 9.17: **comprobar siempre que lo
+medido produjo lo que tenía que producir**, no solo que tardó poco.
+
+### La guarda: el eje que predice el coste, no los milisegundos
+
+Un tope de milisegundos en CI es una prueba inestable, y una prueba inestable se
+acaba reejecutando hasta que pasa. Lo que sí es determinista es **cuántas veces
+se recorre `booking`**, que es lo que hace el coste lineal en el tamaño de la
+ventana. Hoy son **dos**: la ventana y su comparativa.
+
+Se fijan **dos** números, porque el texto y el plan no dicen lo mismo: en el
+texto `booking` aparece cuatro veces —dos `from` y dos `left join … on pb.id =
+p.booking_id` en las CTE de cobros—, pero en el plan solo hay dos barridos,
+porque esos dos `left join` son por clave primaria y sin columnas usadas, así
+que el planificador **los elimina enteros**.
+
+**La primera versión de la guarda sobrevivió a la mutación**: contaba solo `from
+booking`, y la regresión que existe de verdad —la cuarta hipótesis de la tabla—
+entra como `join booking b0`. Contaba dos y había tres.
+
+Y `db-test.sh` corre la siembra a escala 100 (1 200 reservas, unos segundos) para
+que no envejezca: un banco de rendimiento que ya no encaja con el esquema no
+avisa, falla el día que alguien quiere medir. Eso también se aprendió midiendo:
+a escala 100 la primera versión dejaba **dos salidas** en total y solo seis de
+1 200 órdenes llegaban a ser reserva. No falló; devolvió una base inútil.
+
+**Mutación: 8 de 8**, tras corregir la guarda que sobrevivió.
+
+### Qué sigue abierto de P-001
+
+- **Los ~610 ms del año**, que ahora tienen causa y no candidata: trabajo por
+  fila sobre 95 526 reservas. Bajarlos pide una **tabla de instantáneas**, que es
+  una ola entera con su problema de invalidación. No se ha hecho.
+- Lo medido es **una máquina de cuatro núcleos y un solo inquilino**. La
+  capacidad de la instancia real de Supabase será otra; el banco está para
+  correrlo allí.
+
+`tsc`, `eslint`, **4176/4176**, `db-test`, `restore-drill` y `build` en verde.

@@ -171,6 +171,40 @@ elif [ "${consultas_mal:-0}" = "0" ]; then
   echo "  ${consultas} consultas de auditoría y ninguna acusa de falta lo que está puesto"
 fi
 
+# ── La siembra de rendimiento, a escala pequeña ─────────────────────────────
+#
+# `supabase/perf/volumen.sql` es lo que `scripts/perf-panel.sh` usa para medir
+# qué aguanta el panel. Ese banco se corre a mano, de vez en cuando; el esquema
+# cambia todas las semanas. Una siembra de rendimiento que ya no encaja NO
+# avisa: falla el día que alguien quiere medir, que es el peor día.
+#
+# Aquí se corre a escala 100 —1.200 reservas en vez de 120.000, unos segundos—
+# solo para comprobar que sigue encajando. Lo que se mide de verdad no se mide
+# aquí: un tope de milisegundos en CI es una prueba inestable.
+echo "→ la siembra de rendimiento sigue encajando con el esquema"
+if [ -f "$ROOT/supabase/perf/volumen.sql" ]; then
+  PERF="$WORK/volumen.sql"; cp "$ROOT/supabase/perf/volumen.sql" "$PERF"
+  [ "$(id -u)" = "0" ] && chown postgres "$PERF"
+  if ! psql_run -q -c "set perf.escala = 100" -f "$PERF" >/dev/null 2>&1; then
+    echo "✘ supabase/perf/volumen.sql ya no corre contra el esquema actual: el banco de P-001 no mediría nada"; fail=1
+  else
+    # Que corra no basta: a escala 100 una versión anterior dejaba DOS salidas y
+    # solo seis de las 1.200 órdenes llegaban a ser reserva. La siembra no
+    # fallaba; devolvía una base con la que no se puede medir.
+    PR=$(psql_run -At -c "select count(*) from booking where organization_id = (select id from organizations where name = 'Operadora P-001');" 2>/dev/null | tr -d '[:space:]')
+    PO=$(psql_run -At -c "select count(*) from sales_order where organization_id = (select id from organizations where name = 'Operadora P-001');" 2>/dev/null | tr -d '[:space:]')
+    if [ "${PR:-0}" -lt 1000 ] 2>/dev/null || [ "${PR:-0}" != "${PO:-0}" ]; then
+      echo "✘ la siembra de rendimiento dejó ${PR:-0} reservas para ${PO:-0} órdenes: a escala 1 mediría sobre una base a medias"; fail=1
+    else
+      echo "  $PR reservas y $PO órdenes a escala 100: el banco sigue pudiendo medir"
+    fi
+    # Y se retira: el resto de comprobaciones cuentan filas de la demostración.
+    psql_run -q -c "delete from organizations where name in ('Operadora P-001','Socio P-001');" >/dev/null 2>&1 || true
+  fi
+else
+  echo "✘ falta supabase/perf/volumen.sql"; fail=1
+fi
+
 # ── Ningún módulo puede quedarse vacío en silencio ──────────────────────────
 #
 # De dónde sale esto: se reportó «hay varios módulos que se crearon y están
