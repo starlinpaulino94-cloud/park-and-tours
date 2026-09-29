@@ -1055,9 +1055,15 @@ describe("el arranque del E2E escribe columnas que existen", () => {
      * vigilaba su mitad y ninguna vigilaba el PRODUCTO de las dos, que es lo
      * único que de verdad se compara.
      *
-     * Éste sí: 15 pares `columna = "literal"` con valores declarados, medidos
+     * Éste sí: 16 pares `columna = "literal"` con valores declarados, medidos
      * sobre el fichero de hoy. Vaciar el lector, romper el extractor o recortar
      * el arranque lo bajan, y los tres tienen que mirarse a mano.
+     *
+     * Subió de 14 a 16 al sembrar la flota de los dos proveedores: `vehicle`
+     * trae `vehicle_type` y `status` declarados, y los dos se escriben. Que
+     * hiciera falta tocarlo es la prueba de que el número exacto sirve — con un
+     * «al menos catorce» las dos columnas nuevas habrían entrado sin que nadie
+     * comprobara que sus valores son de los que la tabla admite.
      */
     const comparados = escrituras.flatMap((m) => {
       const { body } = objectBody(codigo, m.index! + m[0].length);
@@ -1066,9 +1072,9 @@ describe("el arranque del E2E escribe columnas que existen", () => {
         .map((par) => `${m[1]}.${par[1]}`);
     });
     expect(new Set(comparados).size, "dejaron de compararse valores: o el lector, o el extractor, o el arranque")
-      .toBe(14);
+      .toBe(16);
     /**
-     * CATORCE DE CATORCE, Y LO QUE ESTA GUARDA NO CUBRE.
+     * DIECISÉIS DE DIECISÉIS, Y LO QUE ESTA GUARDA NO CUBRE.
      *
      * Son TODAS las columnas con valores declarados que el arranque escribe:
      * comprobado aparte contra el catálogo de una base con las 102 migraciones

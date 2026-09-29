@@ -9717,9 +9717,21 @@ describe("el aislamiento se prueba con un navegador de verdad", () => {
       "una de las dos tandas de negativas dejó de exigir 403"
     ).toBe(2);
 
-    // Y las dos afirmaciones que no son un código de estado.
-    expect(spec, "dejó de comprobar que la tarifa diaria no sale")
-      .toMatch(/expect\(res\.texto\)\.not\.toContain\("daily_rate"\)/);
+    /**
+     * Y las afirmaciones que no son un código de estado.
+     *
+     * La de la flota decía «no sale `daily_rate`», y no afirmaba nada:
+     * `daily_rate` está en `staff`, no en `vehicle`, así que la columna no sale
+     * de esa respuesta ni con la lista blanca borrada. Ahora se miran las dos
+     * mitades por separado —qué filas y qué columnas— con datos sembrados
+     * detrás de cada una.
+     */
+    expect(spec, "dejó de comprobar que solo ve SU guagua")
+      .toMatch(/expect\(matriculas[^)]*\)\.toContain\(MATRICULA_PROPIA\)/);
+    expect(spec, "dejó de comprobar que NO ve la del de enfrente")
+      .toMatch(/expect\(matriculas[^)]*\)\.not\.toContain\(MATRICULA_AJENA\)/);
+    expect(spec, "dejó de comprobar el recorte de columnas de la ficha del vehículo")
+      .toMatch(/not\.toContain\(NOTA_INTERNA_DEL_VEHICULO\)/);
     expect(spec, "dejó de comprobar que solo llega SU liquidación")
       .toMatch(/expect\(codigos\)\.not\.toContain\(LIQUIDACION_AJENA\)/);
     // Aterrizar en su portal es lo que prueba que el token trae su identificador:
@@ -9730,13 +9742,24 @@ describe("el aislamiento se prueba con un navegador de verdad", () => {
   it("y el del socio sigue afirmando las tres cosas, no solo entrando", () => {
     /**
      * Las tres son distintas y ninguna se deduce de las otras: que ve lo suyo, que
-     * NO ve lo de la operadora, y que la lista de clientes le está negada. Un spec
-     * que solo comprobara la primera pasaría con el filtro por socio quitado.
+     * NO ve lo de la operadora, y que la cartera le llega ACOTADA. Un spec que
+     * solo comprobara la primera pasaría con el filtro por socio quitado.
+     *
+     * La tercera pedía un 403 sobre `customer`, y era falso desde 0075: la tabla
+     * está en las PROPIAS del socio, acotada por `partner_id`, porque sin ella no
+     * podía terminar una venta. El E2E nunca llegó a correr, así que la
+     * contradicción entre la prueba y el ámbito vivió dos semanas sin que nada la
+     * señalara. Ahora se exige lo que de verdad protege: las dos mitades del
+     * reparto, porque con solo «no ve el ajeno» una ruta rota que devolviera lista
+     * vacía pasaría igual.
      */
     const spec = E2E("socio-aislamiento.spec.ts");
     expect(spec).toMatch(/expect\(numeros\)\.toContain\(ORDEN_DEL_SOCIO\)/);
     expect(spec).toMatch(/expect\(numeros\)\.not\.toContain\(ORDEN_PROPIA\)/);
-    expect(spec).toMatch(/expect\(status\)\.toBeGreaterThanOrEqual\(400\)/);
+    expect(spec, "dejó de comprobar que el socio ve a SU cliente")
+      .toMatch(/toContain\(\s*\n?\s*CLIENTE_DEL_SOCIO\.split\(" "\)\[1\]\s*\n?\s*\)/);
+    expect(spec, "dejó de comprobar que NO le llega la cartera de la operadora")
+      .toMatch(/for \(const ajeno of \[CLIENTE_DE_LA_VENTA, CLIENTE_DEL_MANIFIESTO\]\)/);
     expect(spec).toMatch(/expectPath: "\/portal",/);
   });
 
@@ -9815,8 +9838,16 @@ describe("el aislamiento se prueba con un navegador de verdad", () => {
     expect(setup).toMatch(/const ajeno = await ficha\(PROVEEDOR_AJENO, null\);/);
     expect(setup).toMatch(/await liquidacion\(LIQUIDACION_PROPIA, propio\);/);
     expect(setup).toMatch(/await liquidacion\(LIQUIDACION_AJENA, ajeno\);/);
-    expect(setup).toMatch(/await recurso\(propio, "vehicle"\)/);
-    expect(setup).toMatch(/await recurso\(ajeno, "guide"\)/);
+    /**
+     * Y el recurso se siembra por el VEHÍCULO, que es de donde 0085 deduce el
+     * proveedor. Esto decía `recurso(propio, …)` —el identificador del proveedor
+     * escrito a mano— y esa columna la pisa el disparador: las dos filas quedaban
+     * sin dueño y el portal del proveedor salía vacío sin fallar al sembrar.
+     */
+    expect(setup).toMatch(/const guaguaPropia = await guagua\(propio, MATRICULA_PROPIA\);/);
+    expect(setup).toMatch(/const guaguaAjena = await guagua\(ajeno, MATRICULA_AJENA\);/);
+    expect(setup).toMatch(/await recurso\(guaguaPropia, "vehicle"\)/);
+    expect(setup).toMatch(/await recurso\(guaguaAjena, "vehicle"\)/);
     // La salida se refresca a mañana en cada ejecución: con una fecha fija dejaría
     // de ser «próxima» al día siguiente y el portal no la enseñaría.
     expect(setup).toMatch(/const manana = new Date\(Date\.now\(\) \+ 24 \* 3_600_000\)\.toISOString\(\);/);
@@ -12601,5 +12632,166 @@ describe("las acciones de bitácora que se componen en tiempo de ejecución", ()
     expect(desdeLasRutas.size, "no se encontró ninguna acción de saldo regalo").toBe(4);
     const sinTexto = [...desdeLasRutas].filter((a) => !ACCION[a]);
     expect(sinTexto, "saldrían en el papel con su nombre técnico").toEqual([]);
+  });
+});
+
+/**
+ * LO QUE EL E2E LE PIDE A UNA RESPUESTA, Y LO QUE LA RESPUESTA TRAE.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * UNA CLAVE MAL ESCRITA NO FALLA: DEVUELVE CERO
+ *
+ * La prueba del camino del dinero leía `ctx.data.products`, y la ruta devuelve
+ * `catalog`. Con `?? []` detrás, la lectura no reventaba: daba una lista vacía,
+ * el producto no aparecía, las plazas salían a cero y la prueba fallaba
+ * diciendo «la salida del E2E no tiene plazas: revisa el sembrador» — señalando
+ * al sitio equivocado. El sembrador estaba bien.
+ *
+ * Es la forma más cara de equivocarse: el fallo describe una causa falsa, y
+ * quien lo lea empieza por donde no es. Por eso esto no comprueba que la clave
+ * sea «catalog»: comprueba que TODA clave que el E2E lea de esa respuesta sea
+ * una que la ruta escribe. El día que la ruta renombre `catalog`, falla aquí y
+ * no cuatro pantallas más adentro.
+ */
+describe("el E2E no puede leer una clave que la respuesta no trae", () => {
+  const RUTA = "src/app/api/pos/context/route.ts";
+  const SPEC = "tests/e2e/venta-completa.spec.ts";
+
+  /** Las claves de primer nivel del `ok({ … })` con el que termina la ruta. */
+  function clavesDeLaRespuesta(fuente: string): Set<string> {
+    const inicio = fuente.indexOf("return ok({");
+    expect(inicio, "la ruta ya no termina en un `return ok({`").toBeGreaterThan(-1);
+    // Sin comentarios: dentro hay párrafos enteros con dos puntos y llaves.
+    const cuerpo = fuente
+      .slice(inicio + "return ok(".length)
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+
+    const claves = new Set<string>();
+    let profundidad = 0;
+    let trozo = "";
+    /**
+     * Cada trozo entre comas a PROFUNDIDAD UNO es una propiedad. Dentro de un
+     * `map` hay cincuenta comas más, y por eso no vale partir por comas a secas.
+     *
+     * Y se reconocen las dos formas: `catalog` a secas —taquigrafía— cuenta
+     * igual que `hotels: …`. Leer solo la segunda dejaba fuera precisamente la
+     * clave que esta guarda existe para sujetar.
+     */
+    const anotar = () => {
+      const m = /^\s*(?:\.\.\.)?([A-Za-z_][A-Za-z0-9_]*)\s*(:|$)/.exec(trozo.trim() ? trozo : "");
+      if (m && trozo.trim()) claves.add(m[1]);
+      trozo = "";
+    };
+    for (const ch of cuerpo) {
+      if (ch === "{" || ch === "[" || ch === "(") {
+        profundidad++;
+        if (profundidad === 1) continue;
+      } else if (ch === "}" || ch === "]" || ch === ")") {
+        profundidad--;
+        if (profundidad === 0) { anotar(); break; }
+      } else if (ch === "," && profundidad === 1) {
+        anotar();
+        continue;
+      }
+      if (profundidad >= 1) trozo += ch;
+    }
+    return claves;
+  }
+
+  it("cada `ctx.data.<clave>` que la prueba lee existe en el `ok(…)` de la ruta", () => {
+    const claves = clavesDeLaRespuesta(read(RUTA));
+    // Piso: la respuesta del punto de venta trae el catálogo, los paquetes, los
+    // hoteles, los vendedores, los socios, las sucursales y la caja. Con el
+    // lector roto esto quedaría en cero y todo lo de abajo pasaría vacío.
+    expect(claves.size, "no se reconoció ninguna clave: el lector del `ok(…)` está roto")
+      .toBeGreaterThanOrEqual(8);
+    expect(claves.has("catalog")).toBe(true);
+
+    const spec = read(SPEC);
+    const leidas = [...spec.matchAll(/ctx\??\.?data\??\.\s*([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]);
+    expect(leidas.length, "la prueba dejó de leer el contexto del punto de venta")
+      .toBeGreaterThanOrEqual(2);
+
+    const inventadas = [...new Set(leidas)].filter((k) => !claves.has(k));
+    expect(inventadas, `la ruta no devuelve: ${inventadas.join(", ")}`).toEqual([]);
+  });
+
+  /**
+   * Y el tipo que la prueba se declara encima tampoco puede inventarse campos:
+   * un `customers?: …` que la ruta no devuelve compila igual, y deja escrito en
+   * la prueba que existe algo que no existe.
+   */
+  it("ni un campo declarado en el tipo del contexto que la ruta no devuelva", () => {
+    const claves = clavesDeLaRespuesta(read(RUTA));
+    const spec = read(SPEC);
+    const tipos = [...spec.matchAll(/api<\{\s*data\?:\s*\{([\s\S]*?)\}\s*\}>/g)];
+    expect(tipos.length, "la prueba ya no declara el tipo del contexto")
+      .toBeGreaterThanOrEqual(2);
+
+    const declaradas = new Set<string>();
+    for (const t of tipos) {
+      for (const m of t[1].matchAll(/(?:^|\n)\s*([A-Za-z_][A-Za-z0-9_]*)\?:/g)) declaradas.add(m[1]);
+    }
+    expect(declaradas.size, "no se leyó ningún campo del tipo").toBeGreaterThanOrEqual(1);
+    const inventadas = [...declaradas].filter((k) => !claves.has(k));
+    expect(inventadas, `declarados y no devueltos: ${inventadas.join(", ")}`).toEqual([]);
+  });
+});
+
+/**
+ * EL PROVEEDOR DE UN RECURSO SE DEDUCE; NO SE ESCRIBE.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * UNA COLUMNA QUE ACEPTA EL VALOR Y LO TIRA
+ *
+ * `departure_resource.supplier_id` la rellena el disparador de 0085 a partir
+ * del vehículo —y sin vehículo, del personal—. Su última línea es
+ * `new.supplier_id := v_supplier`, sin condición: corre también en el `insert`,
+ * así que un `supplier_id` escrito a mano se va a null en silencio.
+ *
+ * El sembrador del E2E lo escribía a mano, con un comentario que afirmaba lo
+ * contrario. Las dos filas quedaban sin dueño, el sembrador no fallaba, y el
+ * portal del proveedor salía vacío: dos pruebas rojas hablando de la ruta
+ * cuando el problema estaba en el dato.
+ *
+ * Esta guarda sujeta las dos mitades del acuerdo: que el disparador siga
+ * deduciendo sin condición, y que nadie vuelva a escribir la columna a mano.
+ */
+describe("el proveedor de un recurso de salida sale del vehículo", () => {
+  const MIGRACION = "supabase/migrations/0085_supplier_row_scope.sql";
+  const SEMBRADOR = "tests/e2e/global-setup.ts";
+
+  it("el disparador asigna sin condición, que es de donde viene la trampa", () => {
+    const sql = read(MIGRACION);
+    expect(sql, "0085 ya no asigna el proveedor deducido")
+      .toMatch(/new\.supplier_id\s*:=\s*v_supplier\s*;/);
+    // Si algún día se decide RESPETAR lo escrito a mano, será por aquí — y
+    // entonces el comentario del sembrador y esta guarda hay que rehacerlos
+    // juntos, no descubrirlo con el portal vacío.
+    expect(sql, "0085 ahora conserva el valor escrito a mano: revisa el sembrador del E2E")
+      .not.toMatch(/coalesce\s*\(\s*new\.supplier_id/);
+  });
+
+  it("el sembrador no escribe `supplier_id` en un recurso de salida", () => {
+    const fuente = read(SEMBRADOR).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    // Cada escritura, acotada a SU sentencia: un `[\s\S]*?` cruzaría hasta la
+    // siguiente tabla y acusaría a la de al lado.
+    const escrituras = [...fuente.matchAll(
+      /\.from\("departure_resource"\)\s*\.\s*(insert|update)\(\{([^}]*)\}/g
+    )];
+    expect(escrituras.length, "el sembrador ya no escribe recursos de salida")
+      .toBeGreaterThanOrEqual(2);
+
+    const conProveedor = escrituras.filter((m) => /\bsupplier_id\s*:/.test(m[2]));
+    expect(conProveedor.map((m) => m[1]),
+      "0085 lo pisa con lo que deduce: sembrando así la fila queda sin dueño")
+      .toEqual([]);
+
+    // Y sí escribe el vehículo, que es de donde el disparador lo deduce. Sin
+    // esto, borrar las dos escrituras enteras pasaría la mitad de arriba.
+    const conVehiculo = escrituras.filter((m) => /\bvehicle_id\s*:/.test(m[2]));
+    expect(conVehiculo.length, "sin vehículo el disparador deduce null")
+      .toBe(escrituras.length);
   });
 });

@@ -4,6 +4,7 @@ import {
   E2E_SUPPLIER_SUFFIX, emailDerivado,
   CLIENTE_DEL_MANIFIESTO, TELEFONO_DEL_CLIENTE, HABITACION_DEL_CLIENTE,
   LIQUIDACION_PROPIA, LIQUIDACION_AJENA,
+  MATRICULA_PROPIA, MATRICULA_AJENA, NOTA_INTERNA_DEL_VEHICULO,
 } from "./global-setup";
 
 /**
@@ -152,13 +153,26 @@ test.describe("un proveedor solo ve lo suyo", () => {
   test("solo ve SU flota, y sin la tarifa diaria", async ({ page }) => {
     /**
      * `vehicle` entró en su ámbito en 8.9 para que pudiera elegir qué manda. El
-     * filtro decide qué filas; la lista blanca, qué columnas — y esa segunda mitad
-     * importa porque la tarifa diaria de una guagua va al lado de la matrícula.
+     * filtro decide qué filas; la lista blanca, qué columnas.
+     *
+     * Esto afirmaba las dos mitades con una sola línea —«no sale `daily_rate`»—
+     * y no afirmaba ninguna: `daily_rate` está en `staff`, no en `vehicle`, así
+     * que la columna no existe en esta respuesta ni con la lista blanca borrada.
+     * Y la flota no estaba sembrada, de modo que la lista venía vacía y
+     * cualquier cosa que se buscara dentro habría faltado igual.
+     *
+     * Ahora las dos mitades se miran por separado y con datos detrás: su
+     * matrícula sale, la del de enfrente no, y la nota interna —que sí está en
+     * `vehicle` y sí tiene valor— se queda fuera.
      */
     await entrar(page);
     const res = await pedir(page, "/api/erp/vehicle?limit=50");
     expect(res.status).toBe(200);
-    expect(res.texto).not.toContain("daily_rate");
+    const matriculas = (JSON.parse(res.texto)?.data ?? []).map((v: { plate?: string }) => v.plate);
+    expect(matriculas, "no ve ni su propia guagua").toContain(MATRICULA_PROPIA);
+    expect(matriculas, "ve la guagua del transportista de enfrente").not.toContain(MATRICULA_AJENA);
+    expect(res.texto, "la nota interna de la ficha salió por la API")
+      .not.toContain(NOTA_INTERNA_DEL_VEHICULO);
   });
 
   test("y lo que no es suyo le está NEGADO, no vacío", async ({ page }) => {

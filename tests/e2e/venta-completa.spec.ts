@@ -64,10 +64,14 @@ interface ReservaLeida {
 
 /** Las plazas libres de la salida del E2E, leídas por donde las lee el punto de venta. */
 async function plazasLibres(page: Page): Promise<number> {
-  const ctx = await api<{ data?: { products?: { name?: string; departures?: { available_pax?: number | null }[] }[] } }>(
+  // `catalog`, no `products`: es el nombre que devuelve la ruta. Leyendo una
+  // clave que no existe esto daba cero plazas sin fallar en ninguna parte —el
+  // `?? []` convertía «me equivoqué de nombre» en «la salida está llena»— y el
+  // fallo salía cuatro líneas más abajo, acusando al sembrador.
+  const ctx = await api<{ data?: { catalog?: { name?: string; departures?: { available_pax?: number | null }[] }[] } }>(
     page, "/api/pos/context"
   );
-  const producto = (ctx?.data?.products ?? []).find((p) => p.name === EXCURSION_E2E);
+  const producto = (ctx?.data?.catalog ?? []).find((p) => p.name === EXCURSION_E2E);
   const salida = producto?.departures?.[0];
   return Number(salida?.available_pax ?? 0);
 }
@@ -184,10 +188,9 @@ test.describe("una venta entera, de la pantalla a la base", () => {
     await page.goto("/dashboard/pos");
 
     const ctx = await api<{ data?: {
-      products?: { _id: string; name?: string; departures?: { _id: string; capacity: number }[] }[];
-      customers?: { _id: string; last_name?: string }[];
+      catalog?: { _id: string; name?: string; departures?: { _id: string; capacity: number }[] }[];
     } }>(page, "/api/pos/context");
-    const producto = (ctx?.data?.products ?? []).find((p) => p.name === EXCURSION_E2E);
+    const producto = (ctx?.data?.catalog ?? []).find((p) => p.name === EXCURSION_E2E);
     const salida = producto?.departures?.[0];
     expect(salida, "sin salida no se puede probar el techo").toBeTruthy();
 

@@ -6595,3 +6595,132 @@ es la otra forma de que una guarda envejezca sin avisar.
 traducir, y romper el derivador junto con borrar una etiqueta—.
 
 `tsc`, `eslint`, **4191/4191**, `db-test` y `build` en verde.
+
+---
+
+## El E2E corrió por primera vez, y enseñó cinco cosas rotas — ninguna era la que decía
+
+`tests/e2e/venta-completa.spec.ts`, `tests/e2e/socio-aislamiento.spec.ts`,
+`tests/e2e/proveedor-aislamiento.spec.ts`, `tests/e2e/global-setup.ts`,
+`src/test/fake-supabase.ts`, `src/lib/ui-contracts.test.ts`,
+`src/lib/schema-contract.test.ts`, `supabase/tests/recurso_proveedor.test.sql`.
+
+### El contexto: 19 pruebas de navegador, 14 en verde
+
+Arreglado el `departure.status` que mataba el montaje, la ejecución 238 llegó
+por fin a ejecutar los specs: **14 pasaron y 5 fallaron**. Es la primera vez en
+la historia de la rama —y de `main`— que un navegador llega a abrir la
+aplicación en CI.
+
+Los cinco fallos son de tres causas distintas, y **ninguno de los tres mensajes
+señalaba dónde estaba el problema**. Eso es lo que hay que leer de esta entrada:
+no que hubiera cinco fallos, sino que los tres diagnósticos fáciles eran falsos.
+
+### 1 · «revisa el sembrador» — el sembrador estaba bien (2 fallos)
+
+```
+Error: la salida del E2E no tiene plazas: revisa el sembrador
+expect(libresAntes, …).toBeGreaterThan(0)   Received: 0
+```
+
+La prueba leía `ctx.data.products`. La ruta devuelve `catalog`. Con `?? []`
+detrás, la clave equivocada no revienta: da lista vacía → producto no
+encontrado → cero plazas → un mensaje que acusa al sembrador. El segundo fallo
+(`sin salida no se puede probar el techo`) era la misma línea escrita otra vez
+treinta líneas más abajo.
+
+Un mensaje de error que describe una causa falsa es más caro que no tener
+mensaje: manda a mirar donde no es.
+
+**La guarda no comprueba que la clave sea `catalog`.** Comprueba que TODA clave
+que el E2E lea de esa respuesta sea una que la ruta escribe, leyendo las claves
+del `return ok({ … })` de la propia ruta —taquigrafía incluida, que era donde
+se escondía `catalog`—. Y también los campos que el spec DECLARA en su tipo:
+había un `customers?:` declarado que la ruta no devuelve, y compilaba igual.
+
+### 2 · «la lista de servicios del proveedor viene vacía» — la ruta estaba bien (2 fallos)
+
+El sembrador escribía `departure_resource.supplier_id` a mano, con este
+comentario al lado:
+
+> `supplier_id` se escribe a mano porque el disparador de 0085 solo lo deduce
+> cuando hay vehículo o personal detrás.
+
+Es falso. La última línea del disparador es `new.supplier_id := v_supplier`,
+**sin condición**, y la lista `of vehicle_id, staff_id` del `create trigger` no
+restringe los `insert` —solo los `update`—. Así que corría siempre, deducía
+`null` (no había vehículo) y **tiraba el valor escrito en silencio**. Las dos
+filas quedaban sin dueño, el sembrador no fallaba, y el portal salía vacío.
+
+Una columna que acepta el valor y lo descarta no falla donde se escribe: falla
+donde se lee, a veces semanas después.
+
+Arreglado sembrando por el **mismo camino que la operación real**: cada
+proveedor tiene su guagua, y el recurso lleva el vehículo. El proveedor sale del
+vehículo, como en producción.
+
+Tres cosas lo sujetan ahora:
+
+- `supabase/tests/recurso_proveedor.test.sql`, **contra Postgres de verdad**:
+  lo escrito a mano se descarta, con vehículo sale el proveedor del vehículo, el
+  vehículo gana a lo escrito, y `service_date` llega sola (0086). Las dos
+  columnas en la misma prueba porque el portal filtra por las dos: con
+  cualquiera en null la lista sale vacía igual.
+- Una guarda de texto que sujeta las dos mitades del acuerdo: que 0085 siga
+  deduciendo sin condición, y que el sembrador no vuelva a escribir la columna.
+- Una comprobación **dentro del propio sembrador**: si el disparador no dedujo,
+  el arranque se para y lo dice. Sin ella, esto vuelve a salir como «el portal
+  está vacío».
+
+### 3 · «un socio leyó la lista de clientes: 200 en vez de 403» — no es un agujero
+
+Éste daba el susto: parecía una fuga de aislamiento. No lo es.
+
+`customer` está en las tablas **propias** del socio desde 0075, acotada por
+`partner_id`, porque sin ella no podía terminar una venta (`POST /api/orders`
+exige `customer_id`). El 200 es correcto; lo que estaba mal era la prueba —
+escrita dos días DESPUÉS del cambio, pidiendo un 403 que ya no existía. Como el
+E2E no llegaba a correr, la contradicción vivió sin que nada la señalara.
+
+Lo que se afirma ahora es lo que de verdad protege: **las dos mitades del
+reparto**. Ve a su cliente, no ve los dos de la operadora. Con solo la segunda
+mitad, una ruta rota devolviendo lista vacía pasaría la prueba.
+
+### Y dos guardas que no guardaban nada, encontradas de paso
+
+- «solo ve SU flota, y sin la tarifa diaria» comprobaba que no sale
+  `daily_rate`. **`daily_rate` está en `staff`, no en `vehicle`**: no sale de esa
+  respuesta ni con la lista blanca borrada. Y la flota no estaba sembrada, así
+  que la lista venía vacía y cualquier cosa habría «faltado» igual. Ahora: su
+  matrícula sale, la del de enfrente no, y la nota interna —que sí está en
+  `vehicle` y sí tiene valor— se queda fuera.
+- El recuento exacto de `schema-contract` subió de **14 a 16** al sembrar la
+  flota: `vehicle` trae `vehicle_type` y `status` declarados. Que hiciera falta
+  tocarlo a mano es la prueba de que el número exacto sirve — con un «al menos
+  catorce» las dos columnas nuevas habrían entrado sin que nadie comprobara que
+  sus valores son de los que la tabla admite.
+
+### El doble aprendió un disparador, y va atado
+
+`fake-supabase.ts` decía «no hay disparadores; para eso están las pruebas SQL».
+Pero sin emular 0085 el sembrador no se puede probar en memoria: su nueva
+comprobación fallaba siempre. Emular un disparador en un doble es justo lo que
+produjo el falso hallazgo del importador (`citext`), así que éste va con correa:
+`recurso_proveedor.test.sql` afirma contra Postgres las mismas tres cosas que el
+doble emula. Si el motor cambia, esa prueba falla primero.
+
+### Lo que esto NO arregla
+
+Los cinco fallos están diagnosticados y corregidos **en el código**, pero la
+prueba de que están corregidos es la ejecución de CI que viene: aquí no hay
+credenciales de Supabase ni navegador contra el que medir. Lo que sí está
+medido aquí es el disparador de 0085, contra un Postgres de verdad.
+
+**Mutación: 11 de 11.** Siete sobre las guardas de texto —volver a leer
+`products`, declarar un campo inventado, renombrar `catalog` en la ruta,
+reescribir `supplier_id` a mano, quitar el vehículo, borrar las escrituras,
+y hacer que 0085 respete lo escrito— y cuatro contra el motor: el `coalesce` en
+0085, quitarle la rama del vehículo, anular `service_date` en 0086, y romper la
+deducción del doble (12 pruebas en rojo).
+
+`tsc`, `eslint`, **4196/4196**, `db-test` y `build` en verde.
