@@ -13226,8 +13226,9 @@ describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", (
     // estuvieron sin puerta. Las acusó un fallo de este barrido —ver
     // `tienePuerta`—, no una pantalla que faltara.
     "/api/customers/[id]/lista-negra",
-    "/api/inventory/low-stock",
-    "/api/inventory/movement",
+    // Las dos de almacén salieron el 30-sep. Y no eran un módulo vacío: la
+    // pantalla del kardex tenía un formulario que escribía la fila SIN mover el
+    // saldo. Ver «el kardex no se teclea».
     // Las tres de contabilidad salieron el 30-sep: el asiento manual y la reversa
     // en el libro diario, el sembrado en el plan de cuentas y el balance de
     // comprobación en pantalla —con `entries` y `truncated`, que la ruta tiraba—.
@@ -13398,30 +13399,25 @@ describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", (
 
   it("el inventario escrito nombra las mismas que el barrido", () => {
     const doc = read("docs/audit/MOTORES_SIN_PUERTA.md");
-    const faltan = SIN_PUERTA_CONOCIDAS.filter((r) => !doc.includes(r));
-    expect(faltan, `el documento no explica qué se pierde con: ${faltan.join(", ")}`).toEqual([]);
 
     /**
-     * Y al revés: que no se quede PRESENTANDO como abierta una que ya se cerró.
+     * Apartado por apartado, no el documento entero.
      *
-     * Se mira apartado por apartado, no el documento entero. La primera versión
-     * barría todo el fichero y eso la hacía prohibir la prosa: al explicar que lo
-     * que de verdad le falta al saldo regalo es que `/api/payments` no conozca la
-     * tarjeta, la guarda se quejó de `/api/payments` —una ruta sanísima, con
-     * puerta y todo—. Una guarda que impide escribir dónde está el hueco de
-     * verdad es una guarda que alguien borra.
+     * La primera versión barría todo el fichero y eso la hacía prohibir la prosa:
+     * al explicar que lo que de verdad le falta al saldo regalo es que
+     * `/api/payments` no conozca la tarjeta, la guarda se quejó de
+     * `/api/payments` —una ruta sanísima, con puerta y todo—. Una guarda que
+     * impide escribir dónde está el hueco de verdad es una guarda que alguien
+     * borra.
      *
-     * Así que el que manda es el apartado: los de título TACHADO son los cerrados
-     * y pueden explicar lo que quieran —con qué se cerró, qué se creyó y qué era
-     * falso, a qué otra ruta apunta el trabajo que queda—; los demás son el
-     * inventario vivo y ahí cada ruta nombrada tiene que seguir sin puerta.
+     * Así que manda el apartado: los de título TACHADO son los cerrados y pueden
+     * explicar lo que quieran —con qué se cerró, qué se creyó y qué era falso, a
+     * qué otra ruta apunta el trabajo que queda—; los demás son el inventario
+     * vivo.
      */
     const apartados = doc.split(/^### /m).slice(1);
-    expect(apartados.length, "no se reconocieron los apartados del inventario").toBeGreaterThan(4);
-
     const abiertos = apartados.filter((a) => !a.split("\n")[0].includes("~~"));
     const cerrados = apartados.filter((a) => a.split("\n")[0].includes("~~"));
-    expect(cerrados.length, "ningún apartado cerrado: el tachado dejó de reconocerse").toBeGreaterThan(1);
 
     // Tachar un título es afirmar algo. Que lo afirme con todas las letras, para
     // que tachar no sea la manera fácil de callar esta prueba.
@@ -13430,17 +13426,32 @@ describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", (
         .toMatch(/CERRADO|NUNCA FUE UN HUECO/);
     }
 
-    // Pisos. Sin ellos, dar por cerrados TODOS los apartados —o romper el
-    // extractor de rutas— deja la comprobación vacía, y vacío pasa.
-    expect(abiertos.length, "ningún apartado abierto: el inventario vivo se quedó sin nada que revisar")
-      .toBeGreaterThan(2);
-    const nombradas = [...new Set(
+    /**
+     * Y AQUÍ NO VA NINGÚN NÚMERO A MANO.
+     *
+     * La versión anterior ponía dos pisos —«al menos tres apartados abiertos», «al
+     * menos seis rutas nombradas»— para que un extractor roto no dejara la
+     * comprobación vacía y verde. Funcionaron una tarde y **saltaron contra un
+     * documento correcto** en cuanto el inventario se encogió de ocho a seis: un
+     * piso escrito a mano envejece igual que la cifra que vigila, que es el fallo
+     * que este documento existe para no repetir.
+     *
+     * La propiedad derivada es más fuerte que los dos pisos juntos: cada ruta que
+     * sigue sin puerta tiene que estar nombrada en un apartado ABIERTO. Si el
+     * extractor se rompe, o si se dan por cerrados todos los apartados, no quedan
+     * rutas nombradas y esto se pone rojo solo — sin que nadie tenga que acordarse
+     * de subir o bajar un número.
+     */
+    const enAbiertos = new Set(
       abiertos.flatMap((a) => [...a.matchAll(/`(\/api\/[\w[\]/-]+)`/g)].map((m) => m[1]))
-    )];
-    expect(nombradas.length, "el inventario vivo dejó de nombrar rutas: el extractor está roto")
-      .toBeGreaterThan(5);
+    );
+    const sinExplicar = SIN_PUERTA_CONOCIDAS.filter((r) => !enAbiertos.has(r));
+    expect(sinExplicar,
+      `el inventario vivo no explica qué se pierde con: ${sinExplicar.join(", ")}`)
+      .toEqual([]);
 
-    const sobran = nombradas
+    // Y al revés: que no siga dando por abierta una que ya tiene puerta.
+    const sobran = [...enAbiertos]
       .filter((r) => !SIN_PUERTA_CONOCIDAS.includes(r) && !LLAMADOR_EXTERNO.some((p) => r.startsWith(p)));
     expect(sobran,
       `el inventario sigue dando por abiertas rutas que ya tienen puerta: ${sobran.join(", ")}`)
@@ -13699,5 +13710,157 @@ describe("la contabilidad se puede tocar desde el producto", () => {
     const dict = /export const LEDGER_SOURCE = dict\(([\s\S]*?)\n\);/.exec(read("src/lib/labels-modules.ts"))![1];
     const faltan = fuentes.filter((f) => !new RegExp(`\\["${f}"`).test(dict));
     expect(faltan, `fuentes del libro sin etiqueta: ${faltan.join(", ")}`).toEqual([]);
+  });
+});
+
+/**
+ * EL KARDEX QUE SE PODÍA TECLEAR.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * EL PEOR CASO DEL PATRÓN, PORQUE NO SE VEÍA
+ *
+ * `/dashboard/comercio/movimientos` se titula «Kardex inmutable» y tenía un
+ * formulario genérico «Nuevo movimiento» —con `quantity`, `movement_type` y
+ * almacén destino— que escribía a `/api/erp/stock_movement`, más lápiz y
+ * papelera en cada fila. `stock_movement.writable` los admitía todos, incluido
+ * `balance_after`.
+ *
+ * Y escribir ese libro **no mueve el saldo**: nada lo mantiene desde esa tabla,
+ * ni en la aplicación ni con un disparador. Así que una merma de 10 dejaba el
+ * kardex diciendo «merma de 10» y la existencia intacta. De paso se saltaba el
+ * bloqueo de stock negativo, el costo promedio, la segunda pata de una
+ * transferencia y el aviso de reposición — todo lo que vive en `postMovement`.
+ *
+ * Los otros motores sin puerta se notaban: el módulo salía vacío. Este no, porque
+ * **la fila sí aparecía**. La diferencia entre el libro y la existencia no salía
+ * hasta el conteo físico, que es literalmente lo que el comentario de
+ * `stock_level` avisaba desde 0052, una tabla más arriba y sin mirar esta.
+ */
+describe("el kardex no se teclea: lo escribe el motor de inventario", () => {
+  const PANTALLA = "src/app/dashboard/comercio/movimientos/page.tsx";
+  const EXISTENCIAS = "src/app/dashboard/comercio/existencias/page.tsx";
+  const MOTOR = "src/lib/inventory.ts";
+  const limpio = (rel: string) => sinComentariosDe(rel);
+
+  it("ninguna segunda puerta escribe el libro de movimientos", () => {
+    const resources = read("src/lib/resources.ts");
+    const mov = /^ {2}stock_movement: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[\s*\]/.test(mov), "stock_movement.writable volvió a admitir campos").toBe(true);
+
+    // Y `stock_level` sigue como la dejó 0052.
+    const nivel = /^ {2}stock_level: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[\s*\]/.test(nivel), "stock_level.writable volvió a admitir campos").toBe(true);
+  });
+
+  it("la pantalla registra por el motor, no por el CRUD genérico", () => {
+    const p = limpio(PANTALLA);
+    expect(p, "el movimiento no llega al motor").toContain('"/api/inventory/movement"');
+    // El formulario genérico no puede volver: una línea del kardex no se teclea.
+    expect(p, "el kardex volvió a ser escribible por formulario").toMatch(/canWrite=\{false\}/);
+    expect(p, "el formulario genérico volvió a tener campos").toMatch(/fields=\{\[\]\}/);
+  });
+
+  it("no hay manera de borrar ni editar una línea del kardex", () => {
+    /**
+     * Con `canWrite={false}` la tabla no pinta lápiz ni papelera (ver «un recurso
+     * de solo lectura puede tener acciones propias y no el borrado»). Aquí se fija
+     * que la pantalla tampoco se las monte por su cuenta.
+     */
+    const p = limpio(PANTALLA);
+    expect(p, "la pantalla borra filas del kardex").not.toMatch(/api\.delete/);
+    expect(p, "la pantalla edita filas del kardex").not.toMatch(/api\.(put|patch)/);
+  });
+
+  it("el movimiento manda lo que el motor necesita, y el destino solo si es transferencia", () => {
+    const p = limpio(PANTALLA);
+    for (const campo of ["inventory_item:", "warehouse:", "movement_type:", "quantity:"]) {
+      expect(p, `el cuerpo no manda ${campo}`).toContain(campo);
+    }
+    /**
+     * `to_warehouse` SOLO en una transferencia. Mandarlo siempre no rompe hoy,
+     * pero deja una referencia a un almacén en una merma, y el día que alguien
+     * filtre movimientos por destino saldrán cosas que no son transferencias.
+     */
+    expect(p, "el destino se manda siempre, no solo en transferencias")
+      .toMatch(/to_warehouse:\s*esTransferencia \?/);
+  });
+
+  it("una salida por venta no se teclea a mano", () => {
+    /**
+     * De los nueve tipos, tres no se piden nunca: `sale` y `consumption` los
+     * escribe la venta —teclear una salida «por venta» que ninguna venta respalda
+     * deja el kardex sin poder contrastarse con la operación—, y `transfer_in` la
+     * escribe el propio motor como segunda pata: ofrecerla haría que una
+     * transferencia entrara dos veces.
+     */
+    const manuales = /const TIPOS_MANUALES = \[([\s\S]*?)\]/.exec(limpio(PANTALLA))![1];
+    expect(manuales, "no se reconocieron los tipos manuales").toContain('"adjustment"');
+    for (const prohibido of ['"sale"', '"consumption"', '"transfer_in"']) {
+      expect(manuales, `${prohibido} no se teclea a mano`).not.toContain(prohibido);
+    }
+    // Y `transfer_out` sí, que es la que dispara las DOS patas.
+    expect(manuales, "sin transfer_out no hay forma de transferir").toContain('"transfer_out"');
+  });
+
+  it("la existencia solo la mueve el motor; la reserva es otra cuenta", () => {
+    /**
+     * `quantity` es la existencia y la escribe solo `inventory.ts`.
+     * `reserved`/`available` los escribe además `stock-commitment-service`, que es
+     * lo vendido y no salido. Son dos cuentas distintas a propósito; mezclarlas
+     * fue lo que tuvo la columna «Reservado» en cero durante años.
+     */
+    const escribenQuantity = ficherosTs("src/lib")
+      .filter((f) => !/\.test\.ts$/.test(f))
+      .filter((f) => /tenantUpdate\([^)]*"stock_level"[\s\S]{0,200}?quantity:/.test(read(f)));
+    expect(escribenQuantity, "alguien más escribe la existencia")
+      .toEqual(["src/lib/inventory.ts"]);
+
+    // Y el motor no puede dejar de reescribirla.
+    const motor = limpio(MOTOR);
+    expect(motor, "el motor dejó de reescribir el saldo").toMatch(/tenantUpdate\(companyId, "stock_level"/);
+    // Con el parámetro de tipo opcional: la llamada real es
+    // `tenantCreate<{ _id: string }>(companyId, "stock_movement", …)`, y sin
+    // admitirlo esta guarda fallaba contra código correcto.
+    expect(motor, "el motor dejó de escribir el movimiento")
+      .toMatch(/tenantCreate(<[^>]*>)?\(companyId, "stock_movement"/);
+  });
+
+  it("qué cuenta como «bajo» se define una sola vez", () => {
+    /**
+     * El propio inventario lleva avisado desde 0052 que con dos definiciones de
+     * «bajo» la pantalla señala lo que la campana calla. La pantalla necesitaba el
+     * mismo criterio y `inventory.ts` es `server-only`: la salida fácil era
+     * copiar el umbral en el componente.
+     */
+    const reglas = "src/lib/inventory-rules.ts";
+    expect(existsSync(path.join(ROOT, reglas)), "el módulo del criterio no está").toBe(true);
+    /**
+     * SIN COMENTARIOS. La primera versión leía el fichero crudo y saltaba contra
+     * su propia cabecera, que EXPLICA por qué el módulo no lleva `server-only`.
+     * Cuarta vez en esta rama que una guarda mide la documentación en vez del
+     * código; van dos hoy.
+     */
+    expect(sinComentariosDe(reglas), "el criterio no puede depender del servidor")
+      .not.toContain("server-only");
+
+    // Una sola implementación en todo el repositorio.
+    const definen = ficherosTs("src/lib").concat(ficherosTs("src/app"))
+      .filter((f) => !/\.test\.tsx?$/.test(f))
+      .filter((f) => /function reorderThreshold/.test(read(f)));
+    expect(definen, "el umbral está definido en más de un sitio").toEqual([reglas]);
+
+    // Y la pantalla lo IMPORTA en vez de recalcularlo.
+    expect(limpio(EXISTENCIAS), "la pantalla no usa el criterio compartido")
+      .toMatch(/import \{ reorderThreshold \} from "@\/lib\/inventory-rules"/);
+    expect(limpio(EXISTENCIAS), "la pantalla se inventa su propio umbral")
+      .not.toMatch(/reorder_point \?\? /);
+  });
+
+  it("la lista de reposición está en la pantalla, no solo en la campana", () => {
+    const e = limpio(EXISTENCIAS);
+    expect(e, "la reposición sigue sin pedirse").toContain('"/api/inventory/low-stock"');
+    expect(e, "no se pintan los artículos bajos").toMatch(/bajos\.map/);
+    // Y no se inventa una cantidad a pedir que la empresa no declaró.
+    expect(e, "se inventa la cantidad de pedido").toMatch(/reorder_qty/);
   });
 });

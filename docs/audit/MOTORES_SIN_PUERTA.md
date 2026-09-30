@@ -11,7 +11,7 @@
 > **Corregido el 30-sep:** el primer barrido dijo dieciséis y eran **trece**. Tres
 > de las que acusó tenían puerta desde el día que se escribieron; fallaba el
 > detector, no el producto. Ver «Tres huecos que no existían», más abajo. De las
-> trece reales quedan **ocho** por cerrar.
+> trece reales quedan **seis** por cerrar.
 
 ## De dónde salió esto
 
@@ -54,8 +54,9 @@ Ya tiene puerta, con **previsualización del impacto antes de confirmar**: qué
 salidas se cierran y **qué reservas quedan fuera, con su número y su cliente**.
 Ver la entrada «El activo que se caía y no arrastraba nada» en `FIX_LOG.md`.
 
-Quedan **ocho** — los de `SIN_PUERTA_CONOCIDAS`: trece reales menos esta, menos
-la bitácora del parque con la que empezó todo, y menos las tres de contabilidad.
+Quedan **seis** — los de `SIN_PUERTA_CONOCIDAS`: trece reales menos esta, menos
+la bitácora del parque con la que empezó todo, menos las tres de contabilidad y
+menos las dos de almacén.
 
 ### ~~2. El saldo regalo que se emite y no se puede usar~~ — **NUNCA FUE UN HUECO**
 
@@ -130,13 +131,47 @@ a todo lo demás.
 
 Ver la entrada «La contabilidad que no se podía tocar» en `FIX_LOG.md`.
 
-Quedan **ocho**.
+Quedan **seis**.
 
-### 4. Almacén sin movimientos — `/api/inventory/movement`, `/api/inventory/low-stock`
+### ~~4. Almacén sin movimientos~~ — **CERRADO el 30-sep**, y era el peor de los trece
 
-`comercio/almacenes` es un CRUD de almacenes. No hay forma de **mover stock** ni
-de ver el **aviso de mínimos**. Un almacén en el que no entra ni sale nada es una
-ficha, no un almacén.
+Este apartado decía «no hay forma de mover stock». **Había una, y eso era el
+problema.**
+
+`/dashboard/comercio/movimientos` se titula «Kardex inmutable» y tenía un
+formulario genérico **«Nuevo movimiento»** —con cantidad, tipo y almacén
+destino— que escribía a `/api/erp/stock_movement`, más lápiz y papelera en cada
+fila. La lista blanca de la tabla admitía `quantity`, `movement_type` y hasta
+`balance_after`.
+
+Y escribir esa tabla **no mueve el saldo**: nada lo mantiene desde ahí, ni en la
+aplicación ni con un disparador en Postgres (comprobado). Así que registrar una
+merma de 10 dejaba el kardex diciendo «merma de 10» y la existencia intacta en
+50. De paso se saltaba todo lo que vive en `postMovement`:
+
+- el **bloqueo de stock negativo**;
+- el recálculo del **costo promedio ponderado** —con el que se valora el
+  inventario para cerrar el periodo—;
+- la **segunda pata** de una transferencia (una transferencia a medias es el peor
+  resultado posible);
+- y el **aviso de existencias bajas**.
+
+**Por qué es el peor de los trece:** los otros se notaban, porque el módulo salía
+vacío. Este no. La fila **sí aparecía** en la lista, con su insignia y su fecha.
+La diferencia entre el libro y la existencia no salía hasta el conteo físico —que
+es literalmente lo que avisaba el comentario de `stock_level` en `resources.ts`
+desde 0052, una tabla más arriba. 0052 cerró la caché y dejó escribible el libro,
+que es peor.
+
+Un motor sin puerta no hace nada. Esto era **una puerta a otra habitación**: hacía
+algo, parecía funcionar, y dejaba los datos peor que si no hubiera hecho nada.
+
+Ahora: el movimiento pasa por `POST /api/inventory/movement`, `stock_movement`
+está fuera de la lista blanca, no hay lápiz ni papelera, y la lista de reposición
+(`low-stock`) se ve en Existencias en vez de solo sonar una vez al mes. Ver «El
+kardex que se podía teclear» en `FIX_LOG.md`.
+
+Quedan **seis**.
 
 ### 5. El cliente que no se puede vetar — `/api/customers/[id]/lista-negra`
 

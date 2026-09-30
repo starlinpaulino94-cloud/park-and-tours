@@ -1000,11 +1000,28 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["reference", "reason", "lot_code"],
     expand: { warehouse: true, inventory_item: true, user: true },
     sort: { createdAt: "desc" },
-    // `purchase_order_line` y `booking_extra` NO son escribibles: son el rastro
-    // que dice cuánto se recibió de cada línea y qué venta consumió qué. Si se
-    // pudieran teclear, ese rastro dejaría de ser una cuenta y pasaría a ser
-    // una opinión.
-    writable: ["movement_type", "quantity", "unit_cost", "total_cost", "currency", "moved_at", "balance_after", "reason", "reference", "lot_code", "expires_at", "warehouse", "to_warehouse", "inventory_item", "user", "purchase_order", "order", "work_order"],
+    /**
+     * DE SOLO LECTURA, COMO `stock_level` DESDE 0052 — Y POR LA MISMA RAZÓN,
+     * UNA TABLA MÁS ARRIBA.
+     *
+     * 0052 sacó `stock_level` de aquí porque editar el saldo a mano lo separa
+     * del libro de movimientos que es su única explicación. Pero dejó
+     * escribible **el libro**, que es peor: `quantity`, `movement_type` y hasta
+     * `balance_after` se podían teclear por `/api/erp/stock_movement`, y
+     * escribir un movimiento así **no mueve el saldo** —nada lo mantiene desde
+     * esta tabla, ni en la aplicación ni con un disparador—.
+     *
+     * O sea que el kardex decía «merma de 10» y la existencia seguía en 50. La
+     * diferencia no aparece hasta el conteo físico, que es exactamente lo que
+     * el comentario de `stock_level` avisaba. Y de paso se saltaban el bloqueo
+     * de stock negativo, el recálculo del costo promedio y el aviso de
+     * existencias bajas, que viven todos en `postMovement`.
+     *
+     * Ahora el único camino es `POST /api/inventory/movement`. Corregir un
+     * saldo se hace con un ajuste o un conteo, que dejan rastro de quién y por
+     * qué. Una guarda lo sujeta.
+     */
+    writable: [],
     numeric: ["quantity", "unit_cost", "total_cost", "balance_after"],
     dates: ["moved_at", "expires_at"],
     writeRole: "operations",

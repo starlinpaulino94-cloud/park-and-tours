@@ -1,6 +1,13 @@
 import "server-only";
 import { tenantCreate, tenantFindOne, tenantQuery, tenantUpdate, TenantError } from "@/lib/tenant";
 import { notify } from "@/lib/notify-service";
+/**
+ * El criterio de «bajo» vive en un módulo puro para que la PANTALLA pueda usar
+ * el mismo: este fichero es `server-only` y un componente de cliente no lo puede
+ * importar. Se reexporta para no romper a quien ya los pedía de aquí.
+ */
+import { isLowStock, reorderThreshold, type Reorderable } from "@/lib/inventory-rules";
+export { isLowStock, reorderThreshold, type Reorderable };
 
 /**
  * Perpetual inventory engine.
@@ -8,7 +15,18 @@ import { notify } from "@/lib/notify-service";
  * Every quantity change goes through `postMovement`, which writes an immutable
  * `stock_movement` row and then rewrites the `stock_level` balance for that
  * (warehouse, item) pair. The movement is the ledger; the level is the cache.
- * Nothing else in the app is allowed to write `stock_level` directly.
+ *
+ * Y la frase que había aquí —«nada más puede escribir `stock_level`»— era más
+ * amplia de lo que se puede sostener, así que la guarda no podía medirla. Lo
+ * cierto, y lo que sí se comprueba, es más estrecho y más útil:
+ *
+ *   · `quantity` (la EXISTENCIA) la escribe solo este fichero;
+ *   · `reserved` y `available` los escribe además `stock-commitment-service`,
+ *     que es lo vendido y todavía no salido — otra cosa, con su propia cuenta;
+ *   · y `stock_movement` **no se escribe desde ninguna otra parte**, ni por el
+ *     CRUD genérico: hasta el 30-sep su lista blanca tenía `quantity`,
+ *     `movement_type` y `balance_after`, y la pantalla del kardex los ofrecía en
+ *     un formulario. Escribir el libro sin pasar por aquí no movía el saldo.
  */
 
 export type MovementType =
@@ -233,31 +251,6 @@ export async function postMovement(companyId: string, input: MovementInput) {
     dest.allows_negative === true
   );
   return { legs: [out, inLeg] };
-}
-
-export interface Reorderable {
-  name?: string | null;
-  min_stock?: number | null;
-  reorder_point?: number | null;
-}
-
-/**
- * El umbral por debajo del cual un artículo se considera bajo.
- *
- * Es el punto de pedido si está puesto y, si no, el mínimo. Un artículo sin
- * ninguno de los dos NO tiene umbral: devolver 0 lo convertiría en "bajo" en
- * cuanto se agotara, y avisaría de cosas que a nadie le importan —el sistema
- * no sabe cuántas necesita esa empresa.
- */
-export function reorderThreshold(item: Reorderable | null | undefined): number | null {
-  const point = Number(item?.reorder_point ?? item?.min_stock ?? 0);
-  return point > 0 ? point : null;
-}
-
-/** ¿Este saldo está en el umbral o por debajo? */
-export function isLowStock(available: number, item: Reorderable | null | undefined): boolean {
-  const threshold = reorderThreshold(item);
-  return threshold !== null && Number(available) <= threshold;
 }
 
 /** Items at or below their reorder point — drives the purchasing suggestions. */

@@ -7437,3 +7437,145 @@ volver a medir por el sufijo, que es el error original.
 `tsc`, `eslint`, **4258/4258** y `build` en verde. Sin migración.
 
 **Mutación total de la ola: 27 de 27.**
+
+---
+
+## El kardex que se podía teclear
+
+`src/app/dashboard/comercio/movimientos/page.tsx`,
+`.../existencias/page.tsx`, `src/lib/resources.ts`, `src/lib/inventory.ts`,
+`src/lib/inventory-rules.ts` (nuevo), `src/lib/inventory.test.ts`,
+`src/lib/ui-contracts.test.ts`, `docs/audit/MOTORES_SIN_PUERTA.md`.
+
+Cuarto motor sin puerta cerrado, y **el peor de los trece** — no por lo que no
+hacía, sino por lo que sí hacía.
+
+El inventario decía «no hay forma de mover stock». **Había una, y eso era el
+problema.** `/dashboard/comercio/movimientos` se titula «Kardex inmutable» y
+tenía un formulario genérico **«Nuevo movimiento»** —cantidad, tipo, almacén
+destino, costo— que escribía a `/api/erp/stock_movement`. Con lápiz y papelera en
+cada fila. La lista blanca de la tabla admitía `quantity`, `movement_type` y
+hasta `balance_after`, el saldo resultante.
+
+Y escribir esa tabla **no mueve el saldo**. Lo comprobé en los dos sitios donde
+podía estar: en la aplicación, solo `inventory.ts` escribe `stock_level.quantity`;
+en la base, los únicos disparadores sobre `stock_movement` son `touch_updated_at`
+y dos comprobaciones de inquilino. Nada lo mantiene.
+
+Así que registrar una merma de 10 dejaba el kardex diciendo «merma de 10» y la
+existencia intacta en 50. Y de paso se saltaba **todo** lo que vive en
+`postMovement`:
+
+- el **bloqueo de stock negativo**;
+- el recálculo del **costo promedio ponderado**, con el que se valora el
+  inventario para cerrar el periodo;
+- la **segunda pata** de una transferencia —la mercancía salía de un almacén y no
+  entraba en el otro—;
+- y el **aviso de existencias bajas**.
+
+### Por qué es peor que un motor sin puerta
+
+Los otros tres se notaban: el módulo salía vacío y alguien preguntaba. Este no.
+**La fila sí aparecía** en la lista, con su tipo, su fecha y su insignia de
+color. Parecía que funcionaba. La diferencia entre el libro y la existencia no
+salía hasta el conteo físico.
+
+Que es, literalmente, lo que avisaba el comentario de `stock_level` en
+`resources.ts` **desde 0052**, una tabla más arriba:
+
+> «Editar el saldo aquí lo separa del libro de movimientos que es su única
+> explicación, y la diferencia no aparece hasta el conteo físico.»
+
+0052 cerró la caché y **dejó escribible el libro**, que es peor: la caché se
+puede reconstruir desde el libro; un libro falsificado no se reconstruye desde
+nada. Un motor sin puerta no hace nada. Esto era **una puerta a otra habitación**:
+hacía algo, parecía funcionar, y dejaba los datos peor que si no hubiera hecho
+nada.
+
+### Lo que hay ahora
+
+- `stock_movement.writable: []`. El único camino es `POST /api/inventory/movement`.
+- La pantalla registra por el motor, con un diálogo que **dice qué le hace al
+  saldo cada tipo** —«un conteo FIJA el saldo, no se le suma» es la confusión que
+  se lleva por delante un inventario— y que adelanta las reglas del servidor sin
+  sustituirlas.
+- **Sin lápiz ni papelera.** Un kardex del que se borra una línea no es un kardex.
+  Se apoya en el cambio de `ResourcePage` de la ola anterior, que era exactamente
+  para esto.
+- De los nueve tipos, la pantalla ofrece **seis**. `sale` y `consumption` los
+  escribe la venta —teclear una salida «por venta» que ninguna venta respalda
+  deja el kardex sin poder contrastarse con la operación—, y `transfer_in` la
+  escribe el motor como segunda pata: ofrecerla haría que una transferencia
+  entrara dos veces.
+- La **lista de reposición** (`low-stock`) se ve en Existencias. Antes el aviso
+  solo sonaba por notificación, una vez al mes por artículo y almacén: para hacer
+  una orden de compra tocaba recorrer el listado a ojo comparando «Disponible»
+  con un punto de pedido que no se enseñaba.
+
+### Una definición de «bajo», no dos
+
+La pantalla necesitaba el mismo criterio que la campana, y `inventory.ts` es
+`server-only`: un componente de cliente no lo puede importar. La salida fácil era
+copiar el umbral en el componente — y el propio código del inventario lleva
+avisado desde 0052 que **con dos definiciones de «bajo», la pantalla señala lo que
+la campana calla**.
+
+No se copió: las dos funciones puras se fueron a `inventory-rules.ts`, sin
+`server-only` y sin imports, y `inventory.ts` las reexporta. La campana, la lista
+de compras y la pantalla salen del mismo sitio, y una guarda comprueba que
+`reorderThreshold` esté definida **una sola vez** en todo el repositorio.
+
+### Y una frase del motor que no se podía sostener
+
+La cabecera de `inventory.ts` decía «nada más puede escribir `stock_level`». No
+es cierto: `stock-commitment-service` escribe `reserved` y `available` —lo vendido
+y no salido, que es otra cuenta—. Una guarda no puede medir una frase más amplia
+que la verdad, así que ahora dice lo estrecho y comprobable: **`quantity` la
+escribe solo este fichero**, y eso sí se comprueba.
+
+### El motor que escribe tampoco tenía pruebas
+
+`inventory.test.ts` existía con cinco casos, y los cinco eran de las dos
+funciones puras. `postMovement` —las doscientas líneas que mueven el saldo— no
+tenía ninguno. Otra vez el patrón de `ledger.ts`: lo puro probado, lo que escribe
+no.
+
+**25 casos nuevos**, y todos cubren exactamente lo que el formulario viejo se
+saltaba: que escribir el movimiento **y** reescribir el saldo sean una sola cosa;
+que un conteo fije el saldo en vez de sumarse; que un ajuste lleve el signo de
+quien lo manda; que una salida al negativo se rechace **sin dejar ni una línea
+escrita**; que `allows_negative` sea booleano y no la cadena `"yes"` (fallo ya
+corregido una vez); que una transferencia escriba las dos patas con la misma
+cantidad y en almacenes distintos; que el costo promedio solo lo muevan las
+entradas con costo; y que el aviso de reposición se mida contra **lo disponible**,
+solo al bajar, y agrupado por mes.
+
+### Dos guardas mías, mal escritas
+
+1. Una buscaba `tenantCreate(companyId, "stock_movement"` y la llamada real lleva
+   parámetro de tipo: `tenantCreate<{ _id: string }>(…)`. Fallaba contra código
+   correcto.
+2. La otra comprobaba que `inventory-rules.ts` **no** contuviera `server-only`…
+   leyendo el fichero crudo, y saltó contra su propia cabecera, que explica por
+   qué el módulo no lo lleva. **Cuarta vez en esta rama que una guarda mide la
+   documentación en vez del código, y la segunda hoy.**
+
+### El piso que puse por la mañana saltó por la tarde
+
+La guarda del documento tenía dos pisos escritos a mano —«al menos tres apartados
+abiertos», «al menos seis rutas nombradas»— para que un extractor roto no dejara
+la comprobación vacía y verde. Se pusieron en rojo **contra un documento
+correcto** en cuanto el inventario bajó de ocho a seis.
+
+Un piso escrito a mano envejece igual que la cifra que vigila, que es el fallo
+que este documento existe para no repetir. Sustituidos por una propiedad
+derivada, más fuerte que los dos juntos: **cada ruta que sigue sin puerta tiene
+que estar nombrada en un apartado abierto**. Si el extractor se rompe, o si se dan
+por cerrados todos los apartados, no queda ninguna y se pone rojo solo — sin que
+nadie tenga que acordarse de bajar un número.
+
+**Mutación: 26 de 26, todas muertas a la primera.**
+
+La guarda de motores sin puerta se puso en rojo sola. Quedan **seis**.
+
+`tsc`, `eslint`, **4291/4291** y `build` en verde. Sin migración.
