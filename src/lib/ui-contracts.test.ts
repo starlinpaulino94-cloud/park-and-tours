@@ -13199,10 +13199,11 @@ describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", (
   const SIN_PUERTA_CONOCIDAS = [
     // `/api/assets/[id]/status` salió de aquí: tiene puerta desde el 30-sep, con
     // previsualización del impacto antes de confirmar.
+    //
+    // Las tres de gift cards también salieron, pero por otro motivo: NUNCA
+    // estuvieron sin puerta. Las acusó un fallo de este barrido —ver
+    // `tienePuerta`—, no una pantalla que faltara.
     "/api/customers/[id]/lista-negra",
-    "/api/gift-cards/[id]/redeem",
-    "/api/gift-cards/[id]/refund",
-    "/api/gift-cards/[id]/void",
     "/api/inventory/low-stock",
     "/api/inventory/movement",
     "/api/ledger/chart",
@@ -13215,6 +13216,50 @@ describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", (
     "/api/stripe/customer-portal",
   ];
 
+  /**
+   * Un fichero cuenta como puerta si CONSTRUYE la url, aunque la construya por
+   * partes.
+   *
+   * La primera versión solo admitía variable en el segmento DINÁMICO
+   * (`/api/x/${id}/y`). Pero un llamador puede interpolar también el segmento de
+   * la ACCIÓN, y eso es exactamente lo que hace el cajón de las gift cards:
+   * `api.post(`/api/gift-cards/${card._id}/${action}`)` con
+   * `action: "redeem" | "refund" | "void"`. Las tres rutas salieron «huérfanas»
+   * teniendo puerta desde el día que se escribieron. El inventario acusó a tres
+   * motores de no tener pantalla mientras la pantalla estaba delante — y el
+   * documento lo repitió, porque lo copiaba de aquí.
+   *
+   * Así que cualquier segmento puede venir interpolado, pero NO gratis: si viene
+   * interpolado, el mismo fichero tiene que nombrar ese literal entre comillas.
+   * Sin esa condición `/api/${a}/${b}` valdría de llamador de cualquier cosa y
+   * la guarda dejaría de morder. Se mira FICHERO A FICHERO y no sobre el código
+   * concatenado, para que la plantilla y el literal tengan que estar en el mismo
+   * sitio; y se recorren TODAS las coincidencias, porque la primera puede ser la
+   * que no nombra el literal.
+   */
+  function tienePuerta(url: string, fuentes: string[]): boolean {
+    const escapar = (p: string) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const segmentos = url.split("/").filter(Boolean);
+    const patron = segmentos.map((p) =>
+      p.startsWith("[")
+        ? "(?:[^/`\"'${]|\\$\\{[^}]*\\})+"
+        : `(${escapar(p)}|\\$\\{[^}]*\\})`);
+    const re = new RegExp("/" + patron.join("/"), "g");
+
+    return fuentes.some((codigo) =>
+      [...codigo.matchAll(re)].some((m) => {
+        let grupo = 0;
+        return segmentos.every((p) => {
+          if (p.startsWith("[")) return true;
+          grupo += 1;
+          // Escrito tal cual: puerta directa, sin más condiciones.
+          if (!m[grupo].startsWith("${")) return true;
+          // Interpolado: solo cuenta si el fichero nombra el literal.
+          return new RegExp(`["']${escapar(p)}["']`).test(codigo);
+        });
+      }));
+  }
+
   function rutasSinLlamador(): string[] {
     /**
      * Todo lo que podría llamar: pantallas, componentes, servicios y pruebas de
@@ -13224,22 +13269,15 @@ describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", (
     const fuentes = [
       ...ficherosTs("src").filter((f) => !f.includes("/api/") && !/\.test\.tsx?$/.test(f)),
       ...ficherosTs("tests"),
-    ];
-    const codigo = fuentes.map((f) => readFileSync(f, "utf8")).join("\n")
+    ].map((f) => read(f)
       // Sin comentarios: nombrar una ruta al explicarla no es llamarla. Es el
       // fallo que dejó pasar la primera versión de la guarda del parque.
-      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/[^\n]*/gm, "");
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/[^\n]*/gm, ""));
 
     return ficherosTs("src/app/api")
       .filter((f) => f.endsWith("route.ts"))
-      .map((f) => "/" + path.relative(path.join(ROOT, "src/app"), f).replace(/\\/g, "/").replace("/route.ts", ""))
-      .filter((url) => {
-        if (LLAMADOR_EXTERNO.some((p) => url.startsWith(p))) return false;
-        // Un segmento dinámico se llama con plantilla: `/api/x/${id}/y`.
-        const partes = url.split("/").filter(Boolean).map((p) =>
-          p.startsWith("[") ? "[^/`\"']+" : p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-        return !new RegExp("/" + partes.join("/")).test(codigo);
-      })
+      .map((f) => "/" + path.relative(path.join(ROOT, "src/app"), path.join(ROOT, f)).replace(/\\/g, "/").replace("/route.ts", ""))
+      .filter((url) => !LLAMADOR_EXTERNO.some((p) => url.startsWith(p)) && !tienePuerta(url, fuentes))
       .sort();
   }
 
@@ -13262,15 +13300,129 @@ describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", (
       .toEqual([]);
   });
 
+  /**
+   * LA GUARDA TIENE QUE RECONOCER UNA PUERTA CONSTRUIDA POR PARTES.
+   *
+   * Esta prueba existe porque el barrido se equivocó: acusó a
+   * `/api/gift-cards/[id]/{redeem,refund,void}` de no tener llamador mientras el
+   * cajón de gift cards las llamaba con el segmento de la acción interpolado. Un
+   * inventario que inventa huecos es peor que no tenerlo: manda a arreglar lo que
+   * ya está hecho y le quita crédito a los huecos de verdad.
+   *
+   * Se prueba sobre fuentes sintéticas —no sobre el repositorio— para que siga
+   * midiendo el detector cuando el repositorio cambie.
+   */
+  it("una url construida por partes cuenta como puerta, y una vacía no", () => {
+    const comoElCajon = [
+      'type Action = "redeem" | "refund" | "void";',
+      "await api.post(`/api/gift-cards/${card._id}/${action}`, payload);",
+    ].join("\n");
+
+    for (const ruta of ["/api/gift-cards/[id]/redeem", "/api/gift-cards/[id]/refund", "/api/gift-cards/[id]/void"]) {
+      expect(tienePuerta(ruta, [comoElCajon]), `${ruta}: la plantilla del cajón es su puerta`).toBe(true);
+    }
+
+    // Y el literal tiene que estar en el MISMO fichero que la plantilla.
+    expect(tienePuerta("/api/gift-cards/[id]/redeem", [
+      'type Action = "redeem";',
+      "await api.post(`/api/gift-cards/${id}/${action}`);",
+    ]), "en dos ficheros distintos no se puede saber que llama a esta")
+      .toBe(false);
+
+    /**
+     * EL PRECIO DE ADMITIR INTERPOLACIONES: que no se coma todo.
+     *
+     * Si un segmento interpolado valiera sin condición, este llamador sería
+     * puerta de CUALQUIER ruta de dos tramos y la guarda no volvería a morder.
+     */
+    expect(tienePuerta("/api/gift-cards/[id]/void", [
+      "await api.post(`/api/gift-cards/${id}/${accion}`);",
+    ]), "sin nombrar «void» no se puede contar como su llamador")
+      .toBe(false);
+    expect(tienePuerta("/api/ledger/post", ["await api.post(`/api/${grupo}/${accion}`);"]),
+      "una plantilla entera de variables no es puerta de nada")
+      .toBe(false);
+
+    /**
+     * Y se recorren TODAS las coincidencias del fichero, no la primera.
+     *
+     * Este caso costó una mutación superviviente. El primer intento fue este:
+     *
+     *     `/api/gift-cards/${a}/${cualquiera}`   ← primera coincidencia
+     *     const accion = "refund";
+     *     `/api/gift-cards/${b}/${accion}`       ← la buena
+     *
+     * y NO distinguía nada: la condición del literal mira el FICHERO entero, así
+     * que la primera coincidencia ya encontraba `"refund"` entrecomillado en la
+     * línea de en medio y pasaba igual. La prueba daba verde por el motivo
+     * equivocado.
+     *
+     * Para que la segunda coincidencia importe, la primera tiene que fallar: una
+     * plantilla de puras variables en un fichero que NO entrecomilla «refund» en
+     * ningún sitio, y la puerta de verdad escrita tal cual más abajo.
+     */
+    expect(tienePuerta("/api/gift-cards/[id]/refund", [[
+      "await api.post(`/api/gift-cards/${a}/${cualquiera}`);",
+      "await api.post(`/api/gift-cards/${b}/refund`);",
+    ].join("\n")]), "la puerta estaba en la segunda coincidencia, no en la primera")
+      .toBe(true);
+
+    // Y lo evidente sigue funcionando: escrita tal cual, es puerta.
+    expect(tienePuerta("/api/ledger/post", ['await api.post("/api/ledger/post", body);']))
+      .toBe(true);
+    expect(tienePuerta("/api/ledger/post", ["const x = 1;"]), "nadie la nombra: no tiene puerta")
+      .toBe(false);
+  });
+
   it("el inventario escrito nombra las mismas que el barrido", () => {
     const doc = read("docs/audit/MOTORES_SIN_PUERTA.md");
     const faltan = SIN_PUERTA_CONOCIDAS.filter((r) => !doc.includes(r));
     expect(faltan, `el documento no explica qué se pierde con: ${faltan.join(", ")}`).toEqual([]);
-    // Y al revés: que no se quede nombrando una que ya se arregló.
-    const sobran = [...doc.matchAll(/`(\/api\/[\w[\]/-]+)`/g)]
-      .map((m) => m[1])
+
+    /**
+     * Y al revés: que no se quede PRESENTANDO como abierta una que ya se cerró.
+     *
+     * Se mira apartado por apartado, no el documento entero. La primera versión
+     * barría todo el fichero y eso la hacía prohibir la prosa: al explicar que lo
+     * que de verdad le falta al saldo regalo es que `/api/payments` no conozca la
+     * tarjeta, la guarda se quejó de `/api/payments` —una ruta sanísima, con
+     * puerta y todo—. Una guarda que impide escribir dónde está el hueco de
+     * verdad es una guarda que alguien borra.
+     *
+     * Así que el que manda es el apartado: los de título TACHADO son los cerrados
+     * y pueden explicar lo que quieran —con qué se cerró, qué se creyó y qué era
+     * falso, a qué otra ruta apunta el trabajo que queda—; los demás son el
+     * inventario vivo y ahí cada ruta nombrada tiene que seguir sin puerta.
+     */
+    const apartados = doc.split(/^### /m).slice(1);
+    expect(apartados.length, "no se reconocieron los apartados del inventario").toBeGreaterThan(4);
+
+    const abiertos = apartados.filter((a) => !a.split("\n")[0].includes("~~"));
+    const cerrados = apartados.filter((a) => a.split("\n")[0].includes("~~"));
+    expect(cerrados.length, "ningún apartado cerrado: el tachado dejó de reconocerse").toBeGreaterThan(1);
+
+    // Tachar un título es afirmar algo. Que lo afirme con todas las letras, para
+    // que tachar no sea la manera fácil de callar esta prueba.
+    for (const a of cerrados) {
+      expect(a, `apartado cerrado sin decir qué lo cerró: ${a.split("\n")[0]}`)
+        .toMatch(/CERRADO|NUNCA FUE UN HUECO/);
+    }
+
+    // Pisos. Sin ellos, dar por cerrados TODOS los apartados —o romper el
+    // extractor de rutas— deja la comprobación vacía, y vacío pasa.
+    expect(abiertos.length, "ningún apartado abierto: el inventario vivo se quedó sin nada que revisar")
+      .toBeGreaterThan(2);
+    const nombradas = [...new Set(
+      abiertos.flatMap((a) => [...a.matchAll(/`(\/api\/[\w[\]/-]+)`/g)].map((m) => m[1]))
+    )];
+    expect(nombradas.length, "el inventario vivo dejó de nombrar rutas: el extractor está roto")
+      .toBeGreaterThan(5);
+
+    const sobran = nombradas
       .filter((r) => !SIN_PUERTA_CONOCIDAS.includes(r) && !LLAMADOR_EXTERNO.some((p) => r.startsWith(p)));
-    expect(sobran, `el documento nombra rutas que ya no están sin puerta: ${sobran.join(", ")}`).toEqual([]);
+    expect(sobran,
+      `el inventario sigue dando por abiertas rutas que ya tienen puerta: ${sobran.join(", ")}`)
+      .toEqual([]);
   });
 });
 

@@ -7193,3 +7193,104 @@ floja** — es la tercera vez hoy que una mutación miente y la tercera vez que
 verificarla lo desmonta.
 
 `tsc`, `eslint`, **4221/4221** y `build` en verde. Sin migración.
+
+---
+
+## El saldo regalo sí tenía puerta: el que estaba roto era mi detector
+
+`src/lib/ui-contracts.test.ts`, `docs/audit/MOTORES_SIN_PUERTA.md`.
+
+Iba a darle pantalla al ciclo de vida de las gift cards porque el inventario de
+motores sin puerta decía que una tarjeta vendida **no se puede canjear, ni
+devolver, ni anular** desde el producto. Antes de escribir nada fui a leer las
+tres rutas y la pantalla.
+
+**La pantalla ya las llamaba.** `gift-card-drawer.tsx` —de un commit de hace dos
+semanas, no mío— abre el detalle al pulsar la fila: los tres botones, el motivo
+obligatorio donde toca, el aviso de cuánto saldo se extingue al anular, y el
+libro de movimientos debajo. Había incluso una prueba, ya escrita, afirmando que
+el cajón las llama. Mi propio inventario contradecía a una prueba del mismo
+fichero.
+
+### El fallo
+
+El barrido buscaba la url escrita entera, admitiendo variable **solo** en el
+segmento dinámico:
+
+```
+/api/gift-cards/[^/`"']+/redeem
+```
+
+Y el cajón interpola también el segmento de la **acción**:
+
+```ts
+type Action = "redeem" | "refund" | "void";
+await api.post(`/api/gift-cards/${card._id}/${action}`, payload);
+```
+
+Ninguna de las tres urls aparece escrita en ningún sitio del repositorio. Las
+tres salieron huérfanas, y el documento lo repitió porque lo copiaba del
+barrido. **Dieciséis eran trece.**
+
+### Por qué importa más que un número mal
+
+Un inventario que inventa huecos manda a arreglar lo que ya está hecho y le quita
+crédito a los huecos de verdad. Si hubiera empezado a teclear en vez de a leer,
+habría escrito una segunda pantalla para un ciclo de vida que ya funcionaba, y el
+commit habría contado como progreso.
+
+Es la octava vez en esta auditoría que el fallo **no está donde dice el mensaje**,
+y la primera en que el mensaje lo escribí yo.
+
+### El arreglo, sin aflojar la guarda
+
+Ahora **cualquier** segmento puede venir interpolado, pero solo cuenta si el mismo
+fichero nombra ese literal entre comillas. Sin esa condición `/api/${a}/${b}`
+valdría de llamador de cualquier ruta de dos tramos y la guarda no volvería a
+morder — arreglar un falso positivo aflojando el detector habría cambiado el error
+por uno peor, porque el siguiente hueco de verdad pasaría en silencio. Se mira
+fichero a fichero, no sobre el código concatenado, para que la plantilla y el
+literal tengan que estar en el mismo sitio.
+
+Verificado a mano, una por una, que las **once** restantes siguen siendo reales:
+de los dos únicos `grep` que devolvían algo, uno era un módulo de `lib` con el
+mismo nombre y el otro el nombre de un `job`. Ninguno llamaba a una ruta.
+
+### La guarda del documento prohibía escribir dónde está el hueco
+
+Al explicar en el documento qué le falta de verdad al saldo regalo —que
+`/api/payments` no conoce la tarjeta— **la guarda se puso en rojo contra
+`/api/payments`**, una ruta sanísima. Barría el fichero entero y no distinguía el
+inventario de la prosa.
+
+Una guarda que impide escribir dónde está el hueco de verdad es una guarda que
+alguien borra. Ahora manda el apartado: los de título tachado son los cerrados y
+pueden explicar lo que quieran; los demás son el inventario vivo, y ahí cada ruta
+nombrada tiene que seguir sin puerta. Tachar un título exige decir con todas las
+letras qué lo cerró, para que tachar no sea la manera fácil de callar la prueba.
+
+### Lo que sí le falta al saldo regalo, y no es una pantalla
+
+`gift_card` **no es un método de cobro**. El enum `payment_method` (migración
+0003) tiene ocho valores y ninguno es la tarjeta, y la ruta de cobros no la
+menciona. Consumir saldo y cobrar una orden son hoy dos gestos sin relación: se
+consume en el cajón, se teclea el número de orden en la nota, y luego se cobra la
+orden por otro método. La propia ruta lo dice —«la acción NO toca los totales de
+la orden»— y espera que «el flujo de cobro lo aplique». Nadie lo aplica.
+
+Eso es **un motor que falta**, no uno sin puerta, y pide un valor nuevo en el
+enum: una migración que hay que pegar en Supabase. Queda medido y escrito, sin
+empezar.
+
+**Mutación: 9 de 9.** Una sobrevivió y el motivo merece quedar escrito: la prueba
+que debía matarla daba verde **por el motivo equivocado**. Quería comprobar que se
+recorren todas las coincidencias de un fichero y no la primera, y el caso que
+escribí no distinguía nada — la condición del literal mira el fichero entero, así
+que la primera coincidencia ya encontraba el literal entrecomillado dos líneas más
+abajo y pasaba igual. Hay que construir el caso de forma que la primera
+coincidencia **falle**: plantilla de puras variables en un fichero que no
+entrecomilla la acción en ningún sitio, y la puerta escrita tal cual más abajo.
+**Una prueba que pasa por el motivo equivocado se lee exactamente igual que una
+que pasa.**
+
+`tsc`, `eslint`, **4222/4222** y `build` en verde. Sin migración.
