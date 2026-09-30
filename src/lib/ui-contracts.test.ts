@@ -12949,6 +12949,14 @@ describe("el informe de producción no puede decir un número que ya no es", () 
       .map((m) => conEsquema(m[1])));
 
     const servicios = readdirSync(path.join(ROOT, "src/lib")).filter((f) => /-service\.ts$/.test(f));
+    /**
+     * Y el conjunto que de verdad importa: los que ESCRIBEN. «Servicios» era un
+     * sufijo en el nombre del fichero, y `ledger.ts` —el motor de partida doble—
+     * quedaba fuera y sin pruebas sin que ninguna cifra lo dijera.
+     */
+    const escriben = readdirSync(path.join(ROOT, "src/lib"))
+      .filter((f) => /\.ts$/.test(f) && !/\.(test|d)\.ts$/.test(f))
+      .filter((f) => /\b(tenantCreate|tenantUpdate|tenantDelete)\b/.test(read(`src/lib/${f}`)));
     const specs = readdirSync(path.join(ROOT, "tests/e2e")).filter((f) => f.endsWith(".spec.ts"));
 
     return {
@@ -12957,6 +12965,9 @@ describe("el informe de producción no puede decir un número que ya no es", () 
       tablas: tablas.size,
       conRls: [...tablas].filter((t) => conAyuda.has(t) || aMano.has(t)).length,
       servicios: servicios.length,
+      escriben: escriben.length,
+      escribenSinPrueba: escriben
+        .filter((f) => !existsSync(path.join(ROOT, "src/lib", f.replace(/\.ts$/, ".test.ts")))).length,
       sinPrueba: servicios.filter((f) => !existsSync(path.join(ROOT, "src/lib", f.replace(/\.ts$/, ".test.ts")))).length,
       rutas: ficherosTs("src/app/api").filter((f) => f.endsWith("route.ts")).length,
       pruebasSql: readdirSync(path.join(ROOT, "supabase/tests")).filter((f) => f.endsWith(".test.sql")).length,
@@ -12981,6 +12992,8 @@ describe("el informe de producción no puede decir un número que ya no es", () 
       tablas: numero(/\*\*[\d  ]+ de ([\d  ]+) tablas\*\*/, "cuántas tablas hay"),
       sinPrueba: numero(/Servicios sin ninguna prueba: ([\d  ]+)\*\*/, "servicios sin prueba"),
       servicios: numero(/Servicios sin ninguna prueba: [\d  ]+\*\* de \*\*([\d  ]+)\*\*/, "cuántos servicios hay"),
+      escribenSinPrueba: numero(/escriben en la base sin ninguna prueba: ([\d  ]+)\*\*/, "módulos que escriben sin prueba"),
+      escriben: numero(/escriben en la base sin ninguna prueba: [\d  ]+\*\* de \*\*([\d  ]+)\*\*/, "cuántos módulos escriben"),
       rutas: numero(/Rutas de API: ([\d  ]+)\*\*/, "cuántas rutas de API"),
       pruebasSql: numero(/Pruebas SQL contra Postgres de verdad: ([\d  ]+)\*\*/, "cuántas pruebas SQL"),
       recorridos: numero(/Recorridos de navegador: ([\d  ]+)\*\*/, "cuántos recorridos"),
@@ -13011,6 +13024,8 @@ describe("el informe de producción no puede decir un número que ya no es", () 
     comparar("tablas con RLS", dice.conRls, real.conRls);
     comparar("servicios", dice.servicios, real.servicios);
     comparar("servicios sin prueba", dice.sinPrueba, real.sinPrueba);
+    comparar("módulos que escriben en la base", dice.escriben, real.escriben);
+    comparar("módulos que escriben sin prueba", dice.escribenSinPrueba, real.escribenSinPrueba);
     comparar("rutas de API", dice.rutas, real.rutas);
     comparar("pruebas SQL", dice.pruebasSql, real.pruebasSql);
     comparar("ficheros de E2E", dice.ficherosE2e, real.ficherosE2e);
@@ -13036,6 +13051,13 @@ describe("el informe de producción no puede decir un número que ya no es", () 
     expect(delScript.serviciosSinPrueba.length, "el script y la guarda no ven los mismos servicios sin prueba")
       .toBe(real.sinPrueba);
     expect(delScript.tablasSinRls, "el script ve tablas sin RLS que la guarda no").toEqual([]);
+    expect(delScript.escrituraSinPrueba.length, "el script y la guarda no ven los mismos módulos de escritura sin prueba")
+      .toBe(real.escribenSinPrueba);
+    // Y que los NOMBRE: un número a secas no dice a qué apuntar en la ola siguiente.
+    for (const f of delScript.escrituraSinPrueba) {
+      expect(read(INFORME), `el informe no nombra ${f}, que escribe en la base y no tiene pruebas`)
+        .toContain(f);
+    }
   });
 });
 
@@ -13206,9 +13228,9 @@ describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", (
     "/api/customers/[id]/lista-negra",
     "/api/inventory/low-stock",
     "/api/inventory/movement",
-    "/api/ledger/chart",
-    "/api/ledger/post",
-    "/api/ledger/trial-balance",
+    // Las tres de contabilidad salieron el 30-sep: el asiento manual y la reversa
+    // en el libro diario, el sembrado en el plan de cuentas y el balance de
+    // comprobación en pantalla —con `entries` y `truncated`, que la ruta tiraba—.
     "/api/maintenance/reconcile-drafts",
     "/api/proveedor/enlace",
     "/api/setup/demo",
@@ -13496,5 +13518,186 @@ describe("bajar un activo no es editar un campo", () => {
     for (const afirmacion of ["dryRun: true", "bookingsAtRisk", '"task"', '"attraction_log"']) {
       expect(pruebas, `las pruebas dejaron de cubrir ${afirmacion}`).toContain(afirmacion);
     }
+  });
+});
+
+/**
+ * LA CONTABILIDAD QUE NO SE PODÍA TOCAR.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * TRES RUTAS, Y SOLO UNA DE LAS TRES ACUSACIONES ERA CIERTA
+ *
+ * El inventario de motores sin puerta decía que faltaban el plan de cuentas, el
+ * asiento manual y el balance de comprobación. Al abrir las pantallas:
+ *
+ * - el plan de cuentas **siempre se pudo mirar y editar** (`finanzas/cuentas`,
+ *   CRUD genérico). Faltaba SEMBRAR el plan base;
+ * - el asiento manual sí faltaba del todo, y era el hueco de verdad: con
+ *   `ledger_entry.writable: []` la única vía era SQL;
+ * - el balance de comprobación ya venía en la respuesta de `statements` y la
+ *   pantalla lo declaraba en su interfaz **sin pintarlo**: solo se podía bajar
+ *   en CSV.
+ *
+ * Es la segunda vez en el día que una entrada del inventario exagera lo que
+ * falta. Por eso estas guardas miran lo que la pantalla HACE, no lo que el
+ * documento dice.
+ */
+describe("la contabilidad se puede tocar desde el producto", () => {
+  const DIARIO = "src/app/dashboard/finanzas/diario/page.tsx";
+  const CUENTAS = "src/app/dashboard/finanzas/cuentas/page.tsx";
+  const ESTADOS = "src/app/dashboard/finanzas/estados/page.tsx";
+  const RUTA_TB = "src/app/api/ledger/trial-balance/route.ts";
+  const TABLA = "src/components/tf/resource-page.tsx";
+  const limpio = (rel: string) => sinComentariosDe(rel);
+
+  it("el libro diario registra el asiento y lo reversa", () => {
+    const diario = limpio(DIARIO);
+    expect(diario, "el asiento manual no llega a la ruta").toContain('"/api/ledger/post"');
+    // Con líneas: un asiento sin `lines` es un 400 que nadie entiende.
+    expect(diario, "el asiento no manda sus líneas").toMatch(/lines:\s*conImporte\.map/);
+    expect(diario, "la reversa no llega a la ruta").toMatch(/reverseEntry:/);
+    // Y la reversa se pide por el código del asiento, no por el id de la línea:
+    // reversar «esta línea» dejaría el asiento descuadrado a la mitad.
+    expect(diario, "la reversa tiene que ir por entry_code").toMatch(/reverseEntry:\s*reversando\.entry_code/);
+  });
+
+  it("el descuadre se dice, no se guarda", () => {
+    const diario = limpio(DIARIO);
+    /**
+     * El botón depende de la diferencia. Sin esta condición la pantalla manda un
+     * asiento descuadrado, el servidor lo rechaza con un 400 y quien lo teclea
+     * no sabe qué línea mirar: el aviso tiene que estar donde se teclea.
+     */
+    /**
+     * ACOTADO A LA SENTENCIA, no al fichero.
+     *
+     * La primera versión era `/puedeGuardar\s*=[\s\S]*?diferencia === 0/` y la
+     * mutación que quita `diferencia === 0` de la condición SOBREVIVIÓ: con
+     * `[\s\S]*?` sin límite, el regex encontraba el `diferencia === 0` del
+     * render —el que decide el color del total— cientos de líneas más abajo. La
+     * guarda decía que el botón comprobaba el cuadre mirando un `className`.
+     *
+     * `[^;]*` lo encierra en la asignación. Es la misma lección que ya costó dos
+     * guardas hoy, en su tercera forma: lo que se mide tiene que estar donde se
+     * dice que está.
+     */
+    expect(diario, "el botón no depende de que el asiento cuadre")
+      .toMatch(/puedeGuardar\s*=[^;]*diferencia === 0/);
+    expect(diario, "no se exigen las dos líneas mínimas")
+      .toMatch(/conImporte\.length >= 2/);
+    expect(diario, "una línea con importe y sin cuenta pasaría").toMatch(/sinCuenta/);
+    // Y el descuadre se ENSEÑA, no solo bloquea: decir «no puedes guardar» sin
+    // decir cuánto falta y de qué lado obliga a sumar a mano.
+    expect(diario, "no se dice de qué lado falta").toMatch(/Faltan .*de crédito|Faltan .*de débito/);
+  });
+
+  it("del libro diario no se borra ni se edita una línea", () => {
+    const diario = limpio(DIARIO);
+    // La pantalla no ofrece formulario: una línea inmutable no se teclea.
+    expect(diario, "el libro diario volvió a ser escribible por formulario").toMatch(/canWrite=\{false\}/);
+
+    // Y la lista blanca del CRUD genérico sigue vacía: si `ledger_entry` tuviera
+    // campos escribibles, la inmutabilidad del libro sería decorativa.
+    const resources = read("src/lib/resources.ts");
+    const entry = /^ {2}ledger_entry: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[\s*\]/.test(entry), "ledger_entry.writable dejó de estar vacía").toBe(true);
+
+    // Lo mismo para el periodo contable: su estado lo mueve `/api/ledger/periods`.
+    const periodo = /^ {2}accounting_period: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[\s*\]/.test(periodo), "accounting_period.writable dejó de estar vacía").toBe(true);
+
+    // Y el saldo de una cuenta lo hacen los asientos (AUD-F16).
+    const cuenta = /^ {2}ledger_account: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    expect(/writable:\s*\[([\s\S]*?)\]/.exec(cuenta)![1], "balance volvió a ser escribible a mano")
+      .not.toContain('"balance"');
+  });
+
+  /**
+   * La columna de acciones dependía de `canWrite`, así que un recurso inmutable
+   * tenía que elegir entre no tener acciones propias o aceptar el lápiz y la
+   * papelera. El libro diario necesita la reversa y NO puede ofrecer borrar.
+   */
+  it("un recurso de solo lectura puede tener acciones propias y no el borrado", () => {
+    const tabla = limpio(TABLA);
+    expect(tabla, "la columna de acciones volvió a exigir canWrite")
+      .toMatch(/const allColumns = canWrite \|\| rowActions \?/);
+    // Editar y borrar, sólo bajo `canWrite`.
+    const columna = /const actionColumn[\s\S]*?^  \};/m.exec(tabla)![0];
+    expect(columna, "el lápiz y la papelera dejaron de depender de canWrite")
+      .toMatch(/\{canWrite && \(/);
+    for (const boton of ['aria-label="Editar"', 'aria-label="Eliminar"']) {
+      const i = columna.indexOf(boton);
+      expect(i, `no se encontró ${boton}`).toBeGreaterThan(0);
+      expect(columna.slice(0, i), `${boton} quedó fuera de la condición`).toMatch(/\{canWrite && \(/);
+    }
+  });
+
+  it("el plan de cuentas se puede sembrar", () => {
+    expect(limpio(CUENTAS), "el sembrado del plan base no llega a la ruta")
+      .toContain('"/api/ledger/chart"');
+  });
+
+  it("el balance de comprobación se ve, no solo se descarga", () => {
+    const estados = limpio(ESTADOS);
+    expect(estados, "el balance de comprobación sigue sin pedirse").toContain("/api/ledger/trial-balance");
+    // Pintado de verdad: las dos columnas y los totales.
+    expect(estados, "no se pintan las filas del balance").toMatch(/tb\.data \|\| \[\]\)\.map/);
+    expect(estados, "no se pintan los totales").toMatch(/tb\.totals\?\.debit/);
+    expect(estados, "no se dice si cuadra").toMatch(/tb\.balanced/);
+  });
+
+  /**
+   * LA PROPIEDAD QUE NO PUEDE VOLVER A PERDERSE.
+   *
+   * `trialBalance` pagina y se rinde en un techo. Pasado el techo el informe está
+   * incompleto y `balanced` sale `true` igual, porque lo que sí se leyó cuadra
+   * entre ello. La ruta devolvía solo `totals` y `balanced`: tiraba justo las dos
+   * cifras con las que se detecta eso, en el único papel con el que se cierra un
+   * mes.
+   */
+  it("un balance truncado no puede decir «cuadrado» a secas", () => {
+    const ruta = limpio(RUTA_TB);
+    for (const campo of ["entries:", "truncated:"]) {
+      expect(ruta, `la ruta del balance dejó de devolver ${campo}`).toContain(campo);
+    }
+    // Y el motor tiene que seguir calculándolos.
+    const motor = limpio("src/lib/ledger.ts");
+    expect(motor, "el motor dejó de contar los asientos del balance").toMatch(/entries: entries\.length/);
+    expect(motor, "el motor dejó de marcar el truncado").toMatch(/truncated: entries\.length >= TRIAL_MAX/);
+
+    // Y la pantalla tiene que ANTEPONERLO: enseñar «cuadrado» y el aviso de
+    // truncado como dos notas al mismo nivel es lo mismo que no avisar.
+    const estados = limpio(ESTADOS);
+    expect(estados, "la pantalla no avisa del truncado").toMatch(/tb\.truncated/);
+    expect(estados, "el aviso de truncado no se destaca")
+      .toMatch(/tb\.truncated &&[\s\S]{0,400}border-destructive/);
+  });
+
+  it("el asiento manual no puede firmarse como una venta", () => {
+    const diario = limpio(DIARIO);
+    /**
+     * `LedgerSource` tiene quince valores y doce los pone el sistema al vender,
+     * cobrar o liquidar. Si la pantalla los ofreciera todos, se podría teclear a
+     * mano un asiento de «venta» que ninguna venta respalda, y el libro dejaría
+     * de poder contrastarse con la operación.
+     */
+    const manuales = /const ORIGENES_MANUALES = \[([\s\S]*?)\]/.exec(diario)![1];
+    expect(manuales).toContain('"adjustment"');
+    for (const prohibido of ['"sale"', '"payment"', '"commission"', '"settlement"', '"refund"']) {
+      expect(manuales, `un asiento manual no puede firmarse como ${prohibido}`).not.toContain(prohibido);
+    }
+  });
+
+  it("toda fuente del libro tiene etiqueta", () => {
+    /**
+     * `cash_close` existía en `LedgerSource` y no en el diccionario: la insignia
+     * salía con el valor crudo. Se comprueba la lista entera, no ese valor.
+     */
+    const union = /export type LedgerSource =([\s\S]*?);/.exec(read("src/lib/ledger.ts"))![1];
+    const fuentes = [...union.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    expect(fuentes.length, "no se reconoció la unión de fuentes").toBeGreaterThan(10);
+    const dict = /export const LEDGER_SOURCE = dict\(([\s\S]*?)\n\);/.exec(read("src/lib/labels-modules.ts"))![1];
+    const faltan = fuentes.filter((f) => !new RegExp(`\\["${f}"`).test(dict));
+    expect(faltan, `fuentes del libro sin etiqueta: ${faltan.join(", ")}`).toEqual([]);
   });
 });

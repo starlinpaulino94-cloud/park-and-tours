@@ -7294,3 +7294,146 @@ entrecomilla la acción en ningún sitio, y la puerta escrita tal cual más abaj
 que pasa.**
 
 `tsc`, `eslint`, **4222/4222** y `build` en verde. Sin migración.
+
+---
+
+## La contabilidad que no se podía tocar
+
+`src/app/dashboard/finanzas/diario/page.tsx`, `.../cuentas/page.tsx`,
+`.../estados/page.tsx`, `src/app/api/ledger/trial-balance/route.ts`,
+`src/components/tf/resource-page.tsx`, `src/components/tf/simple-resource.tsx`,
+`src/lib/labels-modules.ts`, `src/lib/ledger.test.ts` (nuevo),
+`src/lib/ui-contracts.test.ts`, `docs/audit/MOTORES_SIN_PUERTA.md`.
+
+Tercer motor sin puerta que se cierra, y el inventario volvió a exagerar. Decía
+que faltaban tres cosas del contable. Al abrir las pantallas, **una de las tres
+frases era falsa y otra a medias**:
+
+| lo que el inventario decía | lo que era |
+| --- | --- |
+| «el plan de cuentas, que no se puede ni mirar» | **Falso.** `finanzas/cuentas` lo lista y lo edita desde siempre. Faltaba **sembrar** el plan base, y además `ensureChart` ya corría sola antes de cada asiento automático: una empresa que vende nunca se quedó sin plan |
+| «el asiento manual, un ajuste hay que meterlo por SQL» | **Cierto, y era el hueco de verdad.** Con `ledger_entry.writable: []` no había ninguna otra vía |
+| «el balance de comprobación» | **A medias.** `statements` ya lo devolvía, la pantalla lo declaraba en su interfaz **y no lo pintaba**: el único acceso era el CSV |
+
+Es la segunda vez en el mismo día que una entrada del inventario acusa de más.
+Las dos veces el motivo fue el mismo: se escribieron del barrido, sin abrir la
+pantalla. El barrido dice qué ruta no se llama; **no dice qué le falta al
+módulo**, y confundir las dos cosas manda a construir lo que ya está.
+
+### La promesa que la pantalla no podía cumplir
+
+El libro diario se describía a sí mismo así: «un error no se borra: se corrige
+con un asiento de reversa, así la historia se conserva». Y reversar **no se
+podía**: `POST /api/ledger/post` acepta `reverseEntry` desde el primer día,
+escribe el espejo y marca el original, y no lo llamaba ni una línea.
+
+Es el gemelo del saldo regalo: allí las tres acciones estaban **auditadas** y
+—creía yo— sin ejecutar; aquí la reversa estaba **prometida en la pantalla** y
+sin ejecutar. Una promesa escrita en la interfaz que el producto no puede cumplir
+es peor que no prometer nada, porque el usuario deja de buscar el botón.
+
+### El defecto que apareció al enchufarlo
+
+`/api/ledger/trial-balance` **tiraba `entries` y `truncated`**. El motor los
+devuelve a propósito: `trialBalance` pagina y se rinde en un techo de 200 000
+asientos, y pasado ese techo el informe está incompleto **y `balanced` sale
+`true` igual**, porque los débitos y créditos de lo que sí se leyó cuadran entre
+ello. Un informe recortado que dice «cuadrado», en el único papel con el que se
+cierra un mes.
+
+Los dos campos ya viajan, y la tarjeta antepone el aviso de truncado a todo lo
+demás: enseñar «cuadrado» y «la lectura se truncó» como dos notas al mismo nivel
+es lo mismo que no avisar.
+
+### La tabla obligaba a elegir entre la reversa y el borrado
+
+La columna de acciones de `ResourcePage` dependía entera de `canWrite`. Un
+recurso inmutable solo tenía dos opciones: no tener acciones propias, o aceptar
+el lápiz y la papelera. El libro diario necesita justo lo contrario —la reversa
+sí, el borrado nunca—, así que la condición se partió en dos: la columna aparece
+si hay `rowActions`, y editar y borrar siguen colgando de `canWrite`. **Un libro
+del que se puede borrar una línea no es un libro.**
+
+### Y el motor del dinero no tenía ni una prueba
+
+`src/lib/ledger.ts`: 291 líneas que validan el cuadre, se niegan a contabilizar
+en un mes cerrado, mantienen el saldo de cada cuenta en el signo de su
+naturaleza, reversan con el espejo y arman el balance paginando. **Cero
+cobertura.** A diferencia de `asset-impact`, este sí se ejecutaba —lo llama
+`ledger-events` al vender y al cobrar—, así que no había la excusa de «no se
+usa»: lo que pasaba es que sus tres puertas de contable estaban huérfanas y nadie
+lo miraba de frente.
+
+27 casos nuevos. Los que más importan:
+
+- que el descuadre no entre, y que **no deje ni una línea escrita**;
+- que el mes cerrado se compruebe **antes** de la primera escritura (si fuera
+  después, un mes cerrado se quedaría con un asiento a medias — peor que el
+  problema que la comprobación evita);
+- que un crédito suba una cuenta de ingreso en **positivo**: con el signo al
+  revés el estado de resultados enseña los ingresos en negativo;
+- que dos líneas contra la misma cuenta **acumulen** en vez de pisarse;
+- que la reversa invierta los lados de verdad, marque el original y pida solo las
+  no reversadas —sin ese filtro, reversar dos veces escribe el espejo dos veces—;
+- que el balance **pagine** más allá de la primera página, y que avise del
+  truncado **aunque diga cuadrado**.
+
+### Detalles pequeños que salieron por el camino
+
+- `LedgerSource` emite `cash_close` y el diccionario de etiquetas no lo tenía: la
+  insignia salía con el valor crudo. La guarda comprueba la unión **entera**, no
+  ese valor.
+- El asiento manual solo ofrece `adjustment`, `opening` y `tax`. De los quince
+  valores, doce los pone el sistema al vender, cobrar o liquidar; ofrecerlos
+  todos invita a teclear a mano un asiento de «venta» que ninguna venta respalda,
+  y entonces el libro deja de poder contrastarse con la operación.
+- La reversa va por `entry_code`, no por el `_id` de la línea. La pantalla lista
+  LÍNEAS, y reversar «esta línea» dejaría el asiento descuadrado a la mitad; el
+  diálogo lo dice con todas las letras.
+
+**Mutación: 23 de 23.** Una sobrevivió, y es la tercera forma de la misma
+lección. La guarda del cuadre era:
+
+```
+/puedeGuardar\s*=[\s\S]*?diferencia === 0/
+```
+
+Con `[\s\S]*?` sin límite, el regex encontraba el `diferencia === 0` del
+**render** —el que decide el color del total— cientos de líneas más abajo. Quitar
+la condición del botón dejaba la guarda en verde: afirmaba que el botón
+comprobaba el cuadre mirando un `className`. Acotado a la sentencia con `[^;]*`,
+muerde. **Lo que se mide tiene que estar donde se dice que está.**
+
+Y otra no se aplicó a la primera —dos espacios de indentación de más en el
+patrón—, que se ve exactamente igual que una mutación que muere si no se
+comprueba que el fichero cambió.
+
+La guarda de motores sin puerta **se puso en rojo sola** y exigió sacar las tres.
+Quedan **ocho**.
+
+### Y una cifra del informe era cierta por una definición demasiado estrecha
+
+Al escribir las pruebas de `ledger.ts` fui a mirar qué decía el informe de
+cobertura, esperando que la cifra de «servicios sin prueba» bajara. **No se
+movió, porque ya era cero.** «Servicios» eran los ficheros que se **llaman**
+`*-service.ts`, y `ledger.ts` no se llama así: el motor de partida doble que mueve
+el dinero de la empresa estuvo sin una sola prueba y **ninguna cifra del informe
+lo decía**. «0 de 40» era verdad y no significaba lo que parecía.
+
+Es el mismo fallo que el detector de motores sin puerta, en otra parte del
+repositorio: **la definición de la medida era más estrecha que la afirmación que
+sostenía.** Y las dos veces el síntoma fue el mismo — un número tranquilizador.
+
+El conjunto que importa no es el de un sufijo en el nombre: es el de los módulos
+que **escriben en la base**, porque son los que rompen datos. Medido así son
+**31**, y **cuatro** no tienen pruebas: `audit.ts`, `cash.ts`, `demo-seed.ts` y
+`tenant.ts`. Eran cinco; `ledger.ts` salió hoy.
+
+La cifra se deriva en `scripts/cifras-del-informe.mjs` y la guarda la compara con
+el texto del informe **y exige que los nombre**: un número a secas no dice a qué
+apuntar en la ola siguiente. Cuatro mutaciones más, las cuatro muertas —incluida
+volver a medir por el sufijo, que es el error original.
+
+`tsc`, `eslint`, **4258/4258** y `build` en verde. Sin migración.
+
+**Mutación total de la ola: 27 de 27.**

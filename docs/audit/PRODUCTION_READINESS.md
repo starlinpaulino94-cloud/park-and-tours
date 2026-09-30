@@ -140,6 +140,16 @@ Además, cerrados en este ciclo y no listados antes:
 - **Servicios sin ninguna prueba: 0** de **40**. Los veinte que este informe
   listaba por nombre —`membego-redemption-service`, `invoice-service`,
   `dgii-service`, `supplier-settlement-service`…— tienen todos la suya.
+- **Módulos que escriben en la base sin ninguna prueba: 4** de **31** —
+  `audit.ts`, `cash.ts`, `demo-seed.ts` y `tenant.ts`.
+
+  > Esta cifra es nueva y nació de un error de la de arriba. «Servicios» eran los
+  > ficheros que se **llaman** `*-service.ts`, y con esa definición «0 de 40» era
+  > cierto — mientras `src/lib/ledger.ts`, las 291 líneas de partida doble que
+  > mueven el dinero de la empresa, **no contaba y no tenía ni una prueba**. El
+  > conjunto que importa no es el de un sufijo: es el de los módulos que
+  > **escriben** en la base, porque son los que rompen datos. Medido así eran
+  > cinco; `ledger.ts` salió el 30-sep y quedan cuatro.
 - **Rutas de API: 176**, de las cuales unas pocas con prueba propia. El resto
   está cubierto **estructuralmente** por las guardas de `ui-contracts.test.ts`
   —CSRF, plan, inquilino, forma de la respuesta—, que es otra cosa que probar su

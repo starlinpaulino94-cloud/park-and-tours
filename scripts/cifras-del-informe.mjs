@@ -101,6 +101,24 @@ const aMano = new Set(
 const servicios = listar("src/lib").filter((f) => /-service\.ts$/.test(f));
 const sinPrueba = servicios.filter((f) => !existsSync(path.join(RAIZ, "src/lib", f.replace(/\.ts$/, ".test.ts"))));
 
+/**
+ * LO QUE DE VERDAD IMPORTA MEDIR, Y NO ERA ESTO.
+ *
+ * `servicios` son los ficheros que se LLAMAN `*-service.ts`. Con esa definición
+ * el informe decía «servicios sin ninguna prueba: 0 de 40» y era cierto — y
+ * `src/lib/ledger.ts`, las 291 líneas de partida doble que mueven el dinero de
+ * la empresa, **no contaba**, porque no se llama así. Estuvo sin una sola prueba
+ * hasta el 30-sep y ninguna cifra de este informe lo decía.
+ *
+ * El conjunto que importa no es el de un sufijo: es el de los módulos que
+ * ESCRIBEN en la base. Eso es lo que rompe datos cuando se equivoca.
+ */
+const escriben = listar("src/lib")
+  .filter((f) => /\.ts$/.test(f) && !/\.(test|d)\.ts$/.test(f))
+  .filter((f) => /\b(tenantCreate|tenantUpdate|tenantDelete)\b/.test(leer(`src/lib/${f}`)));
+const escribenSinPrueba = escriben
+  .filter((f) => !existsSync(path.join(RAIZ, "src/lib", f.replace(/\.ts$/, ".test.ts"))));
+
 const specs = listar("tests/e2e").filter((f) => f.endsWith(".spec.ts"));
 const recorridos = specs
   .map((f) => (leer(`tests/e2e/${f}`).match(/^\s*test\(/gm) || []).length)
@@ -115,6 +133,8 @@ const cifras = {
   // Las que no tienen ninguna de las dos. Es el número que de verdad importa.
   tablasSinRls: [...tablas].filter((t) => !conAyuda.has(t) && !aMano.has(t)).sort(),
   servicios: servicios.length,
+  modulosQueEscriben: escriben.length,
+  escrituraSinPrueba: escribenSinPrueba.sort(),
   serviciosSinPrueba: sinPrueba.map((f) => f.replace(/\.ts$/, "")).sort(),
   rutasDeApi: ficheros("src/app/api", (f) => f.endsWith("/route.ts")).length,
   pruebasSql: listar("supabase/tests").filter((f) => f.endsWith(".test.sql")).length,

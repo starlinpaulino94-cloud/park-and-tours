@@ -69,6 +69,7 @@ function cell(row: any, col: SimpleColumn) {
 export function SimpleResource({
   resource, eyebrow, title, description, columns, fields, createLabel,
   emptyTitle, emptyDescription, searchPlaceholder, emptyIcon, filters, fixedFilters, initialSort,
+  extraActions,
 }: {
   resource: string;
   eyebrow: string;
@@ -84,6 +85,8 @@ export function SimpleResource({
   emptyIcon?: string;
   filters?: { name: string; label: string; dict: Record<string, LabelDef> }[];
   fixedFilters?: Record<string, string>;
+  /** Acciones propias del módulo, junto al botón de crear. */
+  extraActions?: React.ReactNode;
   initialSort?: string;
 }) {
   return (
@@ -93,6 +96,7 @@ export function SimpleResource({
       title={title}
       description={description}
       canWrite={Boolean(fields?.length)}
+      extraActions={extraActions}
       createLabel={createLabel}
       searchPlaceholder={searchPlaceholder}
       emptyIcon={emptyIcon}

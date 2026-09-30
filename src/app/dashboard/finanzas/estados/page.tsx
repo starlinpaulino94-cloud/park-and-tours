@@ -49,6 +49,28 @@ interface Period {
   net_income?: number; closed_at?: string; locked_at?: string;
 }
 
+/**
+ * El balance de comprobación, que hasta ahora solo se podía DESCARGAR.
+ *
+ * `/api/ledger/statements` ya lo traía en su respuesta y esta pantalla lo
+ * declaraba en su interfaz… y no lo pintaba en ningún sitio: el único acceso era
+ * el CSV de «Exportar para el contador». El informe que existe para demostrar
+ * que los libros cuadran había que abrirlo en otro programa para verlo.
+ *
+ * Se pide a `/api/ledger/trial-balance`, que es el que trae la PRUEBA —`balanced`,
+ * sobre cuántos asientos se calculó, y si la lectura se truncó—. El CSV sale de
+ * las filas y no dice ninguna de las tres cosas.
+ */
+interface Comprobacion {
+  ok: boolean;
+  data?: { code: string; name: string; type: string; debit: number; credit: number }[];
+  totals?: { debit: number; credit: number };
+  balanced?: boolean;
+  entries?: number;
+  truncated?: boolean;
+  error?: { message?: string };
+}
+
 const thisMonth = () => new Date().toISOString().slice(0, 7);
 
 export default function EstadosPage() {
@@ -59,13 +81,18 @@ export default function EstadosPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [year, setYear] = useState(String(new Date().getFullYear() - 1));
+  const [tb, setTb] = useState<Comprobacion | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [s, p] = await Promise.all([
+    const [s, p, t] = await Promise.all([
       api.get<Statements>(`/api/ledger/statements?from=${from}&to=${to}`),
       api.get<Period[]>("/api/ledger/periods"),
+      // Por PERIODO, no por el rango: el balance de comprobación se lee para
+      // cerrar un mes. Se pide el de cierre, y se dice cuál es.
+      api.get<Comprobacion["data"]>(`/api/ledger/trial-balance?period=${to}`),
     ]);
+    setTb(t as Comprobacion);
     setLoading(false);
     if (s.ok === false) {
       console.error("[estados] error cargando los estados:", s.error);
@@ -267,6 +294,97 @@ export default function EstadosPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* ──────────────────── balance de comprobación ─────────────────────── */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <CardTitle className="text-base">Balance de comprobación · {to}</CardTitle>
+              <CardDescription>
+                El papel con el que se cuadra antes de cerrar. Es del periodo {to}
+                {from !== to && <> —no de todo el rango {from} — {to}—</>}, porque un mes se cierra solo.
+              </CardDescription>
+            </div>
+            {tb?.ok && (
+              <StatusBadge
+                value={tb.balanced ? "balanced" : "off"}
+                dict={{
+                  balanced: { label: "Cuadrado", tone: "success" },
+                  off: { label: "No cuadra", tone: "danger" },
+                }}
+              />
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          {loading && <p className="text-muted-foreground">Cargando…</p>}
+          {!loading && tb && !tb.ok && (
+            <p className="text-destructive">{tb.error?.message || "No se pudo calcular el balance."}</p>
+          )}
+
+          {/*
+            UN INFORME RECORTADO NO PUEDE DECIR «CUADRADO».
+            `trialBalance` se rinde en un techo de asientos, y pasado ese techo
+            los débitos y créditos de lo que sí se leyó cuadran entre ellos y
+            `balanced` sale `true` igual. Si la lectura se truncó, eso manda
+            sobre el resto de la tarjeta.
+          */}
+          {tb?.ok && tb.truncated && (
+            <p className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs font-semibold text-destructive">
+              La lectura se truncó: este balance está incompleto y «cuadrado» no significa nada aquí.
+              No cierres el periodo con este papel.
+            </p>
+          )}
+
+          {!loading && tb?.ok && (tb.data || []).length === 0 && (
+            <p className="text-muted-foreground">Sin asientos en {to}.</p>
+          )}
+
+          {!loading && tb?.ok && (tb.data || []).length > 0 && (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-xs uppercase text-muted-foreground">
+                      <th className="py-1 text-left font-semibold">Cuenta</th>
+                      <th className="py-1 text-right font-semibold">Débito</th>
+                      <th className="py-1 text-right font-semibold">Crédito</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(tb.data || []).map((r) => (
+                      <tr key={r.code} className="border-b last:border-0">
+                        <td className="py-1 text-muted-foreground">{r.code} · {r.name}</td>
+                        <td className="py-1 text-right tabular-nums">{r.debit ? formatMoney(r.debit, "dop") : "—"}</td>
+                        <td className="py-1 text-right tabular-nums">{r.credit ? formatMoney(r.credit, "dop") : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="font-bold">
+                      <td className="pt-2">Totales</td>
+                      <td className="pt-2 text-right tabular-nums">{formatMoney(tb.totals?.debit ?? 0, "dop")}</td>
+                      <td className="pt-2 text-right tabular-nums">{formatMoney(tb.totals?.credit ?? 0, "dop")}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              {/* Un total sin saber sobre cuántos asientos se calculó no se puede
+                  contrastar con nada. */}
+              <p className="text-xs text-muted-foreground">
+                Calculado sobre {formatNumber(tb.entries ?? 0)} línea{(tb.entries ?? 0) === 1 ? "" : "s"} de asiento.
+                {!tb.balanced && (
+                  <> Diferencia de{" "}
+                    {formatMoney(Math.abs((tb.totals?.debit ?? 0) - (tb.totals?.credit ?? 0)), "dop")} entre
+                    débitos y créditos: revísala en el libro diario antes de cerrar.</>
+                )}
+              </p>
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       {/* ─────────────────────────── cierre de periodo ─────────────────────── */}
       <Card>

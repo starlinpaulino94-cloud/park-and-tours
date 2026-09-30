@@ -11,7 +11,7 @@
 > **Corregido el 30-sep:** el primer barrido dijo dieciséis y eran **trece**. Tres
 > de las que acusó tenían puerta desde el día que se escribieron; fallaba el
 > detector, no el producto. Ver «Tres huecos que no existían», más abajo. De las
-> trece reales queda **once** por cerrar.
+> trece reales quedan **ocho** por cerrar.
 
 ## De dónde salió esto
 
@@ -54,8 +54,8 @@ Ya tiene puerta, con **previsualización del impacto antes de confirmar**: qué
 salidas se cierran y **qué reservas quedan fuera, con su número y su cliente**.
 Ver la entrada «El activo que se caía y no arrastraba nada» en `FIX_LOG.md`.
 
-Quedan **once** — que son los once de `SIN_PUERTA_CONOCIDAS`: trece reales menos
-esta y menos la bitácora del parque, con la que empezó todo.
+Quedan **ocho** — los de `SIN_PUERTA_CONOCIDAS`: trece reales menos esta, menos
+la bitácora del parque con la que empezó todo, y menos las tres de contabilidad.
 
 ### ~~2. El saldo regalo que se emite y no se puede usar~~ — **NUNCA FUE UN HUECO**
 
@@ -102,18 +102,35 @@ propia ruta lo dice —«la acción NO toca los totales de la orden»— y esper
 uno sin puerta**, y cerrarlo cuesta un valor nuevo en el enum, es decir una
 migración que hay que pegar en Supabase.
 
-### 3. Contabilidad: tres puertas de seis — `chart`, `post`, `trial-balance`
+### ~~3. Contabilidad: tres puertas de seis~~ — **CERRADO el 30-sep**
 
-`/api/ledger/chart`, `/api/ledger/post`, `/api/ledger/trial-balance`.
+Las tres tienen puerta. Y de lo que este apartado afirmaba, **una de las tres
+frases era falsa y otra a medias** — merece quedar escrito, porque las tres se
+escribieron del tirón sin abrir las pantallas:
 
-Aquí **sí hay casa**: `finanzas/estados` y `reportes/estados-financieros` llaman
-a `periods`, `statements` y `close-year`. Lo que falta son justo las tres cosas
-que pide un contador:
+| lo que decía | lo que era |
+| --- | --- |
+| «el plan de cuentas, que no se puede ni mirar» | **Falso.** `finanzas/cuentas` lo lista y lo edita desde siempre por el CRUD genérico. Lo que faltaba era el **sembrado** del plan base, que ahora es un botón. Y `ensureChart` ya corría sola antes de cada asiento automático, así que una empresa que vende nunca se quedó sin plan |
+| «el asiento manual, así que un ajuste hay que meterlo por SQL» | **Cierto, y era el hueco de verdad.** `ledger_entry` tiene `writable: []` a propósito, así que no había ninguna otra vía. Ahora se registra desde el libro diario, con la partida doble comprobada antes de enviar |
+| «el balance de comprobación, el papel con el que se cuadra antes de cerrar» | **A medias.** `statements` ya lo devolvía y `finanzas/estados` lo declaraba en su interfaz… sin pintarlo: el único acceso era el CSV. Ahora se ve en pantalla, y con la prueba —ver abajo— |
 
-- **el plan de cuentas** (`chart`), que no se puede ni mirar;
-- **el asiento manual** (`post`), así que un ajuste hay que meterlo por SQL;
-- **el balance de comprobación** (`trial-balance`), que es el papel con el que
-  se cuadra antes de cerrar.
+Y con la reversa pasaba lo mismo que con las etiquetas de auditoría del saldo
+regalo, al revés: el libro diario **se describía a sí mismo** diciendo «un error
+no se borra: se corrige con un asiento de reversa», y reversar no se podía. La
+ruta acepta `reverseEntry` desde el primer día. Una promesa escrita en la
+pantalla que el producto no puede cumplir es peor que no prometer nada.
+
+**El defecto que apareció al enchufarlo:** la ruta del balance de comprobación
+tiraba `entries` y `truncated`. El motor los devuelve a propósito —pagina y se
+rinde en un techo de 200 000 asientos— y pasado ese techo el informe está
+incompleto **y `balanced` sale `true` igual**, porque lo que sí se leyó cuadra
+entre ello. Un informe recortado que dice «cuadrado» en el único papel con el que
+se cierra un mes. Ahora los dos viajan y la tarjeta antepone el aviso de truncado
+a todo lo demás.
+
+Ver la entrada «La contabilidad que no se podía tocar» en `FIX_LOG.md`.
+
+Quedan **ocho**.
 
 ### 4. Almacén sin movimientos — `/api/inventory/movement`, `/api/inventory/low-stock`
 

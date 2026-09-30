@@ -178,19 +178,31 @@ export function ResourcePage<T extends { _id: string }>({
     render: (row) => (
       <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
         {rowActions?.(row)}
-        <Button variant="ghost" size="icon" className="size-8" aria-label="Editar"
-          onClick={() => { setEditing(row as Record<string, any>); setFormOpen(true); }}>
-          <Icon name="Pencil" className="size-3.5" />
-        </Button>
-        <Button variant="ghost" size="icon" className="size-8 text-destructive hover:text-destructive"
-          aria-label="Eliminar" onClick={() => setDeleting(row)}>
-          <Icon name="Trash2" className="size-3.5" />
-        </Button>
+        {/*
+          Editar y borrar SOLO si el recurso se escribe por formulario.
+          Antes la columna entera dependía de `canWrite`, así que un recurso
+          inmutable no podía ofrecer acciones propias: o aceptaba el lápiz y la
+          papelera, o se quedaba sin nada. El libro diario es justo ese caso —una
+          línea de asiento no se edita ni se borra, se corrige con una reversa—,
+          y hasta ahora la reversa no tenía dónde vivir.
+        */}
+        {canWrite && (
+          <>
+            <Button variant="ghost" size="icon" className="size-8" aria-label="Editar"
+              onClick={() => { setEditing(row as Record<string, any>); setFormOpen(true); }}>
+              <Icon name="Pencil" className="size-3.5" />
+            </Button>
+            <Button variant="ghost" size="icon" className="size-8 text-destructive hover:text-destructive"
+              aria-label="Eliminar" onClick={() => setDeleting(row)}>
+              <Icon name="Trash2" className="size-3.5" />
+            </Button>
+          </>
+        )}
       </div>
     ),
   };
 
-  const allColumns = canWrite ? [...columns, actionColumn] : columns;
+  const allColumns = canWrite || rowActions ? [...columns, actionColumn] : columns;
   const pages = Math.max(Math.ceil(total / pageSize), 1);
 
   const actions = (

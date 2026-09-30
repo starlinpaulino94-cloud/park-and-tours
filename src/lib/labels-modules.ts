@@ -233,7 +233,10 @@ export const LEDGER_SOURCE = dict(
   ["commission", "Comisión", "violet"], ["settlement", "Liquidación", "info"], ["expense", "Gasto", "warning"],
   ["payable", "Por pagar", "warning"], ["purchase", "Compra", "warning"], ["inventory", "Inventario", "violet"],
   ["payroll", "Nómina"], ["adjustment", "Ajuste"], ["opening", "Apertura"], ["tax", "Impuesto", "danger"],
-  ["gift_card", "Gift card", "warning"], ["membership", "Membresía", "warning"]
+  ["gift_card", "Gift card", "warning"], ["membership", "Membresía", "warning"],
+  // `LedgerSource` la emite (el asiento del cierre de caja) y aquí no estaba:
+  // la insignia salía con el valor crudo.
+  ["cash_close", "Cierre de caja", "info"]
 );
 export const INVOICE_STATUS = dict(
   ["draft", "Borrador"], ["issued", "Emitida", "info"], ["sent", "Enviada", "info"],
