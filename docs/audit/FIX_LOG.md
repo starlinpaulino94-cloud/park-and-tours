@@ -7861,3 +7861,96 @@ Y otra guarda mía falló contra código correcto por un regex ingenuo:
 están en el repositorio.
 
 La guarda de motores sin puerta se puso en rojo sola. Quedan **tres**.
+
+---
+
+## La pantalla que la propia ruta daba por existente
+
+`src/app/dashboard/administracion/salud/page.tsx` (nueva),
+`src/app/api/maintenance/reconcile-drafts/route.ts`, `src/lib/nav.ts`,
+`src/lib/ui-contracts.test.ts`, `docs/audit/MOTORES_SIN_PUERTA.md`.
+
+Octavo motor sin puerta cerrado. Lo puse **último por daño** —la entrada del
+inventario decía «su gemela de `cron` sí corre sola»— y al abrirlo había **dos**
+cosas escritas y no leídas, no una.
+
+### Lo que faltaba no era la salida: era la entrada
+
+`healthReport()` comprueba la base, el enganche que emite las sesiones, si los
+cinco trabajos nocturnos corrieron y si hay incidentes abiertos. Tiene sus pruebas.
+`/api/health` la devuelve **entera a una sesión de administrador**, y su propio
+comentario explica por qué:
+
+> «Una sesión de administrador también vale: es quien va a mirar **la pantalla de
+> estado**.»
+
+Esa pantalla no existía. Todo lo que los crons escriben —diario de trabajos,
+incidentes, cortes por empresa, el `reportIncident` que cada barrido levanta «para
+que salga en la pantalla de salud»— no lo leía nadie.
+
+Es el mismo patrón de las siete olas anteriores con una vuelta de tuerca: aquí no
+faltaba la puerta de salida sino **la de entrada**, la que permite mirar. Y una
+ruta cuyo comentario da por hecha una pantalla que nadie construyó es la versión
+documental del mismo fallo: alguien la dejó escrita como si estuviera.
+
+### Y la reparación manual, que era el hueco del inventario
+
+`POST /api/maintenance/reconcile-drafts` revierte las ventas que un proceso dejó a
+medias: plazas apartadas, voucher escaneando como válido, comisión esperando que la
+próxima liquidación la pague. El cron corre solo cada día sobre todas las empresas,
+pero quien ve una plaza bloqueada **ahora** no va a esperar a mañana, y esta era la
+única vía.
+
+Vive en la pantalla de estado, junto a la evidencia, y no en un menú cualquiera:
+**la reparación sin el diagnóstico es un botón que alguien pulsa a ver qué pasa.**
+
+### El defecto que apareció al enchufarlo
+
+La ruta aceptaba `older_than_minutes: 0`. Una venta que se está creando ahora mismo
+**también está en `draft`** —lo está por definición, mientras la saga escribe—, así
+que un administrador que quisiera «limpiar todo» le habría soltado las plazas,
+anulado el voucher y descuadrado la comisión a alguien que estaba cobrando en el
+mostrador.
+
+El principio ya estaba escrito, en la gemela de `cron` y con todas las letras:
+
+> «Prefiero que una venta huérfana viva una hora de más a revertir una viva.»
+
+Ahora hay suelo de cinco minutos —una saga normal tarda menos de un segundo— y la
+pantalla no ofrece menos de treinta, con el cron en sesenta. Una guarda comprueba
+que **ninguna ventana ofrecida esté por debajo del suelo de la ruta**: dos números
+en dos ficheros distintos que tienen que seguir estando de acuerdo.
+
+### Una asimetría que se explica en vez de disimularse
+
+`/api/health` **no usa la envoltura `{ ok, data }`**: devuelve el informe en la raíz,
+porque quien la llama de verdad es un vigilante externo que solo sabe la URL. Y
+contesta **503** cuando el sistema está caído, que es una respuesta correcta y no un
+fallo de la petición.
+
+Las dos cosas obligan a que esta pantalla decida por el contenido (`checks`) y no
+por `ok`. Mirar `ok` la habría dejado vacía **justo cuando hay algo que mirar**. Va
+escrito en el código, y una guarda fija las dos mitades: que la pantalla no vuelva a
+mirar `ok`, y que la ruta no deje de contestar 503.
+
+### La tercera ola seguida con la misma rotura mía
+
+**Mutación: 20 de 20**, con **dos** supervivientes, y las dos del mismo error:
+
+1. `toMatch(/HEALTH_LABEL\[/)` sobrevivía a quitar la etiqueta del **veredicto
+   general** —el otro uso, el de cada comprobación, seguía ahí y el regex encontraba
+   ese—. El veredicto habría salido como «degraded», en inglés: el mismo fallo que
+   `blacklist` en la insignia del cliente.
+2. `toMatch(/resultado\.reverted/)` sobrevivía a quitar el número de la pantalla,
+   porque el nombre seguía en las dos condiciones que deciden qué avisar.
+
+La segunda es **idéntica** a la del plazo del proveedor (ola anterior) y a la del
+motivo del veto (dos antes). Tres olas seguidas. Lo que funciona no es apuntar la
+lección: es atar la guarda al **valor formateado** —`formatNumber(...)`,
+`HEALTH_LABEL[...]`— y comprobar **cada sitio** donde sale, no que el nombre exista
+en el fichero.
+
+`tsc`, `eslint`, **4321/4321** y `build` en verde. Sin migración.
+
+La guarda de motores sin puerta se puso en rojo sola. Quedan **dos**, y son los dos
+de menor daño de los trece: ninguno desbloquea a nadie que hoy no pueda trabajar.

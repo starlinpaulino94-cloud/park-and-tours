@@ -13234,7 +13234,9 @@ describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", (
     // Las tres de contabilidad salieron el 30-sep: el asiento manual y la reversa
     // en el libro diario, el sembrado en el plan de cuentas y el balance de
     // comprobación en pantalla —con `entries` y `truncated`, que la ruta tiraba—.
-    "/api/maintenance/reconcile-drafts",
+    // `/api/maintenance/reconcile-drafts` salió el 30-sep: vive en la pantalla de
+    // estado del sistema, junto a la evidencia. Ver «la pantalla que la propia
+    // ruta daba por existente».
     // `/api/proveedor/enlace` salió el 30-sep. Era la ÚNICA forma de crear la
     // credencial con la que un proveedor sin cuenta contesta, y todo el resto del
     // camino —página pública incluida— estaba enchufado. Ver «el camino sin cuenta
@@ -14326,5 +14328,150 @@ describe("ningún filtro de pantalla se ignora en silencio", () => {
     // Piso: sin él, un lector roto deja la comprobación vacía y verde.
     expect(revisados, "no se reconoció ni un filtro: el lector está roto").toBeGreaterThan(20);
     expect(problemas, `filtros que no filtran nada:\n  - ${problemas.join("\n  - ")}`).toEqual([]);
+  });
+});
+
+/**
+ * LA PANTALLA QUE LA PROPIA RUTA DABA POR EXISTENTE.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * DOS COSAS ESCRITAS Y NO LEÍDAS
+ *
+ * `healthReport()` comprueba la base, el enganche que emite las sesiones, si los
+ * cinco trabajos nocturnos corrieron y si hay incidentes abiertos. `/api/health`
+ * la devuelve ENTERA a una sesión de administrador, y su propio comentario dice
+ * por qué: «es quien va a mirar la pantalla de estado». Esa pantalla no existía,
+ * así que todo lo que los crons escriben no lo leía nadie.
+ *
+ * Y `POST /api/maintenance/reconcile-drafts` —la reparación manual de las ventas
+ * que un proceso dejó a medias— no la llamaba nadie. El cron corre solo cada día,
+ * pero quien ve una plaza bloqueada AHORA no espera a mañana.
+ *
+ * Es el mismo patrón con una vuelta de tuerca: aquí no faltaba la puerta de salida
+ * sino **la de entrada**, la que permite mirar.
+ */
+describe("el estado del sistema se puede mirar, y las ventas a medias repararse", () => {
+  const PANTALLA = "src/app/dashboard/administracion/salud/page.tsx";
+  const RUTA = "src/app/api/maintenance/reconcile-drafts/route.ts";
+  const limpio = (rel: string) => sinComentariosDe(rel);
+
+  it("la pantalla existe, está en el menú y la lleva un administrador", () => {
+    expect(existsSync(path.join(ROOT, PANTALLA)), "la pantalla de estado no está").toBe(true);
+    const nav = read("src/lib/nav.ts");
+    const entrada = /\{ id: "salud",[^}]*\}/.exec(nav);
+    expect(entrada, "la pantalla de estado no está en el menú").toBeTruthy();
+    expect(entrada![0], "la pantalla de estado no está en /dashboard/administracion/salud")
+      .toContain('href: "/dashboard/administracion/salud"');
+    // El informe nombra la fontanería de dentro: no es para cualquiera.
+    expect(entrada![0], "la pantalla de estado dejó de pedir rango de administrador")
+      .toContain('minRole: "admin"');
+  });
+
+  it("la pantalla lee el informe y pinta cada comprobación", () => {
+    const p = limpio(PANTALLA);
+    expect(p, "la pantalla no pide el informe").toContain('"/api/health"');
+    expect(p, "no se pintan las comprobaciones").toMatch(/informe\?\.checks \?\? \[\]\)\.map/);
+    // El detalle es lo único que dice QUÉ salió; sin él son cinco luces de color.
+    expect(p, "no se enseña el detalle de cada comprobación").toMatch(/\{c\.detail\}/);
+    /**
+     * Y las etiquetas salen del dominio, EN LOS DOS SITIOS donde hay un nivel: el
+     * veredicto de arriba y cada comprobación.
+     *
+     * `toMatch(/HEALTH_LABEL\[/)` a secas sobrevivía a cambiar uno de los dos —el
+     * otro seguía ahí y el regex encontraba ese—. Y el que se rompía era el
+     * veredicto general, que habría salido como «degraded» en inglés: el mismo
+     * fallo que `blacklist` en la insignia del cliente.
+     */
+    expect(p, "el veredicto general se pinta sin su etiqueta")
+      .toMatch(/HEALTH_LABEL\[informe\.level\]/);
+    expect(p, "cada comprobación se pinta sin su etiqueta")
+      .toMatch(/HEALTH_LABEL\[c\.level\]/);
+  });
+
+  it("un 503 es una respuesta, no un fallo", () => {
+    /**
+     * `/api/health` contesta 503 cuando el sistema está CAÍDO y el cuerpo trae el
+     * informe igual; además devuelve el informe en la RAÍZ, sin la envoltura
+     * `{ ok, data }`, porque quien la llama de verdad es un vigilante externo.
+     *
+     * Mirar `res.ok` dejaría la pantalla vacía justo cuando hay algo que mirar.
+     */
+    const p = limpio(PANTALLA);
+    expect(p, "la pantalla decide por `ok` en vez de por el contenido")
+      .toMatch(/Array\.isArray\(cuerpo\.checks\)/);
+
+    // Y que la ruta siga contestando 503 en `down`: si dejara de hacerlo, el
+    // vigilante externo no se enteraría de una caída.
+    const salud = limpio("src/app/api/health/route.ts");
+    expect(salud, "la sonda dejó de contestar 503 cuando el sistema está caído")
+      .toMatch(/level === "down" \? 503 : 200/);
+  });
+
+  it("la reparación manual se puede pedir desde ahí", () => {
+    const p = limpio(PANTALLA);
+    expect(p, "la reconciliación no llega a su ruta").toContain('"/api/maintenance/reconcile-drafts"');
+    expect(p, "no se manda la ventana").toMatch(/older_than_minutes: Number\(ventana\)/);
+    /**
+     * Y el resultado se enseña FORMATEADO: «listo» sin decir cuántas es no decir
+     * nada.
+     *
+     * `toMatch(/resultado\.reverted/)` sobrevivía a quitar el número de la pantalla,
+     * porque el nombre seguía en las dos condiciones que deciden qué avisar. Es la
+     * TERCERA ola seguida con esta misma rotura —el motivo del veto, el plazo del
+     * proveedor y ahora esto—, así que aquí va atado al formateo desde el principio.
+     */
+    expect(p, "no se enseña cuántas se revirtieron")
+      .toMatch(/formatNumber\(resultado\.reverted\)/);
+    expect(p, "no se enseña cuántas se revisaron")
+      .toMatch(/formatNumber\(resultado\.scanned\)/);
+  });
+
+  it("la ventana tiene suelo, y la pantalla no ofrece menos", () => {
+    /**
+     * LA VENTANA CORTA REVIERTE VENTAS VIVAS.
+     *
+     * Una venta que se está creando ahora mismo también está en `draft`. Con
+     * `older_than_minutes: 0` —que la ruta aceptaba— un administrador que quisiera
+     * «limpiar todo» le habría soltado las plazas y anulado el voucher a alguien
+     * que estaba cobrando en el mostrador.
+     *
+     * El principio ya estaba escrito en la gemela de `cron`, que usa sesenta:
+     * «prefiero que una venta huérfana viva una hora de más a revertir una viva».
+     */
+    const ruta = limpio(RUTA);
+    expect(ruta, "la ruta volvió a aceptar una ventana de cero minutos")
+      .toMatch(/Math\.max\(MINUTOS_MINIMOS, pedidos\)/);
+    const suelo = /const MINUTOS_MINIMOS = (\d+);/.exec(ruta);
+    expect(suelo, "el suelo de la ventana desapareció").toBeTruthy();
+    expect(Number(suelo![1]), "un suelo de cero no es un suelo").toBeGreaterThan(0);
+
+    // Y la pantalla no ofrece nada por debajo del suelo.
+    const ventanas = /const VENTANAS = \[([^\]]*)\]/.exec(limpio(PANTALLA))![1];
+    const ofrecidas = [...ventanas.matchAll(/"(\d+)"/g)].map((m) => Number(m[1]));
+    expect(ofrecidas.length, "no se reconocieron las ventanas ofrecidas").toBeGreaterThan(1);
+    for (const v of ofrecidas) {
+      expect(v, `la pantalla ofrece ${v} minutos, por debajo del suelo de la ruta`)
+        .toBeGreaterThanOrEqual(Number(suelo![1]));
+    }
+
+    // Y el cron sigue con la ventana prudente, que es de donde sale el criterio.
+    expect(limpio("src/app/api/cron/reconcile-drafts/route.ts"), "el cron cambió su ventana")
+      .toMatch(/const VENTANA_MINUTOS = 60;/);
+  });
+
+  it("revertir una venta queda en la bitácora de su empresa", () => {
+    /**
+     * Revertir sin dejar rastro es peor que no revertir: al día siguiente falta una
+     * orden que alguien recuerda haber hecho y no hay nada que lo explique. Y va con
+     * severidad de AVISO porque cada reversión significa que un proceso murió a
+     * mitad de una venta: es un síntoma, no una limpieza.
+     */
+    const ruta = limpio(RUTA);
+    expect(ruta, "la reconciliación manual dejó de auditarse").toMatch(/\n\s*await writeAudit\(\{/);
+    expect(ruta, "la auditoría dejó de nombrar la acción").toContain('action: "drafts_reconciled"');
+    expect(ruta, "la reversión dejó de ser un aviso").toMatch(/severity: "warning"/);
+    // Y la pantalla lo dice, para que nadie lo lea como una limpieza rutinaria.
+    expect(limpio(PANTALLA), "la pantalla no dice que cada reversión es un síntoma")
+      .toMatch(/un proceso murió durante una venta/);
   });
 });
