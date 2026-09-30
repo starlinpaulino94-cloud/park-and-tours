@@ -68,7 +68,7 @@ export default function TransportPage() {
         { name: "supplier", label: "Proveedor", type: "reference", resource: "supplier" },
         { name: "insurance_expiry", label: "Vencimiento del seguro", type: "date" },
         { name: "inspection_expiry", label: "Vencimiento de inspección", type: "date" },
-        { name: "photo_url", label: "Foto (URL)", type: "url" },
+        { name: "photo_url", label: "Foto", type: "image" },
         { name: "status", label: "Estado", type: "select", defaultValue: "available", options: [
           { value: "available", label: "Disponible" }, { value: "in_service", label: "En servicio" },
           { value: "maintenance", label: "Mantenimiento" }, { value: "out_of_service", label: "Fuera de servicio" },

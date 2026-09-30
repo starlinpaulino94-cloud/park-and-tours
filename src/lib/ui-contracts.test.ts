@@ -13237,7 +13237,9 @@ describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", (
     "/api/maintenance/reconcile-drafts",
     "/api/proveedor/enlace",
     "/api/setup/demo",
-    "/api/storage/upload",
+    // `/api/storage/upload` salió el 30-sep: los seis campos de imagen del
+    // sistema dejaron de pedir una URL a mano. Ver «la caja de texto donde iba
+    // una foto».
     "/api/stripe/customer-portal",
   ];
 
@@ -13991,5 +13993,124 @@ describe("la lista negra tiene su puerta, y el motivo no sale de casa", () => {
     }
     // Y `partner.notes` sigue donde estaba: esto se añadió, no se sustituyó.
     expect(oculto, "se perdió el recorte de las notas del socio").toMatch(/partner: \["notes", "metadata"\]/);
+  });
+});
+
+/**
+ * LA CAJA DE TEXTO DONDE IBA UNA FOTO.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * `POST /api/storage/upload` es de las rutas más cuidadas del repositorio —la ruta
+ * del objeto se deriva EN EL SERVIDOR del inquilino y del socio, comprueba tipo y
+ * tamaño, cuenta contra el techo del plan, audita— y no la llamaba nadie. Los seis
+ * campos de imagen del sistema eran cajas de texto donde pegar una dirección.
+ *
+ * Estas guardas fijan lo que el control tiene que seguir haciendo, y sobre todo las
+ * DOS CONDICIONES QUE LA RUTA IMPONE y que se descubren con un 400 si no se dicen.
+ */
+describe("los campos de imagen se suben, no se teclean", () => {
+  const FORM = "src/components/tf/resource-form.tsx";
+  const limpio = (rel: string) => sinComentariosDe(rel);
+
+  /** Las pantallas con un campo de imagen, y el recurso con el que lo suben. */
+  const PANTALLAS: [string, string][] = [
+    ["src/app/dashboard/productos/page.tsx", "product"],
+    ["src/app/dashboard/transporte/page.tsx", "vehicle"],
+    ["src/app/dashboard/comercio/articulos/page.tsx", "inventory_item"],
+    ["src/app/dashboard/parque/atracciones/page.tsx", "attraction"],
+    ["src/app/dashboard/personal/page.tsx", "staff"],
+    ["src/app/dashboard/catalogo/membresias/page.tsx", "membership_plan"],
+  ];
+
+  it("el formulario sube el archivo por la ruta del servidor", () => {
+    const f = limpio(FORM);
+    expect(f, "el control de imagen no llega a la ruta").toContain('"/api/storage/upload"');
+    /**
+     * Multipart de verdad: con `api.post` el encabezado sale como JSON y
+     * `req.formData()` del servidor no lee nada. Tiene su propio ayudante para no
+     * bajar a `fetch` crudo en un componente, que es lo que pide no hacer la
+     * cabecera de `api.ts`.
+     */
+    expect(f, "el archivo no se manda como multipart").toMatch(/api\.upload<\{ url: string \}>/);
+    expect(f, "no se construye el FormData").toMatch(/new FormData\(\)/);
+    for (const campo of ['"file"', '"bucket"', '"entity"', '"id"']) {
+      expect(f, `el cuerpo no manda ${campo}`).toContain(`append(${campo}`);
+    }
+    // Y el resultado se escribe en el campo: subir sin eso no guarda nada.
+    expect(f, "la url subida no vuelve al campo").toMatch(/onChange\(res\.data\.url\)/);
+  });
+
+  it("no se puede subir a una ficha que todavía no existe", () => {
+    /**
+     * La ruta comprueba con `tenantFindOne` que el id sea real y rechaza
+     * `"general"`. En un alta no hay id, así que subir sería un 400 incomprensible:
+     * el botón se desactiva y se dice por qué.
+     */
+    const f = limpio(FORM);
+    expect(f, "el botón de subir no depende de que la ficha exista")
+      .toMatch(/disabled=\{!recordId \|\| subiendo\}/);
+    expect(f, "no se explica por qué no se puede subir todavía")
+      .toMatch(/!recordId && \([\s\S]{0,300}Guarda la ficha primero/);
+    // Y la subida se corta antes de salir, no solo en la interfaz.
+    expect(f, "la subida no comprueba el id antes de salir").toMatch(/if \(!file \|\| !recordId\) return;/);
+  });
+
+  it("la imagen va al bucket público, no al que caduca", () => {
+    /**
+     * El privado devuelve una URL firmada de diez minutos. Guardarla en
+     * `image_url` deja la ficha con una imagen rota al rato — un fallo que no se
+     * ve al probarlo y sí se ve al día siguiente.
+     */
+    const f = limpio(FORM);
+    expect(f, "el campo de imagen cambió de bucket").toMatch(/append\("bucket", "public"\)/);
+
+    // Y que el privado siga firmando corto: si dejara de caducar, la razón de
+    // arriba dejaría de ser cierta y esta decisión habría que revisarla.
+    const ruta = limpio("src/app/api/storage/upload/route.ts");
+    expect(ruta, "la ruta dejó de firmar el privado con caducidad")
+      .toMatch(/signedUrl\(bucketKey, path, \d+\)/);
+  });
+
+  it("solo se ofrecen tipos que el servidor acepta", () => {
+    /**
+     * Ofrecer en el selector de archivos algo que `ALLOWED_MIME` rechaza es
+     * regalar un 415: se elige el archivo, se espera la subida y se recibe un
+     * error. El `accept` se comprueba contra la lista real del servidor.
+     */
+    const permitidos = /export const ALLOWED_MIME = new Set\(\[([\s\S]*?)\]\)/
+      .exec(read("src/lib/supabase/storage.ts"))![1];
+    const accept = /accept="([^"]+)"/.exec(limpio(FORM))![1].split(",");
+    expect(accept.length, "no se reconoció el accept del selector").toBeGreaterThan(2);
+    const noPermitidos = accept.filter((t) => !permitidos.includes(`"${t}"`));
+    expect(noPermitidos, `el selector ofrece tipos que el servidor rechaza: ${noPermitidos.join(", ")}`)
+      .toEqual([]);
+  });
+
+  it("los seis campos de imagen son de tipo imagen, y su etiqueta ya no dice URL", () => {
+    for (const [pantalla, recurso] of PANTALLAS) {
+      const p = limpio(pantalla);
+      expect(p, `${pantalla} dejó de declarar su recurso`).toContain(`resource="${recurso}"`);
+
+      const campo = /\{ name: "(?:cover_image_url|image_url|photo_url)",[^}]*\}/.exec(p);
+      expect(campo, `${pantalla} ya no declara su campo de imagen`).toBeTruthy();
+      expect(campo![0], `${pantalla}: el campo de imagen volvió a ser texto`)
+        .toContain('type: "image"');
+      /**
+       * Y la etiqueta no puede seguir diciendo «(URL)»: era verdad cuando había
+       * que pegar una dirección y ahora manda a quien lee a buscar algo que no
+       * necesita. Una etiqueta que describe la implementación vieja miente igual
+       * que un comentario viejo.
+       */
+      expect(campo![0], `${pantalla}: la etiqueta sigue pidiendo una URL`).not.toContain("(URL)");
+    }
+  });
+
+  it("el tipo de campo existe en el contrato del formulario", () => {
+    // Un `type: "image"` que el `FieldType` no conozca compila igual desde una
+    // pantalla con `as const` suelto, y el control nunca se pinta.
+    const f = limpio(FORM);
+    expect(f, "FieldType no declara el tipo imagen").toMatch(/export type FieldType =[^;]*"image"/);
+    expect(f, "el render no tiene rama para el campo de imagen")
+      .toMatch(/f\.type === "image" \? \(/);
   });
 });

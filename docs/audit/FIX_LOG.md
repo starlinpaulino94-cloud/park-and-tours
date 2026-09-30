@@ -7677,3 +7677,86 @@ nombre en vez de cerca del efecto.**
 La guarda de motores sin puerta se puso en rojo sola. Quedan **cinco**.
 
 `tsc`, `eslint`, **4297/4297** y `build` en verde. Sin migración.
+
+---
+
+## La caja de texto donde iba una foto
+
+`src/components/tf/resource-form.tsx`, `src/lib/api.ts`,
+`src/lib/api.test.ts` (nuevo), y las seis pantallas con campo de imagen
+(`productos`, `transporte`, `comercio/articulos`, `parque/atracciones`,
+`personal`, `catalogo/membresias`).
+
+Sexto motor sin puerta cerrado. `POST /api/storage/upload` es de las rutas más
+cuidadas del repositorio y no la llamaba nadie:
+
+- la ruta del objeto se **deriva en el servidor** del inquilino —y del socio, si lo
+  es—, así que el cliente no puede elegir el prefijo y no puede escribir en la
+  carpeta de otra empresa; las políticas de `storage.objects` (0016) son el
+  respaldo;
+- comprueba tipo y tamaño (15 MB, lista blanca de MIME);
+- cuenta el consumo contra el techo del plan, **redondeando hacia arriba** para que
+  un archivo de 0,4 MB no se cuele por redondeo;
+- y deja rastro en auditoría.
+
+Mientras tanto, los **seis** campos de imagen del sistema eran cajas de texto donde
+había que pegar una dirección. En la práctica: fichas sin foto, o con una foto
+alojada en un sitio ajeno que el día que caiga deja el catálogo sin imágenes.
+
+### Las dos cosas que la ruta impone, dichas donde se usa
+
+**1. La ficha tiene que existir.** El archivo se guarda en
+`{empresa}/{entidad}/{id}/…`, y la ruta comprueba con `tenantFindOne` que ese id sea
+real —rechaza `"general"` a propósito—. En un alta todavía no hay id, así que el
+botón se desactiva y **se dice por qué**. Sin eso, subir al crear sería un 400 que
+nadie relaciona con «guarda primero».
+
+**2. Va al bucket público.** El privado devuelve una URL firmada que caduca a los
+**diez minutos**: guardarla en `image_url` deja la ficha con la imagen rota al rato
+— un fallo que no se ve al probarlo y sí al día siguiente. Para documentos privados
+haría falta guardar la RUTA y firmarla al leer, y ese camino de vuelta no existe;
+por eso este control **no ofrece** archivos privados en vez de ofrecer algo que se
+rompe solo. Queda dicho, no hecho.
+
+La caja de texto sigue estando: una URL de un CDN propio es legítima, y el botón
+escribe en el mismo campo.
+
+### Un ayudante nuevo, en vez de bajar a `fetch`
+
+`api.post` fija `Content-Type: application/json` y con eso `req.formData()` del
+servidor no lee nada. La cabecera de `api.ts` pide que ningún componente use `fetch`
+crudo, así que la salida no era saltarse esa regla: `api.upload` manda el
+`FormData` **sin fijar el encabezado** —lo pone el navegador, con su `boundary`— y
+devuelve la misma envoltura `{ ok, data, error }` que todo lo demás.
+
+### La mutación que obligó a escribir una prueba de verdad
+
+Añadir `Content-Type: application/json` a `api.upload` **sobrevivió** a todas las
+guardas de texto. Y es de las peores roturas que hay: la línea que la causa se
+parece a las tres de al lado, el multipart se rompe entero, y el error que llega no
+habla de encabezados.
+
+Ninguna guarda de texto podía cazarlo, porque todas miran que el componente LLAME al
+ayudante, no lo que el ayudante manda. Así que `api.ts` tiene por fin su fichero de
+pruebas —**5 casos**— que sustituye `fetch` y comprueba la petición: que no fije el
+content-type, que el cuerpo sea el `FormData` tal cual, que la cookie viaje, que un
+fallo de red conteste `status: 0` en vez de lanzar, y que los verbos de JSON sigan
+fijándolo.
+
+**Es la diferencia entre comprobar que se llama a algo y comprobar qué hace.** Todas
+las guardas de esta rama que han mordido de verdad están del segundo lado.
+
+### Y una etiqueta que describía la implementación vieja
+
+Los seis campos se llamaban «Imagen (URL)», «Foto (URL)». Era verdad cuando había
+que pegar una dirección y ahora manda a quien lee a buscar algo que no necesita. Una
+guarda comprueba que ninguna etiqueta de un campo de imagen diga «(URL)»: **una
+etiqueta que describe cómo estaba hecho miente igual que un comentario viejo.**
+
+**Mutación: 17 de 17** (la superviviente murió al escribir la prueba de
+comportamiento, no al aflojar la guarda).
+
+La guarda de motores sin puerta se puso en rojo sola. Quedan **cuatro**.
+
+`tsc`, `eslint`, **4308/4308** y `build` en verde. Sin migración — los buckets y sus
+políticas los crea 0016, que ya está en el repositorio.

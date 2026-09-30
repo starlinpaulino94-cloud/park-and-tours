@@ -79,7 +79,7 @@ export default function AtraccionesPage() {
         { name: "requires_waiver", label: "Requiere waiver", type: "select", defaultValue: "no", options: optionsFrom(YES_NO),
           help: "Si es Sí, el acceso exige un waiver firmado y vigente." },
         { name: "weather_sensitive", label: "Sensible al clima", type: "select", defaultValue: "no", options: optionsFrom(YES_NO) },
-        { name: "cover_image_url", label: "Imagen (URL)", type: "url", span: 2 },
+        { name: "cover_image_url", label: "Imagen", span: 2, type: "image" },
         { name: "health_restrictions", label: "Restricciones de salud", type: "textarea", span: 2 },
         { name: "notes", label: "Notas", type: "textarea", span: 2 },
         { name: "status", label: "Alta", type: "select", defaultValue: "active",

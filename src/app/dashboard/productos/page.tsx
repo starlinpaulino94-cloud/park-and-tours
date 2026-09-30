@@ -131,7 +131,7 @@ export default function ProductsPage() {
           help: "Solo si el anticipo es un importe fijo por reserva." },
         { name: "balance_due_days", label: "Saldo, días antes de la salida", type: "number",
           help: "Con 15, el saldo vence quince días antes de viajar. Una reserva de última hora vence hoy." },
-        { name: "cover_image_url", label: "Imagen de portada (URL)", type: "url", span: 2 },
+        { name: "cover_image_url", label: "Imagen de portada", span: 2, type: "image" },
         { name: "short_description", label: "Descripción corta", span: 2 },
         { name: "description", label: "Descripción", type: "textarea", span: 2 },
         { name: "inclusions", label: "Qué incluye", type: "textarea", span: 2 },

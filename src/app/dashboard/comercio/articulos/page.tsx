@@ -68,7 +68,7 @@ export default function ArticulosPage() {
         { name: "shelf_life_days", label: "Vida útil", type: "number", suffix: "días" },
         { name: "is_sellable", label: "Se vende al público", type: "select", defaultValue: "yes", options: optionsFrom(YES_NO) },
         { name: "tracks_lots", label: "Controla lotes", type: "select", defaultValue: "no", options: optionsFrom(YES_NO) },
-        { name: "image_url", label: "Imagen (URL)", type: "url", span: 2 },
+        { name: "image_url", label: "Imagen", span: 2, type: "image" },
         { name: "status", label: "Estado", type: "select", defaultValue: "active",
           options: [{ value: "active", label: "Activo" }, { value: "inactive", label: "Inactivo" }] },
       ]}

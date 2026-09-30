@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -11,8 +11,9 @@ import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { toDateInput } from "@/lib/format";
+import { Icon } from "@/components/tf/icon";
 
-export type FieldType = "text" | "number" | "textarea" | "select" | "date" | "datetime" | "email" | "phone" | "url" | "reference" | "multiselect";
+export type FieldType = "text" | "number" | "textarea" | "select" | "date" | "datetime" | "email" | "phone" | "url" | "reference" | "multiselect" | "image";
 
 export interface FieldDef {
   name: string;
@@ -93,6 +94,116 @@ function useReferenceOptions(fields: FieldDef[], open: boolean) {
   }, [open, fields]);
 
   return { options, loading };
+}
+
+/**
+ * EL CAMPO DE IMAGEN, QUE ANTES PEDÍA UNA URL A MANO.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * LO QUE PASABA
+ *
+ * `POST /api/storage/upload` estaba implementada entera —la ruta del objeto se
+ * deriva EN EL SERVIDOR del inquilino (y del socio, si lo es), así que nadie
+ * puede escribir en la carpeta de otro; comprueba tipo y tamaño, cuenta el
+ * consumo contra el techo del plan y deja rastro en auditoría— y **no la llamaba
+ * nadie**. Los seis campos de imagen del sistema eran cajas de texto donde había
+ * que pegar una URL, así que en la práctica las fichas no tenían foto, o la
+ * tenían apuntando a un sitio ajeno que el día que caiga deja el catálogo sin
+ * imágenes.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * DOS COSAS QUE LA RUTA IMPONE Y HAY QUE DECIR AQUÍ
+ *
+ * 1. **Hace falta que la ficha EXISTA.** El archivo se guarda en
+ *    `{empresa}/{entidad}/{id}/…` y la ruta comprueba con `tenantFindOne` que ese
+ *    id sea real —rechaza `"general"` a propósito—. En un alta todavía no hay id,
+ *    así que el botón se desactiva y **se dice por qué**: sin eso, subir al crear
+ *    sería un 400 que nadie entiende.
+ *
+ * 2. **Va al bucket público.** El privado devuelve una URL firmada que caduca a
+ *    los diez minutos, y guardar eso en `image_url` deja la ficha con una imagen
+ *    rota al rato. Para documentos privados haría falta guardar la RUTA y firmarla
+ *    al leer; eso no existe todavía y por eso este control no los ofrece.
+ *
+ * La caja de texto sigue ahí: una URL de un CDN propio es legítima y el botón
+ * escribe en el mismo campo.
+ */
+function CampoDeImagen({
+  id, resource, recordId, value, onChange,
+}: {
+  id: string;
+  resource: string;
+  recordId?: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [subiendo, setSubiendo] = useState(false);
+  const entrada = useRef<HTMLInputElement | null>(null);
+
+  const elegir = async (file: File | undefined) => {
+    if (!file || !recordId) return;
+    const form = new FormData();
+    form.append("file", file);
+    // Público: lo privado devuelve una URL que caduca (ver cabecera).
+    form.append("bucket", "public");
+    form.append("entity", resource);
+    form.append("id", recordId);
+
+    setSubiendo(true);
+    const res = await api.upload<{ url: string }>("/api/storage/upload", form);
+    setSubiendo(false);
+    // Se limpia la entrada para que elegir el MISMO archivo otra vez vuelva a
+    // disparar el cambio: si no, un reintento tras un error no hace nada.
+    if (entrada.current) entrada.current.value = "";
+    if (!res.ok || !res.data?.url) {
+      toast.error(res.error?.message || "No se pudo subir el archivo");
+      return;
+    }
+    onChange(res.data.url);
+    toast.success("Imagen subida");
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-start gap-3">
+        {value ? (
+          /**
+           * `<img>` y no `next/image`: la URL puede ser de un CDN ajeno y
+           * `next/image` exige declarar cada dominio en la configuración. Aquí no
+           * se sabe de antemano cuál va a ser.
+           */
+          <img src={value} alt="" className="size-16 shrink-0 rounded-md border object-cover"
+            onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }} />
+        ) : (
+          <div className="grid size-16 shrink-0 place-items-center rounded-md border border-dashed text-muted-foreground">
+            <Icon name="Image" className="size-5" />
+          </div>
+        )}
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <Input id={id} value={value} placeholder="https://… o sube un archivo"
+            onChange={(e) => onChange(e.target.value)} />
+          <div className="flex flex-wrap items-center gap-2">
+            <input ref={entrada} type="file" accept="image/png,image/jpeg,image/webp,image/gif"
+              className="hidden" onChange={(e) => void elegir(e.target.files?.[0])} />
+            <Button type="button" variant="outline" size="sm"
+              disabled={!recordId || subiendo}
+              onClick={() => entrada.current?.click()}>
+              <Icon name="ArrowUpFromLine" className="size-3.5" />
+              {subiendo ? "Subiendo…" : "Subir imagen"}
+            </Button>
+            {value && (
+              <Button type="button" variant="ghost" size="sm" onClick={() => onChange("")}>Quitar</Button>
+            )}
+          </div>
+        </div>
+      </div>
+      {!recordId && (
+        <p className="text-[11px] text-muted-foreground">
+          Guarda la ficha primero: el archivo se guarda dentro de ella y todavía no tiene dónde ir.
+        </p>
+      )}
+    </div>
+  );
 }
 
 export function ResourceForm({
@@ -222,6 +333,14 @@ export function ResourceForm({
                 {f.type === "textarea" ? (
                   <Textarea id={id} value={values[f.name] ?? ""} placeholder={f.placeholder} rows={3}
                     onChange={(e) => set(f.name, e.target.value)} />
+                ) : f.type === "image" ? (
+                  <CampoDeImagen
+                    id={id}
+                    resource={resource}
+                    recordId={record?._id}
+                    value={values[f.name] ?? ""}
+                    onChange={(v) => set(f.name, v)}
+                  />
                 ) : f.type === "select" || f.type === "reference" ? (
                   <Select value={values[f.name] || "__none"} onValueChange={(v) => set(f.name, v === "__none" ? "" : v)}>
                     <SelectTrigger id={id} className="w-full">

@@ -79,4 +79,19 @@ export const api = {
   delete<T>(url: string): Promise<ApiResponse<T>> {
     return request<T>(url, { method: "DELETE", credentials: "same-origin" });
   },
+
+  /**
+   * Multipart, para subir un archivo.
+   *
+   * `post` fija `Content-Type: application/json`, y con eso `req.formData()` del
+   * servidor no puede leer nada. Aquí el encabezado se OMITE a propósito: el
+   * navegador lo pone él con el `boundary`, y ponerlo a mano rompe la petición.
+   *
+   * Existe para no tener que bajar a `fetch` crudo en un componente, que es lo
+   * que la cabecera de este módulo pide no hacer: la respuesta sigue llegando con
+   * la misma forma `{ ok, data, error }` que todas las demás.
+   */
+  upload<T>(url: string, form: FormData): Promise<ApiResponse<T>> {
+    return request<T>(url, { method: "POST", credentials: "same-origin", body: form });
+  },
 };

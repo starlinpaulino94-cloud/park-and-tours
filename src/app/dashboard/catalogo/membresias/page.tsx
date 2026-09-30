@@ -30,7 +30,7 @@ export default function Page() {
         { name: "guest_passes", label: "Pases de invitado", type: "number" },
         { name: "discount_percent", label: "Descuento del socio", type: "number", suffix: "%" },
         { name: "auto_renew", label: "Renovación automática", type: "select", defaultValue: "no", options: optionsFrom(YES_NO) },
-        { name: "image_url", label: "Imagen", type: "url" },
+        { name: "image_url", label: "Imagen", type: "image" },
         { name: "status", label: "Estado", type: "select", defaultValue: "active", options: optionsFrom(ACTIVE_STATUS) },
         { name: "benefits", label: "Beneficios", type: "textarea", span: 2, help: "Uno por línea." },
         { name: "blackout_dates", label: "Fechas bloqueadas", type: "textarea", span: 2 },

@@ -52,7 +52,7 @@ export default function StaffPage() {
         { name: "supplier", label: "Proveedor (si es externo)", type: "reference", resource: "supplier" },
         { name: "hire_date", label: "Fecha de alta", type: "date" },
         { name: "license_expiry", label: "Vencimiento de licencia", type: "date" },
-        { name: "photo_url", label: "Foto (URL)", type: "url" },
+        { name: "photo_url", label: "Foto", type: "image" },
         { name: "status", label: "Estado", type: "select", defaultValue: "active", options: [
           { value: "active", label: "Activo" }, { value: "inactive", label: "Inactivo" }, { value: "unavailable", label: "No disponible" },
         ] },
