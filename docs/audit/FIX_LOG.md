@@ -7049,3 +7049,71 @@ módulo exista.
 **Mutación: 9 de 9**, incluida la que deja el comentario y se lleva la llamada.
 
 `tsc`, `eslint`, la suite entera y `build` en verde. Sin migración.
+
+---
+
+## El patrón no era uno: son dieciséis motores sin puerta
+
+`docs/audit/MOTORES_SIN_PUERTA.md` (nuevo), `src/lib/ui-contracts.test.ts`.
+
+### Qué se buscó
+
+Tras arreglar la bitácora del parque —un motor completo que no llamaba nadie—,
+se barrieron **las 176 rutas** del repositorio buscando el mismo patrón: una
+ruta implementada a la que no llega ninguna línea de la aplicación.
+
+Aparecieron **38 sin llamador**. Clasificadas una a una:
+
+- **22 son legítimas**: tienen llamador fuera del repositorio. Los 7 `cron`
+  —comprobado que los siete están declarados en `vercel.json`—, los 10 de
+  `octo/v1` (el revendedor, por el estándar OCTO), los 3 de la API pública del
+  socio, el webhook de Stripe y la sonda de salud.
+- **15 son huecos de verdad**, más la del parque que ya se cerró. **Dieciséis.**
+
+### Lo que más cuesta tener cerrado
+
+1. **`/api/assets/[id]/status`** — el mismo caso que la bitácora y con más
+   consecuencias. `asset-impact.ts` baja el activo, arrastra la atracción que
+   depende de él, escribe su bitácora y **crea una tarea por cada salida
+   afectada para que alguien llame a los clientes**. Cerrado, nada de eso
+   ocurre: la avería no arrastra nada y **los clientes no reciben aviso**.
+2. **El saldo regalo se emite y no se puede usar** — `redeem`, `refund` y
+   `void` huérfanas. Y las tres tienen su etiqueta de auditoría, añadida en
+   esta misma auditoría: están **auditadas y no se pueden ejecutar**.
+3. **Contabilidad, tres puertas de seis** — `finanzas/estados` sí llama a
+   `periods`, `statements` y `close-year`; faltan justo las tres que pide un
+   contador: el **plan de cuentas**, el **asiento manual** (un ajuste hay que
+   meterlo por SQL) y el **balance de comprobación**.
+4. **Almacén sin movimientos** — `movement` y `low-stock` huérfanas: un almacén
+   en el que no entra ni sale nada es una ficha, no un almacén.
+5. Y cinco más: vetar a un cliente, el enlace de un solo uso del proveedor,
+   subir ficheros, los datos de demostración y el portal de facturación.
+
+### Por qué esto pasa
+
+No es un descuido suelto: es una forma de construir —terminar el motor y dejar
+la pantalla para «la siguiente iteración»— que produce módulos que **parecen
+hechos y no se pueden usar**. Y la iteración siguiente no llega, porque desde
+fuera el módulo se ve entero. La bitácora llevaba así hasta que alguien miró la
+pantalla y preguntó por un botón.
+
+### La guarda
+
+Calcula las rutas sin llamador y las compara con el inventario, **en las dos
+direcciones**: una ruta nueva sin puerta la pone en rojo, y una que ya tenga
+puerta obliga a sacarla de la lista. Así el inventario no puede envejecer —que
+es justo lo que le pasó al informe de producción esta misma tarde—. Y exige que
+el documento explique cada una: una lista de rutas sin lo que se pierde con
+ellas cerradas no sirve para priorizar.
+
+El barrido ignora los comentarios: nombrar una ruta al explicarla no es
+llamarla. Es el fallo que dejó pasar la primera versión de la guarda del parque.
+
+**Mutación: 6 de 6** — ruta nueva huérfana, ruta que recibe puerta y no se saca
+de la lista, documento que deja de explicar una, hueco tapado borrándolo del
+inventario, familia declarada externa de más, y el barrido cegado.
+
+`tsc`, `eslint`, la suite entera y `build` en verde. Sin migración.
+
+**Esto no arregla los quince**: los inventaría, los ordena por lo que cuesta y
+pone una guarda para que no aparezca un decimosexto sin que nadie se entere.

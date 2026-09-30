@@ -13148,3 +13148,127 @@ describe("el parque: la bitácora no se teclea, se registra", () => {
       .not.toMatch(/name:\s*"operational_status"/);
   });
 });
+
+/**
+ * MOTORES SIN PUERTA: UNA RUTA QUE NO LLAMA NADIE.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * DE DÓNDE SALE ESTA GUARDA
+ *
+ * La bitácora del parque salió vacía y el diagnóstico fácil era «le falta el
+ * botón de crear». No: le faltaba QUIEN LA ESCRIBIERA.
+ * `POST /api/attractions/status` estaba implementado entero —estado, bitácora,
+ * downtime, auditoría— y no lo llamaba ni una línea de la aplicación.
+ *
+ * Al barrer las 176 rutas buscando el mismo patrón aparecieron más. No es un
+ * descuido suelto: es una forma de construir —terminar el motor y dejar la
+ * pantalla para «la siguiente iteración»— que produce módulos que parecen
+ * hechos y no se pueden usar.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * CÓMO FUNCIONA
+ *
+ * Se calculan las rutas sin llamador y se comparan con la lista de abajo. Falla
+ * en las DOS direcciones: una ruta nueva sin puerta pone la prueba en rojo, y
+ * una que ya tenga puerta obliga a sacarla de la lista. Así el inventario no
+ * puede envejecer, que es lo que le pasó al informe de producción.
+ *
+ * El detalle de cada una, y qué se pierde con ella cerrada, está en
+ * `docs/audit/MOTORES_SIN_PUERTA.md`.
+ */
+describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", () => {
+  /**
+   * Las que SÍ tienen llamador, pero fuera de este repositorio. No son huecos.
+   * Se declaran por prefijo porque son familias enteras de un mismo contrato.
+   */
+  const LLAMADOR_EXTERNO = [
+    "/api/cron/",        // el planificador de vercel.json
+    "/api/octo/v1/",     // el estándar OCTO: lo llama el revendedor
+    "/api/v1/",          // la API pública del socio
+    "/api/stripe/webhook",
+    "/api/health",       // la sonda de disponibilidad
+  ];
+
+  /**
+   * LAS QUE ESTÁN ESPERANDO SU PANTALLA, MEDIDAS Y APUNTADAS.
+   *
+   * Cada una es un motor terminado al que no se llega desde el producto.
+   * Arreglarlas es trabajo; reconocerlas es esta lista. Quitar una de aquí sin
+   * darle puerta pone la prueba en rojo, y dársela obliga a quitarla.
+   */
+  const SIN_PUERTA_CONOCIDAS = [
+    "/api/assets/[id]/status",
+    "/api/customers/[id]/lista-negra",
+    "/api/gift-cards/[id]/redeem",
+    "/api/gift-cards/[id]/refund",
+    "/api/gift-cards/[id]/void",
+    "/api/inventory/low-stock",
+    "/api/inventory/movement",
+    "/api/ledger/chart",
+    "/api/ledger/post",
+    "/api/ledger/trial-balance",
+    "/api/maintenance/reconcile-drafts",
+    "/api/proveedor/enlace",
+    "/api/setup/demo",
+    "/api/storage/upload",
+    "/api/stripe/customer-portal",
+  ];
+
+  function rutasSinLlamador(): string[] {
+    /**
+     * Todo lo que podría llamar: pantallas, componentes, servicios y pruebas de
+     * navegador. Se excluye `src/app/api` para que una ruta que se nombra a sí
+     * misma no cuente como su propio llamador.
+     */
+    const fuentes = [
+      ...ficherosTs("src").filter((f) => !f.includes("/api/") && !/\.test\.tsx?$/.test(f)),
+      ...ficherosTs("tests"),
+    ];
+    const codigo = fuentes.map((f) => readFileSync(f, "utf8")).join("\n")
+      // Sin comentarios: nombrar una ruta al explicarla no es llamarla. Es el
+      // fallo que dejó pasar la primera versión de la guarda del parque.
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/[^\n]*/gm, "");
+
+    return ficherosTs("src/app/api")
+      .filter((f) => f.endsWith("route.ts"))
+      .map((f) => "/" + path.relative(path.join(ROOT, "src/app"), f).replace(/\\/g, "/").replace("/route.ts", ""))
+      .filter((url) => {
+        if (LLAMADOR_EXTERNO.some((p) => url.startsWith(p))) return false;
+        // Un segmento dinámico se llama con plantilla: `/api/x/${id}/y`.
+        const partes = url.split("/").filter(Boolean).map((p) =>
+          p.startsWith("[") ? "[^/`\"']+" : p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+        return !new RegExp("/" + partes.join("/")).test(codigo);
+      })
+      .sort();
+  }
+
+  it("el inventario de motores sin puerta está al día, en las dos direcciones", () => {
+    const sinPuerta = rutasSinLlamador();
+
+    // Piso: el barrido tiene que ver las rutas. Con el lector roto la lista
+    // saldría vacía y «no hay huecos nuevos» pasaría sin mirar nada.
+    expect(ficherosTs("src/app/api").filter((f) => f.endsWith("route.ts")).length,
+      "el barrido dejó de ver las rutas de la API").toBeGreaterThan(100);
+
+    const nuevas = sinPuerta.filter((r) => !SIN_PUERTA_CONOCIDAS.includes(r));
+    expect(nuevas,
+      `motor nuevo sin puerta: está implementado y no lo llama nadie.\n  - ${nuevas.join("\n  - ")}`)
+      .toEqual([]);
+
+    const yaTienenPuerta = SIN_PUERTA_CONOCIDAS.filter((r) => !sinPuerta.includes(r));
+    expect(yaTienenPuerta,
+      `ya tienen puerta: sácalas de SIN_PUERTA_CONOCIDAS.\n  - ${yaTienenPuerta.join("\n  - ")}`)
+      .toEqual([]);
+  });
+
+  it("el inventario escrito nombra las mismas que el barrido", () => {
+    const doc = read("docs/audit/MOTORES_SIN_PUERTA.md");
+    const faltan = SIN_PUERTA_CONOCIDAS.filter((r) => !doc.includes(r));
+    expect(faltan, `el documento no explica qué se pierde con: ${faltan.join(", ")}`).toEqual([]);
+    // Y al revés: que no se quede nombrando una que ya se arregló.
+    const sobran = [...doc.matchAll(/`(\/api\/[\w[\]/-]+)`/g)]
+      .map((m) => m[1])
+      .filter((r) => !SIN_PUERTA_CONOCIDAS.includes(r) && !LLAMADOR_EXTERNO.some((p) => r.startsWith(p)));
+    expect(sobran, `el documento nombra rutas que ya no están sin puerta: ${sobran.join(", ")}`).toEqual([]);
+  });
+});
