@@ -806,7 +806,22 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["name", "code", "location"],
     expand: { zone: true },
     sort: { name: "asc" },
-    writable: ["name", "code", "attraction_type", "operational_status", "capacity_hour", "capacity_simultaneous", "queue_minutes", "guests_today", "duration_min", "min_height_cm", "max_height_cm", "min_age", "max_weight_kg", "health_restrictions", "requires_waiver", "weather_sensitive", "downtime_minutes_today", "last_status_at", "cover_image_url", "location", "status", "notes", "zone"],
+    /**
+     * EL ESTADO OPERATIVO NO SE TECLEA: SE REGISTRA.
+     *
+     * `operational_status`, `downtime_minutes_today` y `last_status_at` los
+     * DERIVA `POST /api/attractions/status`, que además añade la entrada
+     * inmutable a la bitácora. Estaban aquí, así que el estado se podía cambiar
+     * por el CRUD genérico: la insignia cambiaba y no se registraba nada —ni
+     * bitácora, ni downtime, ni hora del cambio—. La bitácora se presenta como
+     * «la fuente del downtime y de la disponibilidad histórica» y salía vacía
+     * con el parque operando.
+     *
+     * Es el mismo motivo por el que `departure.status` y `departure.actual_pax`
+     * llevan fuera desde AUD-B02: un campo que otro flujo calcula deja de ser
+     * verdad en cuanto alguien lo escribe a mano.
+     */
+    writable: ["name", "code", "attraction_type", "capacity_hour", "capacity_simultaneous", "queue_minutes", "guests_today", "duration_min", "min_height_cm", "max_height_cm", "min_age", "max_weight_kg", "health_restrictions", "requires_waiver", "weather_sensitive", "cover_image_url", "location", "status", "notes", "zone"],
     booleans: ["requires_waiver", "weather_sensitive"],
     numeric: ["capacity_hour", "capacity_simultaneous", "queue_minutes", "guests_today", "duration_min", "min_height_cm", "max_height_cm", "min_age", "max_weight_kg", "downtime_minutes_today"],
     dates: ["last_status_at"],

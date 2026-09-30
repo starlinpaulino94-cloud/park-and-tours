@@ -13038,3 +13038,113 @@ describe("el informe de producción no puede decir un número que ya no es", () 
     expect(delScript.tablasSinRls, "el script ve tablas sin RLS que la guarda no").toEqual([]);
   });
 });
+
+/**
+ * EL PARQUE: UN REGISTRO INMUTABLE NECESITA QUIEN LO ESCRIBA.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * DE DÓNDE SALE
+ *
+ * Reportado con una captura: la bitácora de atracciones vacía, «le falta el
+ * botón para crear». El botón faltaba A PROPÓSITO —`canWrite={false}`, es un
+ * registro inmutable y teclear filas a mano destruiría justo lo que lo hace
+ * valer—. Lo que faltaba era otra cosa, y peor.
+ *
+ * `POST /api/attractions/status` estaba escrito ENTERO: cambia el estado, añade
+ * la entrada de bitácora, acumula el downtime del rato que la atracción estuvo
+ * parada y deja rastro en auditoría. **No lo llamaba nadie.** Cero llamadas en
+ * toda la aplicación.
+ *
+ * Y mientras tanto el estado SÍ se podía cambiar, por el formulario genérico
+ * del centro de control: la insignia cambiaba y no se registraba nada. La
+ * bitácora —«la fuente del downtime y de la disponibilidad histórica»— se
+ * quedaba vacía con el parque operando, y el downtime del día en cero con las
+ * atracciones paradas. La pantalla decía que funcionó y no se escribió nada.
+ *
+ * Esta guarda sujeta las tres mitades del acuerdo: que el registro siga sin
+ * poder escribirse a mano, que el camino que SÍ lo escribe esté enchufado, y
+ * que no quede una segunda puerta que cambie el estado sin dejar rastro.
+ */
+describe("el parque: la bitácora no se teclea, se registra", () => {
+  const BITACORA = "src/app/dashboard/parque/bitacora/page.tsx";
+  const CONTROL = "src/app/dashboard/parque/control/page.tsx";
+  const RUTA = "src/app/api/attractions/status/route.ts";
+
+  /**
+   * SIN COMENTARIOS, Y NO ES UN DETALLE.
+   *
+   * La cabecera del centro de control EXPLICA el fallo, y al explicarlo escribe
+   * `/api/attractions/status` en prosa. Comprobando el fichero crudo, la guarda
+   * casaba con el comentario: desenchufar la llamada de verdad la dejaba pasar.
+   * Es el mismo tropiezo que con el SQL comentado unas horas antes — un lector
+   * que no distingue código de comentario no mide el sistema, mide el fichero.
+   *
+   * Se quitan los comentarios de línea solo cuando abren la línea, para no
+   * romper la barra doble de una URL.
+   */
+  const sinComentarios = (fuente: string) =>
+    fuente.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/[^\n]*/gm, "");
+
+  it("la bitácora sigue siendo de solo lectura", () => {
+    const page = read(BITACORA);
+    expect(page, "la bitácora dejó de ser inmutable: se podrían teclear filas")
+      .toMatch(/canWrite=\{false\}/);
+    expect(page, "un registro inmutable no lleva campos de formulario")
+      .toMatch(/fields=\{\[\]\}/);
+  });
+
+  it("el centro de control llama a la ruta que escribe el registro", () => {
+    const control = sinComentarios(read(CONTROL));
+    expect(control, "el centro de control volvió a quedarse sin puerta: nadie escribe la bitácora")
+      .toContain("/api/attractions/status");
+    // Y manda lo que la ruta exige, no un cuerpo a medias.
+    for (const campo of ["attraction:", "status:"]) {
+      expect(control, `el cuerpo no manda ${campo}`).toContain(campo);
+    }
+  });
+
+  it("la ruta escribe el registro, acumula el downtime y deja rastro", () => {
+    const ruta = sinComentarios(read(RUTA));
+    expect(ruta, "la ruta dejó de escribir la bitácora").toContain('"attraction_log"');
+    expect(ruta, "la entrada no dice de qué estado venía").toMatch(/from_status:/);
+    expect(ruta, "el downtime dejó de acumularse").toMatch(/downtime_minutes_today:/);
+    /**
+     * En POSICIÓN DE SENTENCIA, no en cualquier sitio. Buscando «writeAudit» a
+     * secas, envolverlo en un `if (false)` lo dejaba pasar: el nombre seguía
+     * ahí y la llamada ya no ocurría nunca.
+     */
+    expect(ruta, "el cambio de estado dejó de quedar en auditoría")
+      .toMatch(/\n\s*await writeAudit\(\{/);
+    expect(ruta, "la auditoría dejó de nombrar la acción")
+      .toContain('action: "attraction_status_changed"');
+    // Cambiar el estado de una atracción es cosa de operación, no de cualquiera.
+    expect(ruta, "la ruta dejó de exigir rango").toMatch(/requireAtLeast\(ctx, "operations"\)/);
+  });
+
+  it("ninguna segunda puerta escribe el estado sin dejar rastro", () => {
+    const resources = read("src/lib/resources.ts");
+    const attraction = /^ {2}attraction: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    const writable = /writable:\s*\[([\s\S]*?)\]/.exec(attraction)![1];
+
+    /**
+     * Los tres los DERIVA la ruta. Con ellos en la lista blanca, el CRUD
+     * genérico los escribe sin bitácora y sin downtime — que es exactamente el
+     * fallo que se reportó. Mismo motivo por el que `departure.status` y
+     * `departure.actual_pax` llevan fuera desde AUD-B02.
+     */
+    for (const campo of ['"operational_status"', '"downtime_minutes_today"', '"last_status_at"']) {
+      expect(writable, `attraction.writable no debe incluir ${campo}: lo deriva la ruta de estado`)
+        .not.toContain(campo);
+    }
+    // Y que la lista siga existiendo: vaciarla entera pasaría lo de arriba sin
+    // que la pantalla pudiera editar nada.
+    expect(writable, "attraction.writable se quedó vacía").toContain('"name"');
+
+    // El formulario tampoco puede ofrecerlos.
+    const control = sinComentarios(read(CONTROL));
+    const campos = /fields=\{\[([\s\S]*?)\]\}/.exec(control)?.[1] ?? "";
+    expect(campos.length, "no se reconocieron los campos del formulario").toBeGreaterThan(100);
+    expect(campos, "el formulario vuelve a ofrecer el estado operativo")
+      .not.toMatch(/name:\s*"operational_status"/);
+  });
+});

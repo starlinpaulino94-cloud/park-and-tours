@@ -6977,3 +6977,75 @@ Dos veces en una tarde es la respuesta. Se quitó el número: la casilla dice
 número que hay que perseguir cada semana y que no cambia ninguna decisión no
 merece estar escrito — que es el mismo hallazgo de esta entrada aplicado a lo
 que la entrada acababa de escribir.
+
+---
+
+## La bitácora del parque estaba vacía, y no por falta de un botón
+
+`src/app/dashboard/parque/control/page.tsx`, `src/lib/resources.ts`,
+`src/lib/ui-contracts.test.ts`.
+
+### Lo reportado
+
+Una captura de **Parque → Operación → Bitácora**, vacía, con el comentario: «le
+falta el botón para crear lo que corresponde ahí».
+
+### Lo que pasaba de verdad
+
+**El botón falta a propósito y debe seguir faltando.** La página declara
+`canWrite={false}` y se presenta como «registro inmutable […] la fuente del
+downtime y de la disponibilidad histórica». Dejar teclear filas a mano
+destruiría exactamente la propiedad que la hace valer.
+
+Lo que faltaba era otra cosa, y peor: **quien la escriba.**
+
+`POST /api/attractions/status` estaba implementado **entero** —cambia el estado,
+añade la entrada de bitácora, acumula el downtime del rato que la atracción
+estuvo parada y deja rastro en auditoría— y **no lo llamaba nadie**. Cero
+llamadas en toda la aplicación. Lo mismo con el segundo productor
+(`/api/assets/[id]/status`, vía `asset-impact.ts`): también cero.
+
+### Y la parte que hacía daño
+
+El centro de control lo admitía en su propia descripción —«el cambio de estado
+[…] llega en la siguiente iteración»— **pero su formulario ofrecía
+`operational_status` como un campo más**, y `attraction.writable` incluía además
+`downtime_minutes_today` y `last_status_at`.
+
+O sea que el estado **sí** se podía cambiar: la insignia cambiaba y no se
+registraba nada. Ni entrada de bitácora, ni downtime acumulado, ni hora del
+cambio. El operador cree que lo apuntó; la bitácora se queda vacía con el parque
+operando y el downtime en cero con las atracciones paradas.
+
+Nadie ve el fallo hasta que alguien pide el informe de disponibilidad del mes y
+no hay nada que enseñar. Es la misma forma que el resto de esta auditoría: **la
+pantalla dice que funcionó y no se escribió nada.**
+
+### Lo que se hizo
+
+- **La puerta que faltaba**: cada fila del centro de control tiene ahora un
+  botón que abre un diálogo —estado, motivo, visitantes, cola— y llama a la
+  ruta. El **motivo es obligatorio** cuando la atracción deja de estar abierta:
+  un downtime sin motivo no sirve al mes siguiente, que es cuando se decide si
+  hay que cambiar una pieza o formar a alguien.
+- **La segunda puerta, cerrada**: los tres campos derivados salen del formulario
+  y de `attraction.writable`. Mismo motivo por el que `departure.status` y
+  `departure.actual_pax` llevan fuera desde AUD-B02.
+- La descripción de la pantalla deja de prometer lo que ya está.
+
+**Lo que NO se hizo, y queda dicho**: el tablero en vivo que se refresca solo.
+Eso es otra entrega; esto es la puerta, que es lo que hacía falta para que el
+módulo exista.
+
+### Dos supervivientes que eran fallos de mi guarda
+
+1. **Desenchufar la llamada sobrevivía.** La cabecera de la página *explica* el
+   fallo, y al explicarlo escribe `/api/attractions/status` en prosa: la guarda
+   casaba con el comentario. **El mismo tropiezo que con el SQL comentado unas
+   horas antes**, en otro lenguaje y en el mismo día.
+2. **Envolver `writeAudit` en un `if (false)` sobrevivía.** Buscar el nombre a
+   secas no prueba que se llame. Ahora se exige en **posición de sentencia**.
+
+**Mutación: 9 de 9**, incluida la que deja el comentario y se lleva la llamada.
+
+`tsc`, `eslint`, la suite entera y `build` en verde. Sin migración.
