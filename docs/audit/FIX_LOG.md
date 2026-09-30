@@ -7579,3 +7579,101 @@ nadie tenga que acordarse de bajar un número.
 La guarda de motores sin puerta se puso en rojo sola. Quedan **seis**.
 
 `tsc`, `eslint`, **4291/4291** y `build` en verde. Sin migración.
+
+---
+
+## La casilla que por fin hace algo
+
+`src/app/dashboard/clientes/directorio/page.tsx`, `src/lib/labels.ts`,
+`src/lib/field-projection.ts`, `src/lib/field-projection.test.ts`,
+`src/lib/ui-contracts.test.ts`, `docs/audit/MOTORES_SIN_PUERTA.md`.
+
+Quinto motor sin puerta cerrado, y el **caso limpio** del patrón: el único de los
+trece al que le faltaba **solo el botón**. Lo digo así porque las cuatro olas
+anteriores encontraron cada una un defecto en el motor, y aquí no hay ninguno.
+
+Todo lo demás estaba enchufado y bien hecho: `booking-service` rechaza la venta a
+una ficha vetada; `mensajePublico` y `CODIGO_VETADO` traducen el rechazo hacia
+fuera **sin decir la palabra ni el motivo**; `puertaEquivocada` ya cerraba el
+cambio de estado desde el desplegable del CRUD genérico; hay una restricción en la
+base (0092) que impide un `blacklist` sin motivo; y el dominio tiene **21
+pruebas**. Faltaba quien llamara a `PUT /api/customers/:id/lista-negra`.
+
+Sin ese botón, la lista negra era exactamente lo que avisa su propia cabecera:
+
+> «Y de las casillas que no hacen nada, esta es de las peores: quien la marca se
+> queda convencido de que hizo algo.»
+
+### Dos cosas que aparecieron al enchufarlo, ninguna en la ruta
+
+**1. `blacklist` no estaba en ningún diccionario de etiquetas.** El respaldo de
+`labelOf` la pintaba como la palabra cruda «blacklist», en gris neutro — el color
+de «inactivo». El estado más consecuente que puede tener una ficha, en inglés y
+del color de lo intrascendente, justo en la insignia que mira el cajero con la
+persona delante. `GENERIC_STATUS` tiene `blocked`, que es otra cosa y de otro
+módulo. Ahora hay un `CUSTOMER_STATUS` propio, y una guarda comprueba que **los
+tres estados de `ESTADOS_DE_CLIENTE`** tengan etiqueta — la lista entera, no ese
+valor.
+
+**2. El motivo del veto viajaba a la empresa asociada.** `lista-negra.ts` dice
+desde su cabecera que hacia fuera no viaja ni el motivo ni la palabra, y eso
+estaba aplicado a la web y a la API pública. Pero `customer` se expande dentro de
+`order`, `booking` y `lead`: un tour center que leía **sus propias órdenes**
+recibía la ficha con «no se presentó tres veces» y con el id del empleado que lo
+firmó.
+
+Es el mismo caso que `partner.notes`, ya resuelto en `OCULTO_AL_SOCIO` una línea
+más arriba: lo que la operadora escribe sobre alguien es suyo. `status` y
+`blocked_at` sí viajan —al socio le sirve saber que no puede venderle, y
+`booking-service` se lo va a rechazar igual—; lo que no viaja es **el juicio ni
+quién lo firmó**.
+
+Al añadirlo, la guarda «todo campo recortado existe en su recurso» se puso en rojo
+—y con razón: comprueba que un campo recortado no esté mal escrito, porque un
+nombre inventado no recorta nada y la promesa sería mentira. `blocked_reason` y
+`blocked_by` no están en `writable` **a propósito** (los escribe solo la ruta), así
+que van en la lista de excepciones declaradas del propio guardián, con su motivo.
+Esa lista existe justo para esto.
+
+### Y el desplegable invitaba a un callejón
+
+El formulario ofrecía «Lista negra» en el estado, y al guardar saltaba
+`puertaEquivocada` con su mensaje. La guarda estaba bien; **lo que estaba mal era
+ofrecer una opción que el servidor rechaza siempre**. Ahora el formulario tiene los
+dos estados que sí edita —derivados del diccionario quitando el veto, no escritos
+a mano— y dice dónde está el botón.
+
+### Tres decisiones de pantalla
+
+- **El motivo se ve en la fila**, debajo de la insignia. No es adorno: el caso real
+  es el cliente en el mostrador y el cajero decidiendo en treinta segundos. Un
+  «bloqueado» sin motivo se levanta —y entonces no valía nada— o se sostiene a
+  ciegas.
+- **Al levantar, lo primero que se lee es por qué estaba bloqueado**, con
+  `mensajeInterno`, que es la función que existe para eso.
+- **El mínimo del motivo sale del módulo** (`MOTIVO_MINIMO`, `motivoValido`), no de
+  un número tecleado en la pantalla. Con dos definiciones, la pantalla deja pasar
+  lo que el servidor rechaza y quien lo escribe no entiende por qué. Mismo criterio
+  que el umbral de reposición del almacén, dos olas atrás.
+
+Y un filtro por estado, que es como se responde la pregunta que de verdad se hace
+un gerente: **quién está en la lista**.
+
+### Una guarda mía que afirmaba lo que no miraba
+
+`toMatch(/blocked_reason/)` para comprobar que la fila enseña el motivo. La
+mutación que lo quita de la fila **sobrevivió**: el nombre seguía apareciendo en la
+declaración de la interfaz y en el atributo `title`. La guarda afirmaba que el
+cajero ve el motivo **mirando un tipo de TypeScript**.
+
+Arreglada aislando la columna del estado y quitándole los atributos: lo que queda
+es lo que de verdad se pinta. Es la quinta vez en esta rama que una guarda mide
+algo que no es el código que ejecuta, y van tres hoy — comentario, documentación y
+ahora una declaración de tipo. **El patrón no es el comentario: es medir cerca del
+nombre en vez de cerca del efecto.**
+
+**Mutación: 16 de 16.**
+
+La guarda de motores sin puerta se puso en rojo sola. Quedan **cinco**.
+
+`tsc`, `eslint`, **4297/4297** y `build` en verde. Sin migración.

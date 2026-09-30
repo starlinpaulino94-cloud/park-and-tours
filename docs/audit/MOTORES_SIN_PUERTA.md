@@ -11,7 +11,7 @@
 > **Corregido el 30-sep:** el primer barrido dijo dieciséis y eran **trece**. Tres
 > de las que acusó tenían puerta desde el día que se escribieron; fallaba el
 > detector, no el producto. Ver «Tres huecos que no existían», más abajo. De las
-> trece reales quedan **seis** por cerrar.
+> trece reales quedan **cinco** por cerrar.
 
 ## De dónde salió esto
 
@@ -54,9 +54,9 @@ Ya tiene puerta, con **previsualización del impacto antes de confirmar**: qué
 salidas se cierran y **qué reservas quedan fuera, con su número y su cliente**.
 Ver la entrada «El activo que se caía y no arrastraba nada» en `FIX_LOG.md`.
 
-Quedan **seis** — los de `SIN_PUERTA_CONOCIDAS`: trece reales menos esta, menos
-la bitácora del parque con la que empezó todo, menos las tres de contabilidad y
-menos las dos de almacén.
+Quedan **cinco** — los de `SIN_PUERTA_CONOCIDAS`: trece reales menos esta, menos
+la bitácora del parque con la que empezó todo, menos las tres de contabilidad,
+menos las dos de almacén y menos la lista negra.
 
 ### ~~2. El saldo regalo que se emite y no se puede usar~~ — **NUNCA FUE UN HUECO**
 
@@ -131,7 +131,7 @@ a todo lo demás.
 
 Ver la entrada «La contabilidad que no se podía tocar» en `FIX_LOG.md`.
 
-Quedan **seis**.
+Quedan **cinco**.
 
 ### ~~4. Almacén sin movimientos~~ — **CERRADO el 30-sep**, y era el peor de los trece
 
@@ -171,12 +171,40 @@ está fuera de la lista blanca, no hay lápiz ni papelera, y la lista de reposic
 (`low-stock`) se ve en Existencias en vez de solo sonar una vez al mes. Ver «El
 kardex que se podía teclear» en `FIX_LOG.md`.
 
-Quedan **seis**.
+Quedan **cinco**.
 
-### 5. El cliente que no se puede vetar — `/api/customers/[id]/lista-negra`
+### ~~5. El cliente que no se puede vetar~~ — **CERRADO el 30-sep**
 
-Implementado y sin botón en ninguna pantalla. El caso de uso es real y
-desagradable: alguien a quien no se le quiere volver a vender.
+El caso limpio del patrón, y el único de los trece al que le faltaba **solo el
+botón**. Todo lo demás estaba enchufado y bien: `booking-service` rechaza la venta
+a una ficha vetada; la web y la API del socio traducen el rechazo sin decir la
+palabra ni el motivo; el CRUD genérico ya rechazaba el cambio de estado desde el
+desplegable con `puertaEquivocada`; y el dominio tenía sus **21 pruebas**. Sin ese
+botón, la lista negra era exactamente lo que avisa su propio comentario: *una
+casilla que no hace nada, y de esas la peor es la que deja a quien la marca
+convencido de que hizo algo*.
+
+**Dos cosas que aparecieron al enchufarlo**, ninguna en la ruta:
+
+1. **`blacklist` no estaba en ningún diccionario de etiquetas.** El respaldo de
+   `labelOf` la pintaba como la palabra cruda «blacklist» en gris neutro: el
+   estado más consecuente que puede tener una ficha, en inglés y del color de
+   «inactivo», justo en la insignia que mira el cajero con la persona delante.
+2. **El motivo del veto viajaba al socio.** `lista-negra.ts` dice desde su
+   cabecera que hacia fuera no viaja ni el motivo ni la palabra, y eso estaba
+   aplicado solo a la web y a la API pública. Pero `customer` se expande dentro de
+   `order`, `booking` y `lead`: un tour center que leía sus propias órdenes
+   recibía la ficha con «no se presentó tres veces» y con el id del empleado que
+   lo firmó. Mismo caso que `partner.notes`, ya resuelto en `OCULTO_AL_SOCIO`;
+   ahora `blocked_reason` y `blocked_by` están ahí también.
+
+Y el desplegable del formulario dejó de ofrecer «Lista negra»: la ofrecía, y al
+guardar saltaba `puertaEquivocada` con su mensaje. La guarda estaba bien; lo que
+estaba mal era invitar a un callejón.
+
+Ver «La casilla que por fin hace algo» en `FIX_LOG.md`.
+
+Quedan **cinco**.
 
 ### 6. El resto
 

@@ -74,6 +74,22 @@ export const HIDDEN_BELOW: Record<string, Record<string, AppRole>> = {
  */
 export const OCULTO_AL_SOCIO: Record<string, string[]> = {
   partner: ["notes", "metadata"],
+  /**
+   * EL MOTIVO DE UN VETO ES UNA NOTA INTERNA SOBRE UNA PERSONA.
+   *
+   * `lista-negra.ts` lo dice desde su cabecera: hacia fuera no viaja ni el
+   * motivo ni la palabra, y dentro es al revés porque el cajero tiene a la
+   * persona delante. Pero eso solo estaba aplicado a la web y a la API pública,
+   * y `customer` se expande dentro de `order`, `booking` y `lead`: un tour
+   * center que lee sus propias órdenes recibía la ficha con
+   * «no se presentó tres veces» y con el id del empleado que lo decidió.
+   *
+   * Mismo caso que `partner.notes`, una línea más arriba: lo que la operadora
+   * escribe sobre alguien es suyo. `status` y `blocked_at` SÍ viajan —al socio le
+   * sirve saber que no puede venderle, y `booking-service` se lo va a rechazar de
+   * todas formas—; lo que no viaja es el juicio ni quién lo firmó.
+   */
+  customer: ["blocked_reason", "blocked_by"],
 };
 
 /**

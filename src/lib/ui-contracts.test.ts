@@ -13225,7 +13225,9 @@ describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", (
     // Las tres de gift cards también salieron, pero por otro motivo: NUNCA
     // estuvieron sin puerta. Las acusó un fallo de este barrido —ver
     // `tienePuerta`—, no una pantalla que faltara.
-    "/api/customers/[id]/lista-negra",
+    // La lista negra salió el 30-sep: le faltaba SOLO el botón. Todo lo demás
+    // —el rechazo al vender, la traducción hacia fuera, la puerta del CRUD—
+    // estaba enchufado. Ver «la casilla que por fin hace algo».
     // Las dos de almacén salieron el 30-sep. Y no eran un módulo vacío: la
     // pantalla del kardex tenía un formulario que escribía la fila SIN mover el
     // saldo. Ver «el kardex no se teclea».
@@ -13862,5 +13864,132 @@ describe("el kardex no se teclea: lo escribe el motor de inventario", () => {
     expect(e, "no se pintan los artículos bajos").toMatch(/bajos\.map/);
     // Y no se inventa una cantidad a pedir que la empresa no declaró.
     expect(e, "se inventa la cantidad de pedido").toMatch(/reorder_qty/);
+  });
+});
+
+/**
+ * LA CASILLA QUE POR FIN HACE ALGO.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * EL CASO LIMPIO DEL PATRÓN
+ *
+ * De los trece motores sin puerta, el único al que le faltaba **solo el botón**.
+ * Todo lo demás estaba enchufado: `booking-service` rechaza la venta,
+ * `mensajePublico` y `CODIGO_VETADO` traducen el rechazo hacia fuera sin decir la
+ * palabra, `puertaEquivocada` cierra el desplegable del CRUD genérico, y el
+ * dominio tiene sus 21 pruebas.
+ *
+ * Sin ese botón la lista negra era lo que avisa su propia cabecera: una casilla
+ * que no hace nada, **y de esas la peor es la que deja a quien la marca convencido
+ * de que hizo algo**.
+ */
+describe("la lista negra tiene su puerta, y el motivo no sale de casa", () => {
+  const PANTALLA = "src/app/dashboard/clientes/directorio/page.tsx";
+  const limpio = (rel: string) => sinComentariosDe(rel);
+
+  it("la pantalla llama a la ruta del veto", () => {
+    const p = limpio(PANTALLA);
+    expect(p, "el veto no llega a su ruta").toMatch(/\/api\/customers\/\$\{[^}]+\}\/lista-negra/);
+    // Y manda las dos cosas que la ruta exige.
+    expect(p, "no se manda si es bloquear o levantar").toMatch(/blocked: !bloqueado/);
+    expect(p, "no se manda el motivo").toMatch(/reason:/);
+  });
+
+  it("el desplegable ya no invita a un callejón", () => {
+    /**
+     * Ofrecía «Lista negra» y al guardar saltaba `puertaEquivocada`. La guarda
+     * estaba bien; lo que estaba mal era ofrecer una opción que el servidor
+     * rechaza siempre.
+     *
+     * Y la lista de estados del formulario se DERIVA del diccionario quitando el
+     * veto, en vez de escribirse a mano: así un estado nuevo aparece solo.
+     */
+    const p = limpio(PANTALLA);
+    expect(p, "los estados del formulario ya no se derivan del diccionario")
+      .toMatch(/optionsFrom\(CUSTOMER_STATUS\)\.filter\(\(o\) => o\.value !== VETADO\)/);
+    const campos = /fields=\{\[([\s\S]*?)\n        \]\}/.exec(p)?.[1] ?? "";
+    expect(campos.length, "no se reconocieron los campos del formulario").toBeGreaterThan(200);
+    expect(campos, "el formulario vuelve a ofrecer la lista negra").not.toContain('"blacklist"');
+  });
+
+  it("el mínimo del motivo sale del módulo, no de un número en la pantalla", () => {
+    /**
+     * Con dos definiciones, la pantalla deja pasar lo que el servidor rechaza y
+     * quien lo escribe no entiende por qué. Es el mismo criterio que el umbral de
+     * reposición del almacén.
+     */
+    const p = limpio(PANTALLA);
+    expect(p, "la pantalla no usa el validador del módulo").toMatch(/motivoValido\(motivo\)/);
+    expect(p, "la pantalla no usa el mínimo del módulo").toContain("MOTIVO_MINIMO");
+    // Y no se inventa su propia cuenta de caracteres.
+    expect(p, "la pantalla se inventa su propio mínimo").not.toMatch(/length\s*>=\s*\d+/);
+  });
+
+  it("el motivo se ve donde se decide", () => {
+    /**
+     * El caso real es el cliente en el mostrador y el cajero decidiendo en treinta
+     * segundos. Un «bloqueado» sin motivo se levanta —y entonces no valía nada— o
+     * se sostiene a ciegas.
+     */
+    const p = limpio(PANTALLA);
+
+    /**
+     * EN POSICIÓN DE TEXTO, no en cualquier sitio.
+     *
+     * La primera versión era `toMatch(/blocked_reason/)` y la mutación que quita
+     * el motivo de la fila SOBREVIVIÓ: el nombre seguía apareciendo en la
+     * declaración de la interfaz y en el atributo `title`. La guarda afirmaba que
+     * el cajero ve el motivo mirando un tipo de TypeScript.
+     *
+     * Se aísla la columna del estado y se le quitan los atributos: lo que quede es
+     * lo que de verdad se pinta.
+     */
+    const columna = /\{\s*key: "status",([\s\S]*?)\n          \},/.exec(p)?.[1] ?? "";
+    expect(columna.length, "no se reconoció la columna de estado").toBeGreaterThan(100);
+    const soloTexto = columna.replace(/[\w-]+=\{[^}]*\}/g, "").replace(/[\w-]+="[^"]*"/g, "");
+    expect(soloTexto, "la fila no PINTA el motivo del veto").toContain("blocked_reason");
+
+    expect(p, "el diálogo de levantar no recuerda por qué estaba bloqueado")
+      .toMatch(/mensajeInterno\(objetivo\)/);
+  });
+
+  it("todo estado de un cliente tiene su etiqueta", () => {
+    /**
+     * `blacklist` no estaba en ningún diccionario: el respaldo de `labelOf` la
+     * pintaba como la palabra cruda, en gris, en la insignia que mira el cajero.
+     * Se comprueba la lista ENTERA de `ESTADOS_DE_CLIENTE`, no ese valor.
+     */
+    const estados = /export const ESTADOS_DE_CLIENTE: EstadoDeCliente\[\] = \[([\s\S]*?)\];/
+      .exec(read("src/lib/lista-negra.ts"))![1];
+    const lista = [...estados.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    expect(lista.length, "no se reconocieron los estados del cliente").toBeGreaterThan(2);
+
+    const dict = /export const CUSTOMER_STATUS: Record<string, LabelDef> = \{([\s\S]*?)\n\};/
+      .exec(read("src/lib/labels.ts"))![1];
+    const faltan = lista.filter((e) => !new RegExp(`^\\s*${e}:`, "m").test(dict));
+    expect(faltan, `estados de cliente sin etiqueta: ${faltan.join(", ")}`).toEqual([]);
+
+    // Y la pantalla usa ESE diccionario, no el genérico —que tiene `blocked`, que
+    // es otra cosa, y no tiene `blacklist`.
+    expect(limpio(PANTALLA), "la insignia volvió al diccionario genérico")
+      .toMatch(/dict=\{CUSTOMER_STATUS\}/);
+  });
+
+  it("el motivo de un veto no viaja a la empresa asociada", () => {
+    /**
+     * `lista-negra.ts` lo dice desde su cabecera, y estaba aplicado solo a la web
+     * y a la API pública. `customer` se expande dentro de `order`, `booking` y
+     * `lead`: un tour center que leía sus propias órdenes recibía la ficha con el
+     * motivo y con el id del empleado que firmó el veto.
+     */
+    const proy = read("src/lib/field-projection.ts");
+    const oculto = /export const OCULTO_AL_SOCIO: Record<string, string\[\]> = \{([\s\S]*?)\n\};/
+      .exec(proy)![1];
+    const deCliente = /customer: \[([^\]]*)\]/.exec(oculto)?.[1] ?? "";
+    for (const campo of ['"blocked_reason"', '"blocked_by"']) {
+      expect(deCliente, `${campo} vuelve a viajar al socio`).toContain(campo);
+    }
+    // Y `partner.notes` sigue donde estaba: esto se añadió, no se sustituyó.
+    expect(oculto, "se perdió el recorte de las notas del socio").toMatch(/partner: \["notes", "metadata"\]/);
   });
 });

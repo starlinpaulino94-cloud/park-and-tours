@@ -216,6 +216,25 @@ export const ACTIVE_STATUS: Record<string, LabelDef> = {
   inactive: def("Inactivo", "neutral"),
 };
 
+/**
+ * EL ESTADO DE UN CLIENTE, CON SU PALABRA.
+ *
+ * `blacklist` no estaba en ningún diccionario. El respaldo de `labelOf` la
+ * pintaba como la palabra cruda «blacklist» en gris neutro — el estado más
+ * consecuente que puede tener una ficha, en inglés y del color de «inactivo»,
+ * justo en la insignia que mira el cajero con la persona delante.
+ *
+ * `GENERIC_STATUS` tiene `blocked`, que es otra cosa y de otro módulo; añadir
+ * aquí un estado propio del cliente evita ensuciar el diccionario compartido.
+ * Una guarda comprueba que los tres estados de `ESTADOS_DE_CLIENTE` tengan
+ * etiqueta, para que el próximo que se añada no vuelva a salir crudo.
+ */
+export const CUSTOMER_STATUS: Record<string, LabelDef> = {
+  active: def("Activo", "success"),
+  inactive: def("Inactivo", "neutral"),
+  blacklist: def("Lista negra", "danger"),
+};
+
 export const GENERIC_STATUS: Record<string, LabelDef> = {
   active: def("Activo", "success"),
   inactive: def("Inactivo", "neutral"),

@@ -56,6 +56,14 @@ describe("qué se recorta", () => {
     const NO_DECLARADOS: Record<string, string> = {
       "partner.metadata":
         "columna cruda de organizations que la ficha arrastra al reconstruirse; es donde vive `notes`",
+      /**
+       * 0092. Las escribe SOLO `PUT /api/customers/:id/lista-negra`, con el motivo
+       * obligatorio y la auditoría: no están en `writable` a propósito, y el CRUD
+       * genérico además rechaza el cambio de estado por `puertaEquivocada`. Que no
+       * se puedan teclear es justamente lo que las hace fiables.
+       */
+      "customer.blocked_reason": "la escribe solo la ruta de lista negra (0092); nunca por formulario",
+      "customer.blocked_by": "idem: el usuario que firmó el veto, no un campo del formulario",
     };
     const declarados = (table: string, campos: string[]) => {
       const resource = Object.values(RESOURCES).find((r) => r.table === table);
