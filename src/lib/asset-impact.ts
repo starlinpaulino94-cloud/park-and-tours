@@ -122,19 +122,17 @@ export async function changeAssetStatus(
       closed,
     });
 
-    if (opts.dryRun) continue;
-
-    await tenantUpdate(companyId, "departure", dep._id, {
-      capacity: capacityAfter,
-      available_pax: Math.max(0, capacityAfter - bookedPax),
-      // Closing the departure is what actually stops the next sale.
-      status: closed ? "closed" : capacityAfter > bookedPax ? "available" : dep.status,
-      notes: [dep.notes, goingDown
-        ? `Cupo reducido por ${asset.name} fuera de servicio${opts.reason ? `: ${opts.reason}` : ""}.`
-        : `Cupo restituido: ${asset.name} volvió a servicio.`].filter(Boolean).join(" "),
-    });
-
-    // Bookings sold above the new capacity need a human decision.
+    /**
+     * QUIÉN SE QUEDA FUERA SE CALCULA TAMBIÉN EN LA PREVISUALIZACIÓN.
+     *
+     * Esto estaba DEBAJO del `continue` del dry run, así que la previsualización
+     * decía «tres plazas vendidas de más» y no podía decir de quién. Y la
+     * previsualización es justo donde alguien decide a quién se reubica: es el
+     * dato que el operador necesita ANTES de confirmar, no después.
+     *
+     * Son lecturas; no escriben nada, así que caben en un dry run sin
+     * convertirlo en otra cosa.
+     */
     if (oversold > 0) {
       const bookings = await tenantQuery<any>(companyId, "booking", {
         customer: true,
@@ -157,6 +155,18 @@ export async function changeAssetStatus(
         remaining -= Number(b.pax_total ?? 0);
       }
     }
+
+    if (opts.dryRun) continue;
+
+    await tenantUpdate(companyId, "departure", dep._id, {
+      capacity: capacityAfter,
+      available_pax: Math.max(0, capacityAfter - bookedPax),
+      // Closing the departure is what actually stops the next sale.
+      status: closed ? "closed" : capacityAfter > bookedPax ? "available" : dep.status,
+      notes: [dep.notes, goingDown
+        ? `Cupo reducido por ${asset.name} fuera de servicio${opts.reason ? `: ${opts.reason}` : ""}.`
+        : `Cupo restituido: ${asset.name} volvió a servicio.`].filter(Boolean).join(" "),
+    });
   }
 
   if (opts.dryRun) return impact;

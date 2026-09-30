@@ -30,16 +30,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       dryRun: body.dryRun === true,
     });
 
+    /**
+     * UNA PREVISUALIZACIÓN NO SE AUDITA.
+     *
+     * `writeAudit` estaba FUERA de este `if`, así que cada vez que alguien
+     * miraba el impacto sin confirmar quedaba escrito «cambió el estado de un
+     * activo a X», con severidad de aviso. El registro de auditoría se llenaba
+     * de cambios que no ocurrieron.
+     *
+     * Es el mismo defecto que esta auditoría lleva persiguiendo todo el día,
+     * del revés: en vez de hacer algo sin dejar rastro, dejaba rastro sin hacer
+     * nada. Las dos formas arruinan el registro por el mismo motivo — deja de
+     * poder usarse para saber qué pasó.
+     */
     if (!body.dryRun) {
       console.log(`[api] ${ctx.email} cambió el activo ${id} a ${body.status}`);
+      await writeAudit({
+        companyId: ctx.companyId, userId: ctx.userId,
+        action: "asset_status_changed", entityType: "asset", entityId: id,
+        description: `${ctx.email} cambió el estado de un activo a ${body.status}`,
+        severity: "warning",
+        metadata: { estado: body.status, motivo: body.reason || null },
+      });
     }
-    await writeAudit({
-      companyId: ctx.companyId, userId: ctx.userId,
-      action: "asset_status_changed", entityType: "asset", entityId: id,
-      description: `${ctx.email} cambió el estado de un activo a ${body.status}`,
-      severity: "warning",
-      metadata: { estado: body.status },
-    });
     return ok(impact);
   } catch (err) {
     return fail(err);

@@ -38,17 +38,18 @@ porque lo tienen fuera:
 
 ## Los quince, por lo que cuesta tenerlos cerrados
 
-### 1. El activo que se cae y no arrastra nada — `/api/assets/[id]/status`
+### ~~1. El activo que se cae y no arrastra nada~~ — **CERRADO el 30-sep**
 
-**El más caro, y es el mismo caso que la bitácora con más consecuencias.**
-`asset-impact.ts` es un motor completo: baja el activo, arrastra a
-`maintenance` la atracción que depende de él, escribe su entrada de bitácora y
-**crea una tarea por cada salida afectada para que nadie se olvide de llamar a
-los clientes**.
+Era el más caro. `asset-impact.ts` baja el activo, recalcula el cupo de las
+salidas futuras, cierra las que ya no se pueden servir, arrastra a
+`maintenance` la atracción que depende de él y **crea una tarea por cada salida
+afectada para que alguien llame a los clientes**. Nada de eso ocurría.
 
-Cerrado, todo eso no ocurre nunca. La avería se apunta a mano en algún sitio, la
-atracción sigue figurando abierta y **los clientes de las salidas afectadas no
-reciben aviso** porque la tarea no existe.
+Ya tiene puerta, con **previsualización del impacto antes de confirmar**: qué
+salidas se cierran y **qué reservas quedan fuera, con su número y su cliente**.
+Ver la entrada «El activo que se caía y no arrastraba nada» en `FIX_LOG.md`.
+
+Quedan **catorce**.
 
 ### 2. El saldo regalo que se emite y no se puede usar — `redeem`, `refund`, `void`
 

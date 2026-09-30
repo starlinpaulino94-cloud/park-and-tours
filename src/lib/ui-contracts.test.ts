@@ -13197,7 +13197,8 @@ describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", (
    * darle puerta pone la prueba en rojo, y dársela obliga a quitarla.
    */
   const SIN_PUERTA_CONOCIDAS = [
-    "/api/assets/[id]/status",
+    // `/api/assets/[id]/status` salió de aquí: tiene puerta desde el 30-sep, con
+    // previsualización del impacto antes de confirmar.
     "/api/customers/[id]/lista-negra",
     "/api/gift-cards/[id]/redeem",
     "/api/gift-cards/[id]/refund",
@@ -13270,5 +13271,78 @@ describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", (
       .map((m) => m[1])
       .filter((r) => !SIN_PUERTA_CONOCIDAS.includes(r) && !LLAMADOR_EXTERNO.some((p) => r.startsWith(p)));
     expect(sobran, `el documento nombra rutas que ya no están sin puerta: ${sobran.join(", ")}`).toEqual([]);
+  });
+});
+
+/**
+ * EL ACTIVO QUE SE CAE ARRASTRA LO QUE SOSTENÍA.
+ *
+ * Segundo motor sin puerta que se cierra, y el más caro de los dieciséis:
+ * `asset-impact.ts` recalcula el cupo de las salidas futuras, CIERRA las que ya
+ * no se pueden servir, arrastra la atracción que depende del activo y **crea
+ * una tarea urgente para llamar a los clientes que se quedan fuera**. Su ruta
+ * no la llamaba nadie, y la pantalla ofrecía `operational_status` como un campo
+ * más: el activo se marcaba fuera de servicio, la insignia cambiaba, y el cupo
+ * seguía a la venta con los clientes sin aviso.
+ */
+describe("bajar un activo no es editar un campo", () => {
+  const PANTALLA = "src/app/dashboard/mantenimiento/activos/page.tsx";
+  const RUTA = "src/app/api/assets/[id]/status/route.ts";
+  const sinComentarios = (f: string) =>
+    f.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/[^\n]*/gm, "");
+
+  it("la pantalla llama a la ruta, y enseña el impacto antes de confirmar", () => {
+    const page = sinComentarios(read(PANTALLA));
+    expect(page, "la pantalla volvió a quedarse sin puerta").toMatch(/\/api\/assets\/\$\{[^}]+\}\/status/);
+    /**
+     * Las DOS llamadas: la previsualización y la confirmación. Con una sola, o
+     * se confirma a ciegas o se enseña y no se aplica.
+     */
+    expect(page, "se perdió la previsualización: se confirmaría a ciegas").toContain("dryRun: true");
+    expect((page.match(/\/api\/assets\/\$\{[^}]+\}\/status/g) || []).length,
+      "no están las dos llamadas: previsualizar y confirmar").toBe(2);
+    // Y enseña lo único que de verdad decide: a quién deja fuera.
+    expect(page, "la previsualización no enseña las reservas en riesgo").toContain("bookingsAtRisk");
+  });
+
+  it("una previsualización no deja rastro de un cambio que no ocurrió", () => {
+    const ruta = sinComentarios(read(RUTA));
+    /**
+     * `writeAudit` estaba FUERA del `if (!body.dryRun)`: mirar el impacto sin
+     * confirmar escribía «cambió el estado de un activo», con severidad de
+     * aviso. El registro se llenaba de cambios que nunca pasaron.
+     */
+    const guardado = /if \(!body\.dryRun\) \{([\s\S]*?)\n    \}/.exec(ruta)?.[1] ?? "";
+    expect(guardado, "no se reconoció el bloque de la confirmación").toContain("writeAudit");
+    // Y fuera de ese bloque no puede quedar ninguna otra llamada.
+    expect((ruta.match(/writeAudit\(\{/g) || []).length,
+      "hay una auditoría fuera del bloque de confirmación").toBe(1);
+  });
+
+  it("ninguna segunda puerta baja un activo sin arrastrar nada", () => {
+    const resources = read("src/lib/resources.ts");
+    const asset = /^ {2}asset: \{([\s\S]*?)^ {2}\},/m.exec(resources)![1];
+    const writable = /writable:\s*\[([\s\S]*?)\]/.exec(asset)![1];
+    for (const campo of ['"operational_status"', '"downtime_minutes_month"']) {
+      expect(writable, `asset.writable no debe incluir ${campo}: lo deriva la ruta de estado`)
+        .not.toContain(campo);
+    }
+    expect(writable, "asset.writable se quedó vacía").toContain('"name"');
+
+    const campos = /fields=\{\[([\s\S]*?)\]\}/.exec(sinComentarios(read(PANTALLA)))?.[1] ?? "";
+    expect(campos.length, "no se reconocieron los campos del formulario").toBeGreaterThan(100);
+    expect(campos, "el formulario vuelve a ofrecer el estado operativo")
+      .not.toMatch(/name:\s*"operational_status"/);
+  });
+
+  it("el motor que esto enchufa ya no corre sin pruebas", () => {
+    // 220 líneas que cierran salidas y crean tareas urgentes, sin una sola
+    // prueba: no se notaba porque la ruta no se llamaba nunca.
+    const pruebas = read("src/lib/asset-impact.test.ts");
+    expect((pruebas.match(/\bit\(/g) || []).length, "el motor se quedó sin cobertura")
+      .toBeGreaterThanOrEqual(8);
+    for (const afirmacion of ["dryRun: true", "bookingsAtRisk", '"task"', '"attraction_log"']) {
+      expect(pruebas, `las pruebas dejaron de cubrir ${afirmacion}`).toContain(afirmacion);
+    }
   });
 });

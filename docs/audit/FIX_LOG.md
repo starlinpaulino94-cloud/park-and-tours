@@ -7117,3 +7117,79 @@ inventario, familia declarada externa de más, y el barrido cegado.
 
 **Esto no arregla los quince**: los inventaría, los ordena por lo que cuesta y
 pone una guarda para que no aparezca un decimosexto sin que nadie se entere.
+
+---
+
+## El activo que se caía y no arrastraba nada
+
+`src/app/dashboard/mantenimiento/activos/page.tsx`, `src/lib/asset-impact.ts`,
+`src/app/api/assets/[id]/status/route.ts`, `src/lib/resources.ts`,
+`src/lib/asset-impact.test.ts` (nuevo).
+
+Primero de los dieciséis motores sin puerta, y el más caro.
+
+### Lo que no ocurría
+
+`asset-impact.ts` es un motor completo. Al bajar un activo que bloquea cupo:
+
+1. recalcula la capacidad de cada salida futura que lo usa,
+2. **cierra** las que ya no se pueden servir —cerrarlas es lo único que para la
+   siguiente venta—,
+3. arrastra a `maintenance` la atracción que depende de él, con su entrada de
+   bitácora,
+4. y **crea una tarea urgente por cada salida afectada para que alguien llame a
+   los clientes que se quedan fuera**.
+
+Su ruta no la llamaba nadie. Y la pantalla de Activos ofrecía
+`operational_status` como un campo más del formulario, así que el activo **sí**
+se marcaba fuera de servicio: la insignia cambiaba y no pasaba nada de lo
+anterior. **El cupo seguía a la venta y los clientes sin aviso, porque la tarea
+no llegaba a existir.**
+
+### Primero se enseña la consecuencia
+
+La ruta ya aceptaba `dryRun` —estaba pensada para esto y nadie la usaba—. Ahora
+la pantalla lo aprovecha: al elegir el estado se pide el impacto **sin escribir
+nada** y se enseña qué salidas se cierran y qué reservas quedan sobre el cupo.
+Solo entonces se puede confirmar.
+
+No es adorno: bajar una guagua un sábado puede cerrar seis salidas y dejar a
+cuarenta personas fuera. Quien pulsa tiene derecho a verlo antes.
+
+### Dos defectos del motor, encontrados al darle puerta
+
+1. **La previsualización no podía decir A QUIÉN.** El cálculo de las reservas en
+   riesgo vivía **debajo** del `continue` del dry run, así que el preview sabía
+   decir «quince plazas de más» y no de quién. Y la previsualización es justo
+   donde alguien decide si pulsa. Son lecturas: caben en un dry run sin
+   convertirlo en otra cosa.
+2. **Una previsualización se auditaba.** `writeAudit` estaba **fuera** del
+   `if (!body.dryRun)`: mirar el impacto sin confirmar escribía «cambió el
+   estado de un activo», con severidad de aviso. El registro se llenaba de
+   cambios que nunca ocurrieron.
+
+   Es el defecto que esta auditoría lleva persiguiendo todo el día, **del
+   revés**: en vez de hacer algo sin dejar rastro, dejaba rastro sin hacer nada.
+   Las dos formas arruinan el registro por el mismo motivo.
+
+### Y el motor corría sin una sola prueba
+
+220 líneas que cierran salidas y abren tareas urgentes, sin cobertura. No se
+notaba **porque la ruta no se llamaba nunca**: un motor que no se ejecuta no
+parece estar sin probar. Nueve casos nuevos cubren las dos mitades que duelen —
+que deje de venderse lo que ya no existe, y que nadie se quede sin aviso— más
+las tres del dry run.
+
+### La guarda anterior hizo su trabajo
+
+Al darle puerta a esta ruta, la guarda de motores sin puerta **se puso en rojo
+sola**: exigía sacarla del inventario. Quedan **catorce**.
+
+**Mutación: 9 de 9.** Tres parecieron sobrevivir y no era cierto: el filtro
+`-t "activo"` no casaba con los `describe` que las matan, así que corrían solo
+las pruebas que no las cubrían. Repetidas sin filtro, murieron las tres. **Un
+filtro que excluye la prueba que mata se lee exactamente igual que una guarda
+floja** — es la tercera vez hoy que una mutación miente y la tercera vez que
+verificarla lo desmonta.
+
+`tsc`, `eslint`, **4221/4221** y `build` en verde. Sin migración.

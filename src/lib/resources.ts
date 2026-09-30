@@ -918,7 +918,21 @@ export const RESOURCES: Record<string, ResourceDef> = {
     search: ["name", "code", "serial_number", "location"],
     expand: { zone: true, attraction: true, supplier: true },
     sort: { name: "asc" },
-    writable: ["name", "code", "asset_type", "operational_status", "blocks_capacity", "criticality", "serial_number", "location", "capacity", "purchase_date", "purchase_cost", "currency", "warranty_until", "meter_hours", "meter_km", "next_maintenance_at", "downtime_minutes_month", "status", "notes", "zone", "vehicle", "supplier", "branch", "attraction"],
+    /**
+     * BAJAR UN ACTIVO NO ES EDITAR UN CAMPO.
+     *
+     * `operational_status` lo cambia `POST /api/assets/:id/status`, que además
+     * recalcula el cupo de las salidas futuras, cierra las que ya no se pueden
+     * servir, arrastra la atracción que depende del activo y crea la tarea para
+     * avisar a los clientes que se quedan fuera. Y `downtime_minutes_month` lo
+     * acumula esa misma ruta.
+     *
+     * Estaban aquí, así que el CRUD genérico los escribía: la insignia cambiaba
+     * y no pasaba nada de lo anterior — el cupo seguía a la venta y los clientes
+     * sin aviso. Mismo motivo que `attraction.operational_status` y que
+     * `departure.status` desde AUD-B02.
+     */
+    writable: ["name", "code", "asset_type", "blocks_capacity", "criticality", "serial_number", "location", "capacity", "purchase_date", "purchase_cost", "currency", "warranty_until", "meter_hours", "meter_km", "next_maintenance_at", "status", "notes", "zone", "vehicle", "supplier", "branch", "attraction"],
     booleans: ["blocks_capacity"],
     numeric: ["capacity", "purchase_cost", "meter_hours", "meter_km", "downtime_minutes_month"],
     dates: ["purchase_date", "warranty_until", "next_maintenance_at"],
