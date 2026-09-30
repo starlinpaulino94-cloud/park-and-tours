@@ -7760,3 +7760,104 @@ La guarda de motores sin puerta se puso en rojo sola. Quedan **cuatro**.
 
 `tsc`, `eslint`, **4308/4308** y `build` en verde. Sin migración — los buckets y sus
 políticas los crea 0016, que ya está en el repositorio.
+
+---
+
+## El camino sin cuenta que no se podía empezar
+
+`src/components/tf/enlace-de-respuesta.tsx` (nuevo),
+`src/app/dashboard/operaciones/recursos/page.tsx`, `.../rutas/page.tsx`,
+`src/lib/resources.ts`, `src/lib/labels-modules.ts`,
+`src/lib/ui-contracts.test.ts`, `docs/audit/MOTORES_SIN_PUERTA.md`.
+
+Séptimo motor sin puerta cerrado. `POST /api/proveedor/enlace` era la **única**
+forma de crear la credencial con la que un proveedor **sin cuenta** acepta o
+rechaza un servicio, y no la llamaba nadie.
+
+Lo que hay al otro lado estaba entero y enchufado: la página pública
+`/servicio/[token]` abre el enlace sin contraseña y su ruta acepta o rechaza con
+él. O sea que el camino sin cuenta —el que importa, porque el transportista
+pequeño no entra a un portal con contraseña— estaba construido **de punta a punta
+y sin manera de empezarlo**. Ese proveedor no podía contestar de ninguna forma, y
+la operadora se enteraba de que no había respuesta cuando llegaba el autobús.
+
+### Y faltaba algo que no estaba en el inventario
+
+Las pantallas de la casa **no enseñaban ni de quién era el servicio ni si lo había
+aceptado**. La fila lo sabe: el disparador de 0085 deriva `supplier_id` del
+vehículo o de la persona, y 0087 añadió el plazo, la respuesta y por dónde
+contestó. Nada de eso se veía.
+
+Mandar el enlace sin poder ver quién no ha contestado es trabajar a ciegas; ver
+quién no ha contestado sin poder mandarle nada es peor. Las dos cosas juntas valen
+más que separadas, así que la ola trae las dos: el proveedor y la conformidad en
+columna, el plazo debajo cuando sigue pendiente, un filtro por conformidad —que es
+la pregunta que se hace despacho por la mañana—, y el botón del enlace solo donde
+la ruta lo va a aceptar.
+
+**Una aceptación TÁCITA se distingue de una real.** `responded_via: "tacito"`
+quiere decir que no contestó nadie y lo dio por bueno una política; el día que se
+discuta si el proveedor aceptó de verdad, esa diferencia es todo lo que hay. Sale
+con su propia insignia.
+
+### El filtro que no filtraba, y los dos que encontró
+
+`acceptance` no está en `writable` —lo deriva el motor de respuesta— y la lista de
+filtros se arma con `search ∪ writable ∪ numeric ∪ dates ∪ expand`. Así que el
+filtro de conformidad **se habría ignorado en silencio y habría devuelto todo**:
+`buildListFilter` descarta un campo desconocido sin decir nada, a propósito, para
+que la interfaz no se rompa.
+
+La salida fácil era meter `acceptance` en `writable`. Eso habría abierto la segunda
+puerta que esta auditoría lleva siete olas cerrando: marcar «aceptado» desde el
+formulario genérico haría que la conformidad **no probara nada**, que es justo lo
+que `/api/proveedor/respuesta` existe para evitar. Va en `GLOBAL_FILTERABLE`, con
+`operational_status` y `movement_type`: estado derivado, se filtra, no se teclea.
+
+**Y al buscar ese mismo fallo en todas las pantallas aparecieron dos más:**
+
+| pantalla | filtro | por qué no filtraba |
+| --- | --- | --- |
+| `finanzas/diario` | `source_type` | `ledger_entry.writable: []` — es un libro inmutable |
+| `parque/bitacora` | `event_type` | `attraction_log.writable: []` — igual |
+
+Elegir «Venta» en el libro diario devolvía todas las líneas. **Y ese lo dejé yo el
+mismo día**, al darle puerta a la contabilidad: mantuve el filtro que ya estaba sin
+comprobar que filtrara. Los dos son de la misma familia y van al mismo sitio.
+
+Lo fija una guarda nueva y general: **cada filtro que ofrece una pantalla tiene que
+ser filtrable de verdad**. Recorre todas las pantallas, resuelve su recurso y
+rehace las mismas cuentas que `allowedFilterFields`. Es la guarda más útil de la
+ola, porque no vigila un caso: vigila una clase entera que no se ve.
+
+### El diálogo tiene que decir tres cosas
+
+1. **La dirección se ve una vez.** En la base solo queda su huella; no hay pantalla
+   que la vuelva a mostrar. Mismo patrón que la llave de API.
+2. **Emitir revoca el anterior.** Un servicio tiene UN enlace vivo: con dos, «de un
+   solo uso» dejaría de ser verdad por la vía de tener dos usos.
+3. **Cuándo caduca**, que no es el plazo a secas — el motor lo recorta a la hora del
+   servicio, porque un enlace que sobrevive al viaje es un enlace con el que alguien
+   acepta el martes lo que pasó el lunes.
+
+### La sexta vez de la misma lección, y esta después de escribirla
+
+**Mutación: 22 de 22**, con una superviviente. La guarda del plazo era
+`toMatch(/acceptance_deadline/)`, y quitar el plazo de la fila la dejaba en verde:
+el nombre seguía en la declaración de la interfaz y en la condición que decide si
+pintarlo.
+
+Es **la misma rotura** que la del motivo de la lista negra, dos olas atrás — y la
+escribí **después** de dejar apuntada la lección «medir cerca del nombre en vez de
+cerca del efecto». Apuntarla no basta. Lo que funciona es atar la guarda al valor
+que sale: `formatDateTime(r.acceptance_deadline)`. Si no aparece formateado, no se
+ve.
+
+Y otra guarda mía falló contra código correcto por un regex ingenuo:
+`/expand:\s*\{([^}]*)\}/` se paraba en el `}` del objeto anidado
+`departure: { product: true }`, así que buscaba el proveedor donde no podía estar.
+
+`tsc`, `eslint`, **4315/4315** y `build` en verde. Sin migración: 0085 y 0087 ya
+están en el repositorio.
+
+La guarda de motores sin puerta se puso en rojo sola. Quedan **tres**.

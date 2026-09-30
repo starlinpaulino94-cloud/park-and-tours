@@ -736,7 +736,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
   pickup_route: {
     table: "pickup_route",
     search: ["name"],
-    expand: { departure: { product: true }, zone: true, vehicle: true, driver: true, guide: true },
+    expand: { departure: { product: true }, zone: true, vehicle: true, driver: true, guide: true, supplier: true },
     expandOne: { departure: { product: true }, zone: true, vehicle: true, driver: true, guide: true, pickup: { _limit: 200, hotel: true, booking: { customer: true } } },
     sort: { start_time: "asc" },
     writable: ["departure", "zone", "vehicle", "driver", "guide", "name", "start_time", "pax_total", "stops_count", "status", "notes"],
@@ -762,7 +762,14 @@ export const RESOURCES: Record<string, ResourceDef> = {
   departure_resource: {
     table: "departure_resource",
     search: ["notes"],
-    expand: { departure: { product: true }, vehicle: true, staff: true },
+    /**
+     * `supplier` se expande desde el 30-sep. El disparador de 0085 lo DERIVA del
+     * vehículo o de la persona, así que la fila siempre supo de quién era el
+     * servicio — y la pantalla de asignación no lo enseñaba, ni enseñaba si ese
+     * proveedor había aceptado. Mandarle el enlace de conformidad sin poder ver
+     * quién no ha contestado no sirve de nada.
+     */
+    expand: { departure: { product: true }, vehicle: true, staff: true, supplier: true },
     sort: { createdAt: "desc" },
     writable: ["departure", "vehicle", "staff", "resource_role", "pax_assigned", "start_time", "end_time", "cost", "currency", "status", "notes"],
     numeric: ["pax_assigned", "cost"],
@@ -1895,6 +1902,34 @@ const GLOBAL_FILTERABLE = new Set([
   "_id", "status", "severity", "payment_type", "beneficiary_type", "method",
   "channel", "aging_bucket", "read_status", "operational_status", "checkin_status",
   "result", "priority", "category", "case_type", "movement_type",
+  /**
+   * `acceptance` — la conformidad del proveedor, derivada por
+   * `/api/proveedor/respuesta` y por el barrido de vencimientos.
+   *
+   * Va aquí y NO en `writable`, que es la diferencia importante: la lista de
+   * filtros se arma con `search ∪ writable ∪ numeric ∪ dates ∪ expand`, así que
+   * la forma fácil de poder filtrar por un campo es hacerlo escribible — y eso
+   * abriría la segunda puerta que toda esta auditoría lleva cerrando: marcar
+   * «aceptado» desde el formulario genérico haría que la conformidad no probara
+   * nada. Es la misma familia que `operational_status` y `movement_type`: estado
+   * derivado, se filtra, no se teclea.
+   */
+  "acceptance",
+  /**
+   * Y los dos que aparecieron al buscar este mismo fallo en todas las pantallas.
+   *
+   * `ledger_entry.source_type` y `attraction_log.event_type`: las dos tablas
+   * tienen `writable: []` porque son libros inmutables, así que sus pantallas
+   * ofrecían un desplegable de filtro que **no filtraba nada** —elegir «Venta» en
+   * el libro diario devolvía todas las líneas igual—. Uno lo dejé yo al darle
+   * puerta a la contabilidad el mismo día.
+   *
+   * El fallo no se ve: `buildListFilter` ignora un campo desconocido en silencio
+   * a propósito, para que la interfaz no se rompa. El precio de esa decisión es
+   * justo este, y por eso existe la guarda «ningún filtro de pantalla se ignora
+   * en silencio».
+   */
+  "source_type", "event_type",
 ]);
 
 /**

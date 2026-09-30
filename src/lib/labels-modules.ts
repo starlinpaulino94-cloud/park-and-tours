@@ -228,6 +228,25 @@ export const SUBLEDGER = dict(
   ["gift_card_liability", "Pasivo gift cards", "warning"], ["membership_liability", "Pasivo membresías", "warning"]
 );
 export const NORMAL_SIDE = dict(["debit", "Débito", "info"], ["credit", "Crédito", "warning"]);
+/**
+ * EL ESTADO DE CONFORMIDAD, VISTO DESDE LA OPERADORA.
+ *
+ * `ETIQUETA_DE_ACEPTACION` (en `aceptacion-proveedor.ts`) existe y NO sirve aquí:
+ * está escrita para el proveedor —«Pendiente de **tu** respuesta»— y en la pantalla
+ * de la casa esa segunda persona apunta a quien no es. Son dos audiencias, como el
+ * mensaje interno y el público de la lista negra.
+ *
+ * El tono importa: `expired` no es neutro. Quiere decir que el servicio sigue
+ * asignado, nadie contestó y el autobús sale igual.
+ *
+ * Una guarda comprueba que los cinco estados de `EstadoDeAceptacion` tengan
+ * etiqueta aquí, para que el próximo que se añada no salga crudo.
+ */
+export const ACCEPTANCE_STATUS = dict(
+  ["not_required", "No requiere"], ["pending", "Sin contestar", "warning"],
+  ["accepted", "Aceptado", "success"], ["rejected", "Rechazado", "danger"],
+  ["expired", "Sin respuesta a tiempo", "danger"]
+);
 export const LEDGER_SOURCE = dict(
   ["sale", "Venta", "success"], ["payment", "Pago", "info"], ["refund", "Reembolso", "danger"],
   ["commission", "Comisión", "violet"], ["settlement", "Liquidación", "info"], ["expense", "Gasto", "warning"],

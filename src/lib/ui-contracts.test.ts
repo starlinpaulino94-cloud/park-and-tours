@@ -13235,7 +13235,10 @@ describe("motores sin puerta: ninguna ruta nueva se queda sin quien la llame", (
     // en el libro diario, el sembrado en el plan de cuentas y el balance de
     // comprobación en pantalla —con `entries` y `truncated`, que la ruta tiraba—.
     "/api/maintenance/reconcile-drafts",
-    "/api/proveedor/enlace",
+    // `/api/proveedor/enlace` salió el 30-sep. Era la ÚNICA forma de crear la
+    // credencial con la que un proveedor sin cuenta contesta, y todo el resto del
+    // camino —página pública incluida— estaba enchufado. Ver «el camino sin cuenta
+    // que no se podía empezar».
     "/api/setup/demo",
     // `/api/storage/upload` salió el 30-sep: los seis campos de imagen del
     // sistema dejaron de pedir una URL a mano. Ver «la caja de texto donde iba
@@ -14112,5 +14115,216 @@ describe("los campos de imagen se suben, no se teclean", () => {
     expect(f, "FieldType no declara el tipo imagen").toMatch(/export type FieldType =[^;]*"image"/);
     expect(f, "el render no tiene rama para el campo de imagen")
       .toMatch(/f\.type === "image" \? \(/);
+  });
+});
+
+/**
+ * EL CAMINO SIN CUENTA QUE NO SE PODÍA EMPEZAR.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * `POST /api/proveedor/enlace` es la ÚNICA forma de crear la credencial con la que
+ * un proveedor SIN CUENTA acepta o rechaza un servicio, y no la llamaba nadie. Lo
+ * que hay al otro lado sí estaba entero: la página pública `/servicio/[token]` y su
+ * ruta. El camino existía de punta a punta y **sin manera de empezarlo** — que es
+ * el que importa, porque el transportista pequeño no entra a un portal con
+ * contraseña.
+ *
+ * Y las pantallas de la casa no enseñaban **ni el proveedor ni si había aceptado**,
+ * aunque la fila lo sabe desde 0085 y 0087. Mandar el enlace sin ver quién no ha
+ * contestado es trabajar a ciegas.
+ */
+describe("la conformidad del proveedor se pide y se ve", () => {
+  const DIALOGO = "src/components/tf/enlace-de-respuesta.tsx";
+  const RECURSOS = "src/app/dashboard/operaciones/recursos/page.tsx";
+  const RUTAS = "src/app/dashboard/operaciones/rutas/page.tsx";
+  const limpio = (rel: string) => sinComentariosDe(rel);
+
+  it("el enlace se emite por su ruta, con el tipo y el servicio", () => {
+    const d = limpio(DIALOGO);
+    expect(d, "el enlace no llega a su ruta").toContain('"/api/proveedor/enlace"');
+    expect(d, "no se manda el tipo ni el servicio").toMatch(/\{ tipo, id: servicioId \}/);
+  });
+
+  it("la dirección se enseña una vez y se dice que no vuelve", () => {
+    /**
+     * En la base solo queda la HUELLA del token: no hay pantalla que lo vuelva a
+     * mostrar. Si el diálogo no lo dice, quien lo cierre sin copiar cree que puede
+     * volver a buscarlo.
+     */
+    const d = limpio(DIALOGO);
+    expect(d, "no se avisa de que el enlace no se vuelve a mostrar")
+      .toMatch(/no se vuelve a mostrar/);
+    expect(d, "no se puede copiar el enlace").toMatch(/clipboard\.writeText\(enlace\.url\)/);
+    // Y que emitir revoca el anterior, que es lo que hace cierto «de un solo uso».
+    expect(d, "no se avisa de que emitir invalida el anterior").toMatch(/deja[\s\S]{0,40}de valer/);
+    // Y cuándo caduca: un enlace sin fecha no se sabe si sirve.
+    expect(d, "no se dice cuándo caduca").toMatch(/enlace\.expiresAt/);
+  });
+
+  it("las dos pantallas enseñan de quién es el servicio y si aceptó", () => {
+    for (const pantalla of [RECURSOS, RUTAS]) {
+      const p = limpio(pantalla);
+      expect(p, `${pantalla}: no enseña el proveedor`).toMatch(/header: "Proveedor"/);
+      expect(p, `${pantalla}: no enseña la conformidad`).toMatch(/dict=\{ACCEPTANCE_STATUS\}/);
+      /**
+       * El plazo FORMATEADO, que es lo que decide si se llama por teléfono ahora o
+       * después.
+       *
+       * La primera versión era `toMatch(/acceptance_deadline/)` y la mutación que
+       * quita el plazo de la fila SOBREVIVIÓ: el nombre seguía en la declaración de
+       * la interfaz y en la condición que decide si pintarlo. Es la MISMA rotura que
+       * la del motivo de la lista negra, dos olas atrás, y la escribí después de
+       * dejar apuntada la lección: medir cerca del nombre en vez de cerca del
+       * efecto. Apuntarla no basta; hay que atar la guarda al valor que sale.
+       */
+      expect(p, `${pantalla}: no enseña el plazo`)
+        .toMatch(/formatDateTime\(r\.acceptance_deadline\)/);
+      /**
+       * Y que una aceptación TÁCITA se distinga. Quiere decir que no contestó
+       * nadie y lo dio por bueno una política; el día que se discuta si el
+       * proveedor aceptó de verdad, esa diferencia es todo lo que hay.
+       */
+      expect(p, `${pantalla}: una aceptación tácita se ve igual que una real`)
+        .toMatch(/responded_via === "tacito"/);
+      // El botón, solo donde la ruta lo va a aceptar.
+      expect(p, `${pantalla}: el enlace no se ofrece según el estado`)
+        .toMatch(/acceptance === "pending" \|\| r\.acceptance === "expired"/);
+      expect(p, `${pantalla}: el enlace se ofrece sin proveedor`)
+        .toMatch(/typeof r\.supplier === "object" && r\.supplier &&/);
+    }
+  });
+
+  it("el proveedor viaja en la fila de las dos tablas", () => {
+    // Sin la expansión, la columna sale vacía por mucho que la pantalla la pinte.
+    const resources = read("src/lib/resources.ts");
+    for (const tabla of ["departure_resource", "pickup_route"]) {
+      const bloque = new RegExp(`^ {2}${tabla}: \\{([\\s\\S]*?)^ {2}\\},`, "m").exec(resources)![1];
+      /**
+       * Atado a la LÍNEA del `expand`. El primer intento fue
+       * `/expand:\s*\{([^}]*)\}/` y se paraba en el `}` del objeto anidado
+       * —`departure: { product: true }`—, así que buscaba el proveedor en un trozo
+       * donde no podía estar y fallaba contra código correcto.
+       */
+      const expand = /expand:[^\n]*/.exec(bloque)![0];
+      expect(expand, `${tabla} dejó de expandir el proveedor`).toContain("supplier: true");
+    }
+  });
+
+  it("la conformidad se filtra pero NO se escribe", () => {
+    /**
+     * La diferencia importa. La lista de filtros se arma con
+     * `search ∪ writable ∪ numeric ∪ dates ∪ expand`, así que la forma fácil de
+     * poder filtrar por `acceptance` sería hacerlo escribible — y eso abriría la
+     * segunda puerta: marcar «aceptado» desde el formulario genérico haría que la
+     * conformidad no probara nada, que es justo lo que `/api/proveedor/respuesta`
+     * existe para evitar.
+     */
+    const resources = read("src/lib/resources.ts");
+    const global = /const GLOBAL_FILTERABLE = new Set\(\[([\s\S]*?)\]\);/.exec(resources)![1];
+    expect(global, "acceptance dejó de poder filtrarse").toContain('"acceptance"');
+    for (const tabla of ["departure_resource", "pickup_route"]) {
+      const bloque = new RegExp(`^ {2}${tabla}: \\{([\\s\\S]*?)^ {2}\\},`, "m").exec(resources)![1];
+      const writable = /writable:\s*\[([\s\S]*?)\]/.exec(bloque)![1];
+      expect(writable, `${tabla}.writable admite la conformidad: se podría marcar «aceptado» a mano`)
+        .not.toContain("acceptance");
+      expect(writable, `${tabla}.writable admite responded_via`).not.toContain("responded_via");
+      expect(writable, `${tabla}.writable admite el número de confirmación`)
+        .not.toContain("confirmation_number");
+    }
+  });
+
+  it("todo estado de conformidad tiene etiqueta para la operadora", () => {
+    /**
+     * `ETIQUETA_DE_ACEPTACION` existe y está escrita para el PROVEEDOR
+     * —«Pendiente de tu respuesta»—: en la pantalla de la casa esa segunda persona
+     * apunta a quien no es. Se comprueba la unión entera, no un valor.
+     */
+    const union = /export type EstadoDeAceptacion =([\s\S]*?);/
+      .exec(read("src/lib/aceptacion-proveedor.ts"))![1];
+    const estados = [...union.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    expect(estados.length, "no se reconocieron los estados de conformidad").toBe(5);
+
+    const dict = /export const ACCEPTANCE_STATUS = dict\(([\s\S]*?)\n\);/
+      .exec(read("src/lib/labels-modules.ts"))![1];
+    const faltan = estados.filter((e) => !dict.includes(`["${e}"`));
+    expect(faltan, `estados de conformidad sin etiqueta: ${faltan.join(", ")}`).toEqual([]);
+  });
+});
+
+/**
+ * NINGÚN FILTRO DE PANTALLA SE IGNORA EN SILENCIO.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * DE DÓNDE SALE
+ *
+ * `buildListFilter` descarta un `filter.<campo>` desconocido **sin decir nada**, a
+ * propósito, para que la interfaz no se rompa. El precio de esa decisión es que un
+ * desplegable de filtro puede no filtrar nada y verse perfectamente: se elige
+ * «Venta», la lista no cambia, y nadie sabe si es que no hay ventas.
+ *
+ * Al buscarlo en todas las pantallas aparecieron DOS, y una la había dejado yo
+ * el mismo día al darle puerta a la contabilidad:
+ *
+ *   · `finanzas/diario` filtraba por `source_type` sobre `ledger_entry`, que tiene
+ *     `writable: []` porque es un libro inmutable;
+ *   · `parque/bitacora` filtraba por `event_type` sobre `attraction_log`, igual.
+ *
+ * Las dos son de la familia de `operational_status`: estado derivado que se filtra
+ * y no se teclea, y que va en `GLOBAL_FILTERABLE` y no en `writable`.
+ */
+describe("ningún filtro de pantalla se ignora en silencio", () => {
+  /** Las mismas cuentas que `allowedFilterFields`, leídas del fuente. */
+  function filtrablesDe(tabla: string, resources: string): Set<string> | null {
+    const bloque = new RegExp(`^ {2}${tabla}: \\{([\\s\\S]*?)^ {2}\\},`, "m").exec(resources)?.[1];
+    if (!bloque) return null;
+    const lista = (clave: string) => {
+      const m = new RegExp(`${clave}:\\s*\\[([\\s\\S]*?)\\]`).exec(bloque);
+      return m ? [...m[1].matchAll(/"([a-zA-Z_]+)"/g)].map((x) => x[1]) : [];
+    };
+    /** Los nombres de primer nivel de un objeto, sin tragarse los anidados. */
+    const clavesDe = (clave: string) => {
+      const m = new RegExp(`${clave}:\\s*\\{`).exec(bloque);
+      if (!m) return [];
+      let i = m.index + m[0].length, prof = 1, buf = "";
+      while (i < bloque.length && prof > 0) {
+        const c = bloque[i];
+        if (c === "{") prof++; else if (c === "}") prof--;
+        if (prof > 0) buf += c;
+        i++;
+      }
+      return [...buf.matchAll(/(?:^|,)\s*([a-z_]+)\s*:/g)].map((x) => x[1]);
+    };
+    const global = /const GLOBAL_FILTERABLE = new Set\(\[([\s\S]*?)\]\);/.exec(resources)![1];
+    return new Set([
+      ...[...global.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]),
+      ...lista("search"), ...lista("writable"), ...lista("numeric"), ...lista("dates"),
+      ...clavesDe("expand"), ...clavesDe("expandOne"),
+    ]);
+  }
+
+  it("cada filtro que ofrece una pantalla es filtrable de verdad", () => {
+    const resources = read("src/lib/resources.ts");
+    const pantallas = ficherosTs("src/app").filter((f) => f.endsWith(".tsx") && !/\.test\.tsx$/.test(f));
+    expect(pantallas.length, "el barrido dejó de ver las pantallas").toBeGreaterThan(50);
+
+    const problemas: string[] = [];
+    let revisados = 0;
+    for (const f of pantallas) {
+      const src = sinComentariosDe(f);
+      const recurso = /resource="([a-z_]+)"/.exec(src)?.[1];
+      const bloque = /filters=\{\[([\s\S]*?)\]\}/.exec(src)?.[1];
+      if (!recurso || !bloque) continue;
+      const permitidos = filtrablesDe(recurso, resources);
+      if (!permitidos) { problemas.push(`${f}: el recurso ${recurso} no está en RESOURCES`); continue; }
+      for (const nombre of [...bloque.matchAll(/name:\s*"([a-zA-Z_]+)"/g)].map((m) => m[1])) {
+        revisados += 1;
+        if (!permitidos.has(nombre)) {
+          problemas.push(`${f} (${recurso}): el filtro "${nombre}" no es filtrable — se ignora en silencio`);
+        }
+      }
+    }
+    // Piso: sin él, un lector roto deja la comprobación vacía y verde.
+    expect(revisados, "no se reconoció ni un filtro: el lector está roto").toBeGreaterThan(20);
+    expect(problemas, `filtros que no filtran nada:\n  - ${problemas.join("\n  - ")}`).toEqual([]);
   });
 });

@@ -11,7 +11,7 @@
 > **Corregido el 30-sep:** el primer barrido dijo dieciséis y eran **trece**. Tres
 > de las que acusó tenían puerta desde el día que se escribieron; fallaba el
 > detector, no el producto. Ver «Tres huecos que no existían», más abajo. De las
-> trece reales quedan **cuatro** por cerrar.
+> trece reales quedan **tres** por cerrar.
 
 ## De dónde salió esto
 
@@ -54,9 +54,10 @@ Ya tiene puerta, con **previsualización del impacto antes de confirmar**: qué
 salidas se cierran y **qué reservas quedan fuera, con su número y su cliente**.
 Ver la entrada «El activo que se caía y no arrastraba nada» en `FIX_LOG.md`.
 
-Quedan **cuatro** — los de `SIN_PUERTA_CONOCIDAS`: trece reales menos esta, menos
-la bitácora del parque con la que empezó todo, menos las tres de contabilidad,
-menos las dos de almacén, menos la lista negra y menos la subida de archivos.
+Quedan **tres** — los de `SIN_PUERTA_CONOCIDAS`: trece reales menos esta, menos la
+bitácora del parque con la que empezó todo, menos las tres de contabilidad, menos
+las dos de almacén, menos la lista negra, menos la subida de archivos y menos el
+enlace del proveedor.
 
 ### ~~2. El saldo regalo que se emite y no se puede usar~~ — **NUNCA FUE UN HUECO**
 
@@ -131,7 +132,7 @@ a todo lo demás.
 
 Ver la entrada «La contabilidad que no se podía tocar» en `FIX_LOG.md`.
 
-Quedan **cuatro**.
+Quedan **tres**.
 
 ### ~~4. Almacén sin movimientos~~ — **CERRADO el 30-sep**, y era el peor de los trece
 
@@ -171,7 +172,7 @@ está fuera de la lista blanca, no hay lápiz ni papelera, y la lista de reposic
 (`low-stock`) se ve en Existencias en vez de solo sonar una vez al mes. Ver «El
 kardex que se podía teclear» en `FIX_LOG.md`.
 
-Quedan **cuatro**.
+Quedan **tres**.
 
 ### ~~5. El cliente que no se puede vetar~~ — **CERRADO el 30-sep**
 
@@ -204,7 +205,7 @@ estaba mal era invitar a un callejón.
 
 Ver «La casilla que por fin hace algo» en `FIX_LOG.md`.
 
-Quedan **cuatro**.
+Quedan **tres**.
 
 ### ~~La subida de archivos~~ — **CERRADO el 30-sep**
 
@@ -228,13 +229,34 @@ privado devuelve una URL firmada que caduca a los diez minutos, y guardar eso en
 `image_url` deja la imagen rota al rato. Ver «La caja de texto donde iba una foto»
 en `FIX_LOG.md`.
 
-Quedan **cuatro**.
+Quedan **tres**.
+
+### ~~El enlace del proveedor~~ — **CERRADO el 30-sep**
+
+`POST /api/proveedor/enlace` era la **única** forma de crear la credencial con la
+que un proveedor **sin cuenta** acepta o rechaza un servicio. Lo que hay al otro
+lado estaba entero y enchufado: la página pública `/servicio/[token]` y su ruta.
+
+O sea que el camino sin cuenta —el que importa, porque el transportista pequeño no
+entra a un portal con contraseña— estaba construido de punta a punta **y sin manera
+de empezarlo**. Ese proveedor no podía contestar de ninguna forma, y la operadora se
+enteraba de que no había respuesta cuando llegaba el autobús.
+
+**Y faltaba algo más, que no estaba en el inventario:** las pantallas de la casa no
+enseñaban **ni de quién era el servicio ni si lo había aceptado**, aunque la fila lo
+sabe —0085 deriva `supplier_id` del vehículo, 0087 añadió el plazo y la respuesta—.
+Mandar el enlace sin ver quién no ha contestado es trabajar a ciegas; ver quién no ha
+contestado sin poder mandarle nada es peor. Las dos cosas juntas valen más que
+separadas.
+
+Ver «El camino sin cuenta que no se podía empezar» en `FIX_LOG.md`.
+
+Quedan **tres**.
 
 ### 6. El resto
 
 | ruta | qué queda sin hacerse |
 | --- | --- |
-| `/api/proveedor/enlace` | el enlace de un solo uso de la fase 8.4, para que el proveedor conteste sin cuenta |
 | `/api/maintenance/reconcile-drafts` | la conciliación de borradores a mano; su gemela de `cron` sí corre sola |
 | `/api/setup/demo` | cargar los datos de demostración desde el producto |
 | `/api/stripe/customer-portal` | el portal de facturación de Stripe, para que el cliente gestione su suscripción |
