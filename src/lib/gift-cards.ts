@@ -13,15 +13,24 @@
  * vive en funciones puras para poder probarla sin base de datos; las rutas solo
  * autorizan, persisten y auditan.
  *
- * SOBRE LA CONTABILIDAD. El libro mayor de este sistema es de base de efectivo
- * por decisión explícita (ver `src/lib/ledger-events.ts`): cada asiento refleja
- * un movimiento real de caja o banco, sin diferidos ni devengo. La venta de la
- * gift card ya registra `Dr Caja / Cr Ingresos` cuando se cobra la orden, así
- * que la redención NO debe volver a acreditar ingresos: duplicaría la venta. El
- * `2202 Pasivo por gift cards` del plan de cuentas pertenece al modelo de
- * devengo, que todavía no está implementado. Por eso estas acciones no asientan:
- * pasar a devengo es una decisión contable aparte, no un efecto colateral de
- * arreglar el control del saldo.
+ * SOBRE LA CONTABILIDAD. La gift card es la única excepción a la base de
+ * efectivo del libro mayor (ver `src/lib/ledger-events.ts`), y no por gusto: al
+ * emitirla entra dinero por un servicio que todavía no se ha dado, así que
+ * reconocerlo como venta infla el mes en que se vendió el plástico y deja vacío
+ * el mes en que de verdad se viaja. El saldo vendido y sin usar es una DEUDA con
+ * el portador mientras no se gasta, y ese es el papel de `2202 Pasivo por gift
+ * cards`, que estaba en el plan base desde el primer día sin que ningún asiento
+ * lo tocara.
+ *
+ *   Emitir   (`postGiftCardIssued`):  Dr caja o banco / Cr 2202
+ *   Consumir (`/api/payments`):       Dr 2202         / Cr 4101 Ingresos
+ *
+ * Las dos mitades se cierran solas y el pasivo dice en todo momento cuánto saldo
+ * queda vendido sin usar. Lo que NO se hace es acreditar ingresos dos veces: la
+ * redención es la única que los reconoce.
+ *
+ * Estas funciones puras no asientan nada por su cuenta —son decisiones sobre el
+ * saldo, no sobre el libro—; asientan las rutas que las llaman.
  */
 
 export interface RedeemableGiftCard {
@@ -129,6 +138,63 @@ export function applyRefund(
     status: balance_after > 0 ? "partially_used" : "redeemed",
     movement_type: "refund",
   };
+}
+
+/**
+ * ¿PUEDE ESTA TARJETA PAGAR ESTO? UNA SOLA DEFINICIÓN.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ ESTÁ AQUÍ Y NO EN CADA RUTA
+ *
+ * Desde el 30-sep hay DOS sitios que consumen saldo: la acción del cajón
+ * (`/api/gift-cards/:id/redeem`) y el cobro de una orden con método `gift_card`
+ * (`/api/payments`). Las tres comprobaciones —que la tarjeta se pueda usar, que
+ * el importe valga, y que la moneda sea la misma— tenían que estar en los dos.
+ *
+ * Copiarlas era la salida fácil y es exactamente el fallo que esta rama lleva
+ * cerrando: con dos definiciones, la que se queda desactualizada es siempre la
+ * que nadie mira. Y aquí el que se queda atrás cobra de menos, o cobra una
+ * tarjeta cerrada, o mezcla divisas 1:1.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * LA MONEDA NO SE CONVIERTE
+ *
+ * Una tarjeta en dólares no paga una orden en pesos sin una tasa explícita, y
+ * aquí no hay ninguna. Mezclarlas 1:1 descuadraría el saldo y el ingreso a la
+ * vez, y nadie lo vería hasta cuadrar el pasivo de gift cards a fin de mes.
+ *
+ * Devuelve el `status` HTTP junto al mensaje porque los tres casos no son el
+ * mismo: un importe mal escrito es culpa de quien llama (400) y una tarjeta
+ * vencida o sin saldo es un estado del mundo (409).
+ */
+export function planDePagoConTarjeta(
+  card: RedeemableGiftCard & { currency?: string | null },
+  rawAmount: unknown,
+  currency?: string | null,
+  /**
+   * El instante contra el que se mide la vigencia. Es un parámetro y no el reloj
+   * a secas porque si no, la única regla de aquí que depende del tiempo solo se
+   * puede probar esperando a que el calendario coopere — y una prueba que caduca
+   * es una prueba que alguien borra el día que se pone roja sola.
+   */
+  now = new Date()
+): { plan: GiftCardMovementPlan } | { error: string; status: 400 | 409 } {
+  const parsed = validateAmount(rawAmount);
+  if ("error" in parsed) return { error: parsed.error, status: 400 };
+
+  const blocker = giftCardBlocker(card, now);
+  if (blocker) return { error: GIFT_CARD_BLOCK_MESSAGE[blocker], status: 409 };
+
+  if (currency && card.currency && currency !== card.currency) {
+    return {
+      error: `La tarjeta está en ${card.currency.toUpperCase()} y el cobro en ${currency.toUpperCase()}`,
+      status: 409,
+    };
+  }
+
+  const plan = applyRedemption(card, parsed.amount);
+  if ("error" in plan) return { error: plan.error, status: 409 };
+  return { plan };
 }
 
 /** Emisión: el saldo nace igual al importe emitido. */

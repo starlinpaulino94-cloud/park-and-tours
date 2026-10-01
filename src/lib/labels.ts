@@ -62,6 +62,8 @@ export const PAYMENT_METHOD: Record<string, LabelDef> = {
   credit: def("Crédito", "warning"),
   deposit: def("Depósito", "info"),
   check: def("Cheque", "neutral"),
+  // 0103. Una guarda comprueba que todo valor de `PaymentMethod` tenga etiqueta.
+  gift_card: def("Gift card", "violet"),
   other: def("Otro", "neutral"),
 };
 

@@ -224,6 +224,16 @@ describe("el tablero de metas", () => {
 
 /* ════════════════════════════════ el bono ══════════════════════════════ */
 
+/**
+ * EL INSTANTE SE FIJA, NO SE HEREDA DEL CALENDARIO.
+ *
+ * Estas pruebas siembran reservas de septiembre de 2026 y la meta es mensual, así
+ * que medir contra el reloj real solo funciona mientras el reloj real esté en
+ * septiembre. Estuvieron en verde semanas y el 1 de octubre se pusieron rojas las
+ * cinco a la vez, sin que nadie tocara nada.
+ */
+const EN_SEPTIEMBRE = new Date("2026-09-15T12:00:00.000Z");
+
 describe("otorgar el bono de una meta", () => {
   const cumplida = () => db.seed("booking", [
     reserva({ _id: "bk-1", created_at: "2026-09-10T15:00:00.000Z" }),
@@ -233,7 +243,8 @@ describe("otorgar el bono de una meta", () => {
   it("una meta cumplida se otorga, y su condición queda congelada", async () => {
     // Dentro de seis meses la meta puede estar editada o borrada.
     cumplida();
-    const out = await awardGoalBonus(ctx, { goalId: "meta-1", sellerId: "ven-1", amount: 100 });
+    const out = await awardGoalBonus(ctx, {
+      now: EN_SEPTIEMBRE, goalId: "meta-1", sellerId: "ven-1", amount: 100 });
     const bono = db.row("seller_bonus", { _id: out.bonusId })!;
     expect(bono.status).toBe("pending");
     expect(Number(bono.amount)).toBe(100);
@@ -244,7 +255,8 @@ describe("otorgar el bono de una meta", () => {
 
   it("una meta sin cumplir no se otorga", async () => {
     await expect(
-      awardGoalBonus(ctx, { goalId: "meta-1", sellerId: "ven-1", amount: 100 })
+      awardGoalBonus(ctx, {
+      now: EN_SEPTIEMBRE, goalId: "meta-1", sellerId: "ven-1", amount: 100 })
     ).rejects.toMatchObject({ status: 409 });
   });
 
@@ -260,7 +272,8 @@ describe("otorgar el bono de una meta", () => {
       reserva({ _id: "bk-2", created_at: "2026-09-11T15:00:00.000Z", seller_id: "ven-2" }),
     ]);
     await expect(
-      awardGoalBonus(ctx, { goalId: "meta-1", sellerId: "ven-2", amount: 100 })
+      awardGoalBonus(ctx, {
+      now: EN_SEPTIEMBRE, goalId: "meta-1", sellerId: "ven-2", amount: 100 })
     ).rejects.toThrow(/no entra en el alcance/);
     expect(db.rows("seller_bonus"), "se pagó un premio ajeno").toHaveLength(0);
   });
@@ -277,7 +290,8 @@ describe("otorgar el bono de una meta", () => {
       reserva({ _id: "bk-1", created_at: "2026-09-10T15:00:00.000Z", seller_id: "ven-1" }),
       reserva({ _id: "bk-2", created_at: "2026-09-11T15:00:00.000Z", seller_id: "ven-2" }),
     ]);
-    const out = await awardGoalBonus(ctx, { goalId: "meta-grupo", sellerId: "ven-2", amount: 50 });
+    const out = await awardGoalBonus(ctx, {
+      now: EN_SEPTIEMBRE, goalId: "meta-grupo", sellerId: "ven-2", amount: 50 });
     expect(out.bonusId).toBeTruthy();
   });
 
@@ -288,15 +302,18 @@ describe("otorgar el bono de una meta", () => {
       reserva({ _id: "bk-2", created_at: "2026-09-11T15:00:00.000Z", seller_id: "ven-2" }),
     ]);
     await expect(
-      awardGoalBonus(ctx, { goalId: "meta-grupo", sellerId: "ven-3", amount: 50 })
+      awardGoalBonus(ctx, {
+      now: EN_SEPTIEMBRE, goalId: "meta-grupo", sellerId: "ven-3", amount: 50 })
     ).rejects.toThrow(/no entra en el alcance/);
   });
 
   it("un mismo vendedor no cobra dos veces la misma meta", async () => {
     cumplida();
-    await awardGoalBonus(ctx, { goalId: "meta-1", sellerId: "ven-1", amount: 100 });
+    await awardGoalBonus(ctx, {
+      now: EN_SEPTIEMBRE, goalId: "meta-1", sellerId: "ven-1", amount: 100 });
     await expect(
-      awardGoalBonus(ctx, { goalId: "meta-1", sellerId: "ven-1", amount: 100 })
+      awardGoalBonus(ctx, {
+      now: EN_SEPTIEMBRE, goalId: "meta-1", sellerId: "ven-1", amount: 100 })
     ).rejects.toMatchObject({ status: 409 });
   });
 
@@ -309,19 +326,22 @@ describe("otorgar el bono de una meta", () => {
      */
     db.seed("seller_goal", [{ ...META, _id: "meta-1t", target_bookings: 1 }]);
     db.seed("booking", [reserva({ _id: "bk-noche", created_at: "2026-10-01T01:00:00.000Z" })]);
-    const out = await awardGoalBonus(ctx, { goalId: "meta-1t", sellerId: "ven-1", amount: 100 });
+    const out = await awardGoalBonus(ctx, {
+      now: EN_SEPTIEMBRE, goalId: "meta-1t", sellerId: "ven-1", amount: 100 });
     expect(out.bonusId).toBeTruthy();
   });
 
   it("y una meta que no existe es 404", async () => {
     await expect(
-      awardGoalBonus(ctx, { goalId: "meta-inventada", sellerId: "ven-1", amount: 100 })
+      awardGoalBonus(ctx, {
+      now: EN_SEPTIEMBRE, goalId: "meta-inventada", sellerId: "ven-1", amount: 100 })
     ).rejects.toMatchObject({ status: 404 });
   });
 
   it("un importe negativo se guarda en cero, no en negativo", async () => {
     cumplida();
-    const out = await awardGoalBonus(ctx, { goalId: "meta-1", sellerId: "ven-1", amount: -50 });
+    const out = await awardGoalBonus(ctx, {
+      now: EN_SEPTIEMBRE, goalId: "meta-1", sellerId: "ven-1", amount: -50 });
     expect(Number(db.row("seller_bonus", { _id: out.bonusId })!.amount)).toBe(0);
   });
 });

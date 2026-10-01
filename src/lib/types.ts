@@ -576,7 +576,9 @@ export interface PaymentScheduleRow extends BaseRecord {
 
 /** Enum `payment_method` de la base, literal. */
 export type PaymentMethod =
-  | "cash" | "card" | "transfer" | "link" | "credit" | "deposit" | "check" | "other";
+  | "cash" | "card" | "transfer" | "link" | "credit" | "deposit" | "check" | "other"
+  /** 0103. Consume saldo de una gift card: no es caja, es un pasivo que baja. */
+  | "gift_card";
 
 export interface Payment extends BaseRecord {
   company?: Ref<Company>; order?: Ref<Order>; booking?: Ref<Booking>;

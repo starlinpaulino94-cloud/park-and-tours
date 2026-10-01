@@ -271,6 +271,16 @@ export interface AwardInput {
   payoutKind?: string | null;
   description?: string | null;
   currency?: Currency;
+  /**
+   * El instante contra el que se mide el período de la meta.
+   *
+   * Es un parámetro y no el reloj a secas por lo mismo que en `goalsWithProgress`
+   * —que ya lo tenía—: sin él, lo único que decide si una meta está cumplida es
+   * qué día se ejecuta el código, y eso no se puede probar. Se vio el 1 de
+   * octubre, cuando cinco pruebas que llevaban semanas en verde se pusieron rojas
+   * solas: sembraban reservas de septiembre y el mes corriente había cambiado.
+   */
+  now?: Date;
 }
 
 /**
@@ -329,7 +339,23 @@ export async function awardGoalBonus(
     );
   }
 
-  const range = rangeOf(goal);
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * LO QUE SE MIDE ES EL PERÍODO CORRIENTE, Y ESO TIENE UN LÍMITE CONOCIDO
+   *
+   * Una meta `monthly` no guarda QUÉ mes: «mensual» significa el mes en curso,
+   * porque `period_from`/`period_to` solo existen para el período `range`. Así
+   * que el bono de una meta mensual **solo se puede otorgar dentro del propio
+   * mes**: el día 1 del siguiente, el rango se ha movido, las ventas del mes
+   * cerrado ya no cuentan y la meta se rechaza por «no cumplida».
+   *
+   * No se arregla aquí con una ventana de cortesía inventada: cuántos días
+   * después de cerrar un período se puede pagar su premio es una decisión del
+   * negocio, no un efecto colateral. La vía que YA existe para una meta que se
+   * paga después de terminar es el período `range`, con sus fechas escritas.
+   * Queda anotado en el informe de producción para que se decida.
+   */
+  const range = rangeOf(goal, input.now);
   const actuals = await actualsFor(
     ctx.companyId, scope, range,
     companyTimeZone(ctx.company as { timezone?: string | null } | null)

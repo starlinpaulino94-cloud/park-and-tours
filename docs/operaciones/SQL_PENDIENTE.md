@@ -1,6 +1,6 @@
 # SQL pendiente, en orden de pegado
 
-**47 archivos, 15 migraciones (0088 → 0102), más los datos de demostración y dos verificaciones sueltas.**
+**50 archivos, 16 migraciones (0088 → 0103), más los datos de demostración y dos verificaciones sueltas.**
 Todos están en `supabase/editor/`. Se pegan enteros en el editor SQL de
 Supabase (Ctrl+A en el archivo, pegar, «Run»).
 
@@ -19,7 +19,7 @@ todo lo que responda `OK`:
 
 Las dos solo leen. Una fila `FALTA` significa que esa migración no llegó al
 final; `OK` que sí. Si quieres el detalle objeto por objeto:
-`auditoria_funciones_1.sql`, `_2` y `_3`.
+`auditoria_funciones_1.sql`, `_2`, `_3` y `_4`.
 
 > Estas consultas se corren en cada integración contra una base con **todas** las
 > migraciones aplicadas, y ni una fila puede decir `FALTA`. Es lo que evita que
@@ -30,7 +30,7 @@ final; `OK` que sí. Si quieres el detalle objeto por objeto:
 
 ## El orden es el numérico, y ese es el único probado
 
-Van de la **0088 a la 0102, en orden de número**. No es una preferencia: es el
+Van de la **0088 a la 0103, en orden de número**. No es una preferencia: es el
 orden en que se aplican en cada integración, sobre una base vacía, y el único
 que está probado de punta a punta.
 
@@ -235,6 +235,30 @@ vendedor, proveedor— o a un documento sobre una persona —reserva, venta—. 
 cara de la lista no es de dinero: `supplier_response_token.supplier_id` es la
 llave del portal del proveedor, y apuntando a otro proveedor ese enlace de un
 solo uso **abre el portal de otra empresa**.
+
+### 0103 — El saldo regalo se puede gastar
+
+| | archivo |
+| --- | --- |
+| 48 | `0103_parte_1.sql` — solo añade el método de cobro |
+| 49 | `0103_parte_2.sql` |
+| 50 | `0103_parte_3_verificacion.sql` *(lee)* — las cuatro filas tienen que decir **OK** |
+
+El sistema sabía emitir, consumir, devolver y anular gift cards, pero **no
+pagar una orden con una**: `payment_method` tenía ocho valores y ninguno era la
+tarjeta. El cajero consumía el saldo en el cajón de la tarjeta, apuntaba el
+número de orden a mano y cobraba la orden por otro método; si se olvidaba el
+segundo gesto, la orden quedaba impagada con el saldo ya gastado.
+
+La parte 2 añade las dos columnas con las que el cobro y el asiento dicen de qué
+tarjeta salió el saldo. Sin ellas, el pasivo `2202` no se puede conciliar tarjeta
+por tarjeta y el apunte de la emisión no puede ser idempotente.
+
+> **La fila 4 de la verificación es la importante.** El disparador del asiento se
+> registra por nombre y `create trigger` **sustituye**, así que la parte 2 lo
+> vuelve a crear con sus **nueve** referencias y no solo con la nueva. Si la fila
+> 4 dice `FALTA`, las que nombra dejaron de comprobarse y el aislamiento que
+> cerró la 0102 se reabrió en esa tabla.
 
 ---
 

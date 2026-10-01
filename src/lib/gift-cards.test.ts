@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   applyIssue, applyRedemption, applyRefund, giftCardBalance, giftCardBlocker,
-  validateAmount, CLOSED_GIFT_CARD_STATUSES, GIFT_CARD_BLOCK_MESSAGE,
+  planDePagoConTarjeta, validateAmount, CLOSED_GIFT_CARD_STATUSES, GIFT_CARD_BLOCK_MESSAGE,
 } from "@/lib/gift-cards";
 
 const NOW = new Date("2026-06-15T12:00:00Z");
@@ -124,5 +124,99 @@ describe("gift cards — saldo", () => {
   it("un saldo ausente es cero, no NaN", () => {
     expect(giftCardBalance({})).toBe(0);
     expect(giftCardBalance({ balance: null })).toBe(0);
+  });
+});
+
+/**
+ * EL PLAN DE PAGO: la única definición de «¿puede esta tarjeta pagar esto?».
+ *
+ * La comparten `/api/payments`, la acción del cajón y el punto de venta. Lo que
+ * se prueba aquí es lo que el mostrador va a ofrecer y lo que el servidor va a
+ * aceptar, que tienen que ser la misma cosa.
+ */
+describe("gift cards — plan de pago con tarjeta", () => {
+  const vale = { status: "active", balance: 100, currency: "dop", expires_at: ahead(30) };
+
+  it("una tarjeta buena con importe dentro del saldo devuelve el plan", () => {
+    const r = planDePagoConTarjeta(vale, 40, "dop", NOW);
+    expect("plan" in r).toBe(true);
+    if (!("plan" in r)) return;
+    expect(r.plan.amount).toBe(40);
+    expect(r.plan.balance_after).toBe(60);
+    expect(r.plan.status).toBe("partially_used");
+    expect(r.plan.movement_type).toBe("redeem");
+  });
+
+  it("un importe mal escrito es culpa de quien llama: 400", () => {
+    for (const malo of [0, -5, "hola", null, undefined]) {
+      const r = planDePagoConTarjeta(vale, malo, "dop", NOW);
+      expect("error" in r).toBe(true);
+      if ("error" in r) expect(r.status).toBe(400);
+    }
+  });
+
+  it("una tarjeta que no se puede consumir es un estado del mundo: 409", () => {
+    for (const card of [
+      { ...vale, status: "void" },
+      { ...vale, expires_at: ago(1) },
+      { ...vale, balance: 0 },
+    ]) {
+      const r = planDePagoConTarjeta(card, 10, "dop", NOW);
+      expect("error" in r).toBe(true);
+      if ("error" in r) expect(r.status).toBe(409);
+    }
+  });
+
+  it("el importe se comprueba ANTES del estado de la tarjeta", () => {
+    // Si el orden se invirtiera, un importe de cero sobre una tarjeta anulada
+    // contestaría 409 y quien llama creería que el problema es la tarjeta.
+    const r = planDePagoConTarjeta({ ...vale, status: "void" }, 0, "dop", NOW);
+    expect("error" in r && r.status).toBe(400);
+  });
+
+  it("la moneda no se convierte: tarjeta y cobro tienen que coincidir", () => {
+    const r = planDePagoConTarjeta(vale, 40, "usd", NOW);
+    expect("error" in r).toBe(true);
+    if (!("error" in r)) return;
+    expect(r.status).toBe(409);
+    // El mensaje nombra LAS DOS monedas: con una sola no se sabe qué cambiar.
+    expect(r.error).toContain("DOP");
+    expect(r.error).toContain("USD");
+  });
+
+  it("sin moneda declarada en la tarjeta no se inventa un desajuste", () => {
+    const r = planDePagoConTarjeta({ ...vale, currency: null }, 40, "usd", NOW);
+    expect("plan" in r).toBe(true);
+  });
+
+  it("pedir más saldo del que hay se rechaza con 409, no se recorta", () => {
+    const r = planDePagoConTarjeta(vale, 140, "dop", NOW);
+    expect("error" in r).toBe(true);
+    if ("error" in r) {
+      expect(r.status).toBe(409);
+      // El mensaje dice CUÁNTO hay: sin eso el cajero prueba importes a ciegas.
+      expect(r.error).toContain("100.00");
+    }
+  });
+
+  it("consumir el saldo exacto la deja redimida", () => {
+    const r = planDePagoConTarjeta(vale, 100, "dop", NOW);
+    expect("plan" in r && r.plan.status).toBe("redeemed");
+    expect("plan" in r && r.plan.balance_after).toBe(0);
+  });
+});
+
+describe("gift cards — la vigencia del plan de pago se mide contra un instante dado", () => {
+  const card = { status: "active", balance: 100, currency: "dop", expires_at: NOW.toISOString() };
+
+  it("un día antes de vencer, la tarjeta paga", () => {
+    const r = planDePagoConTarjeta(card, 10, "dop", new Date(NOW.getTime() - 86_400_000));
+    expect("plan" in r).toBe(true);
+  });
+
+  it("un día después, no", () => {
+    const r = planDePagoConTarjeta(card, 10, "dop", new Date(NOW.getTime() + 86_400_000));
+    expect("error" in r && r.status).toBe(409);
+    expect("error" in r && r.error).toBe(GIFT_CARD_BLOCK_MESSAGE.expired);
   });
 });

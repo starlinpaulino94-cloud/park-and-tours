@@ -70,7 +70,8 @@ with e(mig,obj,col) as (values
   ('0090','message','attachment_scope'),
   ('0092','customer','blocked_at'),
   ('0098','membego_customer','membership_status'),
-  ('0099','departure','hold_pax')
+  ('0099','departure','hold_pax'),
+  ('0103','payment','gift_card_id')
 )
 select e.mig as migracion,
        -- Esta rama va PRIMERA a propósito. Con el orden al revés,

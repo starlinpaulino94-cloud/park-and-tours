@@ -157,7 +157,7 @@ Además, cerrados en este ciclo y no listados antes:
 - **Pruebas SQL contra Postgres de verdad: 24** ficheros.
 - **Recorridos de navegador: 19**, repartidos en **7** ficheros, y ya no es una
   promesa: el 29-sep el CI los ejecutó enteros en verde por primera vez.
-- **Migraciones en el repositorio: 102**, la última la **0102**.
+- **Migraciones en el repositorio: 103**, la última la **0103**.
 
 ---
 
@@ -166,7 +166,7 @@ Además, cerrados en este ciclo y no listados antes:
 El entorno donde se escribe esto **no tiene credenciales de Supabase**. Por lo
 tanto, sobre la base real no se sabe:
 
-- qué migraciones están aplicadas (en el repositorio hay **102**);
+- qué migraciones están aplicadas (en el repositorio hay **103**);
 - si el hook del token (`app.custom_access_token_hook`) está instalado y activo;
 - si las variables de entorno están puestas en el alojamiento;
 - si las copias de seguridad corren, y con qué retención.
@@ -206,13 +206,33 @@ En orden de lo que más cuesta si sale mal:
    que no hay un segundo proyecto que mantener ni ningún secreto que custodiar.
 6. **Probar la reversión de un despliegue**, una vez, a propósito.
 
+### Una decisión de negocio que el código tomó por accidente
+
+El **bono de una meta mensual solo se puede otorgar dentro del propio mes.** Una
+meta `monthly` no guarda QUÉ mes —«mensual» significa el mes en curso, porque
+`period_from`/`period_to` solo existen para el período `range`—, así que el día 1
+del mes siguiente el rango se ha movido, las ventas del mes cerrado ya no cuentan
+y la meta se rechaza por «no cumplida». El premio del mes que acaba de terminar,
+que es justo cuando se pagan los premios, no se puede pagar.
+
+Se encontró el 1 de octubre, porque cinco pruebas que llevaban semanas en verde se
+pusieron rojas solas al cambiar el mes corriente. **No se ha inventado una ventana
+de cortesía**: cuántos días después de cerrar un período se puede pagar su premio
+es una decisión de la empresa, no un efecto colateral de arreglar una prueba. Lo
+que sí se hizo es que el instante se pueda pasar (`awardGoalBonus({ now })`), para
+que la regla sea comprobable en vez de depender del calendario.
+
+Mientras no se decida, la vía que **ya funciona** para una meta que se paga
+después de terminar es el período `range`, con sus dos fechas escritas: ese rango
+no se mueve.
+
 ---
 
 ## Para operar tu empresa desde ya
 
 Lo que hay que tener hecho antes de la primera venta real:
 
-- [ ] `npm run verify:migrations` sin nada pendiente (la **0102** es la última).
+- [ ] `npm run verify:migrations` sin nada pendiente (la **0103** es la última).
 - [ ] `SUPABASE_USE_RLS=true` en producción — si no, la aplicación **se niega a
       arrancar**, por diseño.
 - [ ] `CRON_SECRET` puesto, y los cinco trabajos programados dados de alta

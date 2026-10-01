@@ -384,7 +384,21 @@ describe("Panel ejecutivo", () => {
     const page = read("src/app/dashboard/pos/page.tsx");
     // El efectivo se bloquea sin caja abierta (evita un cobro que el servidor rechaza).
     expect(page).toContain('disabled={o.value === "cash" && !canPayCash}');
-    expect(page).toContain('payMethod === "cash" && !ctx?.cash_session');
+    /**
+     * Y el cobro no se puede mandar sin caja.
+     *
+     * La comprobación vivía escrita a mano dentro de `registerPayment`. Desde el
+     * cobro con gift card (0103) hay más de una razón para no poder cobrar, y
+     * todas salen de `impedimentoDeCobro`: una sola cuenta para el botón, el
+     * aviso y el envío. Lo que sigue siendo cierto —y es lo que se vigila— es que
+     * la razón del efectivo está ahí y que se mira ANTES de mandar.
+     */
+    expect(page, "canPayCash dejó de mirar si hay caja abierta")
+      .toMatch(/const canPayCash = Boolean\(ctx\?\.cash_session\)/);
+    expect(page, "el efectivo sin caja dejó de ser un impedimento")
+      .toMatch(/if \(payMethod === "cash" && !canPayCash\)/);
+    expect(page, "registerPayment manda sin comprobar el impedimento")
+      .toMatch(/if \(impedimentoDeCobro\)[\s\S]{0,80}?return;/);
     // Cálculo del cambio y del saldo pendiente.
     expect(page).toContain("cashChange");
     expect(page).toContain("pendingAfter");
@@ -12469,12 +12483,12 @@ describe("la lista de SQL pendiente no puede envejecer", () => {
     const controles = [...bloque![1].matchAll(/"(\d{4}):[^:"]+:[^"]+"/g)].map((m) => m[1]);
     const conCaza = new Set(controles);
 
-    for (const num of ["0088", "0089", "0098", "0102"]) {
+    for (const num of ["0088", "0089", "0098", "0102", "0103"]) {
       expect(conCaza.has(num), `${num} corre en CI y nadie comprueba que su verificación sepa acusar`)
         .toBe(true);
     }
-    // Y que no se vacíe el bloque entero: dos por migración es lo medido.
-    expect(controles.length, "se borraron controles negativos").toBeGreaterThanOrEqual(6);
+    // Y que no se vacíe el bloque entero: ocho es lo que hay hoy, contado.
+    expect(controles.length, "se borraron controles negativos").toBeGreaterThanOrEqual(8);
 
     // Toda verificación que CI ejecuta tiene que tener al menos un control.
     const copias = /COPIAS_QUE_SE_REPITEN=\(([\s\S]*?)\n\)/.exec(sh);
@@ -14473,5 +14487,394 @@ describe("el estado del sistema se puede mirar, y las ventas a medias repararse"
     // Y la pantalla lo dice, para que nadie lo lea como una limpieza rutinaria.
     expect(limpio(PANTALLA), "la pantalla no dice que cada reversión es un síntoma")
       .toMatch(/un proceso murió durante una venta/);
+  });
+});
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════════
+ * EL SALDO REGALO PAGA, Y LO QUE PAGA SE PUEDE CUADRAR (0103)
+ *
+ * Antes de esta entrega el saldo emitido no podía pagar nada: se consumía en el
+ * cajón de la tarjeta y la orden se cobraba por otro método, dos gestos sin
+ * relación. Olvidar el segundo dejaba la orden impagada con el saldo gastado.
+ *
+ * Lo que estas guardas vigilan no es que el botón exista, sino las cuatro
+ * maneras de que exista y mienta:
+ *
+ *  1. Que el consumo entre en el arqueo, y al cajero le falte a fin de turno
+ *     exactamente lo que se pagó con tarjetas.
+ *  2. Que el asiento diga que entró dinero al banco, cuando lo que pasó es que
+ *     la empresa dejó de deber.
+ *  3. Que el saldo se consuma y el cobro no se escriba, sin nada que lo señale.
+ *  4. Que un reembolso con método tarjeta RESTE saldo en vez de devolverlo.
+ * ══════════════════════════════════════════════════════════════════════════════
+ */
+describe("el saldo regalo paga una venta, y lo que paga se puede cuadrar", () => {
+  const RUTA_COBRO = "src/app/api/payments/route.ts";
+  const POS = "src/app/dashboard/pos/page.tsx";
+  const MIGRACION = "supabase/migrations/0103_gift_card_como_metodo_de_cobro.sql";
+  const limpio = (rel: string) => sinComentariosDe(rel);
+
+  it("gift card es un método de cobro declarado en los tres sitios", () => {
+    // El tipo, la etiqueta y el enum de la base. Si falta el enum, la escritura
+    // revienta en producción con un método que la interfaz sí ofrece.
+    expect(limpio("src/lib/types.ts"), "PaymentMethod no admite gift_card")
+      .toMatch(/PaymentMethod[\s\S]{0,400}?"gift_card"/);
+    expect(limpio("src/lib/labels.ts"), "gift_card no tiene etiqueta en PAYMENT_METHOD")
+      .toMatch(/gift_card:\s*def\(/);
+    expect(readSql(MIGRACION), "el enum payment_method de la base no admite gift_card")
+      .toMatch(/alter type payment_method add value if not exists 'gift_card'/i);
+  });
+
+  it("consumir saldo NO entra en el arqueo de caja", () => {
+    /**
+     * La comprobación mira la ASIGNACIÓN, no el nombre.
+     *
+     * Un `toContain("conTarjeta")` sobrevive a que la sesión de caja se calcule
+     * igual que antes: la palabra sigue estando en la ruta veinte líneas más
+     * arriba. Lo que tiene que ser cierto es que el valor de `cashSessionId`
+     * dependa de ello.
+     */
+    const r = limpio(RUTA_COBRO);
+    expect(r, "conTarjeta ya no se decide por el método").toMatch(
+      /const conTarjeta\s*=\s*body\.method === "gift_card"/
+    );
+    expect(r, "la sesión de caja dejó de excluir el cobro con tarjeta").toMatch(
+      /let cashSessionId\s*=\s*conTarjeta \? null :/
+    );
+  });
+
+  it("el asiento del consumo baja el pasivo, no infla el banco", () => {
+    /**
+     * `cashAccountForMethod` cae a 1102 Bancos por defecto. Sin el caso de la
+     * tarjeta el asiento diría que entró dinero al banco —cuando no entró nada— y
+     * el pasivo por gift cards se quedaría intacto para siempre.
+     *
+     * Se ancla al `case` y a su `return`: buscar "2202" a secas encuentra el
+     * apunte de la emisión, que está en el mismo fichero.
+     */
+    const l = limpio("src/lib/ledger-events.ts");
+    expect(l, "el cobro con gift card volvió a caer en la cuenta de bancos")
+      .toMatch(/case "gift_card":\s*\n?\s*return "2202";/);
+  });
+
+  it("emitir una gift card asienta la deuda, y solo una vez", () => {
+    const l = limpio("src/lib/ledger-events.ts");
+    // Dr lo cobrado / Cr 2202. Sin el crédito al pasivo, el débito del consumo
+    // lo dejaría en negativo: un balance que no significa nada.
+    expect(l, "la emisión no acredita el pasivo por gift cards")
+      .toMatch(/\{ account: "2202", credit: amount/);
+    expect(l, "la emisión no debita lo que se cobró")
+      .toMatch(/\{ account: cobrado, debit: amount/);
+    // Idempotente: un reintento no puede duplicar el pasivo.
+    expect(l, "la emisión puede asentar dos veces")
+      .toMatch(/alreadyPosted\(companyId, "gift_card", "gift_card", input\.giftCardId\)/);
+    // Y la ruta del alta lo llama: el asiento que nadie invoca no existe.
+    expect(limpio("src/app/api/gift-cards/route.ts"), "el alta de gift card no asienta nada")
+      .toContain("postGiftCardIssued(");
+  });
+
+  it("si el cobro no se escribe, el saldo se devuelve al estado que tenía", () => {
+    const r = limpio(RUTA_COBRO);
+    expect(r, "el cobro con tarjeta no se compensa si falla").toMatch(
+      /catch[\s\S]{0,400}?deshacerCanje\(/
+    );
+    /**
+     * Y se devuelve AL ESTADO ANTERIOR, leído de la fila.
+     *
+     * Aquí hubo un `status: "partially_used"` escrito a mano, que marcaba como
+     * usada una tarjeta que se queda intacta: el cliente veía su tarjeta tocada
+     * por un cobro que no ocurrió. Lo mismo con el saldo.
+     */
+    expect(r, "la compensación inventa el estado en vez de restaurarlo")
+      .toMatch(/status:\s*tarjeta\?\.status \|\| "active"/);
+    expect(r, "la compensación no restaura el saldo previo")
+      .toMatch(/balance_after:\s*Math\.round\(\(Number\(tarjeta\?\.balance/);
+    /**
+     * Y la devolución se apunta CON SEVERIDAD DE AVISO.
+     *
+     * Sin ella, un canje deshecho queda en la bitácora indistinguible de una
+     * devolución normal — y esa fila es la huella de que un cobro se cayó a
+     * medias. La guarda del huérfano de abajo no la cubría: son dos escrituras
+     * distintas, y la mutación que le quitaba la severidad a esta sobrevivió.
+     */
+    expect(r, "la devolución del canje se apunta sin severidad de aviso").toMatch(
+      /gift_card_refunded[\s\S]{0,400}?severity: "warning"/
+    );
+    // Y si la compensación TAMBIÉN falla, se grita: hay saldo consumido sin cobro.
+    expect(r, "una compensación fallida se pierde en silencio")
+      .toContain('action: "gift_card_redeem_orphaned"');
+    expect(r, "el aviso del saldo huérfano no tiene severidad").toMatch(
+      /gift_card_redeem_orphaned[\s\S]{0,500}?severity: "warning"/
+    );
+  });
+
+  it("un reembolso con método gift card se rechaza, no resta saldo", () => {
+    /**
+     * Esta rama consume con `applyRedemption`. Un `refund` entrando por aquí le
+     * QUITARÍA saldo a quien se le está devolviendo dinero, y el libro de la
+     * tarjeta lo apuntaría como «consumido». La devolución tiene su puerta.
+     */
+    /**
+     * SE ANCLA AL RECHAZO, NO A LA CONDICIÓN.
+     *
+     * `body.payment_type === "refund" || ... "credit_note"` aparece SEIS veces en
+     * esta ruta —cada `isRefund` del asiento, de la caja y del libro—, así que un
+     * regex sobre la condición sobrevivía a vaciar justo esta: el regex
+     * encontraba cualquiera de las otras cinco. Es el mismo fallo que ya se
+     * repitió en cinco olas seguidas. Lo que se exige es el RECHAZO, con su
+     * condición y su mensaje pegados.
+     */
+    const r = limpio(RUTA_COBRO);
+    expect(r, "un reembolso con gift card ya no se rechaza").toMatch(
+      /payment_type === "refund" \|\| body\.payment_type === "credit_note"\) \{\s*throw Object\.assign\(/
+    );
+    expect(r, "el rechazo del reembolso perdió su explicación").toContain(
+      "Un reembolso con método gift card consumiría saldo en vez de devolverlo."
+    );
+    expect(existsSync(path.join(ROOT, "src/app/api/gift-cards/[id]/refund/route.ts")),
+      "la puerta de devolver saldo no existe").toBe(true);
+  });
+
+  it("una tarjeta que no existe es un 404, no un 500", () => {
+    // `tenantFindOne` devuelve null para una tarjeta ajena o inventada, y el
+    // dominio revienta leyéndole el estado: una traza interna para un id mal
+    // escrito.
+    expect(limpio(RUTA_COBRO), "una gift card inexistente revienta el cobro").toMatch(
+      /if \(!tarjeta\)[\s\S]{0,200}?status: 404/
+    );
+  });
+
+  it("las dos referencias nuevas tienen columna y disparador de inquilino", () => {
+    const sql = readSql(MIGRACION);
+    for (const tabla of ["payment", "ledger_entry"]) {
+      /**
+       * Se ancla la SENTENCIA, no la aparición de la palabra.
+       *
+       * Un `[\s\S]{0,200}?gift_card_id` cruza de un `alter table` al siguiente y
+       * al índice de abajo: la columna podía desaparecer y el regex seguía
+       * encontrando su nombre en la línea de al lado.
+       */
+      expect(sql, `${tabla} no guarda de qué gift card salió el saldo`)
+        .toMatch(new RegExp(`alter table ${tabla}\\s+add column if not exists gift_card_id`, "i"));
+    }
+    // Sin el disparador, una referencia puede apuntar a la tarjeta de otra
+    // empresa: el mismo hueco que DB-001 cerró para el resto.
+    expect(sql, "payment.gift_card_id puede apuntar a otra empresa")
+      .toMatch(/payment_same_tenant_gift_card/);
+    expect(sql, "ledger_entry.gift_card_id puede apuntar a otra empresa")
+      .toMatch(/ledger_entry_same_tenant_refs/);
+  });
+
+  it("la copia que se pega lleva el MISMO disparador que la migración", () => {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * LO QUE SE PEGA ES LA COPIA, NO LA MIGRACIÓN
+     *
+     * `supabase/migrations/` se aplica en cada integración sobre una base vacía;
+     * la base de producción se levanta pegando `supabase/editor/`. La guarda de
+     * DB-001 —«un disparador de inquilino no puede encoger»— solo lee las
+     * migraciones, así que la copia podía encogerlo sin que nada lo dijera. Y es
+     * la copia la que decide lo que acaba en la base real: encogerlo ahí deja
+     * ocho referencias del asiento sin comprobar EN PRODUCCIÓN, con el
+     * repositorio en verde.
+     *
+     * Se comparan los nombres de columna de la sentencia, no el texto: la copia
+     * tiene su propio formato y sus propios comentarios.
+     */
+    const columnas = (sql: string) => {
+      const m = /create trigger ledger_entry_same_tenant_refs\s+before insert or update of ([\s\S]*?)\s+on ledger_entry/.exec(sql);
+      expect(m, "no se encontró el disparador del asiento").toBeTruthy();
+      return m![1].split(",").map((c) => c.trim()).filter(Boolean).sort();
+    };
+    const enMigracion = columnas(readSql(MIGRACION));
+    const enCopia = columnas(readSql("supabase/editor/0103_parte_2.sql"));
+    expect(enCopia, "la copia del editor y la migración no registran las mismas columnas")
+      .toEqual(enMigracion);
+    // Y son las nueve: que coincidan las dos encogidas no vale de nada.
+    expect(enMigracion.length, "el disparador del asiento dejó de vigilar nueve referencias").toBe(10);
+  });
+
+  it("el punto de venta pide la tarjeta y enseña el saldo ANTES de cobrar", () => {
+    const p = limpio(POS);
+    expect(p, "el POS no manda de qué tarjeta sale el saldo")
+      .toMatch(/gift_card_id:\s*giftCardId/);
+    /**
+     * Y el saldo se enseña FORMATEADO.
+     *
+     * Un `toContain("saldoDeLaTarjeta")` sobrevive a que el número salga en
+     * crudo, porque el nombre sigue apareciendo en la declaración. Lo que el
+     * cajero tiene que ver es una cifra con su moneda: sin eso, elegir tarjeta
+     * es adivinar cuál llega para esta venta.
+     */
+    expect(p, "el saldo de la tarjeta elegida no se enseña con su moneda").toMatch(
+      /formatMoney\(saldoDeLaTarjeta,\s*giftCardElegida\.currency/
+    );
+    expect(p, "el desplegable no enseña el saldo de cada tarjeta").toMatch(
+      /formatMoney\(giftCardBalance\(c\),\s*c\.currency/
+    );
+  });
+
+  it("el mostrador y el servidor deciden con LA MISMA función", () => {
+    /**
+     * Las tres comprobaciones —tarjeta utilizable, importe válido, moneda igual—
+     * viven en `planDePagoConTarjeta`. Copiarlas en la pantalla es lo que esta
+     * rama lleva cerrando: con dos definiciones, la que se queda atrás ofrece un
+     * cobro que la ruta rechaza, o esconde uno que aceptaría.
+     */
+    expect(limpio(POS), "el POS decide por su cuenta si la tarjeta puede pagar")
+      .toContain("planDePagoConTarjeta(giftCardElegida");
+    expect(limpio(RUTA_COBRO), "la ruta de cobro decide por su cuenta")
+      .toContain("planDePagoConTarjeta(tarjeta");
+    expect(limpio("src/app/api/gift-cards/[id]/redeem/route.ts"), "el cajón decide por su cuenta")
+      .toContain("planDePagoConTarjeta(");
+  });
+
+  it("el botón de cobrar y el aviso salen del mismo impedimento", () => {
+    /**
+     * Un botón que se apaga sin decir por qué parece una pantalla colgada, y un
+     * aviso que no apaga el botón es un aviso que nadie lee. Los dos leen
+     * `impedimentoDeCobro`, y `registerPayment` comprueba lo mismo antes de
+     * mandar: sin eso, el gate es solo cosmético y basta un Enter para saltarlo.
+     */
+    const p = limpio(POS);
+    expect(p, "el botón de cobrar dejó de mirar el impedimento")
+      .toMatch(/disabled=\{busy \|\| impedimentoDeCobro !== null\}/);
+    expect(p, "el impedimento no se le dice a nadie")
+      .toMatch(/\{impedimentoDeCobro\}/);
+    expect(p, "registerPayment no comprueba el impedimento antes de mandar")
+      .toMatch(/if \(impedimentoDeCobro\)[\s\S]{0,80}?toast\.error\(impedimentoDeCobro\)/);
+  });
+
+  it("la tarjeta elegida no sobrevive al diálogo", () => {
+    /**
+     * Si `giftCardId` se queda al cerrar, la venta SIGUIENTE abre el método de
+     * pago con una tarjeta ya seleccionada que no tiene nada que ver con ella, y
+     * basta un clic de más para cobrarle a un tercero. Las tres salidas del
+     * diálogo —cerrar, «cobrar más tarde» y cobrar— la olvidan.
+     */
+    const p = limpio(POS);
+    expect(p, "cerrarCobro ya no olvida la tarjeta")
+      .toMatch(/const cerrarCobro = \(\) => \{[\s\S]{0,200}?setGiftCardId\(""\)/);
+    expect(p, "cerrar el diálogo no pasa por cerrarCobro")
+      .toMatch(/onOpenChange=\{\(v\) => !v && cerrarCobro\(\)\}/);
+    expect(p, "«cobrar más tarde» no pasa por cerrarCobro")
+      .toMatch(/onClick=\{cerrarCobro\}/);
+    // Y tras cobrar, la lista también: el saldo de esa tarjeta acaba de cambiar.
+    expect(p, "tras cobrar, la lista de tarjetas se queda con el saldo viejo")
+      .toMatch(/setGiftCardId\(""\);\s*\n\s*setGiftCards\(null\)/);
+  });
+
+  it("el POS ofrece solo las tarjetas que el servidor aceptaría", () => {
+    expect(limpio(POS), "el POS filtra las tarjetas con otro criterio que el servidor")
+      .toMatch(/filter\(\(c\) => giftCardBlocker\(c\) === null\)/);
+  });
+
+  it("gift_card_id no se puede escribir por el CRUD genérico", () => {
+    /**
+     * LA SEGUNDA PUERTA.
+     *
+     * `payment.gift_card_id` lo DERIVA el cobro, después de consumir el saldo. Si
+     * entrara en `writable`, el ERP genérico podría colgarle una tarjeta a un
+     * cobro sin tocar su saldo: el pasivo diría que se debe un dinero que ya se
+     * gastó, y el libro de la tarjeta no tendría el movimiento.
+     */
+    /**
+     * SE LEE LA DEFINICIÓN, NO EL FICHERO.
+     *
+     * La primera versión buscaba `/^\s*payment: \{[\s\S]*?^\s*\},/m` en el texto
+     * de `resources.ts`, y lo primero que encuentra ese regex NO es el recurso:
+     * es el `payment: { _limit: 100, ... }` del `expandOne` de la orden, veinte
+     * definiciones más arriba. La guarda miraba un bloque que no tiene `writable`,
+     * así que la mutación que metía `gift_card` en el de verdad sobrevivió.
+     *
+     * `RESOURCES` ya está importado aquí: se le pregunta a él.
+     */
+    expect(RESOURCES.payment.writable, "payment.writable dejó entrar la gift card")
+      .not.toContain("gift_card");
+    // Y los demás campos derivados del cobro tampoco: solo la nota se teclea.
+    expect(RESOURCES.payment.writable, "payment.writable dejó de ser solo la nota")
+      .toEqual(["notes"]);
+  });
+
+  it("la vigencia del plan de pago se mide contra un instante que se le pasa", () => {
+    /**
+     * Es la única regla de `planDePagoConTarjeta` que depende del tiempo. Con el
+     * reloj del sistema por dentro solo se puede probar esperando a que el
+     * calendario coopere, y una prueba que caduca es una prueba que alguien borra
+     * el día que se pone roja sola.
+     */
+    expect(sinComentariosDe("src/lib/gift-cards.ts"), "el plan de pago volvió a leer el reloj a secas")
+      .toMatch(/now = new Date\(\)\s*\)[\s\S]{0,400}?giftCardBlocker\(card, now\)/);
+  });
+});
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════════
+ * NINGUNA REGLA DE DINERO SE MIDE CONTRA EL RELOJ A SECAS
+ *
+ * El 1 de octubre, cinco pruebas del bono de metas que llevaban semanas en verde
+ * se pusieron rojas **solas**: sembraban reservas de septiembre y `awardGoalBonus`
+ * medía el período con `new Date()`, así que al cambiar el mes corriente la meta
+ * dejó de estar cumplida. Nadie había tocado nada.
+ *
+ * Lo malo no es que la prueba caduque: es lo que revela. Una regla que solo se
+ * puede probar si el calendario coopera es una regla que NO está probada, y el día
+ * que se pone roja sola la respuesta más barata es borrarla.
+ *
+ * La misma tarde apareció la segunda: `planDePagoConTarjeta` decidía la vigencia
+ * de una gift card con el reloj por dentro. Dos en el mismo día son un patrón, así
+ * que se vigila por lista: toda decisión de dinero que mire el tiempo recibe el
+ * instante.
+ * ══════════════════════════════════════════════════════════════════════════════
+ */
+describe("ninguna regla de dinero se mide contra el reloj a secas", () => {
+  /** Función → el parámetro con el que se le pasa el instante. */
+  const RECIBEN_EL_INSTANTE: [string, string, string][] = [
+    ["src/lib/gift-cards.ts", "planDePagoConTarjeta", "now = new Date()"],
+    ["src/lib/seller-goals.ts", "rangeOf", "now: Date = new Date()"],
+  ];
+
+  it.each(RECIBEN_EL_INSTANTE)("%s · %s recibe el instante", (fichero, fn, firma) => {
+    const codigo = sinComentariosDe(fichero);
+    const i = codigo.indexOf(`function ${fn}(`);
+    expect(i, `no se encontró ${fn} en ${fichero}`).toBeGreaterThan(-1);
+    // La firma, no el fichero: `new Date()` aparece en medio sitio.
+    expect(codigo.slice(i, i + 700), `${fn} dejó de recibir el instante`).toContain(firma);
+  });
+
+  it("el bono de una meta mide el período con el instante que le dan", () => {
+    /**
+     * `rangeOf(goal)` a secas era el fallo: el bono medía el mes CORRIENTE sin que
+     * quien lo llama pudiera decir cuál. Se exige la llamada con el instante, no
+     * que el parámetro exista: declararlo y no usarlo pasaba la guarda de arriba.
+     */
+    const s = sinComentariosDe("src/lib/seller-goals-service.ts");
+    expect(s, "el bono volvió a medir el período contra el reloj del sistema")
+      .toMatch(/rangeOf\(goal, input\.now\)/);
+    /**
+     * Y se mira DENTRO de `AwardInput`.
+     *
+     * `now?: Date;` también está en las opciones de `goalsWithProgress`, dos
+     * funciones más arriba, así que un regex sobre el fichero sobrevivía a
+     * quitárselo al bono: encontraba el del tablero. Tercera vez en esta sesión
+     * que el nombre existe en otro sitio y la guarda se conforma con eso.
+     */
+    const entrada = /interface AwardInput \{[\s\S]*?\n\}/.exec(s);
+    expect(entrada, "no se encontró AwardInput").toBeTruthy();
+    expect(entrada![0], "el bono ya no admite que le pasen el instante").toContain("now?: Date;");
+  });
+
+  it("y el límite conocido queda escrito donde se decide", () => {
+    /**
+     * Una meta `monthly` no guarda QUÉ mes, así que su bono solo se puede otorgar
+     * dentro del propio mes: el día 1 del siguiente ya se rechaza por «no
+     * cumplida». Eso NO se arregló con una ventana de cortesía inventada —cuántos
+     * días después de cerrar un período se paga su premio es del negocio—, así que
+     * tiene que estar anotado donde se toman esas decisiones. Una limitación que
+     * solo vive en un comentario del servicio es una limitación que nadie decide.
+     */
+    expect(read("docs/audit/PRODUCTION_READINESS.md"), "el límite del bono mensual no está anotado")
+      .toContain("bono de una meta mensual");
   });
 });

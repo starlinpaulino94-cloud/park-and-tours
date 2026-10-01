@@ -178,6 +178,12 @@ export const ACCION: Record<string, string> = {
   gift_card_issued: "Saldo regalo emitido",
   gift_card_redeemed: "Saldo regalo consumido",
   gift_card_refunded: "Saldo regalo devuelto",
+  /**
+   * El que hay que mirar. Se escribe cuando se consumió saldo, el cobro no se
+   * pudo registrar Y la devolución automática también falló: hay un cliente con
+   * menos saldo y una orden sin cobrar, y eso lo arregla una persona.
+   */
+  gift_card_redeem_orphaned: "Saldo regalo consumido sin cobro — hay que devolverlo a mano",
   gift_card_voided: "Saldo regalo anulado",
   seller_bonus_awarded: "Bono otorgado",
   settlement_disputed: "Liquidación disputada por su beneficiario",

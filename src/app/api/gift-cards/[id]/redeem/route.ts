@@ -4,7 +4,7 @@ import { ok, fail, readJson } from "@/lib/api-response";
 import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import {
-  applyRedemption, giftCardBalance, giftCardBlocker, validateAmount,
+  giftCardBalance, giftCardBlocker, planDePagoConTarjeta,
   GIFT_CARD_BLOCK_MESSAGE, type RedeemableGiftCard,
 } from "@/lib/gift-cards";
 import { recordMovement } from "@/lib/gift-card-service";
@@ -38,25 +38,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     requireAtLeast(ctx, "cashier");
 
     const body = await readJson<{ amount?: number; order?: string; notes?: string; currency?: string }>(req);
-    const parsed = validateAmount(body.amount);
-    if ("error" in parsed) throw Object.assign(new Error(parsed.error), { status: 400 });
-
     const card = await tenantFindOne<GiftCardRow>(ctx.companyId, "gift_card", id);
 
-    const blocker = giftCardBlocker(card);
-    if (blocker) throw Object.assign(new Error(GIFT_CARD_BLOCK_MESSAGE[blocker]), { status: 409 });
-
-    // Una tarjeta en dólares no paga una orden en pesos sin una tasa explícita,
-    // y aquí no hay ninguna: mezclar divisas 1:1 descuadraría el saldo.
-    if (body.currency && card.currency && body.currency !== card.currency) {
-      throw Object.assign(
-        new Error(`La tarjeta está en ${card.currency.toUpperCase()} y el cobro en ${body.currency.toUpperCase()}`),
-        { status: 409 }
-      );
-    }
-
-    const plan = applyRedemption(card, parsed.amount);
-    if ("error" in plan) throw Object.assign(new Error(plan.error), { status: 409 });
+    /**
+     * Las tres comprobaciones —importe, estado y moneda— viven en el dominio
+     * desde el 30-sep, porque `/api/payments` hace lo mismo al cobrar una orden
+     * con método `gift_card`. Tenerlas aquí y allí era tener dos definiciones de
+     * «esta tarjeta puede pagar esto», y la que se queda atrás cobra de menos o
+     * acepta una tarjeta cerrada.
+     */
+    const decision = planDePagoConTarjeta(card, body.amount, body.currency);
+    if ("error" in decision) throw Object.assign(new Error(decision.error), { status: decision.status });
+    const plan = decision.plan;
 
     await recordMovement({ companyId: ctx.companyId, userId: ctx.userId }, {
       cardId: id,
@@ -67,11 +60,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       orderId: body.order,
       auditAction: "gift_card_redeemed",
       auditDescription:
-        `Gift card ${card.code || id}: consumidos ${parsed.amount} ${(card.currency || "").toUpperCase()}, ` +
+        `Gift card ${card.code || id}: consumidos ${plan.amount} ${(card.currency || "").toUpperCase()}, ` +
         `saldo restante ${plan.balance_after}`,
     });
 
-    return ok({ amount: parsed.amount, balance: plan.balance_after, status: plan.status, currency: card.currency });
+    return ok({ amount: plan.amount, balance: plan.balance_after, status: plan.status, currency: card.currency });
   } catch (err) {
     return fail(err);
   }

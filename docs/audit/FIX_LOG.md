@@ -7954,3 +7954,169 @@ en el fichero.
 
 La guarda de motores sin puerta se puso en rojo sola. Quedan **dos**, y son los dos
 de menor daño de los trece: ninguno desbloquea a nadie que hoy no pueda trabajar.
+
+---
+
+## El saldo regalo paga una venta (0103)
+
+El sistema sabía emitir gift cards, consumirlas, devolverlas y anularlas desde su
+pantalla, y llevaba su libro de movimientos. Lo que **no** podía hacer era pagar
+una orden con una: `payment_method` (0003) tenía ocho valores y ninguno era la
+tarjeta.
+
+En la práctica el cajero consumía saldo en el cajón de la tarjeta, escribía el
+número de orden en la nota a mano y después cobraba la orden por otro método. Dos
+gestos sin relación: si se olvidaba el segundo, **la orden quedaba impagada con el
+saldo ya gastado**; si se olvidaba el primero, al revés. Y no había nada que lo
+señalara.
+
+### La mitad que no se ve: emitir una gift card no es un ingreso
+
+`LedgerSource` tenía `"gift_card"` **declarado y sin usar**, y la cuenta `2202
+Pasivo por gift cards` estaba en el plan base desde el primer día **sin que ningún
+asiento la tocara**. La emisión no contabilizaba nada.
+
+Eso no se notaba mientras el saldo no se pudiera gastar. Al hacer la tarjeta un
+método de cobro, el consumo empieza a **debitar** 2202 —eso es lo correcto— y sin
+el apunte de la emisión el pasivo se iría a **negativo**: un balance que dice que
+los clientes le deben saldo a la empresa.
+
+```
+Emitir   (postGiftCardIssued):  Dr caja o banco  / Cr 2202
+Consumir (/api/payments):       Dr 2202          / Cr 4101 Ingresos
+```
+
+Es la **única excepción** a la base de efectivo del libro, y no por gusto: al
+emitir entra dinero por un servicio que no se ha dado. Reconocerlo como venta
+infla el mes en que se vendió el plástico y deja vacío el mes en que de verdad se
+viaja. El docstring de `gift-cards.ts` decía justo lo contrario —que 2202 pertenece
+a un modelo de devengo sin implementar y que «por eso estas acciones no asientan»—
+y queda corregido: un comentario que describe el código de hace tres meses es peor
+que no tenerlo.
+
+`cashAccountForMethod` cae a **1102 Bancos** por defecto, así que sin el caso de la
+tarjeta el asiento del cobro habría dicho que entró dinero al banco cuando lo que
+pasó es que la empresa dejó de deber. **Las dos mitades mal a la vez.**
+
+### El saldo regalo no es efectivo y no pasa por caja
+
+Consumir una gift card no mete un peso en el cajón. Meterlo en el arqueo haría que
+el cajero cuadrara contra un dinero que no está, y **a fin de turno le faltaría
+exactamente lo que se pagó con tarjetas**. Por eso `cash_session` se queda a un
+lado en esa rama, y como el apunte de caja solo se escribe si hay sesión, no se
+escribe ninguno.
+
+### Canjear primero y cobrar después, porque es el que se puede deshacer
+
+No hay transacción que abarque las dos escrituras, así que alguna va primero y hay
+que elegir cuál **falla mejor**:
+
+- *Cobrar y luego canjear*: si el canje falla, la orden queda pagada y la tarjeta
+  conserva su saldo. El cliente lo gasta otra vez y la empresa paga dos veces el
+  mismo servicio, **sin que nada lo señale**.
+- *Canjear y luego cobrar*: si el cobro falla, el cliente perdió saldo y la orden
+  sigue impagada. Eso **se puede deshacer**, y aquí se deshace.
+
+La compensación devuelve el saldo **al estado que la tarjeta tenía**, leído de la
+fila. Aquí hubo un `status: "partially_used"` escrito a mano, que marcaba como
+usada una tarjeta que se queda intacta: el cliente habría visto su tarjeta tocada
+por un cobro que no ocurrió. Y si la compensación **también** falla, se grita
+—auditoría `gift_card_redeem_orphaned` con severidad de aviso y el error
+original—, porque entonces hay saldo consumido sin cobro y eso lo arregla una
+persona.
+
+### Una sola definición de «¿puede esta tarjeta pagar esto?»
+
+Hay dos consumidores: la acción del cajón y el cobro de una orden. Las tres
+comprobaciones —tarjeta utilizable, importe válido, moneda igual— tenían que estar
+en los dos. Copiarlas era la salida fácil y es el fallo que esta rama lleva
+cerrando: con dos definiciones, la que se queda atrás **cobra de menos, cobra una
+tarjeta cerrada, o mezcla divisas 1:1**.
+
+`planDePagoConTarjeta` es esa definición, y la llaman los dos. **También el punto
+de venta**, para no ofrecer un cobro que la ruta rechaza ni esconder uno que
+aceptaría.
+
+### Dos cosas que se encontraron leyendo, no buscándolas
+
+1. **Un reembolso con método gift card restaba saldo.** La rama consume con
+   `applyRedemption` y `conTarjeta` solo mira el método, así que un `refund` o una
+   nota de crédito entraban por el mismo sitio: a quien se le devuelve dinero se
+   le **quitaba** saldo, y el libro de la tarjeta lo apuntaba como «consumido». Se
+   rechaza con 400 y se manda a la puerta que existe para eso
+   (`/api/gift-cards/:id/refund`, con su techo de lo emitido). Decidir aquí a qué
+   tarjeta va y cuánto cabe sería inventar.
+2. **Una tarjeta inexistente daba un 500.** `tenantFindOne` devuelve `null` para
+   una tarjeta ajena o inventada, y el dominio reventaba leyéndole el estado: una
+   traza de fallo interno para un identificador mal escrito. Ahora es un 404.
+
+### El disparador que iba a encoger, cazado por una guarda propia
+
+`create trigger` **no añade: sustituye.** La primera versión de 0103 registraba
+`ledger_entry_same_tenant_refs` con solo `gift_card_id`, lo que habría **quitado
+las ocho referencias que 0095 vigilaba** —el pago, la orden, la cuenta, el arqueo,
+el gasto, la cuenta por pagar, la cuenta por cobrar y la liquidación—, reabriendo
+en esa tabla el agujero que DB-001 cerró, sin que nada lo dijera.
+
+Lo cazó la guarda «un disparador de inquilino no puede encoger», escrita en DB-001
+precisamente porque el mismo error ya había pasado con `pickup`. Van las nueve.
+
+Y la mutación encontró el hueco que quedaba: **esa guarda solo lee
+`supabase/migrations/`**, y lo que se pega en producción es `supabase/editor/`. La
+copia podía encoger el disparador con el repositorio en verde. Guarda nueva: las
+dos registran las mismas columnas, y son nueve.
+
+### Mutación: 40, cero supervivientes — pero cinco al primer intento
+
+| # | sobrevivió porque | donde ya había pasado |
+| --- | --- | --- |
+| G07 | el regex buscaba `payment_type === "refund" \|\| ... "credit_note"`, que aparece **seis veces** en la ruta | 6ª vez |
+| G21 | `/^\s*payment: \{/m` encontraba el `payment:` del `expandOne` de la orden, **veinte definiciones antes** que el recurso | nueva variante |
+| G11 | la severidad que se comprobaba era la del **huérfano**, no la de la devolución: dos escrituras distintas | — |
+| G35 | la guarda del disparador solo leía las migraciones, no la copia que se pega | — |
+| R04 | `now?: Date;` también está en las opciones de `goalsWithProgress`, **dos funciones más arriba** | 7ª vez |
+
+Cuatro de las cinco son **el mismo error**: la guarda busca un **nombre** y el
+nombre existe en otro sitio del mismo fichero, así que la mutación se lo lleva y el
+regex encuentra el otro. Lo que funciona es anclar a la **sentencia** —la condición
+con su `throw` pegado, el `case` con su `return`, la interfaz con sus campos— o
+preguntarle al objeto en vez de al texto: `RESOURCES.payment.writable` en lugar de
+un regex sobre `resources.ts`.
+
+### Y una que apareció sola: el 1 de octubre
+
+A mitad de la ola, **cinco pruebas del bono de metas que llevaban semanas en verde
+se pusieron rojas sin que nadie tocara nada**. Sembraban reservas de septiembre y
+`awardGoalBonus` medía el período con `new Date()`: al cambiar el mes corriente, la
+meta dejó de estar cumplida.
+
+Lo malo no es que la prueba caduque, es lo que revela. Una regla que solo se puede
+probar si el calendario coopera **no está probada**, y el día que se pone roja sola
+la respuesta más barata es borrarla. La misma tarde apareció la segunda:
+`planDePagoConTarjeta` decidía la vigencia de una gift card con el reloj por
+dentro. Dos en el mismo día son un patrón, así que ahora se vigila **por lista**.
+
+Debajo había una limitación real que el código tomó por accidente: **el bono de una
+meta mensual solo se puede otorgar dentro del propio mes.** Una meta `monthly` no
+guarda QUÉ mes —`period_from`/`period_to` solo existen para el período `range`—, así
+que el día 1 del siguiente el rango se movió, las ventas del mes cerrado no cuentan
+y el premio del mes que acaba de terminar **no se puede pagar**, que es justo cuando
+se pagan los premios.
+
+**No se ha inventado una ventana de cortesía.** Cuántos días después de cerrar un
+período se paga su premio es una decisión de la empresa, no un efecto colateral de
+arreglar una prueba. Queda anotada en el informe de producción, con la vía que ya
+funciona: el período `range`, con sus dos fechas escritas, que no se mueve.
+
+### Lo que falta y no es mío
+
+La **0103 hay que pegarla**: tres ficheros nuevos en `supabase/editor/` (la parte 1
+es solo el método de cobro; la 3 es la verificación, y **su fila 4 es la
+importante**, la que dice si el disparador del asiento sigue vigilando sus nueve
+referencias). Añadida a `SQL_PENDIENTE.md` como pasos **48, 49 y 50**, y al CI con
+sus dos controles negativos — porque una verificación que nadie ha visto acusar no
+verifica.
+
+`tsc`, `eslint`, **4351/4351** y `build` en verde.
+
+Quedan **dos** motores sin puerta, los dos de menor daño de los trece.

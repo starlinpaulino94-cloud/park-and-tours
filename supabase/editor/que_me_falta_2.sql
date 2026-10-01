@@ -30,7 +30,8 @@ with u(mig,tipo,nom,huella) as (values
   ('0099','col','departure.hold_pax',''),
   ('0100','fn','public.release_allotment_seats',''),
   ('0101','idx','ledger_entry_una_vez_por_turno_idx',''),
-  ('0102','trg','work_order_same_tenant_refs','')
+  ('0102','trg','work_order_same_tenant_refs',''),
+  ('0103','idx','ledger_entry_gift_card_idx','')
 ), v as (
   select u.mig,
          case u.tipo

@@ -121,6 +121,7 @@ COPIAS_QUE_SE_REPITEN=(
   "0089:-:0089_parte_3_verificacion.sql"
   "0098:0098_parte_1.sql:0098_parte_2_verificacion.sql"
   "0102:0102_parte_[123].sql:0102_parte_4_verificacion.sql"
+  "0103:0103_parte_[12].sql:0103_parte_3_verificacion.sql"
 )
 echo "→ las copias del editor que aguantan repetirse"
 for entrada in "${COPIAS_QUE_SE_REPITEN[@]}"; do
@@ -179,6 +180,8 @@ CAZA_VERIFICACION=(
   "0089:alter table settlement drop column supplier_ncf:settlement.supplier_ncf"
   "0098:alter table membego_customer drop column membership_status:columna membership_status"
   "0102:drop trigger task_same_tenant_refs on task:disparadores de 0102"
+  "0103:alter table payment drop column gift_card_id cascade:de que tarjeta salio el saldo"
+  "0103:drop trigger ledger_entry_same_tenant_refs on ledger_entry:el asiento comprueba sus 9 referencias"
 )
 echo "→ rompiendo a propósito, para ver si la verificación se entera"
 for entrada in "${CAZA_VERIFICACION[@]}"; do

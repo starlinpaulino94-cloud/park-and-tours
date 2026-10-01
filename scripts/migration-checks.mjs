@@ -771,4 +771,20 @@ export const MIGRATION_CHECKS = [
       ["departure", ["hold_pax", "hold_until"]],
     ],
   },
+  {
+    migration: "0103 — el saldo regalo se puede gastar",
+    columns: [
+      // Sin `payment.gift_card_id` un cobro con método `gift_card` no dice de
+      // qué tarjeta salió el saldo: el pasivo 2202 no se concilia tarjeta por
+      // tarjeta y un reembolso de ese cobro no sabe a dónde devolverlo. Sin
+      // `ledger_entry.gift_card_id` el apunte de la emisión deja de ser
+      // idempotente, y un asiento de dinero que se puede duplicar no es un
+      // detalle. Las dos faltan hasta que alguien pegue la 0103, así que el
+      // verificador tiene que preguntarlas antes de dar el despliegue por bueno.
+      ["payment", ["gift_card_id"]],
+      ["ledger_entry", ["gift_card_id"]],
+    ],
+    // El valor nuevo del enum y los dos disparadores los lee
+    // `0103_parte_3_verificacion.sql`.
+  },
 ];

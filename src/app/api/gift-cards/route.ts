@@ -6,6 +6,7 @@ import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { newGiftCardCode } from "@/lib/codes";
 import { applyIssue, validateAmount } from "@/lib/gift-cards";
 import { recordMovement } from "@/lib/gift-card-service";
+import { postGiftCardIssued } from "@/lib/ledger-events";
 import type { Currency } from "@/lib/types";
 
 interface GiftCardRow { _id: string; code?: string }
@@ -29,6 +30,8 @@ export async function POST(req: NextRequest) {
       amount?: number; currency?: Currency; code?: string; expires_at?: string;
       recipient_name?: string; recipient_email?: string; message?: string;
       delivery_channel?: string; customer?: string; order?: string; product?: string; notes?: string;
+      /** Con qué pagó el cliente la tarjeta: decide la contrapartida del asiento. */
+      paid_with?: string;
     }>(req);
 
     const parsed = validateAmount(body.amount);
@@ -66,6 +69,30 @@ export async function POST(req: NextRequest) {
       orderId: body.order,
       auditAction: "gift_card_issued",
       auditDescription: `Gift card ${card.code} emitida por ${parsed.amount} ${currency.toUpperCase()}`,
+    });
+
+    /**
+     * Y LA DEUDA QUEDA EN LOS LIBROS (0103).
+     *
+     * Emitir no es un ingreso: el dinero entró pero el servicio no se ha dado.
+     * `Dr caja o banco / Cr 2202 Pasivo por gift cards`. El ingreso se reconoce
+     * al consumir la tarjeta, que es lo que hace el asiento del cobro.
+     *
+     * La cuenta 2202 estaba en el plan base desde el primer día y nada la tocaba.
+     * Sin este apunte, ahora que el consumo la debita, el pasivo se iría a
+     * negativo.
+     *
+     * Mejor esfuerzo, como el resto de la contabilidad: el saldo ya está emitido
+     * y tumbar la emisión por no poder contabilizar convertiría un problema de
+     * libros en una tarjeta que el cliente pagó y no existe.
+     */
+    await postGiftCardIssued(ctx.companyId, {
+      giftCardId: card._id,
+      amount: parsed.amount,
+      // Con qué pagó el cliente la tarjeta. Sin dato, el asiento va a banco.
+      method: body.paid_with || null,
+      currency,
+      userId: ctx.userId,
     });
 
     console.log(`[gift-cards] emitida ${card.code} por ${parsed.amount} ${currency}`);

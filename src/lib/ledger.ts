@@ -33,7 +33,9 @@ export interface PostingInput {
   /** Links back to the business document that caused the posting. */
   refs?: Partial<Record<
     "order" | "payment" | "invoice" | "settlement" | "expense" | "payable" |
-    "receivable" | "purchase_order" | "stock_movement" | "cash_session", string
+    "receivable" | "purchase_order" | "stock_movement" | "cash_session" |
+    /** 0103: el asiento de emisión apunta a la tarjeta, y así es idempotente. */
+    "gift_card", string
   >>;
   userId?: string;
 }

@@ -17,6 +17,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { CHANNEL, DEPARTURE_STATUS, MODALITY_TYPE, PAYMENT_METHOD } from "@/lib/labels";
+import { giftCardBalance, giftCardBlocker, planDePagoConTarjeta } from "@/lib/gift-cards";
 import { formatDate, formatMoney, formatNumber, formatTime, toDateInput } from "@/lib/format";
 import { optionsFrom } from "@/components/tf/options";
 import { MembegoBenefits } from "./_components/membego-benefits";
@@ -158,6 +159,17 @@ interface Quote {
 let uidCounter = 0;
 const nextUid = () => `item-${++uidCounter}`;
 
+/** Lo que el POS necesita saber de una tarjeta para cobrar con ella. */
+interface GiftCardPagable {
+  _id: string;
+  code?: string;
+  status?: string;
+  balance?: number;
+  currency?: string;
+  expires_at?: string;
+  recipient_name?: string;
+}
+
 export default function PosPage() {
   const router = useRouter();
   const [ctx, setCtx] = useState<PosContext | null>(null);
@@ -203,6 +215,15 @@ export default function PosPage() {
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState("cash");
   const [payReceived, setPayReceived] = useState(""); // efectivo entregado, solo para calcular el cambio
+  /**
+   * LAS TARJETAS CON LAS QUE SE PUEDE PAGAR (0103).
+   *
+   * Se cargan al elegir el método, no al abrir el POS: la mayoría de los cobros
+   * no son con tarjeta y una lectura por venta que casi nunca se usa es una
+   * lectura de más en la pantalla que más se abre del sistema.
+   */
+  const [giftCards, setGiftCards] = useState<GiftCardPagable[] | null>(null);
+  const [giftCardId, setGiftCardId] = useState("");
 
   const loadContext = useCallback(async () => {
     setLoading(true);
@@ -587,14 +608,91 @@ export default function PosPage() {
     setWaitlistFor(null);
   };
 
+  /**
+   * Las tarjetas utilizables, con el MISMO criterio que el servidor.
+   *
+   * `giftCardBlocker` es el que decide si una tarjeta se puede consumir —cerrada,
+   * vencida o sin saldo—, y es el que va a aplicar `/api/payments`. Filtrar aquí
+   * con otra regla ofrecería tarjetas que el servidor rechaza, o esconde tarjetas
+   * que sí valen.
+   */
+  const cargarGiftCards = useCallback(async () => {
+    const res = await api.get<GiftCardPagable[]>("/api/erp/gift_card?limit=200&sort=-issued_at");
+    if (!res.ok) {
+      console.error("[pos] no se pudieron cargar las gift cards:", res.error);
+      setGiftCards([]);
+      return;
+    }
+    setGiftCards((res.data || []).filter((c) => giftCardBlocker(c) === null));
+  }, []);
+
+  useEffect(() => {
+    if (payMethod === "gift_card" && giftCards === null) void cargarGiftCards();
+  }, [payMethod, giftCards, cargarGiftCards]);
+
+  /** La elegida, para poder topar el importe a su saldo. */
+  const giftCardElegida = (giftCards || []).find((c) => c._id === giftCardId) || null;
+  const saldoDeLaTarjeta = giftCardElegida ? giftCardBalance(giftCardElegida) : 0;
+
+  // La moneda del mostrador: la de la cotización en curso, o la de la empresa.
+  const currency = quote?.currency || ctx?.currency || "usd";
+
+  // Ayudas del cobro tras la venta.
+  const canPayCash = Boolean(ctx?.cash_session);
+  // El beneficio de MembeGo rebaja la venta DESPUÉS de crearla, así que el
+  // importe a cobrar no puede quedarse con el total del momento de la venta: el
+  // cajero cobraría de más un descuento que sí se aplicó.
+  const orderTotal = benefitTotal ?? Number(payFor?.order?.total ?? 0);
+  const payAmountNum = Number(payAmount) || 0;
+  const receivedNum = Number(payReceived) || 0;
+  const cashChange = payMethod === "cash" && receivedNum > payAmountNum ? receivedNum - payAmountNum : 0;
+  const pendingAfter = orderTotal > 0 && payAmountNum > 0 && payAmountNum < orderTotal ? orderTotal - payAmountNum : 0;
+
+  /** La moneda del cobro, que es la de la orden y no la del mostrador. */
+  const monedaDelCobro = String(payFor?.order?.currency || currency || "");
+
+  /**
+   * POR QUÉ NO SE PUEDE COBRAR TODAVÍA, EN UNA SOLA CUENTA.
+   *
+   * El botón y el aviso salen de aquí, y `registerPayment` comprueba lo mismo
+   * antes de mandar: un botón que se apaga sin decir por qué parece una pantalla
+   * colgada, y un aviso que no apaga el botón es un aviso que nadie lee.
+   *
+   * La parte de la tarjeta NO se vuelve a escribir: se le pregunta a
+   * `planDePagoConTarjeta`, que es la misma función que va a decidir en el
+   * servidor. Así el mostrador no puede ofrecer un cobro que la ruta rechaza, ni
+   * esconder uno que aceptaría.
+   */
+  const impedimentoDeCobro: string | null = (() => {
+    if (payMethod === "cash" && !canPayCash) {
+      return "Abre una caja para cobrar en efectivo, o elige otro método.";
+    }
+    if (payMethod !== "gift_card") return null;
+    if (giftCards === null) return "Buscando las tarjetas con saldo…";
+    if (giftCards.length === 0) return "No hay ninguna gift card con saldo utilizable.";
+    if (!giftCardElegida) return "Elige de qué tarjeta sale el saldo.";
+    const plan = planDePagoConTarjeta(giftCardElegida, payAmountNum, monedaDelCobro);
+    return "error" in plan ? plan.error : null;
+  })();
+
+  /**
+   * Cerrar el cobro sin cobrar.
+   *
+   * La tarjeta elegida NO puede sobrevivir al diálogo: si se queda, la venta
+   * siguiente abre el método de pago con una tarjeta ya seleccionada que no tiene
+   * nada que ver con ella, y basta un clic de más para cobrarle a un tercero.
+   */
+  const cerrarCobro = () => {
+    setPayFor(null);
+    setCustomerId("");
+    setGiftCardId("");
+  };
+
   const registerPayment = async () => {
     if (!payFor) return;
     const amount = Number(payAmount);
     if (!Number.isFinite(amount) || amount <= 0) { toast.error("El importe debe ser mayor que cero"); return; }
-    if (payMethod === "cash" && !ctx?.cash_session) {
-      toast.error("Abre una caja para cobrar en efectivo, o elige otro método");
-      return;
-    }
+    if (impedimentoDeCobro) { toast.error(impedimentoDeCobro); return; }
     setBusy(true);
     const res = await api.post<{
       factura?: { id: string; ncf: string | null } | null;
@@ -604,6 +702,8 @@ export default function PosPage() {
       amount,
       method: payMethod,
       payment_type: "payment",
+      // De qué tarjeta sale el saldo. Sin esto el servidor rechaza con 400.
+      ...(payMethod === "gift_card" ? { gift_card_id: giftCardId } : {}),
     });
     setBusy(false);
     if (!res.ok) {
@@ -646,6 +746,9 @@ export default function PosPage() {
     setBenefitTotal(null);
     setPayReceived("");
     setCustomerId("");
+    // La tarjeta se olvida y la lista también: su saldo acaba de cambiar.
+    setGiftCardId("");
+    setGiftCards(null);
   };
 
   const filteredCatalog = useMemo(() => {
@@ -656,7 +759,6 @@ export default function PosPage() {
     );
   }, [ctx, productSearch]);
 
-  const currency = quote?.currency || ctx?.currency || "usd";
   const selectedCustomer = customers.find((c) => c._id === customerId);
   const hasBlockingError = (quote?.lines || []).some((l) => l.error);
   const overCapacity = cart.some((i) => {
@@ -665,17 +767,6 @@ export default function PosPage() {
     const libres = plazasLibres(dep);
     return libres !== null && i.adults + i.children + i.infants > libres;
   });
-
-  // Ayudas del cobro tras la venta.
-  const canPayCash = Boolean(ctx?.cash_session);
-  // El beneficio de MembeGo rebaja la venta DESPUÉS de crearla, así que el
-  // importe a cobrar no puede quedarse con el total del momento de la venta: el
-  // cajero cobraría de más un descuento que sí se aplicó.
-  const orderTotal = benefitTotal ?? Number(payFor?.order?.total ?? 0);
-  const payAmountNum = Number(payAmount) || 0;
-  const receivedNum = Number(payReceived) || 0;
-  const cashChange = payMethod === "cash" && receivedNum > payAmountNum ? receivedNum - payAmountNum : 0;
-  const pendingAfter = orderTotal > 0 && payAmountNum > 0 && payAmountNum < orderTotal ? orderTotal - payAmountNum : 0;
 
   return (
     <div className="space-y-5">
@@ -1374,7 +1465,7 @@ export default function PosPage() {
       </Dialog>
 
       {/* ---- collect right after the sale -------------------------------- */}
-      <Dialog open={!!payFor} onOpenChange={(v) => !v && setPayFor(null)}>
+      <Dialog open={!!payFor} onOpenChange={(v) => !v && cerrarCobro()}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Venta {payFor?.order?.order_number} registrada</DialogTitle>
@@ -1443,6 +1534,55 @@ export default function PosPage() {
                 </Select>
               </div>
 
+              {/**
+                * DE QUÉ TARJETA SALE EL SALDO.
+                *
+                * Se enseña el código y el saldo de cada una: sin el saldo delante,
+                * elegir tarjeta es adivinar cuál llega para esta venta. Y se
+                * ofrece el importe exacto del saldo cuando el cobro lo pasa,
+                * porque el caso normal de una tarjeta corta es cobrar todo lo que
+                * queda y el resto con otro método.
+                */}
+              {payMethod === "gift_card" && (
+                <div className="space-y-1.5 sm:col-span-2">
+                  <Label>Gift card</Label>
+                  <Select value={giftCardId} onValueChange={setGiftCardId}
+                    disabled={giftCards === null || giftCards.length === 0}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={
+                        giftCards === null ? "Buscando tarjetas…"
+                          : giftCards.length === 0 ? "No hay tarjetas con saldo"
+                          : "Elige la tarjeta"
+                      } />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(giftCards || []).map((c) => (
+                        <SelectItem key={c._id} value={c._id}>
+                          {c.code || c._id.slice(0, 8)} · {formatMoney(giftCardBalance(c), c.currency || monedaDelCobro)}
+                          {c.recipient_name ? ` · ${c.recipient_name}` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {giftCardElegida && (
+                    <div className="flex items-center justify-between text-[13px]">
+                      <span className="text-muted-foreground">
+                        Saldo disponible{" "}
+                        <span className="tf-num font-semibold text-foreground">
+                          {formatMoney(saldoDeLaTarjeta, giftCardElegida.currency || monedaDelCobro)}
+                        </span>
+                      </span>
+                      {payAmountNum !== saldoDeLaTarjeta && saldoDeLaTarjeta > 0 && (
+                        <button type="button" className="text-xs font-semibold text-primary hover:underline"
+                          onClick={() => setPayAmount(String(saldoDeLaTarjeta))}>
+                          Cobrar todo el saldo
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Cambio en efectivo: el "recibido" es solo para calcular la vuelta. */}
               {payMethod === "cash" && (
                 <div className="space-y-1.5">
@@ -1463,6 +1603,12 @@ export default function PosPage() {
               )}
             </div>
 
+            {impedimentoDeCobro && (
+              <p className="rounded-lg bg-rose-50 px-3 py-2 text-[13px] text-rose-900 dark:bg-rose-950/40 dark:text-rose-100">
+                {impedimentoDeCobro}
+              </p>
+            )}
+
             {pendingAfter > 0 && (
               <p className="rounded-lg bg-amber-50 px-3 py-2 text-[13px] text-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
                 Cobro parcial: quedará un saldo pendiente de {formatMoney(pendingAfter, payFor?.order?.currency || currency)}.
@@ -1470,8 +1616,8 @@ export default function PosPage() {
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setPayFor(null); setCustomerId(""); }}>Cobrar más tarde</Button>
-            <Button onClick={registerPayment} disabled={busy || (payMethod === "cash" && !canPayCash)}>
+            <Button variant="outline" onClick={cerrarCobro}>Cobrar más tarde</Button>
+            <Button onClick={registerPayment} disabled={busy || impedimentoDeCobro !== null}>
               {busy ? "Cobrando…" : "Cobrar ahora"}
             </Button>
           </DialogFooter>

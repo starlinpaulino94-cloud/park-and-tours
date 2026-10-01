@@ -38,6 +38,23 @@ function cashAccountForMethod(method?: string | null): string {
       return "1102"; // Bancos
     case "cash":
       return "1101"; // Caja general
+    /**
+     * LA GIFT CARD NO ES CAJA: ES UN PASIVO QUE BAJA.
+     *
+     * Sin este caso caería en el `default` —Bancos— y el asiento diría que entró
+     * dinero al banco cuando lo que ocurrió es que la empresa dejó de deberle al
+     * portador. El efectivo quedaría inflado y el pasivo por gift cards, intacto
+     * para siempre: las dos mitades mal a la vez.
+     *
+     * Con 2202 el asiento del cobro sale solo y correcto:
+     *   Dr 2202 Pasivo por gift cards / Cr 4101 Ingresos.
+     *
+     * El otro lado —emitir— lo pone `postGiftCardIssued`: Dr caja / Cr 2202. Sin
+     * ese, este débito dejaría el pasivo en NEGATIVO, que es un balance que no
+     * significa nada.
+     */
+    case "gift_card":
+      return "2202"; // Pasivo por gift cards
     default:
       return "1102"; // conservative default: bank
   }
@@ -109,6 +126,79 @@ export async function postPayment(companyId: string, input: PaymentLedgerInput):
     });
   } catch (err) {
     console.error("[ledger] postPayment falló (no crítico):", err);
+  }
+}
+
+export interface GiftCardIssueLedgerInput {
+  giftCardId: string;
+  amount: number;
+  /** Con qué se pagó la tarjeta al comprarla. */
+  method?: string | null;
+  currency?: string | null;
+  exchangeRate?: number | null;
+  userId?: string;
+}
+
+/**
+ * EMITIR UNA GIFT CARD NO ES UN INGRESO: ES UNA DEUDA.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * EL LADO QUE FALTABA
+ *
+ * `LedgerSource` tenía `"gift_card"` declarado y **sin usar**: la emisión no
+ * contabilizaba nada. La cuenta `2202 Pasivo por gift cards` existía en el plan
+ * base desde el primer día y ningún asiento la tocaba.
+ *
+ * Eso no se notaba mientras el saldo no se pudiera gastar. Al hacer la tarjeta un
+ * método de cobro, el consumo empieza a DEBITAR 2202 —eso es lo correcto— y sin
+ * este apunte el pasivo se iría a negativo: un balance que dice que los clientes
+ * le deben saldo a la empresa.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POR QUÉ NO ES INGRESO AL EMITIR
+ *
+ * El dinero entró, pero el servicio no se ha dado. Reconocerlo como venta al
+ * emitir infla el resultado del mes en que se vendió la tarjeta y lo deja vacío
+ * el mes en que de verdad se viaja. El ingreso se reconoce al CONSUMIRLA, que es
+ * lo que hace el asiento del cobro: Dr 2202 / Cr 4101.
+ *
+ *   Emitir:  Dr caja o banco   / Cr 2202 (deuda con el portador)
+ *   Consumir: Dr 2202          / Cr 4101 (ahora sí, ingreso)
+ *
+ * Las dos mitades se cierran y el pasivo refleja en todo momento cuánto saldo
+ * vendido queda sin usar — que es la cifra que un contador pide a fin de año.
+ */
+export async function postGiftCardIssued(
+  companyId: string,
+  input: GiftCardIssueLedgerInput
+): Promise<void> {
+  try {
+    const amount = Math.round((Number(input.amount) + Number.EPSILON) * 100) / 100;
+    if (!(amount > 0)) return;
+    if (await alreadyPosted(companyId, "gift_card", "gift_card", input.giftCardId)) return;
+
+    await ensureChart(companyId);
+    /**
+     * El método es con qué PAGÓ el cliente la tarjeta, no la tarjeta misma. Si
+     * llegara `gift_card` —pagar una gift card con otra gift card— el asiento
+     * saldría 2202 contra 2202 y no diría nada, así que se cae a banco.
+     */
+    const cobrado = input.method === "gift_card" ? "1102" : cashAccountForMethod(input.method);
+
+    await post(companyId, {
+      source: "gift_card",
+      currency: input.currency || undefined,
+      exchangeRate: input.exchangeRate ?? 1,
+      userId: input.userId,
+      refs: { gift_card: input.giftCardId },
+      memo: "Emisión de gift card",
+      lines: [
+        { account: cobrado, debit: amount, memo: "Cobro de la gift card" },
+        { account: "2202", credit: amount, memo: "Saldo vendido y sin usar" },
+      ],
+    });
+  } catch (err) {
+    console.error("[ledger] postGiftCardIssued falló (no crítico):", err);
   }
 }
 

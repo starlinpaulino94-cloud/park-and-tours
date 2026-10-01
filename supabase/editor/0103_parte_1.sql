@@ -1,0 +1,21 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 0103 · EL SALDO REGALO SE PUEDE GASTAR — PARTE 1 DE 2
+--
+-- Pega esta parte entera en el editor SQL de Supabase y dale a «Run». Se puede
+-- repetir sin daño: `add value if not exists` no falla si ya está.
+--
+-- QUÉ HACE: añade `gift_card` a los métodos de cobro. Hasta ahora el tipo
+-- `payment_method` (0003) tenía ocho valores y ninguno era la tarjeta, así que
+-- el saldo emitido no podía pagar una orden: el cajero lo consumía en el cajón
+-- de la tarjeta, apuntaba el número de orden a mano y cobraba la orden por otro
+-- método. Dos gestos sin relación — si se olvidaba el segundo, la orden quedaba
+-- impagada con el saldo ya gastado.
+--
+-- POR QUÉ VA SOLA EN SU PROPIO «RUN»: Postgres admite `alter type ... add
+-- value` dentro de una transacción con una condición — el valor nuevo no se
+-- puede USAR en esa misma transacción. Nada de la parte 2 lo usa, así que las
+-- dos juntas también funcionarían; se separan para que el día que la parte 2
+-- crezca y necesite el valor, no haya que acordarse de esto.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+alter type payment_method add value if not exists 'gift_card';

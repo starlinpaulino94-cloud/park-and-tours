@@ -16,6 +16,8 @@ import { assertSameOriginMutation } from "@/lib/csrf";
 import { assertRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import type { CashSession, Currency, Order, PaymentMethod, Receivable } from "@/lib/types";
 import { flushOutboxAfterResponse } from "@/lib/messaging/flush";
+import { planDePagoConTarjeta, type RedeemableGiftCard } from "@/lib/gift-cards";
+import { recordMovement } from "@/lib/gift-card-service";
 
 /**
  * POST /api/payments — registers a payment/refund, updates the order and
@@ -34,6 +36,8 @@ export async function POST(req: NextRequest) {
       payment_type?: "payment" | "refund" | "deposit" | "credit_note";
       cash_session_id?: string; reference?: string; notes?: string; paid_at?: string;
       allow_overpay?: boolean;
+      /** 0103. Con `method: "gift_card"`, de qué tarjeta sale el saldo. */
+      gift_card_id?: string;
     }>(req);
 
     const amount = Number(body.amount);
@@ -101,8 +105,21 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    /**
+     * EL SALDO REGALO NO ES EFECTIVO Y NO PASA POR CAJA (0103).
+     *
+     * Consumir una gift card no mete un peso en el cajón: extingue una deuda que
+     * la empresa ya cobró el día que vendió la tarjeta. Meterlo en el arqueo
+     * haría que el cajero cuadrara contra un dinero que no está, y a fin de turno
+     * le faltaría exactamente lo que se pagó con tarjetas.
+     *
+     * Por eso `cash_session` se queda a un lado: más abajo el apunte de caja solo
+     * se escribe si hay sesión, así que con esto no se escribe ninguno.
+     */
+    const conTarjeta = body.method === "gift_card";
+
     // An open cash session is required for cash movements.
-    let cashSessionId = body.cash_session_id || null;
+    let cashSessionId = conTarjeta ? null : body.cash_session_id || null;
     if (!cashSessionId && body.method === "cash") {
       const open = await tenantQuery<CashSession>(ctx.companyId, "cash_session", {
         _filter: { user: ctx.userId, status: "open" }, _limit: 1, _sort: { createdAt: "desc" },
@@ -143,7 +160,127 @@ export async function POST(req: NextRequest) {
       (order && typeof order.partner === "object" ? order.partner?._id : order?.partner) ||
       null;
 
-    const payment = await tenantCreate(ctx.companyId, "payment", {
+    /**
+     * ────────────────────────────────────────────────────────────────────────
+     * EL CANJE Y EL COBRO SON UNA SOLA OPERACIÓN (0103)
+     *
+     * Antes de esta entrega el saldo emitido no podía pagar una orden: se
+     * consumía en el cajón de la tarjeta y se cobraba la orden por otro método,
+     * dos gestos sin relación. Si se olvidaba el segundo, la orden quedaba
+     * impagada con el saldo ya gastado.
+     *
+     * ¿POR QUÉ SE CANJEA PRIMERO Y NO DESPUÉS?
+     *
+     * No hay transacción que abarque las dos escrituras, así que alguna va
+     * primero y hay que elegir cuál falla mejor:
+     *
+     *  · Cobrar y luego canjear: si el canje falla, la orden queda pagada y la
+     *    tarjeta conserva su saldo. El cliente puede gastarlo otra vez y la
+     *    empresa paga dos veces el mismo servicio, **sin que nada lo señale**.
+     *  · Canjear y luego cobrar: si el cobro falla, el cliente perdió saldo y la
+     *    orden sigue impagada. Eso **se puede deshacer**, y aquí se deshace:
+     *    `applyRefund` existe justo para esto y el movimiento de devolución
+     *    queda en el libro de la tarjeta con su motivo.
+     *
+     * Se elige el que se puede compensar. Y si la compensación TAMBIÉN falla se
+     * grita —auditoría con severidad de aviso y el error original—, porque
+     * entonces hay un saldo consumido sin cobro y eso lo tiene que arreglar una
+     * persona.
+     */
+    let tarjeta: (RedeemableGiftCard & { _id: string; code?: string; currency?: string }) | null = null;
+    let canjeado = 0;
+    if (conTarjeta) {
+      /**
+       * DEVOLVER NO ES COBRAR AL REVÉS: AQUÍ SOLO SE COBRA.
+       *
+       * Esta rama consume saldo con `applyRedemption`, y un `refund` o una nota
+       * de crédito con `method: "gift_card"` entraría por el mismo sitio: al
+       * cliente que se le devuelve dinero se le RESTARÍA saldo, en la dirección
+       * contraria a lo que se le prometió, y el apunte del libro de la tarjeta
+       * diría «consumido» para una operación que le debía dinero.
+       *
+       * La devolución a tarjeta existe y tiene su puerta —`applyRefund` y
+       * `/api/gift-cards/:id/refund`—, con su propio techo (no puede devolver
+       * más de lo emitido). Se manda allí en vez de adivinar aquí a qué tarjeta
+       * va y cuánto cabe.
+       */
+      if (body.payment_type === "refund" || body.payment_type === "credit_note") {
+        throw Object.assign(
+          new Error(
+            "Un reembolso con método gift card consumiría saldo en vez de devolverlo. " +
+            "Devuelve el saldo desde la ficha de la tarjeta y registra el reembolso con otro método."
+          ),
+          { status: 400 }
+        );
+      }
+      if (!body.gift_card_id) {
+        throw Object.assign(new Error("Indica la gift card de la que sale el saldo"), { status: 400 });
+      }
+      tarjeta = await tenantFindOne(ctx.companyId, "gift_card", body.gift_card_id);
+      /**
+       * Sin esto, una tarjeta inexistente —o de otra empresa, que desde aquí es
+       * lo mismo— llegaba como `null` al dominio y reventaba leyéndole el estado:
+       * un 500 en lugar de un «no existe», y con la traza de un fallo interno
+       * para lo que es un identificador equivocado.
+       */
+      if (!tarjeta) {
+        throw Object.assign(new Error("Esa gift card no existe"), { status: 404 });
+      }
+
+      // Las mismas tres comprobaciones que la acción del cajón, en el dominio.
+      const decision = planDePagoConTarjeta(tarjeta, amount, currency);
+      if ("error" in decision) {
+        throw Object.assign(new Error(decision.error), { status: decision.status });
+      }
+
+      await recordMovement({ companyId: ctx.companyId, userId: ctx.userId }, {
+        cardId: body.gift_card_id,
+        label: tarjeta.code || body.gift_card_id,
+        plan: decision.plan,
+        currency: tarjeta.currency,
+        notes: body.notes,
+        orderId: orderId || undefined,
+        auditAction: "gift_card_redeemed",
+        auditDescription:
+          `Gift card ${tarjeta.code || body.gift_card_id}: consumidos ${amount} ` +
+          `${currency.toUpperCase()} para cobrar ${order?.order_number ?? orderId ?? "una venta"}, ` +
+          `saldo restante ${decision.plan.balance_after}`,
+      });
+      canjeado = amount;
+    }
+
+    /** Devuelve el saldo si el cobro no se pudo registrar. */
+    const deshacerCanje = async (motivo: string) => {
+      if (!conTarjeta || canjeado <= 0 || !body.gift_card_id) return;
+      await recordMovement({ companyId: ctx.companyId, userId: ctx.userId }, {
+        cardId: body.gift_card_id,
+        label: tarjeta?.code || body.gift_card_id,
+        plan: {
+          amount: -canjeado,
+          /**
+           * El saldo y el estado que la tarjeta tenía ANTES del canje, leídos de
+           * la fila que se cargó arriba. Deshacer es volver a donde estaba, no
+           * calcular otra cosa: poner `partially_used` a mano —que es lo que
+           * había aquí al escribirlo— marcaría como usada una tarjeta que se
+           * queda intacta.
+           */
+          balance_after: Math.round((Number(tarjeta?.balance ?? 0) + Number.EPSILON) * 100) / 100,
+          status: tarjeta?.status || "active",
+          movement_type: "refund",
+        },
+        currency: tarjeta?.currency,
+        notes: `Devuelto: el cobro no se pudo registrar (${motivo})`,
+        auditAction: "gift_card_refunded",
+        auditDescription:
+          `Gift card ${tarjeta?.code || body.gift_card_id}: devueltos ${canjeado} ` +
+          `${currency.toUpperCase()} porque el cobro falló — ${motivo}`,
+        severity: "warning",
+      });
+    };
+
+    let payment: { _id: string; reference?: string };
+    try {
+      payment = await tenantCreate(ctx.companyId, "payment", {
       order: orderId || undefined,
       schedule: scheduleRef || undefined,
       booking: body.booking_id || undefined,
@@ -162,7 +299,31 @@ export async function POST(req: NextRequest) {
       base_amount: Math.round((amount * rate + Number.EPSILON) * 100) / 100,
       paid_at: body.paid_at ? new Date(body.paid_at).toISOString() : new Date().toISOString(),
       notes: body.notes,
-    }) as { _id: string; reference?: string };
+      ...(conTarjeta ? { gift_card: body.gift_card_id } : {}),
+      }) as { _id: string; reference?: string };
+    } catch (err) {
+      /**
+       * El cobro no se escribió y el saldo ya se consumió: se devuelve.
+       *
+       * Si la devolución falla también, se deja escrito con severidad de aviso y
+       * se lanza el error ORIGINAL —no el de la compensación—, porque el
+       * diagnóstico de por qué no se pudo cobrar es el que sirve.
+       */
+      await deshacerCanje(err instanceof Error ? err.message : String(err)).catch(async (fallo) => {
+        console.error("[payments] el canje NO se pudo deshacer:", fallo);
+        await writeAudit({
+          companyId: ctx.companyId, userId: ctx.userId,
+          action: "gift_card_redeem_orphaned",
+          entityType: "gift_card", entityId: body.gift_card_id!,
+          description:
+            `Se consumió saldo de una gift card y el cobro no se registró, y la devolución ` +
+            `automática también falló. Hay que devolverlo a mano.`,
+          severity: "warning",
+          metadata: { amount: canjeado, order: orderId, error: String(err) },
+        }).catch(() => {});
+      });
+      throw err;
+    }
 
     // ---- cash session movement ---------------------------------------------
     if (cashSessionId) {

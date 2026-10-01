@@ -1,4 +1,4 @@
--- Funciones y disparadores de cada migracion, parte 2 de 3.
+-- Funciones y disparadores de cada migracion, parte 2 de 4.
 -- GENERADO: no lo edites. Pegalo ENTERO en el editor SQL. Solo lee.
 
 with o(mig,tipo,nom,propio) as (values
